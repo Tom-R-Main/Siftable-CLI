@@ -127,9 +127,24 @@ export default class AuthLogin extends BaseCommand {
         }),
       });
 
-      if (tokenRes.ok) {
-        const tokenData: TokenResponse = await tokenRes.json() as TokenResponse;
-        storeToken(tokenData.access_token);
+      let body: string;
+      try {
+        body = await tokenRes.text();
+      } catch {
+        // Network error during read — retry
+        continue;
+      }
+
+      let parsed: TokenResponse | ErrorResponse | undefined;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        // Non-JSON response (e.g. HTML error page) — server issue
+        this.error(`Server error (HTTP ${tokenRes.status}). The API may be updating — try again in a minute.`);
+      }
+
+      if (tokenRes.ok && parsed && 'access_token' in parsed) {
+        storeToken(parsed.access_token);
         if (!this.jsonEnabled()) {
           this.log('  Logged in successfully!');
         }
@@ -137,9 +152,9 @@ export default class AuthLogin extends BaseCommand {
         return {stored: true};
       }
 
-      const errorData: ErrorResponse = await tokenRes.json() as ErrorResponse;
+      const errorData = parsed as ErrorResponse | undefined;
 
-      switch (errorData.error) {
+      switch (errorData?.error) {
         case 'authorization_pending':
           // Keep polling
           break;
@@ -157,7 +172,7 @@ export default class AuthLogin extends BaseCommand {
           break;
 
         default:
-          this.error(`Unexpected error: ${errorData.error}`);
+          this.error(`Unexpected error: ${errorData?.error ?? `HTTP ${tokenRes.status}`}`);
       }
     }
 
