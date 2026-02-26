@@ -36,7 +36,7 @@
     }
   },
   "dependencies": {
-    "@execufunction/mcp-server": "*",
+    "@execufunction/mcp-server": "^0.2.0",
     "@oclif/core": "^4",
     "@oclif/plugin-help": "^6"
   },
@@ -61,5 +61,13 @@
     "knowledge-base"
   ],
   "author": "ExecuFunction",
-  "license": "MIT"
+  "license": "MIT",
+  "files": [
+    "dist",
+    "bin",
+    "oclif.manifest.json"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
 }
