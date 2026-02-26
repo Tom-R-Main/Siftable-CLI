@@ -1,11 +1,53 @@
 import {Flags} from '@oclif/core';
+import {execSync} from 'node:child_process';
 import {BaseCommand} from '../../lib/base-command.js';
 import {storeToken} from '../../lib/auth.js';
+
+const GRANT_TYPE = 'urn:ietf:params:oauth:grant-type:device_code';
+
+interface DeviceResponse {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete: string;
+  expires_in: number;
+  interval: number;
+}
+
+interface TokenResponse {
+  access_token: string;
+  token_type: string;
+}
+
+interface ErrorResponse {
+  error: string;
+  error_description?: string;
+}
+
+function openBrowser(url: string): void {
+  try {
+    const platform = process.platform;
+    if (platform === 'darwin') {
+      execSync(`open ${JSON.stringify(url)}`, {stdio: 'ignore'});
+    } else if (platform === 'win32') {
+      execSync(`start "" ${JSON.stringify(url)}`, {stdio: 'ignore'});
+    } else {
+      execSync(`xdg-open ${JSON.stringify(url)}`, {stdio: 'ignore'});
+    }
+  } catch {
+    // Browser open failed — user can manually navigate to the URL
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export default class AuthLogin extends BaseCommand {
   static description = 'Authenticate with ExecuFunction';
 
   static examples = [
+    '<%= config.bin %> auth login',
     '<%= config.bin %> auth login --token exf_pat_xxx',
     'EXF_TOKEN=exf_pat_xxx <%= config.bin %> auth status',
   ];
@@ -13,7 +55,7 @@ export default class AuthLogin extends BaseCommand {
   static flags = {
     ...BaseCommand.baseFlags,
     token: Flags.string({
-      description: 'Personal access token',
+      description: 'Personal access token (skips device flow)',
       env: 'EXF_TOKEN',
     }),
   };
@@ -22,15 +64,103 @@ export default class AuthLogin extends BaseCommand {
     const {flags} = await this.parse(AuthLogin);
     const token = flags.token;
 
-    if (!token) {
-      this.error('Provide a token with --token or EXF_TOKEN environment variable.');
+    // Direct token mode: existing behavior
+    if (token) {
+      storeToken(token);
+      if (!this.jsonEnabled()) {
+        this.log('Token stored in ~/.config/exf/auth.json');
+      }
+
+      return {stored: true};
     }
 
-    storeToken(token);
+    // Device flow
+    const apiUrl = flags['api-url'] || 'https://execufunction.com';
+    return this.deviceFlow(apiUrl, flags['no-input'] ?? false);
+  }
+
+  private async deviceFlow(apiUrl: string, noInput: boolean): Promise<{stored: boolean}> {
+    // Step 1: Request device code
+    const deviceRes = await fetch(`${apiUrl}/auth/device`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+    });
+
+    if (!deviceRes.ok) {
+      this.error(`Failed to start device flow (HTTP ${deviceRes.status}). Is the API reachable at ${apiUrl}?`);
+    }
+
+    const device: DeviceResponse = await deviceRes.json() as DeviceResponse;
+
+    // Step 2: Show code and open browser
     if (!this.jsonEnabled()) {
-      this.log('Token stored in ~/.config/exf/auth.json');
+      this.log('');
+      this.log(`  Your verification code: ${device.user_code}`);
+      this.log('');
+
+      if (noInput) {
+        this.log(`  Open this URL to authorize:`);
+        this.log(`  ${device.verification_uri_complete}`);
+      } else {
+        this.log('  Opening browser...');
+        openBrowser(device.verification_uri_complete);
+        this.log(`  If the browser didn't open, visit: ${device.verification_uri_complete}`);
+      }
+
+      this.log('');
+      this.log('  Waiting for authorization...');
     }
 
-    return {stored: true};
+    // Step 3: Poll for token
+    let interval = device.interval * 1000;
+    const deadline = Date.now() + device.expires_in * 1000;
+
+    while (Date.now() < deadline) {
+      await sleep(interval);
+
+      const tokenRes = await fetch(`${apiUrl}/auth/device/token`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          device_code: device.device_code,
+          grant_type: GRANT_TYPE,
+        }),
+      });
+
+      if (tokenRes.ok) {
+        const tokenData: TokenResponse = await tokenRes.json() as TokenResponse;
+        storeToken(tokenData.access_token);
+        if (!this.jsonEnabled()) {
+          this.log('  Logged in successfully!');
+        }
+
+        return {stored: true};
+      }
+
+      const errorData: ErrorResponse = await tokenRes.json() as ErrorResponse;
+
+      switch (errorData.error) {
+        case 'authorization_pending':
+          // Keep polling
+          break;
+
+        case 'slow_down':
+          interval += 5000;
+          break;
+
+        case 'expired_token':
+          this.error('Session expired. Run `exf auth login` again.');
+          break;
+
+        case 'access_denied':
+          this.error('Authorization denied.');
+          break;
+
+        default:
+          this.error(`Unexpected error: ${errorData.error}`);
+      }
+    }
+
+    this.error('Session expired. Run `exf auth login` again.');
   }
 }
