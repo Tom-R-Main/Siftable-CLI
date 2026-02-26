@@ -1,0 +1,65 @@
+{
+  "name": "@execufunction/cli",
+  "version": "0.1.0",
+  "description": "CLI for ExecuFunction — AI executive function assistant",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "exf": "./bin/run.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "prepack": "npm run build && oclif manifest",
+    "postpack": "rm -f oclif.manifest.json"
+  },
+  "oclif": {
+    "bin": "exf",
+    "dirname": "exf",
+    "commands": "./dist/commands",
+    "topicSeparator": " ",
+    "plugins": [
+      "@oclif/plugin-help"
+    ],
+    "topics": {
+      "auth": { "description": "Authentication commands" },
+      "tasks": { "description": "Task management" },
+      "projects": { "description": "Project management" },
+      "notes": { "description": "Knowledge notes" },
+      "calendar": { "description": "Calendar events" },
+      "people": { "description": "People and contacts" },
+      "codebase": { "description": "Code indexing and search" },
+      "code": { "description": "Code tools" },
+      "code:memory": { "description": "Code memory and facts" },
+      "vault": { "description": "Secrets vault" },
+      "documents": { "description": "Document upload" }
+    }
+  },
+  "dependencies": {
+    "@execufunction/mcp-server": "*",
+    "@oclif/core": "^4",
+    "@oclif/plugin-help": "^6"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "@types/node": "^20.0.0",
+    "jest": "^29.7.0",
+    "nock": "^13.5.0",
+    "oclif": "^4",
+    "ts-jest": "^29.1.0",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "cli",
+    "execufunction",
+    "ai",
+    "tasks",
+    "calendar",
+    "knowledge-base"
+  ],
+  "author": "ExecuFunction",
+  "license": "MIT"
+}
