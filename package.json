@@ -1,6 +1,6 @@
 {
   "name": "@execufunction/cli",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "CLI for ExecuFunction — AI executive function assistant",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -22,17 +22,39 @@
       "@oclif/plugin-help"
     ],
     "topics": {
-      "auth": { "description": "Authentication commands" },
-      "tasks": { "description": "Task management" },
-      "projects": { "description": "Project management" },
-      "notes": { "description": "Knowledge notes" },
-      "calendar": { "description": "Calendar events" },
-      "people": { "description": "People and contacts" },
-      "codebase": { "description": "Code indexing and search" },
-      "code": { "description": "Code tools" },
-      "code:memory": { "description": "Code memory and facts" },
-      "vault": { "description": "Secrets vault" },
-      "documents": { "description": "Document upload" }
+      "auth": {
+        "description": "Authentication commands"
+      },
+      "tasks": {
+        "description": "Task management"
+      },
+      "projects": {
+        "description": "Project management"
+      },
+      "notes": {
+        "description": "Knowledge notes"
+      },
+      "calendar": {
+        "description": "Calendar events"
+      },
+      "people": {
+        "description": "People and contacts"
+      },
+      "codebase": {
+        "description": "Code indexing and search"
+      },
+      "code": {
+        "description": "Code tools"
+      },
+      "code:memory": {
+        "description": "Code memory and facts"
+      },
+      "vault": {
+        "description": "Secrets vault"
+      },
+      "documents": {
+        "description": "Document upload"
+      }
     }
   },
   "dependencies": {
