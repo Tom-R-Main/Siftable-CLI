@@ -15,9 +15,17 @@ export default class CalendarList extends BaseCommand {
   async run(): Promise<unknown> {
     const {flags} = await this.parse(CalendarList);
     const client = await this.client(flags);
+
+    // Default to today through 7 days from now
+    const now = new Date();
+    const weekFromNow = new Date(now);
+    weekFromNow.setDate(weekFromNow.getDate() + 7);
+    const startDate = flags.start ?? now.toISOString();
+    const endDate = flags.end ?? weekFromNow.toISOString();
+
     const response = await client.listCalendarEvents({
-      startDate: flags.start,
-      endDate: flags.end,
+      startDate,
+      endDate,
       limit: flags.limit,
     });
     this.handleApiError(response);

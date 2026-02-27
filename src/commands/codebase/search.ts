@@ -40,7 +40,7 @@ export default class CodebaseSearch extends BaseCommand {
           {key: 'filePath', header: 'File'},
           {key: 'symbolName', header: 'Symbol'},
           {key: 'symbolType', header: 'Type'},
-          {key: 'score', header: 'Score', get: (r) => r.score != null ? String(Number(r.score).toFixed(2)) : '—'},
+          {key: 'similarity', header: 'Score', get: (r) => r.similarity != null ? String(Number(r.similarity).toFixed(2)) : '—'},
         ]);
       } else {
         this.log('No results found.');
