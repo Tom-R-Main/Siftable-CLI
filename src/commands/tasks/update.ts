@@ -22,6 +22,25 @@ export default class TasksUpdate extends BaseCommand {
     }),
     due: Flags.string({description: 'Due date (ISO 8601)'}),
     project: Flags.string({description: 'Project ID'}),
+    phase: Flags.string({
+      description: 'Lifecycle phase',
+      options: ['draft', 'open', 'in_flight', 'review', 'blocked', 'done', 'cancelled'],
+    }),
+    effort: Flags.string({
+      description: 'Effort estimate',
+      options: ['trivial', 'small', 'medium', 'large', 'epic', 'unknown'],
+    }),
+    'executor-agent': Flags.string({
+      description: 'AI executor agent',
+      options: ['claude_code', 'openclaw', 'cursor', 'windsurf'],
+    }),
+    'blocked-reason': Flags.string({description: 'Reason task is blocked'}),
+    'acceptance-criteria': Flags.string({
+      description: 'Acceptance criteria (semicolon-separated text, e.g. "tests pass; docs updated")',
+    }),
+    scope: Flags.string({
+      description: 'Scope boundaries (JSON object with include/exclude arrays)',
+    }),
   };
 
   async run(): Promise<unknown> {
@@ -35,6 +54,24 @@ export default class TasksUpdate extends BaseCommand {
     if (flags.priority !== undefined) updates.priority = flags.priority;
     if (flags.due !== undefined) updates.dueAt = flags.due;
     if (flags.project !== undefined) updates.projectId = flags.project;
+    if (flags.phase !== undefined) updates.phase = flags.phase;
+    if (flags.effort !== undefined) updates.effort = flags.effort;
+    if (flags['executor-agent'] !== undefined) updates.executorAgent = flags['executor-agent'];
+    if (flags['blocked-reason'] !== undefined) updates.blockedReason = flags['blocked-reason'];
+    if (flags['acceptance-criteria'] !== undefined) {
+      updates.acceptanceCriteria = flags['acceptance-criteria']
+        .split(';')
+        .map((s: string) => s.trim())
+        .filter(Boolean)
+        .map((text: string) => ({ text, met: false }));
+    }
+    if (flags.scope !== undefined) {
+      try {
+        updates.scope = JSON.parse(flags.scope);
+      } catch {
+        this.error('Invalid JSON for --scope flag');
+      }
+    }
 
     const response = await client.updateTask(args.id, updates, this.idempotencyKey());
     this.handleApiError(response);

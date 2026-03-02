@@ -22,11 +22,35 @@ export default class TasksGet extends BaseCommand {
     const task = this.unwrapOne(response, 'task');
 
     if (!this.jsonEnabled()) {
+      // Format acceptance criteria
+      const ac = task.acceptanceCriteria as Array<{ text: string; met: boolean }> | undefined;
+      let acDisplay = '—';
+      if (ac && ac.length > 0) {
+        const met = ac.filter((c: { met: boolean }) => c.met).length;
+        acDisplay = `${met}/${ac.length} met\n` + ac.map((c: { text: string; met: boolean }) => `  ${c.met ? '[x]' : '[ ]'} ${c.text}`).join('\n');
+      }
+
+      // Format scope
+      const sc = task.scope as { include?: string[]; exclude?: string[] } | undefined;
+      let scopeDisplay = '—';
+      if (sc && ((sc.include?.length ?? 0) > 0 || (sc.exclude?.length ?? 0) > 0)) {
+        const parts: string[] = [];
+        if (sc.include?.length) parts.push(...sc.include.map((s: string) => `  + ${s}`));
+        if (sc.exclude?.length) parts.push(...sc.exclude.map((s: string) => `  - ${s}`));
+        scopeDisplay = parts.join('\n');
+      }
+
       renderDetail([
         ['ID', task.id],
         ['Title', task.title],
+        ['Phase', task.phase || 'open'],
+        ['Effort', task.effort || 'unknown'],
         ['Status', task.status],
         ['Priority', task.priority],
+        ['Executor', task.executorAgent || '—'],
+        ['Blocked Reason', task.blockedReason || '—'],
+        ['Acceptance Criteria', acDisplay],
+        ['Scope', scopeDisplay],
         ['Description', task.description],
         ['Due', formatDate(task.dueAt as string)],
         ['Project', task.projectId],

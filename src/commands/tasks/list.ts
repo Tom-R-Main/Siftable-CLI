@@ -19,6 +19,18 @@ export default class TasksList extends BaseCommand {
     }),
     project: Flags.string({description: 'Filter by project ID'}),
     limit: Flags.integer({description: 'Maximum number of results'}),
+    phase: Flags.string({
+      description: 'Filter by phase',
+      options: ['draft', 'open', 'in_flight', 'review', 'blocked', 'done', 'cancelled'],
+    }),
+    effort: Flags.string({
+      description: 'Filter by effort',
+      options: ['trivial', 'small', 'medium', 'large', 'epic', 'unknown'],
+    }),
+    'executor-agent': Flags.string({
+      description: 'Filter by executor agent',
+      options: ['claude_code', 'openclaw', 'cursor', 'windsurf'],
+    }),
   };
 
   async run(): Promise<unknown> {
@@ -28,6 +40,9 @@ export default class TasksList extends BaseCommand {
       status: flags.status,
       projectId: flags.project,
       limit: flags.limit,
+      phase: flags.phase,
+      effort: flags.effort,
+      executorAgent: flags['executor-agent'],
     });
     this.handleApiError(response);
 
@@ -37,8 +52,9 @@ export default class TasksList extends BaseCommand {
       renderTable(tasks, [
         {key: 'id', header: 'ID'},
         {key: 'title', header: 'Title'},
+        {key: 'phase', header: 'Phase', get: (r) => (r.phase as string) || 'open'},
+        {key: 'effort', header: 'Effort', get: (r) => (r.effort as string) || '—'},
         {key: 'status', header: 'Status'},
-        {key: 'priority', header: 'Priority'},
         {key: 'dueAt', header: 'Due', get: (r) => r.dueAt ? new Date(r.dueAt as string).toLocaleDateString() : '—'},
       ]);
     }

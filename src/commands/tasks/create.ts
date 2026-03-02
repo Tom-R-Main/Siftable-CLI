@@ -7,6 +7,7 @@ export default class TasksCreate extends BaseCommand {
   static examples = [
     '<%= config.bin %> tasks create --title "Review PR"',
     '<%= config.bin %> tasks create --title "Ship feature" --priority do_now --due 2026-03-01',
+    '<%= config.bin %> tasks create --title "Refactor auth" --effort medium --phase draft',
   ];
 
   static flags = {
@@ -19,11 +20,49 @@ export default class TasksCreate extends BaseCommand {
     }),
     due: Flags.string({description: 'Due date (ISO 8601)'}),
     project: Flags.string({description: 'Project ID'}),
+    phase: Flags.string({
+      description: 'Lifecycle phase',
+      options: ['draft', 'open', 'in_flight', 'review', 'blocked', 'done', 'cancelled'],
+    }),
+    effort: Flags.string({
+      description: 'Effort estimate',
+      options: ['trivial', 'small', 'medium', 'large', 'epic', 'unknown'],
+    }),
+    'executor-agent': Flags.string({
+      description: 'AI executor agent',
+      options: ['claude_code', 'openclaw', 'cursor', 'windsurf'],
+    }),
+    'acceptance-criteria': Flags.string({
+      description: 'Acceptance criteria (semicolon-separated text, e.g. "tests pass; docs updated")',
+    }),
+    scope: Flags.string({
+      description: 'Scope boundaries (JSON object with include/exclude arrays)',
+    }),
   };
 
   async run(): Promise<unknown> {
     const {flags} = await this.parse(TasksCreate);
     const client = await this.client(flags);
+    // Parse acceptance criteria: semicolon-separated → array of {text, met: false}
+    let acceptanceCriteria: Array<{ text: string; met: boolean }> | undefined;
+    if (flags['acceptance-criteria']) {
+      acceptanceCriteria = flags['acceptance-criteria']
+        .split(';')
+        .map(s => s.trim())
+        .filter(Boolean)
+        .map(text => ({ text, met: false }));
+    }
+
+    // Parse scope as JSON
+    let scope: { include?: string[]; exclude?: string[] } | undefined;
+    if (flags.scope) {
+      try {
+        scope = JSON.parse(flags.scope);
+      } catch {
+        this.error('Invalid JSON for --scope flag');
+      }
+    }
+
     const response = await client.createTask(
       {
         title: flags.title,
@@ -31,6 +70,11 @@ export default class TasksCreate extends BaseCommand {
         priority: flags.priority as 'do_now' | 'schedule' | 'delegate' | 'someday' | undefined,
         dueAt: flags.due,
         projectId: flags.project,
+        phase: flags.phase,
+        effort: flags.effort,
+        executorAgent: flags['executor-agent'],
+        acceptanceCriteria,
+        scope,
       },
       this.idempotencyKey(),
     );
