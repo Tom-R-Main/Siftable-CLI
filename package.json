@@ -52,6 +52,9 @@
       "vault": {
         "description": "Secrets vault"
       },
+      "datasets": {
+        "description": "Structured datasets"
+      },
       "documents": {
         "description": "Document upload"
       }
