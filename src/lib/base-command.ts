@@ -1,5 +1,6 @@
 import {Command, Flags} from '@oclif/core';
 import {randomUUID} from 'node:crypto';
+import {readFileSync} from 'node:fs';
 import {ExfClient} from '@execufunction/mcp-server/dist/exfClient.js';
 import {resolveToken} from './auth.js';
 import {confirm} from './output.js';
@@ -83,5 +84,38 @@ export abstract class BaseCommand extends Command {
 
   protected idempotencyKey(): string {
     return `cli-${Date.now()}-${randomUUID()}`;
+  }
+
+  protected parseJsonFlag<T>(value: string | undefined, label: string): T | undefined {
+    if (!value) {
+      return undefined;
+    }
+
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      this.error(`Invalid ${label} JSON.`);
+    }
+  }
+
+  protected parseJsonInput<T>(
+    value: string | undefined,
+    filePath: string | undefined,
+    label: string,
+  ): T | undefined {
+    if (!value && !filePath) {
+      return undefined;
+    }
+
+    if (value && filePath) {
+      this.error(`Provide either ${label} JSON inline or ${label} file path, not both.`);
+    }
+
+    const raw = filePath ? readFileSync(filePath, 'utf8') : value!;
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      this.error(`Invalid ${label} JSON${filePath ? ` in ${filePath}` : ''}.`);
+    }
   }
 }
