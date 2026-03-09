@@ -35,8 +35,8 @@ export default class CodeMemorySearch extends BaseCommand {
     if (!this.jsonEnabled()) {
       renderTable(memories, [
         {key: 'id', header: 'ID'},
-        {key: 'fact', header: 'Fact'},
-        {key: 'category', header: 'Category'},
+        {key: 'content', header: 'Fact'},
+        {key: 'factType', header: 'Category'},
         {key: 'filePath', header: 'File'},
       ]);
     }
