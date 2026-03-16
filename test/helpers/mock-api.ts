@@ -214,6 +214,7 @@ export async function runCommand(argv: string[]): Promise<{stdout: string; error
   const originalLog = console.log;
   const originalError = console.error;
   const originalWarn = console.warn;
+  const originalExitCode = process.exitCode;
   const lines: string[] = [];
 
   console.log = (...args: unknown[]) => {
@@ -228,6 +229,7 @@ export async function runCommand(argv: string[]): Promise<{stdout: string; error
   try {
     const {run} = require('@oclif/core');
     await run(argv, {root: path.join(__dirname, '..', '..')});
+    exitCode = process.exitCode ?? 0;
   } catch (err: any) {
     error = err;
     exitCode = err.oclif?.exit ?? 1;
@@ -235,6 +237,7 @@ export async function runCommand(argv: string[]): Promise<{stdout: string; error
     console.log = originalLog;
     console.error = originalError;
     console.warn = originalWarn;
+    process.exitCode = originalExitCode;
   }
 
   return {stdout: lines.join('\n'), error, exitCode};

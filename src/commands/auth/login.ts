@@ -2,6 +2,7 @@ import {Flags} from '@oclif/core';
 import {execSync} from 'node:child_process';
 import {BaseCommand} from '../../lib/base-command.js';
 import {storeToken} from '../../lib/auth.js';
+import {getConfigDir} from '../../lib/config.js';
 
 const GRANT_TYPE = 'urn:ietf:params:oauth:grant-type:device_code';
 
@@ -68,7 +69,7 @@ export default class AuthLogin extends BaseCommand {
     if (token) {
       storeToken(token);
       if (!this.jsonEnabled()) {
-        this.log('Token stored in ~/.config/exf/auth.json');
+        this.log(`Token stored in ${getConfigDir()}/auth.json`);
       }
 
       return {stored: true};
@@ -146,7 +147,7 @@ export default class AuthLogin extends BaseCommand {
       if (tokenRes.ok && parsed && 'access_token' in parsed) {
         storeToken(parsed.access_token);
         if (!this.jsonEnabled()) {
-          this.log('  Logged in successfully!');
+          this.log(`  Logged in successfully! Token stored in ${getConfigDir()}/auth.json`);
         }
 
         return {stored: true};

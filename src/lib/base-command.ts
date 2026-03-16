@@ -48,25 +48,82 @@ export abstract class BaseCommand extends Command {
     return (data?.[key] ?? data ?? {}) as Record<string, unknown>;
   }
 
+  private parseApiError(error?: string): {
+    message: string;
+    raw: string;
+    payload?: Record<string, unknown>;
+  } {
+    if (!error) {
+      return {message: 'Unknown API error', raw: ''};
+    }
+
+    try {
+      const payload = JSON.parse(error) as Record<string, unknown>;
+      const title = typeof payload.title === 'string' ? payload.title : undefined;
+      const detail = typeof payload.detail === 'string' ? payload.detail : undefined;
+      const message = [title, detail].filter(Boolean).join(': ') || error;
+      return {message, raw: error, payload};
+    } catch {
+      return {message: error, raw: error};
+    }
+  }
+
+  protected override toErrorJson(err: Error & {
+    oclif?: {exit?: number};
+    code?: string;
+    statusCode?: number;
+    suggestions?: string[];
+    api?: Record<string, unknown>;
+  }): unknown {
+    return {
+      error: {
+        message: err.message,
+        code: err.code,
+        statusCode: err.statusCode,
+        api: err.api,
+        exit: err.oclif?.exit ?? 1,
+        suggestions: err.suggestions,
+      },
+    };
+  }
+
   protected handleApiError(response: {statusCode: number; error?: string; data?: unknown}): void {
     if (response.error) {
+      const parsed = this.parseApiError(response.error);
+
       if (response.statusCode === 401) {
-        this.error(`Authentication failed: ${response.error}\nRun \`exf auth login\` to authenticate.`);
+        this.error(`Authentication failed: ${parsed.message}\nRun \`exf auth login\` to authenticate.`);
       }
 
       if (response.statusCode === 403) {
-        this.error(`Permission denied: ${response.error}`);
+        this.error(`Permission denied: ${parsed.message}`);
       }
 
       if (response.statusCode === 404) {
-        this.error(`Not found: ${response.error}`);
+        this.error(`Not found: ${parsed.message}`);
       }
 
       if (response.statusCode === 429) {
-        this.error(`Rate limited: ${response.error}\nPlease try again shortly.`);
+        this.error(`Rate limited: ${parsed.message}\nPlease try again shortly.`);
       }
 
-      this.error(`API error (${response.statusCode}): ${response.error}`);
+      if (parsed.payload) {
+        const error = new Error(parsed.message) as Error & {
+          code?: string;
+          statusCode?: number;
+          api?: Record<string, unknown>;
+        };
+        error.code = parsed.payload.type as string | undefined;
+        error.statusCode = response.statusCode;
+        error.api = parsed.payload;
+        this.error(error, {exit: response.statusCode});
+      }
+
+      const error = new Error(`API error (${response.statusCode}): ${parsed.message}`) as Error & {
+        statusCode?: number;
+      };
+      error.statusCode = response.statusCode;
+      this.error(error, {exit: response.statusCode});
     }
   }
 

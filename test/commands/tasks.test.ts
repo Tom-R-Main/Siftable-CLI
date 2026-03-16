@@ -1,4 +1,7 @@
 import {mockFetch, fixtures, runCommand, restoreFetch} from '../helpers/mock-api';
+import {installIsolatedConfigDirHooks} from '../helpers/config-env';
+
+installIsolatedConfigDirHooks('exf-cli-tasks-test-');
 
 afterAll(() => {
   restoreFetch();
@@ -86,6 +89,40 @@ describe('tasks commands', () => {
       const json = JSON.parse(result.stdout);
       expect(json.task.id).toBe('task-new');
     });
+
+    it('returns structured JSON errors when the API rejects creation', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/tasks')
+        .reply(400, {
+          type: 'bad_request',
+          title: 'Focus queue full',
+          status: 400,
+          detail: 'You already have 3 tasks in Now. Move something to Today or Soon first.',
+          instance: '/api/v1/tasks',
+        })
+        .install();
+
+      const result = await runCommand([
+        'tasks',
+        'create',
+        '--title',
+        'New task',
+        '--priority',
+        'do_now',
+        '--token',
+        'exf_pat_test',
+        '--json',
+      ]);
+
+      const json = JSON.parse(result.stdout);
+      expect(json.error.message).toBe(
+        'Focus queue full: You already have 3 tasks in Now. Move something to Today or Soon first.'
+      );
+      expect(json.error.code).toBe('bad_request');
+      expect(json.error.exit).toBe(400);
+      expect(json.error.statusCode).toBe(400);
+      expect(json.error.api.title).toBe('Focus queue full');
+    });
   });
 
   describe('tasks complete', () => {
@@ -139,8 +176,6 @@ describe('tasks commands', () => {
     });
 
     it('errors when no token available', async () => {
-      try { require('fs').unlinkSync(require('path').join(require('os').homedir(), '.config', 'exf', 'auth.json')); } catch {}
-
       const result = await runCommand(['tasks', 'list']);
       expect(result.error?.message).toContain('No authentication token');
     });

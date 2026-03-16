@@ -1,5 +1,6 @@
 import {BaseCommand} from '../../lib/base-command.js';
 import {resolveToken} from '../../lib/auth.js';
+import {getConfigDir} from '../../lib/config.js';
 
 export default class AuthStatus extends BaseCommand {
   static description = 'Show authentication status';
@@ -15,7 +16,7 @@ export default class AuthStatus extends BaseCommand {
     if (flags.token) {
       source = flags.token.startsWith('exf_pat_') ? 'flag/env' : 'flag/env';
     } else if (resolveToken()) {
-      source = 'config file (~/.config/exf/auth.json)';
+      source = `config file (${getConfigDir()}/auth.json)`;
     }
 
     const authenticated = !!source;
