@@ -5,6 +5,7 @@ import {indexIncrementally, formatIncrementalResult} from '@execufunction/mcp-se
 
 export default class CodebaseIndex extends BaseCommand {
   static description = 'Index a codebase (scan and upload files)';
+  static aliases = ['codebase index'];
 
   static args = {
     id: Args.string({description: 'Repository ID', required: true}),
