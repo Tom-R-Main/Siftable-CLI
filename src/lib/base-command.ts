@@ -24,9 +24,14 @@ export abstract class BaseCommand extends Command {
       description: 'Disable interactive prompts',
       helpGroup: 'GLOBAL',
     }),
+    workspace: Flags.string({
+      description: 'Workspace org ID to scope operations to',
+      env: 'EXF_WORKSPACE_ID',
+      helpGroup: 'GLOBAL',
+    }),
   };
 
-  protected async client(flags: {token?: string; 'api-url'?: string}): Promise<ExfClient> {
+  protected async client(flags: {token?: string; 'api-url'?: string; workspace?: string}): Promise<ExfClient> {
     const token = flags.token || resolveToken();
     if (!token) {
       this.error('No authentication token found. Run `exf auth login` or set EXF_TOKEN.');
@@ -35,6 +40,7 @@ export abstract class BaseCommand extends Command {
     return new ExfClient({
       apiUrl: flags['api-url'] || 'https://execufunction.com',
       pat: token,
+      workspaceId: flags.workspace,
     });
   }
 
