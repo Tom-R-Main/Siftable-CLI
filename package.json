@@ -10,6 +10,7 @@
   "scripts": {
     "build": "tsc",
     "test": "jest",
+    "prepublishOnly": "npm run build",
     "prepack": "npm run build && oclif manifest",
     "postpack": "rm -f oclif.manifest.json"
   },
