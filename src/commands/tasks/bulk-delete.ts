@@ -37,18 +37,25 @@ export default class TasksBulkDelete extends BaseCommand {
       confirm: flags.confirm,
     });
     this.handleApiError(response);
-    const data = response.data || {matched: [], matchedCount: 0, deletedCount: 0, previewOnly: true, truncated: false};
+    const data = (response.data as {
+      matched: Record<string, unknown>[];
+      matchedCount: number;
+      shownCount: number;
+      deletedCount: number;
+      previewOnly: boolean;
+      truncated: boolean;
+    } | undefined) || {matched: [], matchedCount: 0, shownCount: 0, deletedCount: 0, previewOnly: true, truncated: false};
 
     if (!this.jsonEnabled()) {
       if (data.previewOnly) {
-        this.log(`Preview: ${data.matchedCount} task(s) matched.`);
+        this.log(`Preview: ${data.matchedCount} task(s) matched.${data.truncated ? ` Showing first ${data.shownCount}.` : ''}`);
         renderTable((data.matched || []) as Record<string, unknown>[], [
           {key: 'id', header: 'ID'},
           {key: 'title', header: 'Title'},
           {key: 'phase', header: 'Phase'},
           {key: 'when', header: 'When'},
         ]);
-        if (data.truncated) this.log('Results truncated to 200 matches.');
+        if (data.truncated) this.log('Results truncated to 200 matches per call.');
         this.log('Re-run with --confirm to execute deletion.');
       } else {
         this.log(`Deleted ${data.deletedCount} task(s).`);

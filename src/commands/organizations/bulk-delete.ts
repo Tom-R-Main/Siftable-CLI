@@ -35,18 +35,25 @@ export default class OrganizationsBulkDelete extends BaseCommand {
       confirm: flags.confirm,
     });
     this.handleApiError(response);
-    const data = response.data || {matched: [], matchedCount: 0, deletedCount: 0, previewOnly: true, truncated: false};
+    const data = (response.data as {
+      matched: Record<string, unknown>[];
+      matchedCount: number;
+      shownCount: number;
+      deletedCount: number;
+      previewOnly: boolean;
+      truncated: boolean;
+    } | undefined) || {matched: [], matchedCount: 0, shownCount: 0, deletedCount: 0, previewOnly: true, truncated: false};
 
     if (!this.jsonEnabled()) {
       if (data.previewOnly) {
-        this.log(`Preview: ${data.matchedCount} organization(s) matched.`);
+        this.log(`Preview: ${data.matchedCount} organization(s) matched.${data.truncated ? ` Showing first ${data.shownCount}.` : ''}`);
         renderTable((data.matched || []) as Record<string, unknown>[], [
           {key: 'id', header: 'ID'},
           {key: 'name', header: 'Name'},
           {key: 'type', header: 'Type'},
           {key: 'relationshipStatus', header: 'Relationship'},
         ]);
-        if (data.truncated) this.log('Results truncated to 200 matches.');
+        if (data.truncated) this.log('Results truncated to 200 matches per call.');
         this.log('Re-run with --confirm to execute deletion.');
       } else {
         this.log(`Deleted ${data.deletedCount} organization(s).`);
