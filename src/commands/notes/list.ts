@@ -13,6 +13,10 @@ export default class NotesList extends BaseCommand {
       options: ['note', 'concept', 'meeting', 'reference', 'daily', 'dataset'],
     }),
     limit: Flags.integer({description: 'Maximum number of results'}),
+    'title-starts-with': Flags.string({description: 'Title prefix filter'}),
+    'title-contains': Flags.string({description: 'Title substring filter'}),
+    'title-equals': Flags.string({description: 'Exact title filter'}),
+    archived: Flags.boolean({description: 'Filter by archived state'}),
   };
 
   async run(): Promise<unknown> {
@@ -22,6 +26,10 @@ export default class NotesList extends BaseCommand {
       projectId: flags.project,
       noteType: flags.type,
       limit: flags.limit,
+      titleStartsWith: flags['title-starts-with'],
+      titleContains: flags['title-contains'],
+      titleEquals: flags['title-equals'],
+      isArchived: flags.archived,
     });
     this.handleApiError(response);
 

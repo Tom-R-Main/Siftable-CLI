@@ -1,6 +1,6 @@
 {
   "name": "@execufunction/cli",
-  "version": "0.5.4",
+  "version": "0.5.6",
   "description": "CLI for ExecuFunction — AI executive function assistant",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -64,7 +64,7 @@
     }
   },
   "dependencies": {
-    "@execufunction/mcp-server": "^1.2.3",
+    "@execufunction/mcp-server": "^1.2.5",
     "@oclif/core": "^4",
     "@oclif/plugin-help": "^6"
   },
