@@ -7,7 +7,4 @@ async function main() {
   await run(process.argv.slice(2), {root: path.join(__dirname, '..')})
 }
 
-main().catch(err => {
-  console.error(err)
-  process.exit(1)
-})
+main().catch(require('@oclif/core').handle)

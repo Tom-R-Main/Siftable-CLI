@@ -5,6 +5,15 @@ afterAll(() => {
 });
 
 describe('codebase commands', () => {
+  describe('codebase topic help', () => {
+    it('does not treat bare codebase as a missing-id indexing invocation', async () => {
+      const result = await runCommand(['codebase']);
+      expect(result.stdout).toContain('Code indexing and search');
+      expect(result.stdout).toContain('codebase incremental');
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
   describe('codebase list', () => {
     it('lists repositories', async () => {
       mockFetch()
@@ -57,6 +66,15 @@ describe('codebase commands', () => {
       const result = await runCommand(['codebase', 'search', 'main function', '--token', 'exf_pat_test']);
       expect(result.stdout).toContain('src/index.ts');
       expect(result.stdout).toContain('main');
+    });
+  });
+
+  describe('codebase incremental help', () => {
+    it('exposes incremental indexing as a direct command', async () => {
+      const result = await runCommand(['codebase', 'incremental']);
+      expect(result.exitCode).toBe(2);
+      expect(result.error?.message).toContain('Missing 1 required arg');
+      expect(result.error?.message).toContain('Repository ID');
     });
   });
 });
