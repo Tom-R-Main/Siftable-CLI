@@ -1,14 +1,9 @@
 {
   "commands": {
-    "auth:login": {
+    "agents:create": {
       "aliases": [],
       "args": {},
-      "description": "Authenticate with ExecuFunction",
-      "examples": [
-        "<%= config.bin %> auth login",
-        "<%= config.bin %> auth login --token exf_pat_xxx",
-        "EXF_TOKEN=exf_pat_xxx <%= config.bin %> auth status"
-      ],
+      "description": "Create an agent alias",
       "flags": {
         "json": {
           "description": "Format output as json.",
@@ -18,8 +13,8 @@
           "type": "boolean"
         },
         "token": {
-          "description": "Personal access token (skips device flow)",
-          "env": "EXF_TOKEN",
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
           "multiple": false,
@@ -27,7 +22,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -44,7 +38,533 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "alias": {
+          "description": "Stable alias slug, e.g. codex",
+          "name": "alias",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "name": {
+          "description": "Display name",
+          "name": "name",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "type": {
+          "description": "Agent type",
+          "name": "type",
+          "default": "custom",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "operator": {
+          "description": "Linked daemon/operator ID",
+          "name": "operator",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "capabilities": {
+          "description": "Capabilities JSON object",
+          "name": "capabilities",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "permissions": {
+          "description": "Default permissions JSON object",
+          "name": "permissions",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "hidden": {
+          "description": "Hide from normal user-visible lists",
+          "name": "hidden",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "agents:create",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "agents",
+        "create.js"
+      ]
+    },
+    "agents:disable": {
+      "aliases": [],
+      "args": {
+        "alias": {
+          "description": "Agent alias or ID",
+          "name": "alias",
+          "required": true
+        }
+      },
+      "description": "Disable an agent alias",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "agents:disable",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "agents",
+        "disable.js"
+      ]
+    },
+    "agents:get": {
+      "aliases": [],
+      "args": {
+        "alias": {
+          "description": "Agent alias or ID",
+          "name": "alias",
+          "required": true
+        }
+      },
+      "description": "Get an agent alias",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "agents:get",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "agents",
+        "get.js"
+      ]
+    },
+    "agents:list": {
+      "aliases": [],
+      "args": {},
+      "description": "List agent aliases",
+      "examples": [
+        "<%= config.bin %> agents list",
+        "<%= config.bin %> agents list --include-disabled --json"
+      ],
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "include-disabled": {
+          "description": "Include disabled aliases",
+          "name": "include-disabled",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "agents:list",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "agents",
+        "list.js"
+      ]
+    },
+    "agents:update": {
+      "aliases": [],
+      "args": {
+        "alias": {
+          "description": "Agent alias or ID",
+          "name": "alias",
+          "required": true
+        }
+      },
+      "description": "Update an agent alias",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "name": {
+          "description": "Display name",
+          "name": "name",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "type": {
+          "description": "Agent type",
+          "name": "type",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "operator": {
+          "description": "Linked daemon/operator ID",
+          "name": "operator",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "capabilities": {
+          "description": "Capabilities JSON object",
+          "name": "capabilities",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "permissions": {
+          "description": "Default permissions JSON object",
+          "name": "permissions",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "status": {
+          "description": "Alias status",
+          "name": "status",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "active",
+            "disabled"
+          ],
+          "type": "option"
+        },
+        "hidden": {
+          "description": "Hide from normal user-visible lists",
+          "name": "hidden",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "visible": {
+          "description": "Show in normal user-visible lists",
+          "name": "visible",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "agents:update",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "agents",
+        "update.js"
+      ]
+    },
+    "agents:work": {
+      "aliases": [],
+      "args": {
+        "alias": {
+          "description": "Agent alias or ID",
+          "name": "alias",
+          "required": true
+        }
+      },
+      "description": "List work assigned to an agent alias",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "status": {
+          "description": "Work item status",
+          "name": "status",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "limit": {
+          "description": "Maximum results",
+          "name": "limit",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "agents:work",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "agents",
+        "work.js"
+      ]
+    },
+    "auth:login": {
+      "aliases": [],
+      "args": {},
+      "description": "Authenticate with Siftable",
+      "examples": [
+        "<%= config.bin %> auth login",
+        "<%= config.bin %> auth login --token sift_pat_xxx",
+        "SIFT_TOKEN=sift_pat_xxx <%= config.bin %> auth status",
+        "EXF_TOKEN=exf_pat_xxx <%= config.bin %> auth status"
+      ],
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token (skips device flow)",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -55,8 +575,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "auth:login",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -82,7 +602,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -91,7 +610,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -108,7 +626,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -119,8 +636,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "auth:logout",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -146,7 +663,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -155,7 +671,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -172,7 +687,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -183,8 +697,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "auth:status",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -213,7 +727,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -222,7 +735,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -239,7 +751,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -288,8 +799,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "calendar:create",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -321,7 +832,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -330,7 +840,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -347,7 +856,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -365,8 +873,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "calendar:delete",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -392,7 +900,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -401,7 +908,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -418,7 +924,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -450,8 +955,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "calendar:list",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -483,7 +988,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -492,7 +996,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -509,7 +1012,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -555,8 +1057,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "calendar:update",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -588,7 +1090,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -597,7 +1098,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -614,7 +1114,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -633,8 +1132,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "code:blame",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -666,7 +1165,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -675,7 +1173,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -692,7 +1189,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -703,8 +1199,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "code:expertise",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -736,7 +1232,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -745,7 +1240,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -762,7 +1256,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -787,8 +1280,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "code:history",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -820,7 +1313,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -829,7 +1321,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -846,7 +1337,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -886,8 +1376,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "code:link",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -924,7 +1414,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -933,7 +1422,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -950,7 +1438,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -968,8 +1455,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "code:who-knows",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -1001,7 +1488,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -1010,7 +1496,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -1027,7 +1512,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -1045,8 +1529,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "codebase:delete",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -1081,7 +1565,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -1090,7 +1573,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -1107,7 +1589,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -1140,8 +1621,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "codebase:incremental",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -1175,7 +1656,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -1184,7 +1664,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -1201,7 +1680,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -1240,8 +1718,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "codebase",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -1267,7 +1745,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -1276,7 +1753,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -1293,7 +1769,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -1304,8 +1779,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "codebase:list",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -1331,7 +1806,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -1340,7 +1814,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -1357,7 +1830,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -1397,8 +1869,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "codebase:register",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -1430,7 +1902,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -1439,7 +1910,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -1456,7 +1926,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -1503,8 +1972,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "codebase:search",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -1536,7 +2005,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -1545,7 +2013,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -1562,7 +2029,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -1586,8 +2052,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "codebase:snapshot",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -1619,7 +2085,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -1628,7 +2093,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -1645,7 +2109,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -1656,8 +2119,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "codebase:status",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -1667,105 +2130,6 @@
         "commands",
         "codebase",
         "status.js"
-      ]
-    },
-    "documents:upload": {
-      "aliases": [],
-      "args": {
-        "file": {
-          "description": "Path to file",
-          "name": "file",
-          "required": true
-        }
-      },
-      "description": "Upload a document (PDF, Markdown, or text) as a note",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "env": "EXF_TOKEN",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "env": "EXF_API_URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://execufunction.com",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "title": {
-          "description": "Note title (defaults to filename)",
-          "name": "title",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "type": {
-          "description": "Note type",
-          "name": "type",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "note",
-            "concept",
-            "meeting",
-            "reference",
-            "daily",
-            "dataset"
-          ],
-          "type": "option"
-        },
-        "project": {
-          "description": "Project ID",
-          "name": "project",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "documents:upload",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "documents",
-        "upload.js"
       ]
     },
     "datasets:add": {
@@ -1788,7 +2152,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -1797,7 +2160,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -1814,7 +2176,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -1839,8 +2200,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:add",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -1872,7 +2233,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -1881,7 +2241,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -1898,7 +2257,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -1952,8 +2310,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:aggregate",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -1985,7 +2343,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -1994,7 +2351,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -2011,7 +2367,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -2044,8 +2399,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:analyze",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -2077,7 +2432,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -2086,7 +2440,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -2103,7 +2456,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -2150,8 +2502,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:bucket",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -2183,7 +2535,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -2192,7 +2543,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -2209,7 +2559,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -2257,8 +2606,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:compare",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -2290,7 +2639,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -2299,7 +2647,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -2316,7 +2663,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -2385,8 +2731,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:compute",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -2412,7 +2758,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -2421,7 +2766,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -2438,7 +2782,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -2478,8 +2821,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:create",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -2516,7 +2859,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -2525,7 +2867,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -2542,7 +2883,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -2560,8 +2900,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:delete-record",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -2593,7 +2933,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -2602,7 +2941,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -2619,7 +2957,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -2660,8 +2997,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:export",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -2693,7 +3030,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -2702,7 +3038,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -2719,7 +3054,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -2730,8 +3064,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:get",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -2763,7 +3097,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -2772,7 +3105,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -2789,7 +3121,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -2829,8 +3160,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:import",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -2862,7 +3193,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -2871,7 +3201,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -2888,7 +3217,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -2972,8 +3300,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:join",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -2999,7 +3327,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -3008,7 +3335,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -3025,7 +3351,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -3044,8 +3369,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:list",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -3071,7 +3396,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -3080,7 +3404,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -3097,7 +3420,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -3139,8 +3461,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:materialize",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -3166,7 +3488,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -3175,7 +3496,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -3192,7 +3512,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -3255,8 +3574,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:plot",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -3288,7 +3607,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -3297,7 +3615,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -3314,7 +3631,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -3360,8 +3676,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:query",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -3393,7 +3709,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -3402,7 +3717,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -3419,7 +3733,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -3459,8 +3772,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:rank",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -3492,7 +3805,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -3501,7 +3813,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -3518,7 +3829,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -3556,8 +3866,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:schema",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -3589,7 +3899,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -3598,7 +3907,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -3615,7 +3923,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -3626,8 +3933,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:summarize",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -3659,7 +3966,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -3668,7 +3974,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -3685,7 +3990,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -3765,8 +4069,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:timeseries",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -3803,7 +4107,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -3812,7 +4115,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -3829,7 +4131,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -3848,8 +4149,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "datasets:update-record",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -3861,10 +4162,16 @@
         "update-record.js"
       ]
     },
-    "notes:bulk-delete": {
+    "documents:upload": {
       "aliases": [],
-      "args": {},
-      "description": "Preview or bulk-delete notes",
+      "args": {
+        "file": {
+          "description": "Path to file",
+          "name": "file",
+          "required": true
+        }
+      },
+      "description": "Upload a document (PDF, Markdown, or text) as a note",
       "flags": {
         "json": {
           "description": "Format output as json.",
@@ -3875,7 +4182,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -3884,7 +4190,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -3901,7 +4206,96 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "title": {
+          "description": "Note title (defaults to filename)",
+          "name": "title",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "type": {
+          "description": "Note type",
+          "name": "type",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "note",
+            "concept",
+            "meeting",
+            "reference",
+            "daily",
+            "dataset"
+          ],
+          "type": "option"
+        },
+        "project": {
+          "description": "Project ID",
+          "name": "project",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "documents:upload",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "documents",
+        "upload.js"
+      ]
+    },
+    "notes:bulk-delete": {
+      "aliases": [],
+      "args": {},
+      "description": "Preview or bulk-delete notes",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -3966,8 +4360,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "notes:bulk-delete",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -3993,7 +4387,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -4002,7 +4395,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -4019,7 +4411,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -4067,8 +4458,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "notes:create",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -4100,7 +4491,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -4109,7 +4499,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -4126,7 +4515,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -4144,8 +4532,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "notes:delete",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -4177,7 +4565,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -4186,7 +4573,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -4203,7 +4589,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -4214,8 +4599,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "notes:get",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -4241,7 +4626,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -4250,7 +4634,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -4267,7 +4650,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -4334,8 +4716,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "notes:list",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -4367,7 +4749,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -4376,7 +4757,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -4393,7 +4773,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -4418,8 +4797,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "notes:search",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -4451,7 +4830,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -4460,7 +4838,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -4477,7 +4854,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -4517,8 +4893,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "notes:update",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -4544,7 +4920,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -4553,7 +4928,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -4570,7 +4944,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -4629,8 +5002,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "organizations:bulk-delete",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -4660,7 +5033,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -4669,7 +5041,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -4686,7 +5057,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -4761,8 +5131,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "organizations:create",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -4794,7 +5164,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -4803,7 +5172,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -4820,7 +5188,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -4838,8 +5205,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "organizations:delete",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -4871,7 +5238,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -4880,7 +5246,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -4897,7 +5262,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -4950,8 +5314,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "organizations:search",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -4983,7 +5347,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -4992,7 +5355,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -5009,7 +5371,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -5083,8 +5444,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "organizations:update",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -5110,7 +5471,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -5119,7 +5479,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -5136,7 +5495,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -5194,8 +5552,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "people:bulk-delete",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -5225,7 +5583,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -5234,7 +5591,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -5251,7 +5607,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -5361,8 +5716,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "people:create",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -5394,7 +5749,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -5403,7 +5757,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -5420,7 +5773,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -5438,8 +5790,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "people:delete",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -5465,7 +5817,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -5474,7 +5825,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -5491,7 +5841,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -5543,8 +5892,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "people:list",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -5576,7 +5925,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -5585,7 +5933,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -5602,7 +5949,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -5654,8 +6000,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "people:search",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -5687,7 +6033,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -5696,7 +6041,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -5713,7 +6057,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -5822,8 +6165,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "people:update",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -5855,7 +6198,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -5864,7 +6206,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -5881,7 +6222,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -5899,8 +6239,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "projects:archive",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -5932,7 +6272,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -5941,7 +6280,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -5958,7 +6296,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -5969,8 +6306,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "projects:context",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -5996,7 +6333,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -6005,7 +6341,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -6022,7 +6357,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -6069,8 +6403,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "projects:create",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -6096,7 +6430,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -6105,7 +6438,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -6122,7 +6454,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -6153,8 +6484,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "projects:list",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -6186,7 +6517,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -6195,7 +6525,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -6212,7 +6541,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -6223,8 +6551,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "projects:planning-recompute",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -6256,7 +6584,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -6265,7 +6592,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -6282,7 +6608,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -6293,8 +6618,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "projects:planning",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -6326,7 +6651,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -6335,7 +6659,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -6352,7 +6675,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -6398,8 +6720,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "projects:update",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -6408,6 +6730,469 @@
         "dist",
         "commands",
         "projects",
+        "update.js"
+      ]
+    },
+    "vault:create": {
+      "aliases": [],
+      "args": {},
+      "description": "Store a new encrypted secret",
+      "examples": [
+        "<%= config.bin %> vault create --name \"API Key\" --payload '{\"key\":\"sk-xxx\"}'"
+      ],
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "name": {
+          "description": "Secret name",
+          "name": "name",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "payload": {
+          "description": "JSON payload to encrypt",
+          "name": "payload",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "type": {
+          "description": "Entry type",
+          "name": "type",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "env_var",
+            "credential",
+            "oauth_token",
+            "ssh_key",
+            "certificate",
+            "note"
+          ],
+          "type": "option"
+        },
+        "slug": {
+          "description": "Machine-friendly identifier",
+          "name": "slug",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "description": {
+          "description": "Description",
+          "name": "description",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "tags": {
+          "description": "Comma-separated tags",
+          "name": "tags",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "category": {
+          "description": "Category",
+          "name": "category",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "url": {
+          "description": "Associated URL",
+          "name": "url",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "vault:create",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "vault",
+        "create.js"
+      ]
+    },
+    "vault:list": {
+      "aliases": [],
+      "args": {},
+      "description": "List vault entries (metadata only)",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "type": {
+          "description": "Filter by entry type",
+          "name": "type",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "env_var",
+            "credential",
+            "oauth_token",
+            "ssh_key",
+            "certificate",
+            "note"
+          ],
+          "type": "option"
+        },
+        "category": {
+          "description": "Filter by category",
+          "name": "category",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "limit": {
+          "description": "Maximum number of results",
+          "name": "limit",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "vault:list",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "vault",
+        "list.js"
+      ]
+    },
+    "vault:read": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Vault entry ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Decrypt and read a vault secret (audit-logged)",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "vault:read",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "vault",
+        "read.js"
+      ]
+    },
+    "vault:search": {
+      "aliases": [],
+      "args": {
+        "query": {
+          "description": "Search query",
+          "name": "query",
+          "required": true
+        }
+      },
+      "description": "Search vault entries",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "limit": {
+          "description": "Maximum number of results",
+          "name": "limit",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "vault:search",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "vault",
+        "search.js"
+      ]
+    },
+    "vault:update": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Vault entry ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Update vault entry metadata",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "name": {
+          "description": "Entry name",
+          "name": "name",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "description": {
+          "description": "Description",
+          "name": "description",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "tags": {
+          "description": "Comma-separated tags",
+          "name": "tags",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "category": {
+          "description": "Category",
+          "name": "category",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "url": {
+          "description": "Associated URL",
+          "name": "url",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "vault:update",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "vault",
         "update.js"
       ]
     },
@@ -6425,7 +7210,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -6434,7 +7218,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -6451,7 +7234,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -6529,8 +7311,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "tasks:bulk-delete",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -6562,7 +7344,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -6571,7 +7352,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -6588,7 +7368,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -6599,8 +7378,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "tasks:complete",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -6637,7 +7416,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -6646,7 +7424,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -6663,7 +7440,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -6700,8 +7476,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "tasks:coupling-create",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -6738,7 +7514,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -6747,7 +7522,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -6764,7 +7538,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -6782,8 +7555,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "tasks:coupling-delete",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -6815,7 +7588,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -6824,7 +7596,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -6841,7 +7612,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -6852,8 +7622,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "tasks:coupling-list",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -6884,7 +7654,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -6893,7 +7662,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -6910,7 +7678,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -7021,8 +7788,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "tasks:create",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -7054,7 +7821,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -7063,7 +7829,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -7080,7 +7845,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -7098,8 +7862,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "tasks:delete",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -7131,7 +7895,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -7140,7 +7903,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -7157,7 +7919,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -7168,8 +7929,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "tasks:get",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -7200,7 +7961,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -7209,7 +7969,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -7226,7 +7985,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -7331,8 +8089,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "tasks:list",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -7364,7 +8122,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -7373,7 +8130,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -7390,7 +8146,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -7455,8 +8210,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "tasks:planning-update",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -7488,7 +8243,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -7497,7 +8251,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -7514,7 +8267,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -7646,8 +8398,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "tasks:update",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -7659,13 +8411,16 @@
         "update.js"
       ]
     },
-    "vault:create": {
+    "work:block": {
       "aliases": [],
-      "args": {},
-      "description": "Store a new encrypted secret",
-      "examples": [
-        "<%= config.bin %> vault create --name \"API Key\" --payload '{\"key\":\"sk-xxx\"}'"
-      ],
+      "args": {
+        "id": {
+          "description": "Work item ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Mark a work item as blocked",
       "flags": {
         "json": {
           "description": "Format output as json.",
@@ -7676,7 +8431,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -7685,7 +8439,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -7702,75 +8455,50 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
-        "name": {
-          "description": "Secret name",
-          "name": "name",
-          "required": true,
+        "owner": {
+          "description": "Claim owner identity",
+          "name": "owner",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
-        "payload": {
-          "description": "JSON payload to encrypt",
-          "name": "payload",
-          "required": true,
+        "claim-token": {
+          "description": "Claim token returned by work claim",
+          "name": "claim-token",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
-        "type": {
-          "description": "Entry type",
-          "name": "type",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "env_var",
-            "credential",
-            "oauth_token",
-            "ssh_key",
-            "certificate",
-            "note"
-          ],
-          "type": "option"
-        },
-        "slug": {
-          "description": "Machine-friendly identifier",
-          "name": "slug",
+        "lease": {
+          "description": "Lease seconds",
+          "name": "lease",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
-        "description": {
-          "description": "Description",
-          "name": "description",
+        "summary": {
+          "description": "Result summary",
+          "name": "summary",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
-        "tags": {
-          "description": "Comma-separated tags",
-          "name": "tags",
+        "artifacts": {
+          "description": "Artifact refs JSON array",
+          "name": "artifacts",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
-        "category": {
-          "description": "Category",
-          "name": "category",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "url": {
-          "description": "Associated URL",
-          "name": "url",
+        "reason": {
+          "description": "Block or failure reason",
+          "name": "reason",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
@@ -7778,9 +8506,340 @@
       },
       "hasDynamicHelp": false,
       "hiddenAliases": [],
-      "id": "vault:create",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "id": "work:block",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "baseActionFlags": {
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "default": "https://execufunction.com",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "owner": {
+          "description": "Claim owner identity",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "claim-token": {
+          "description": "Claim token returned by work claim",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "lease": {
+          "description": "Lease seconds",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "summary": {
+          "description": "Result summary",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "artifacts": {
+          "description": "Artifact refs JSON array",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "reason": {
+          "description": "Block or failure reason",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "block.js"
+      ]
+    },
+    "work:cancel": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Work item ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Cancel a work item",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "owner": {
+          "description": "Claim owner identity",
+          "name": "owner",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "claim-token": {
+          "description": "Claim token returned by work claim",
+          "name": "claim-token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "lease": {
+          "description": "Lease seconds",
+          "name": "lease",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "summary": {
+          "description": "Result summary",
+          "name": "summary",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "artifacts": {
+          "description": "Artifact refs JSON array",
+          "name": "artifacts",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "reason": {
+          "description": "Block or failure reason",
+          "name": "reason",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:cancel",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "baseActionFlags": {
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "default": "https://execufunction.com",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "owner": {
+          "description": "Claim owner identity",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "claim-token": {
+          "description": "Claim token returned by work claim",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "lease": {
+          "description": "Lease seconds",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "summary": {
+          "description": "Result summary",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "artifacts": {
+          "description": "Artifact refs JSON array",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "reason": {
+          "description": "Block or failure reason",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "cancel.js"
+      ]
+    },
+    "work:claim": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Optional specific work item ID",
+          "name": "id",
+          "required": false
+        }
+      },
+      "description": "Claim the next available agent work item",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "agent": {
+          "description": "Agent alias to claim for",
+          "name": "agent",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "owner": {
+          "description": "Claim owner identity",
+          "name": "owner",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "lease": {
+          "description": "Lease seconds",
+          "name": "lease",
+          "default": 1800,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:claim",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -7788,14 +8847,335 @@
       "relativePath": [
         "dist",
         "commands",
-        "vault",
+        "work",
+        "claim.js"
+      ]
+    },
+    "work:complete": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Work item ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Complete a work item",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "owner": {
+          "description": "Claim owner identity",
+          "name": "owner",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "claim-token": {
+          "description": "Claim token returned by work claim",
+          "name": "claim-token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "lease": {
+          "description": "Lease seconds",
+          "name": "lease",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "summary": {
+          "description": "Result summary",
+          "name": "summary",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "artifacts": {
+          "description": "Artifact refs JSON array",
+          "name": "artifacts",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "reason": {
+          "description": "Block or failure reason",
+          "name": "reason",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:complete",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "baseActionFlags": {
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "default": "https://execufunction.com",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "owner": {
+          "description": "Claim owner identity",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "claim-token": {
+          "description": "Claim token returned by work claim",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "lease": {
+          "description": "Lease seconds",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "summary": {
+          "description": "Result summary",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "artifacts": {
+          "description": "Artifact refs JSON array",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "reason": {
+          "description": "Block or failure reason",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "complete.js"
+      ]
+    },
+    "work:create": {
+      "aliases": [],
+      "args": {},
+      "description": "Create an agent work item",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "title": {
+          "description": "Work item title",
+          "name": "title",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "prompt": {
+          "description": "Agent prompt or instructions",
+          "name": "prompt",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "agent": {
+          "description": "Assigned agent alias",
+          "name": "agent",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "project": {
+          "description": "Linked project ID",
+          "name": "project",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "task": {
+          "description": "Linked human task ID",
+          "name": "task",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "rank": {
+          "description": "Queue rank",
+          "name": "rank",
+          "default": 0,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "context": {
+          "description": "Input context JSON object",
+          "name": "context",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "acceptance-criteria": {
+          "description": "Acceptance criteria JSON array or semicolon-separated text",
+          "name": "acceptance-criteria",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "allowed-actions": {
+          "description": "Allowed actions JSON object",
+          "name": "allowed-actions",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "write-scope": {
+          "description": "Write scope JSON object",
+          "name": "write-scope",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "verify": {
+          "description": "Verification commands separated by semicolons",
+          "name": "verify",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:create",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
         "create.js"
       ]
     },
-    "vault:list": {
+    "work:fail": {
       "aliases": [],
-      "args": {},
-      "description": "List vault entries (metadata only)",
+      "args": {
+        "id": {
+          "description": "Work item ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Mark a work item as failed",
       "flags": {
         "json": {
           "description": "Format output as json.",
@@ -7806,7 +9186,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -7815,7 +9194,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -7832,37 +9210,453 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
-        "type": {
-          "description": "Filter by entry type",
-          "name": "type",
+        "owner": {
+          "description": "Claim owner identity",
+          "name": "owner",
           "hasDynamicHelp": false,
           "multiple": false,
-          "options": [
-            "env_var",
-            "credential",
-            "oauth_token",
-            "ssh_key",
-            "certificate",
-            "note"
-          ],
           "type": "option"
         },
-        "category": {
-          "description": "Filter by category",
-          "name": "category",
+        "claim-token": {
+          "description": "Claim token returned by work claim",
+          "name": "claim-token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "lease": {
+          "description": "Lease seconds",
+          "name": "lease",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "summary": {
+          "description": "Result summary",
+          "name": "summary",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "artifacts": {
+          "description": "Artifact refs JSON array",
+          "name": "artifacts",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "reason": {
+          "description": "Block or failure reason",
+          "name": "reason",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:fail",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "baseActionFlags": {
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "default": "https://execufunction.com",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "owner": {
+          "description": "Claim owner identity",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "claim-token": {
+          "description": "Claim token returned by work claim",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "lease": {
+          "description": "Lease seconds",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "summary": {
+          "description": "Result summary",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "artifacts": {
+          "description": "Artifact refs JSON array",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "reason": {
+          "description": "Block or failure reason",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "fail.js"
+      ]
+    },
+    "work:get": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Work item ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Get an agent work item",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:get",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "get.js"
+      ]
+    },
+    "work:heartbeat": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Work item ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Extend a work item lease",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "owner": {
+          "description": "Claim owner identity",
+          "name": "owner",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "claim-token": {
+          "description": "Claim token returned by work claim",
+          "name": "claim-token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "lease": {
+          "description": "Lease seconds",
+          "name": "lease",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "summary": {
+          "description": "Result summary",
+          "name": "summary",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "artifacts": {
+          "description": "Artifact refs JSON array",
+          "name": "artifacts",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "reason": {
+          "description": "Block or failure reason",
+          "name": "reason",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:heartbeat",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "baseActionFlags": {
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "default": "https://execufunction.com",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "owner": {
+          "description": "Claim owner identity",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "claim-token": {
+          "description": "Claim token returned by work claim",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "lease": {
+          "description": "Lease seconds",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "summary": {
+          "description": "Result summary",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "artifacts": {
+          "description": "Artifact refs JSON array",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "reason": {
+          "description": "Block or failure reason",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "heartbeat.js"
+      ]
+    },
+    "work:list": {
+      "aliases": [],
+      "args": {},
+      "description": "List agent work items",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "status": {
+          "description": "Filter by status",
+          "name": "status",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "agent": {
+          "description": "Filter by assigned agent alias",
+          "name": "agent",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "project": {
+          "description": "Filter by project ID",
+          "name": "project",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "task": {
+          "description": "Filter by task ID",
+          "name": "task",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
         "limit": {
-          "description": "Maximum number of results",
+          "description": "Maximum results",
           "name": "limit",
           "hasDynamicHelp": false,
           "multiple": false,
@@ -7871,9 +9665,9 @@
       },
       "hasDynamicHelp": false,
       "hiddenAliases": [],
-      "id": "vault:list",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "id": "work:list",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -7881,20 +9675,20 @@
       "relativePath": [
         "dist",
         "commands",
-        "vault",
+        "work",
         "list.js"
       ]
     },
-    "vault:read": {
+    "work:release": {
       "aliases": [],
       "args": {
         "id": {
-          "description": "Vault entry ID",
+          "description": "Work item ID",
           "name": "id",
           "required": true
         }
       },
-      "description": "Decrypt and read a vault secret (audit-logged)",
+      "description": "Release a claimed work item back to the queue",
       "flags": {
         "json": {
           "description": "Format output as json.",
@@ -7905,7 +9699,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -7914,7 +9707,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -7931,9 +9723,50 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "owner": {
+          "description": "Claim owner identity",
+          "name": "owner",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "claim-token": {
+          "description": "Claim token returned by work claim",
+          "name": "claim-token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "lease": {
+          "description": "Lease seconds",
+          "name": "lease",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "summary": {
+          "description": "Result summary",
+          "name": "summary",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "artifacts": {
+          "description": "Artifact refs JSON array",
+          "name": "artifacts",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "reason": {
+          "description": "Block or failure reason",
+          "name": "reason",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
@@ -7941,107 +9774,96 @@
       },
       "hasDynamicHelp": false,
       "hiddenAliases": [],
-      "id": "vault:read",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "id": "work:release",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "vault",
-        "read.js"
-      ]
-    },
-    "vault:search": {
-      "aliases": [],
-      "args": {
-        "query": {
-          "description": "Search query",
-          "name": "query",
-          "required": true
-        }
-      },
-      "description": "Search vault entries",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
+      "baseActionFlags": {
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
+          "input": [],
           "multiple": false,
           "type": "option"
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
           "default": "https://execufunction.com",
-          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "input": [],
           "multiple": false,
           "type": "option"
         },
         "no-input": {
           "description": "Disable interactive prompts",
           "helpGroup": "GLOBAL",
-          "name": "no-input",
           "allowNo": false,
           "type": "boolean"
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
+          "input": [],
           "multiple": false,
           "type": "option"
         },
-        "limit": {
-          "description": "Maximum number of results",
-          "name": "limit",
-          "hasDynamicHelp": false,
+        "owner": {
+          "description": "Claim owner identity",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "claim-token": {
+          "description": "Claim token returned by work claim",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "lease": {
+          "description": "Lease seconds",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "summary": {
+          "description": "Result summary",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "artifacts": {
+          "description": "Artifact refs JSON array",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "reason": {
+          "description": "Block or failure reason",
+          "input": [],
           "multiple": false,
           "type": "option"
         }
       },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "vault:search",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
       "isESM": false,
       "relativePath": [
         "dist",
         "commands",
-        "vault",
-        "search.js"
+        "work",
+        "release.js"
       ]
     },
-    "vault:update": {
+    "work:review": {
       "aliases": [],
       "args": {
         "id": {
-          "description": "Vault entry ID",
+          "description": "Work item ID",
           "name": "id",
           "required": true
         }
       },
-      "description": "Update vault entry metadata",
+      "description": "Mark a work item as needing review",
       "flags": {
         "json": {
           "description": "Format output as json.",
@@ -8052,7 +9874,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -8061,7 +9882,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -8078,44 +9898,50 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
-        "name": {
-          "description": "Entry name",
-          "name": "name",
+        "owner": {
+          "description": "Claim owner identity",
+          "name": "owner",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
-        "description": {
-          "description": "Description",
-          "name": "description",
+        "claim-token": {
+          "description": "Claim token returned by work claim",
+          "name": "claim-token",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
-        "tags": {
-          "description": "Comma-separated tags",
-          "name": "tags",
+        "lease": {
+          "description": "Lease seconds",
+          "name": "lease",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
-        "category": {
-          "description": "Category",
-          "name": "category",
+        "summary": {
+          "description": "Result summary",
+          "name": "summary",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
-        "url": {
-          "description": "Associated URL",
-          "name": "url",
+        "artifacts": {
+          "description": "Artifact refs JSON array",
+          "name": "artifacts",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "reason": {
+          "description": "Block or failure reason",
+          "name": "reason",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
@@ -8123,18 +9949,259 @@
       },
       "hasDynamicHelp": false,
       "hiddenAliases": [],
-      "id": "vault:update",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "id": "work:review",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
+      "baseActionFlags": {
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "default": "https://execufunction.com",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "owner": {
+          "description": "Claim owner identity",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "claim-token": {
+          "description": "Claim token returned by work claim",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "lease": {
+          "description": "Lease seconds",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "summary": {
+          "description": "Result summary",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "artifacts": {
+          "description": "Artifact refs JSON array",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "reason": {
+          "description": "Block or failure reason",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        }
+      },
       "isESM": false,
       "relativePath": [
         "dist",
         "commands",
-        "vault",
-        "update.js"
+        "work",
+        "review.js"
+      ]
+    },
+    "work:start": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Work item ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Mark a work item as running",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "owner": {
+          "description": "Claim owner identity",
+          "name": "owner",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "claim-token": {
+          "description": "Claim token returned by work claim",
+          "name": "claim-token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "lease": {
+          "description": "Lease seconds",
+          "name": "lease",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "summary": {
+          "description": "Result summary",
+          "name": "summary",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "artifacts": {
+          "description": "Artifact refs JSON array",
+          "name": "artifacts",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "reason": {
+          "description": "Block or failure reason",
+          "name": "reason",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:start",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "baseActionFlags": {
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "default": "https://execufunction.com",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "owner": {
+          "description": "Claim owner identity",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "claim-token": {
+          "description": "Claim token returned by work claim",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "lease": {
+          "description": "Lease seconds",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "summary": {
+          "description": "Result summary",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "artifacts": {
+          "description": "Artifact refs JSON array",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        },
+        "reason": {
+          "description": "Block or failure reason",
+          "input": [],
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "start.js"
       ]
     },
     "code:memory:delete": {
@@ -8157,7 +10224,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -8166,7 +10232,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -8183,7 +10248,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -8201,8 +10265,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "code:memory:delete",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -8229,7 +10293,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -8238,7 +10301,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -8255,7 +10317,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -8280,8 +10341,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "code:memory:list",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -8314,7 +10375,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -8323,7 +10383,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -8340,7 +10399,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -8380,8 +10438,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "code:memory:search",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -8408,7 +10466,6 @@
         },
         "token": {
           "description": "Personal access token",
-          "env": "EXF_TOKEN",
           "helpGroup": "GLOBAL",
           "name": "token",
           "hasDynamicHelp": false,
@@ -8417,7 +10474,6 @@
         },
         "api-url": {
           "description": "API base URL",
-          "env": "EXF_API_URL",
           "helpGroup": "GLOBAL",
           "name": "api-url",
           "default": "https://execufunction.com",
@@ -8434,7 +10490,6 @@
         },
         "workspace": {
           "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
           "helpGroup": "GLOBAL",
           "name": "workspace",
           "hasDynamicHelp": false,
@@ -8483,8 +10538,8 @@
       "hasDynamicHelp": false,
       "hiddenAliases": [],
       "id": "code:memory:store",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
       "pluginType": "core",
       "strict": true,
       "enableJsonFlag": true,
@@ -8496,7 +10551,91 @@
         "memory",
         "store.js"
       ]
+    },
+    "codex:daily-review:collect": {
+      "aliases": [],
+      "args": {},
+      "description": "Collect read-only Siftable and local git context for Codex daily work reviews",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "limit": {
+          "description": "Maximum records per source",
+          "name": "limit",
+          "default": 20,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "calendar-days": {
+          "description": "Calendar lookahead days",
+          "name": "calendar-days",
+          "default": 7,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "skip-git": {
+          "description": "Skip local git summary",
+          "name": "skip-git",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "codex:daily-review:collect",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "codex",
+        "daily-review",
+        "collect.js"
+      ]
     }
   },
-  "version": "0.5.6"
+  "version": "0.5.7"
 }

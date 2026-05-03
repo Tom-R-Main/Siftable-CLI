@@ -1,22 +1,25 @@
 {
-  "name": "@execufunction/cli",
-  "version": "0.5.6",
-  "description": "CLI for ExecuFunction — AI executive function assistant",
+  "name": "@siftable/cli",
+  "version": "0.5.7",
+  "description": "Siftable CLI — tasks, knowledge, agents, work queues, and automation harness tools",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "exf": "./bin/run.js"
+    "sift": "bin/run.js",
+    "siftable": "bin/run.js",
+    "exf": "bin/run.js"
   },
   "scripts": {
     "build": "tsc",
     "test": "jest",
+    "test:vitest": "vitest run --config vitest.config.ts",
     "prepublishOnly": "npm run build",
     "prepack": "npm run build && oclif manifest",
     "postpack": "rm -f oclif.manifest.json"
   },
   "oclif": {
-    "bin": "exf",
-    "dirname": "exf",
+    "bin": "sift",
+    "dirname": "siftable",
     "commands": "./dist/commands",
     "topicSeparator": " ",
     "plugins": [
@@ -61,13 +64,22 @@
       },
       "documents": {
         "description": "Document upload"
+      },
+      "agents": {
+        "description": "Agent aliases"
+      },
+      "work": {
+        "description": "Agent work queue"
+      },
+      "codex": {
+        "description": "Codex automation helpers"
       }
     }
   },
   "dependencies": {
-    "@execufunction/mcp-server": "^1.2.5",
     "@oclif/core": "^4",
-    "@oclif/plugin-help": "^6"
+    "@oclif/plugin-help": "^6",
+    "@siftable/mcp-server": "^1.2.6"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",
@@ -83,13 +95,14 @@
   },
   "keywords": [
     "cli",
-    "execufunction",
+    "siftable",
     "ai",
     "tasks",
     "calendar",
-    "knowledge-base"
+    "knowledge-base",
+    "agents"
   ],
-  "author": "ExecuFunction",
+  "author": "Siftable",
   "license": "MIT",
   "files": [
     "dist",

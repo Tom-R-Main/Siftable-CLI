@@ -26,7 +26,7 @@ export default class CodebaseIndex extends BaseCommand {
         'Code indexing and search',
         '',
         'USAGE',
-        '  $ exf codebase <COMMAND>',
+        '  $ sift codebase <COMMAND>',
         '',
         'COMMANDS',
         '  codebase index        Full index: scan and upload matching files',
@@ -38,7 +38,7 @@ export default class CodebaseIndex extends BaseCommand {
         '  codebase status       Check indexing status for a repository',
         '  codebase delete       Delete a repository and all indexed data',
         '',
-        'Use `exf help codebase index` or `exf help codebase incremental` for command-specific flags.',
+        'Use `sift help codebase index` or `sift help codebase incremental` for command-specific flags.',
       ];
       lines.forEach((line) => this.log(line));
       return {

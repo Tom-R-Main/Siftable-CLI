@@ -1,6 +1,6 @@
-import { ExfClient } from '@execufunction/mcp-server/dist/exfClient.js';
-import { indexLocalCodebase } from '@execufunction/mcp-server/dist/localIndexer.js';
-import { indexIncrementally, formatIncrementalResult } from '@execufunction/mcp-server/dist/incrementalIndexer.js';
+import { ExfClient } from '@siftable/mcp-server/dist/exfClient.js';
+import { indexLocalCodebase } from '@siftable/mcp-server/dist/localIndexer.js';
+import { indexIncrementally, formatIncrementalResult } from '@siftable/mcp-server/dist/incrementalIndexer.js';
 
 interface ExecuteCodebaseIndexOptions {
   client: ExfClient;

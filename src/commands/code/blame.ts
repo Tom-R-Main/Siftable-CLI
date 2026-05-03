@@ -1,6 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
-import {GitService} from '@execufunction/mcp-server/dist/gitService.js';
+import {GitService} from '@siftable/mcp-server/dist/gitService.js';
 import {renderTable} from '../../lib/output.js';
 
 export default class CodeBlame extends BaseCommand {

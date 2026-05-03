@@ -13,8 +13,9 @@ export default class AuthStatus extends BaseCommand {
     const {flags} = await this.parse(AuthStatus);
 
     let source: string | undefined;
-    if (flags.token) {
-      source = flags.token.startsWith('exf_pat_') ? 'flag/env' : 'flag/env';
+    const envToken = process.env.SIFT_TOKEN || process.env.EXF_TOKEN;
+    if (flags.token || envToken) {
+      source = flags.token ? 'flag' : (process.env.SIFT_TOKEN ? 'SIFT_TOKEN' : 'EXF_TOKEN');
     } else if (resolveToken()) {
       source = `config file (${getConfigDir()}/auth.json)`;
     }
@@ -25,7 +26,7 @@ export default class AuthStatus extends BaseCommand {
       if (authenticated) {
         this.log(`Authenticated via ${source}`);
       } else {
-        this.log('Not authenticated. Run `exf auth login` or set EXF_TOKEN.');
+        this.log('Not authenticated. Run `sift auth login` or set SIFT_TOKEN.');
       }
     }
 

@@ -7,6 +7,15 @@ export interface AuthConfig {
 }
 
 export function getConfigDir(): string {
+  if (process.env.SIFT_CONFIG_DIR) {
+    return process.env.SIFT_CONFIG_DIR;
+  }
+
+  const baseDir = process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
+  return join(baseDir, 'siftable');
+}
+
+export function getLegacyConfigDir(): string {
   if (process.env.EXF_CONFIG_DIR) {
     return process.env.EXF_CONFIG_DIR;
   }
@@ -19,12 +28,21 @@ function getAuthFile(): string {
   return join(getConfigDir(), 'auth.json');
 }
 
+function getLegacyAuthFile(): string {
+  return join(getLegacyConfigDir(), 'auth.json');
+}
+
 export function readConfig(): AuthConfig | null {
   try {
     const content = readFileSync(getAuthFile(), 'utf-8');
     return JSON.parse(content);
   } catch {
-    return null;
+    try {
+      const content = readFileSync(getLegacyAuthFile(), 'utf-8');
+      return JSON.parse(content);
+    } catch {
+      return null;
+    }
   }
 }
 

@@ -1,15 +1,15 @@
-# @execufunction/cli
+# @siftable/cli
 
-Command-line interface for [ExecuFunction](https://execufunction.com) — AI executive function assistant for tasks, calendar, knowledge, code indexing, and CRM.
+Command-line interface for [Siftable](https://execufunction.com) — an automation harness for tasks, agent work queues, calendar, knowledge, code indexing, and CRM.
 
 ## Installation
 
 ```bash
 # Run directly
-npx @execufunction/cli <command>
+npx @siftable/cli <command>
 
 # Or install globally
-npm install -g @execufunction/cli
+npm install -g @siftable/cli
 ```
 
 ## Quick Start
@@ -17,119 +17,156 @@ npm install -g @execufunction/cli
 ### 1. Authenticate
 
 ```bash
-exf auth login
+sift auth login
 ```
 
 Or set a Personal Access Token directly:
 
 ```bash
-export EXF_TOKEN=exf_pat_your_token_here
+export SIFT_TOKEN=sift_pat_your_token_here
 ```
 
 ### 2. Run your first command
 
 ```bash
-exf tasks list
-exf tasks create --title "Ship CLI v1"
-exf notes search "deployment process"
+sift tasks list
+sift tasks create --title "Ship CLI v1"
+sift notes search "deployment process"
+sift work list --agent codex --json
 ```
+
+## Mental Model
+
+Users plan commitments with `sift tasks`. Agents execute bounded queue items with `sift work`. User-visible executor identities, aliases, capabilities, and default permissions live under `sift agents`.
+
+`sift` is the primary command. `siftable` is an explicit product alias, and `exf` remains as a compatibility alias for older automations.
 
 ## Command Reference
 
 ### Auth
 | Command | Description |
 |---------|-------------|
-| `exf auth login` | Authenticate with ExecuFunction |
-| `exf auth logout` | Clear stored credentials |
-| `exf auth status` | Show current auth status |
+| `sift auth login` | Authenticate with Siftable |
+| `sift auth logout` | Clear stored credentials |
+| `sift auth status` | Show current auth status |
 
 ### Tasks
 | Command | Description |
 |---------|-------------|
-| `exf tasks list` | List tasks (filterable by status, project) |
-| `exf tasks get <id>` | Get task details |
-| `exf tasks create` | Create a task |
-| `exf tasks update <id>` | Update a task |
-| `exf tasks complete <id>` | Mark a task complete |
-| `exf tasks delete <id>` | Delete a task |
+| `sift tasks list` | List tasks (filterable by status, project) |
+| `sift tasks get <id>` | Get task details |
+| `sift tasks create` | Create a task |
+| `sift tasks update <id>` | Update a task |
+| `sift tasks complete <id>` | Mark a task complete |
+| `sift tasks delete <id>` | Delete a task |
+
+### Agents
+| Command | Description |
+|---------|-------------|
+| `sift agents list` | List user-visible agent aliases |
+| `sift agents get <alias>` | Get alias capabilities and permissions |
+| `sift agents create` | Create an agent alias |
+| `sift agents update <alias>` | Update alias metadata |
+| `sift agents disable <alias>` | Disable an alias without deleting history |
+| `sift agents work <alias>` | List work assigned to an alias |
+
+### Work
+| Command | Description |
+|---------|-------------|
+| `sift work list` | List agent work queue items |
+| `sift work create` | Create a bounded agent work item |
+| `sift work claim` | Claim queued work with a lease |
+| `sift work start <id>` | Mark claimed work as running |
+| `sift work heartbeat <id>` | Extend a claim lease |
+| `sift work block <id>` | Mark work blocked |
+| `sift work review <id>` | Mark work as needing review |
+| `sift work complete <id>` | Complete work with summary/artifacts |
+| `sift work fail <id>` | Mark work failed |
+| `sift work release <id>` | Release a claim back to the queue |
+| `sift work cancel <id>` | Cancel work |
+
+### Codex Automation
+| Command | Description |
+|---------|-------------|
+| `sift codex daily-review collect --json` | Collect read-only Siftable and local git context for daily Codex reviews |
 
 ### Projects
 | Command | Description |
 |---------|-------------|
-| `exf projects list` | List projects |
-| `exf projects create` | Create a project |
-| `exf projects update <id>` | Update a project |
-| `exf projects archive <id>` | Archive a project |
-| `exf projects context <id>` | Get full project context |
+| `sift projects list` | List projects |
+| `sift projects create` | Create a project |
+| `sift projects update <id>` | Update a project |
+| `sift projects archive <id>` | Archive a project |
+| `sift projects context <id>` | Get full project context |
 
 ### Notes
 | Command | Description |
 |---------|-------------|
-| `exf notes list` | List notes |
-| `exf notes get <id>` | Get note with full content |
-| `exf notes create` | Create a note |
-| `exf notes search <query>` | Search knowledge base |
-| `exf notes update <id>` | Update a note |
-| `exf notes delete <id>` | Delete a note |
+| `sift notes list` | List notes |
+| `sift notes get <id>` | Get note with full content |
+| `sift notes create` | Create a note |
+| `sift notes search <query>` | Search knowledge base |
+| `sift notes update <id>` | Update a note |
+| `sift notes delete <id>` | Delete a note |
 
 ### Calendar
 | Command | Description |
 |---------|-------------|
-| `exf calendar list` | List events (filterable by date range) |
-| `exf calendar create` | Create an event |
-| `exf calendar update <id>` | Update an event |
-| `exf calendar delete <id>` | Delete an event |
+| `sift calendar list` | List events (filterable by date range) |
+| `sift calendar create` | Create an event |
+| `sift calendar update <id>` | Update an event |
+| `sift calendar delete <id>` | Delete an event |
 
 ### People
 | Command | Description |
 |---------|-------------|
-| `exf people list` | List contacts |
-| `exf people search <query>` | Search contacts |
+| `sift people list` | List contacts |
+| `sift people search <query>` | Search contacts |
 
 ### Vault
 | Command | Description |
 |---------|-------------|
-| `exf vault list` | List vault entries (metadata only) |
-| `exf vault create` | Store an encrypted secret |
-| `exf vault read <id>` | Decrypt and read a secret |
-| `exf vault search <query>` | Search vault entries |
-| `exf vault update <id>` | Update entry metadata |
+| `sift vault list` | List vault entries (metadata only) |
+| `sift vault create` | Store an encrypted secret |
+| `sift vault read <id>` | Decrypt and read a secret |
+| `sift vault search <query>` | Search vault entries |
+| `sift vault update <id>` | Update entry metadata |
 
 ### Codebase
 | Command | Description |
 |---------|-------------|
-| `exf codebase list` | List indexed repositories |
-| `exf codebase register` | Register a repo for indexing |
-| `exf codebase status <id>` | Check indexing status |
-| `exf codebase index <id>` | Trigger indexing |
-| `exf codebase search <query>` | Semantic code search |
-| `exf codebase snapshot <id>` | Get latest snapshot |
-| `exf codebase delete <id>` | Delete a repository |
+| `sift codebase list` | List indexed repositories |
+| `sift codebase register` | Register a repo for indexing |
+| `sift codebase status <id>` | Check indexing status |
+| `sift codebase index <id>` | Trigger indexing |
+| `sift codebase search <query>` | Semantic code search |
+| `sift codebase snapshot <id>` | Get latest snapshot |
+| `sift codebase delete <id>` | Delete a repository |
 
 ### Code Tools
 | Command | Description |
 |---------|-------------|
-| `exf code history <repo>` | Get commit history |
-| `exf code who-knows <repo> <area>` | Find experts for a code area |
-| `exf code blame <file>` | Git blame for a file |
-| `exf code link <task>` | Link a task to code |
-| `exf code expertise <repo>` | Refresh expertise index |
-| `exf code memory store` | Store a codebase fact |
-| `exf code memory list` | List stored facts |
-| `exf code memory search <query>` | Search stored facts |
-| `exf code memory delete <id>` | Delete a stored fact |
+| `sift code history <repo>` | Get commit history |
+| `sift code who-knows <repo> <area>` | Find experts for a code area |
+| `sift code blame <file>` | Git blame for a file |
+| `sift code link <task>` | Link a task to code |
+| `sift code expertise <repo>` | Refresh expertise index |
+| `sift code memory store` | Store a codebase fact |
+| `sift code memory list` | List stored facts |
+| `sift code memory search <query>` | Search stored facts |
+| `sift code memory delete <id>` | Delete a stored fact |
 
 ### Documents
 | Command | Description |
 |---------|-------------|
-| `exf documents upload <file>` | Upload a document (PDF, MD, TXT) as a note |
+| `sift documents upload <file>` | Upload a document (PDF, MD, TXT) as a note |
 
 ## Global Flags
 
 | Flag | Env Var | Description |
 |------|---------|-------------|
-| `--token` | `EXF_TOKEN` | Personal access token |
-| `--api-url` | `EXF_API_URL` | API base URL (default: `https://execufunction.com`) |
+| `--token` | `SIFT_TOKEN` | Personal access token |
+| `--api-url` | `SIFT_API_URL` | API base URL (default: `https://execufunction.com`) |
 | `--json` | — | Output raw JSON instead of tables |
 | `--no-input` | — | Disable interactive prompts |
 
@@ -139,22 +176,25 @@ All commands support `--json` for structured output, making the CLI composable w
 
 ```bash
 # List tasks as JSON and filter with jq
-exf tasks list --json | jq '.[] | select(.status == "in_progress")'
+sift tasks list --json | jq '.[] | select(.status == "in_progress")'
 
 # Create a task and capture the ID
-TASK_ID=$(exf tasks create --title "Deploy v2" --json | jq -r '.task.id')
+TASK_ID=$(sift tasks create --title "Deploy v2" --json | jq -r '.task.id')
 
 # Use in CI/CD scripts
-export EXF_TOKEN=exf_pat_...
-exf tasks complete "$TASK_ID"
+export SIFT_TOKEN=sift_pat_...
+sift tasks complete "$TASK_ID"
 ```
 
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `EXF_TOKEN` | Personal access token for authentication |
-| `EXF_API_URL` | API base URL (default: `https://execufunction.com`) |
+| `SIFT_TOKEN` | Personal access token for authentication |
+| `SIFT_API_URL` | API base URL (default: `https://execufunction.com`) |
+| `SIFT_WORKSPACE_ID` | Workspace org ID to scope operations |
+
+Legacy `EXF_TOKEN`, `EXF_API_URL`, `EXF_WORKSPACE_ID`, and `exf_pat_` tokens remain supported while older automation configs migrate.
 
 ## License
 

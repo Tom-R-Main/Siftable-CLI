@@ -45,11 +45,12 @@ function sleep(ms: number): Promise<void> {
 }
 
 export default class AuthLogin extends BaseCommand {
-  static description = 'Authenticate with ExecuFunction';
+  static description = 'Authenticate with Siftable';
 
   static examples = [
     '<%= config.bin %> auth login',
-    '<%= config.bin %> auth login --token exf_pat_xxx',
+    '<%= config.bin %> auth login --token sift_pat_xxx',
+    'SIFT_TOKEN=sift_pat_xxx <%= config.bin %> auth status',
     'EXF_TOKEN=exf_pat_xxx <%= config.bin %> auth status',
   ];
 
@@ -57,13 +58,12 @@ export default class AuthLogin extends BaseCommand {
     ...BaseCommand.baseFlags,
     token: Flags.string({
       description: 'Personal access token (skips device flow)',
-      env: 'EXF_TOKEN',
     }),
   };
 
   async run(): Promise<{stored: boolean}> {
     const {flags} = await this.parse(AuthLogin);
-    const token = flags.token;
+    const token = flags.token || process.env.SIFT_TOKEN || process.env.EXF_TOKEN;
 
     // Direct token mode: existing behavior
     if (token) {
@@ -76,7 +76,7 @@ export default class AuthLogin extends BaseCommand {
     }
 
     // Device flow
-    const apiUrl = flags['api-url'] || 'https://execufunction.com';
+    const apiUrl = flags['api-url'] || process.env.SIFT_API_URL || process.env.EXF_API_URL || 'https://execufunction.com';
     return this.deviceFlow(apiUrl, flags['no-input'] ?? false);
   }
 
@@ -165,7 +165,7 @@ export default class AuthLogin extends BaseCommand {
           break;
 
         case 'expired_token':
-          this.error('Session expired. Run `exf auth login` again.');
+          this.error('Session expired. Run `sift auth login` again.');
           break;
 
         case 'access_denied':
@@ -177,6 +177,6 @@ export default class AuthLogin extends BaseCommand {
       }
     }
 
-    this.error('Session expired. Run `exf auth login` again.');
+    this.error('Session expired. Run `sift auth login` again.');
   }
 }

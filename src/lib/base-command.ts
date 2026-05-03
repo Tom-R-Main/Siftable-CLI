@@ -1,9 +1,13 @@
 import {Command, Flags} from '@oclif/core';
 import {randomUUID} from 'node:crypto';
 import {readFileSync} from 'node:fs';
-import {ExfClient} from '@execufunction/mcp-server/dist/exfClient.js';
+import {SiftClient} from '@siftable/mcp-server/dist/exfClient.js';
 import {resolveToken} from './auth.js';
 import {confirm} from './output.js';
+
+function envValue(primary: string, legacy: string): string | undefined {
+  return process.env[primary] || process.env[legacy];
+}
 
 export abstract class BaseCommand extends Command {
   static enableJsonFlag = true;
@@ -11,12 +15,10 @@ export abstract class BaseCommand extends Command {
   static baseFlags = {
     token: Flags.string({
       description: 'Personal access token',
-      env: 'EXF_TOKEN',
       helpGroup: 'GLOBAL',
     }),
     'api-url': Flags.string({
       description: 'API base URL',
-      env: 'EXF_API_URL',
       default: 'https://execufunction.com',
       helpGroup: 'GLOBAL',
     }),
@@ -26,21 +28,20 @@ export abstract class BaseCommand extends Command {
     }),
     workspace: Flags.string({
       description: 'Workspace org ID to scope operations to',
-      env: 'EXF_WORKSPACE_ID',
       helpGroup: 'GLOBAL',
     }),
   };
 
-  protected async client(flags: {token?: string; 'api-url'?: string; workspace?: string}): Promise<ExfClient> {
-    const token = flags.token || resolveToken();
+  protected async client(flags: {token?: string; 'api-url'?: string; workspace?: string}): Promise<SiftClient> {
+    const token = flags.token || envValue('SIFT_TOKEN', 'EXF_TOKEN') || resolveToken();
     if (!token) {
-      this.error('No authentication token found. Run `exf auth login` or set EXF_TOKEN.');
+      this.error('No authentication token found. Run `sift auth login` or set SIFT_TOKEN.');
     }
 
-    return new ExfClient({
-      apiUrl: flags['api-url'] || 'https://execufunction.com',
+    return new SiftClient({
+      apiUrl: flags['api-url'] || envValue('SIFT_API_URL', 'EXF_API_URL') || 'https://execufunction.com',
       pat: token,
-      workspaceId: flags.workspace,
+      workspaceId: flags.workspace || envValue('SIFT_WORKSPACE_ID', 'EXF_WORKSPACE_ID'),
     });
   }
 
@@ -98,7 +99,7 @@ export abstract class BaseCommand extends Command {
       const parsed = this.parseApiError(response.error);
 
       if (response.statusCode === 401) {
-        this.error(`Authentication failed: ${parsed.message}\nRun \`exf auth login\` to authenticate.`);
+        this.error(`Authentication failed: ${parsed.message}\nRun \`sift auth login\` to authenticate.`);
       }
 
       if (response.statusCode === 403) {
