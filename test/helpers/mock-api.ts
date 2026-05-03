@@ -192,8 +192,8 @@ export const fixtures = {
 
   memory: (overrides: Record<string, unknown> = {}) => ({
     id: 'mem-001',
-    fact: 'Test fact',
-    category: 'convention',
+    content: 'Test fact',
+    factType: 'code.convention',
     filePath: null,
     repositoryId: null,
     createdAt: '2026-01-01T00:00:00Z',

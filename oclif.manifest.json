@@ -1669,675 +1669,6 @@
         "status.js"
       ]
     },
-    "notes:bulk-delete": {
-      "aliases": [],
-      "args": {},
-      "description": "Preview or bulk-delete notes",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "env": "EXF_TOKEN",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "env": "EXF_API_URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://execufunction.com",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "ids": {
-          "description": "Comma-separated note IDs",
-          "name": "ids",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "title-starts-with": {
-          "description": "Title prefix filter",
-          "name": "title-starts-with",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "title-contains": {
-          "description": "Title substring filter",
-          "name": "title-contains",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "title-equals": {
-          "description": "Exact title filter",
-          "name": "title-equals",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "type": {
-          "name": "type",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "note",
-            "concept",
-            "meeting",
-            "reference",
-            "daily",
-            "dataset"
-          ],
-          "type": "option"
-        },
-        "archived": {
-          "description": "Filter by archived state",
-          "name": "archived",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "confirm": {
-          "description": "Execute deletion instead of preview",
-          "name": "confirm",
-          "allowNo": false,
-          "type": "boolean"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "notes:bulk-delete",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "notes",
-        "bulk-delete.js"
-      ]
-    },
-    "notes:create": {
-      "aliases": [],
-      "args": {},
-      "description": "Create a note",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "env": "EXF_TOKEN",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "env": "EXF_API_URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://execufunction.com",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "title": {
-          "description": "Note title",
-          "name": "title",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "content": {
-          "description": "Note content (markdown)",
-          "name": "content",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "type": {
-          "description": "Note type",
-          "name": "type",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "note",
-            "concept",
-            "meeting",
-            "reference",
-            "daily",
-            "dataset"
-          ],
-          "type": "option"
-        },
-        "project": {
-          "description": "Project ID",
-          "name": "project",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "notes:create",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "notes",
-        "create.js"
-      ]
-    },
-    "notes:delete": {
-      "aliases": [],
-      "args": {
-        "id": {
-          "description": "Note ID",
-          "name": "id",
-          "required": true
-        }
-      },
-      "description": "Delete a note",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "env": "EXF_TOKEN",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "env": "EXF_API_URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://execufunction.com",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "yes": {
-          "char": "y",
-          "description": "Skip confirmation",
-          "name": "yes",
-          "allowNo": false,
-          "type": "boolean"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "notes:delete",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "notes",
-        "delete.js"
-      ]
-    },
-    "notes:get": {
-      "aliases": [],
-      "args": {
-        "id": {
-          "description": "Note ID",
-          "name": "id",
-          "required": true
-        }
-      },
-      "description": "Get a note with full content",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "env": "EXF_TOKEN",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "env": "EXF_API_URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://execufunction.com",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "notes:get",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "notes",
-        "get.js"
-      ]
-    },
-    "notes:list": {
-      "aliases": [],
-      "args": {},
-      "description": "List notes",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "env": "EXF_TOKEN",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "env": "EXF_API_URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://execufunction.com",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "project": {
-          "description": "Filter by project ID",
-          "name": "project",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "type": {
-          "description": "Filter by note type",
-          "name": "type",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "note",
-            "concept",
-            "meeting",
-            "reference",
-            "daily",
-            "dataset"
-          ],
-          "type": "option"
-        },
-        "limit": {
-          "description": "Maximum number of results",
-          "name": "limit",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "title-starts-with": {
-          "description": "Title prefix filter",
-          "name": "title-starts-with",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "title-contains": {
-          "description": "Title substring filter",
-          "name": "title-contains",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "title-equals": {
-          "description": "Exact title filter",
-          "name": "title-equals",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "archived": {
-          "description": "Filter by archived state",
-          "name": "archived",
-          "allowNo": false,
-          "type": "boolean"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "notes:list",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "notes",
-        "list.js"
-      ]
-    },
-    "notes:search": {
-      "aliases": [],
-      "args": {
-        "query": {
-          "description": "Search query",
-          "name": "query",
-          "required": true
-        }
-      },
-      "description": "Search notes",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "env": "EXF_TOKEN",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "env": "EXF_API_URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://execufunction.com",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "project": {
-          "description": "Filter by project ID",
-          "name": "project",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "limit": {
-          "description": "Maximum number of results",
-          "name": "limit",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "notes:search",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "notes",
-        "search.js"
-      ]
-    },
-    "notes:update": {
-      "aliases": [],
-      "args": {
-        "id": {
-          "description": "Note ID",
-          "name": "id",
-          "required": true
-        }
-      },
-      "description": "Update a note",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "env": "EXF_TOKEN",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "env": "EXF_API_URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://execufunction.com",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "title": {
-          "description": "Note title",
-          "name": "title",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "content": {
-          "description": "Note content (markdown)",
-          "name": "content",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "type": {
-          "description": "Note type",
-          "name": "type",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "note",
-            "concept",
-            "meeting",
-            "reference",
-            "daily",
-            "dataset"
-          ],
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "notes:update",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "notes",
-        "update.js"
-      ]
-    },
     "documents:upload": {
       "aliases": [],
       "args": {
@@ -4530,6 +3861,675 @@
         "update-record.js"
       ]
     },
+    "notes:bulk-delete": {
+      "aliases": [],
+      "args": {},
+      "description": "Preview or bulk-delete notes",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "env": "EXF_TOKEN",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "env": "EXF_API_URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "env": "EXF_WORKSPACE_ID",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "ids": {
+          "description": "Comma-separated note IDs",
+          "name": "ids",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "title-starts-with": {
+          "description": "Title prefix filter",
+          "name": "title-starts-with",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "title-contains": {
+          "description": "Title substring filter",
+          "name": "title-contains",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "title-equals": {
+          "description": "Exact title filter",
+          "name": "title-equals",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "type": {
+          "name": "type",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "note",
+            "concept",
+            "meeting",
+            "reference",
+            "daily",
+            "dataset"
+          ],
+          "type": "option"
+        },
+        "archived": {
+          "description": "Filter by archived state",
+          "name": "archived",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "confirm": {
+          "description": "Execute deletion instead of preview",
+          "name": "confirm",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "notes:bulk-delete",
+      "pluginAlias": "@execufunction/cli",
+      "pluginName": "@execufunction/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "notes",
+        "bulk-delete.js"
+      ]
+    },
+    "notes:create": {
+      "aliases": [],
+      "args": {},
+      "description": "Create a note",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "env": "EXF_TOKEN",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "env": "EXF_API_URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "env": "EXF_WORKSPACE_ID",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "title": {
+          "description": "Note title",
+          "name": "title",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "content": {
+          "description": "Note content (markdown)",
+          "name": "content",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "type": {
+          "description": "Note type",
+          "name": "type",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "note",
+            "concept",
+            "meeting",
+            "reference",
+            "daily",
+            "dataset"
+          ],
+          "type": "option"
+        },
+        "project": {
+          "description": "Project ID",
+          "name": "project",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "notes:create",
+      "pluginAlias": "@execufunction/cli",
+      "pluginName": "@execufunction/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "notes",
+        "create.js"
+      ]
+    },
+    "notes:delete": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Note ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Delete a note",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "env": "EXF_TOKEN",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "env": "EXF_API_URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "env": "EXF_WORKSPACE_ID",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "yes": {
+          "char": "y",
+          "description": "Skip confirmation",
+          "name": "yes",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "notes:delete",
+      "pluginAlias": "@execufunction/cli",
+      "pluginName": "@execufunction/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "notes",
+        "delete.js"
+      ]
+    },
+    "notes:get": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Note ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Get a note with full content",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "env": "EXF_TOKEN",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "env": "EXF_API_URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "env": "EXF_WORKSPACE_ID",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "notes:get",
+      "pluginAlias": "@execufunction/cli",
+      "pluginName": "@execufunction/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "notes",
+        "get.js"
+      ]
+    },
+    "notes:list": {
+      "aliases": [],
+      "args": {},
+      "description": "List notes",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "env": "EXF_TOKEN",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "env": "EXF_API_URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "env": "EXF_WORKSPACE_ID",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "project": {
+          "description": "Filter by project ID",
+          "name": "project",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "type": {
+          "description": "Filter by note type",
+          "name": "type",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "note",
+            "concept",
+            "meeting",
+            "reference",
+            "daily",
+            "dataset"
+          ],
+          "type": "option"
+        },
+        "limit": {
+          "description": "Maximum number of results",
+          "name": "limit",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "title-starts-with": {
+          "description": "Title prefix filter",
+          "name": "title-starts-with",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "title-contains": {
+          "description": "Title substring filter",
+          "name": "title-contains",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "title-equals": {
+          "description": "Exact title filter",
+          "name": "title-equals",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "archived": {
+          "description": "Filter by archived state",
+          "name": "archived",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "notes:list",
+      "pluginAlias": "@execufunction/cli",
+      "pluginName": "@execufunction/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "notes",
+        "list.js"
+      ]
+    },
+    "notes:search": {
+      "aliases": [],
+      "args": {
+        "query": {
+          "description": "Search query",
+          "name": "query",
+          "required": true
+        }
+      },
+      "description": "Search notes",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "env": "EXF_TOKEN",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "env": "EXF_API_URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "env": "EXF_WORKSPACE_ID",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "project": {
+          "description": "Filter by project ID",
+          "name": "project",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "limit": {
+          "description": "Maximum number of results",
+          "name": "limit",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "notes:search",
+      "pluginAlias": "@execufunction/cli",
+      "pluginName": "@execufunction/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "notes",
+        "search.js"
+      ]
+    },
+    "notes:update": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Note ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Update a note",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "env": "EXF_TOKEN",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "env": "EXF_API_URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "env": "EXF_WORKSPACE_ID",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "title": {
+          "description": "Note title",
+          "name": "title",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "content": {
+          "description": "Note content (markdown)",
+          "name": "content",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "type": {
+          "description": "Note type",
+          "name": "type",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "note",
+            "concept",
+            "meeting",
+            "reference",
+            "daily",
+            "dataset"
+          ],
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "notes:update",
+      "pluginAlias": "@execufunction/cli",
+      "pluginName": "@execufunction/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "notes",
+        "update.js"
+      ]
+    },
     "organizations:bulk-delete": {
       "aliases": [],
       "args": {},
@@ -6166,6 +6166,146 @@
         "list.js"
       ]
     },
+    "projects:planning-recompute": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Project ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Recompute the canonical CSN planning snapshot for a project",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "env": "EXF_TOKEN",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "env": "EXF_API_URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "env": "EXF_WORKSPACE_ID",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "projects:planning-recompute",
+      "pluginAlias": "@execufunction/cli",
+      "pluginName": "@execufunction/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "projects",
+        "planning-recompute.js"
+      ]
+    },
+    "projects:planning": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Project ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Get the canonical CSN planning snapshot for a project",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "env": "EXF_TOKEN",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "env": "EXF_API_URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "env": "EXF_WORKSPACE_ID",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "projects:planning",
+      "pluginAlias": "@execufunction/cli",
+      "pluginName": "@execufunction/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "projects",
+        "planning.js"
+      ]
+    },
     "projects:update": {
       "aliases": [],
       "args": {
@@ -6268,484 +6408,6 @@
         "dist",
         "commands",
         "projects",
-        "update.js"
-      ]
-    },
-    "vault:create": {
-      "aliases": [],
-      "args": {},
-      "description": "Store a new encrypted secret",
-      "examples": [
-        "<%= config.bin %> vault create --name \"API Key\" --payload '{\"key\":\"sk-xxx\"}'"
-      ],
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "env": "EXF_TOKEN",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "env": "EXF_API_URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://execufunction.com",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "name": {
-          "description": "Secret name",
-          "name": "name",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "payload": {
-          "description": "JSON payload to encrypt",
-          "name": "payload",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "type": {
-          "description": "Entry type",
-          "name": "type",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "env_var",
-            "credential",
-            "oauth_token",
-            "ssh_key",
-            "certificate",
-            "note"
-          ],
-          "type": "option"
-        },
-        "slug": {
-          "description": "Machine-friendly identifier",
-          "name": "slug",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "description": {
-          "description": "Description",
-          "name": "description",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "tags": {
-          "description": "Comma-separated tags",
-          "name": "tags",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "category": {
-          "description": "Category",
-          "name": "category",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "url": {
-          "description": "Associated URL",
-          "name": "url",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "vault:create",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "vault",
-        "create.js"
-      ]
-    },
-    "vault:list": {
-      "aliases": [],
-      "args": {},
-      "description": "List vault entries (metadata only)",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "env": "EXF_TOKEN",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "env": "EXF_API_URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://execufunction.com",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "type": {
-          "description": "Filter by entry type",
-          "name": "type",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "env_var",
-            "credential",
-            "oauth_token",
-            "ssh_key",
-            "certificate",
-            "note"
-          ],
-          "type": "option"
-        },
-        "category": {
-          "description": "Filter by category",
-          "name": "category",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "limit": {
-          "description": "Maximum number of results",
-          "name": "limit",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "vault:list",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "vault",
-        "list.js"
-      ]
-    },
-    "vault:read": {
-      "aliases": [],
-      "args": {
-        "id": {
-          "description": "Vault entry ID",
-          "name": "id",
-          "required": true
-        }
-      },
-      "description": "Decrypt and read a vault secret (audit-logged)",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "env": "EXF_TOKEN",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "env": "EXF_API_URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://execufunction.com",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "vault:read",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "vault",
-        "read.js"
-      ]
-    },
-    "vault:search": {
-      "aliases": [],
-      "args": {
-        "query": {
-          "description": "Search query",
-          "name": "query",
-          "required": true
-        }
-      },
-      "description": "Search vault entries",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "env": "EXF_TOKEN",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "env": "EXF_API_URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://execufunction.com",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "limit": {
-          "description": "Maximum number of results",
-          "name": "limit",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "vault:search",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "vault",
-        "search.js"
-      ]
-    },
-    "vault:update": {
-      "aliases": [],
-      "args": {
-        "id": {
-          "description": "Vault entry ID",
-          "name": "id",
-          "required": true
-        }
-      },
-      "description": "Update vault entry metadata",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "env": "EXF_TOKEN",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "env": "EXF_API_URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://execufunction.com",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "env": "EXF_WORKSPACE_ID",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "name": {
-          "description": "Entry name",
-          "name": "name",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "description": {
-          "description": "Description",
-          "name": "description",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "tags": {
-          "description": "Comma-separated tags",
-          "name": "tags",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "category": {
-          "description": "Category",
-          "name": "category",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "url": {
-          "description": "Associated URL",
-          "name": "url",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "vault:update",
-      "pluginAlias": "@execufunction/cli",
-      "pluginName": "@execufunction/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "vault",
         "update.js"
       ]
     },
@@ -6948,6 +6610,259 @@
         "commands",
         "tasks",
         "complete.js"
+      ]
+    },
+    "tasks:coupling-create": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Source task ID",
+          "name": "id",
+          "required": true
+        },
+        "target": {
+          "description": "Target task ID",
+          "name": "target",
+          "required": true
+        }
+      },
+      "description": "Create a CSN coupling edge between tasks in the same project",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "env": "EXF_TOKEN",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "env": "EXF_API_URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "env": "EXF_WORKSPACE_ID",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "type": {
+          "description": "Coupling type",
+          "name": "type",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "info",
+            "resource"
+          ],
+          "type": "option"
+        },
+        "strength": {
+          "description": "Coupling strength (0-1)",
+          "name": "strength",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "note": {
+          "description": "Optional note",
+          "name": "note",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "tasks:coupling-create",
+      "pluginAlias": "@execufunction/cli",
+      "pluginName": "@execufunction/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "tasks",
+        "coupling-create.js"
+      ]
+    },
+    "tasks:coupling-delete": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Task ID",
+          "name": "id",
+          "required": true
+        },
+        "edgeId": {
+          "description": "Coupling edge ID",
+          "name": "edgeId",
+          "required": true
+        }
+      },
+      "description": "Delete a CSN coupling edge from a task",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "env": "EXF_TOKEN",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "env": "EXF_API_URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "env": "EXF_WORKSPACE_ID",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "yes": {
+          "char": "y",
+          "description": "Skip confirmation",
+          "name": "yes",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "tasks:coupling-delete",
+      "pluginAlias": "@execufunction/cli",
+      "pluginName": "@execufunction/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "tasks",
+        "coupling-delete.js"
+      ]
+    },
+    "tasks:coupling-list": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Task ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "List CSN coupling edges for a task",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "env": "EXF_TOKEN",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "env": "EXF_API_URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "env": "EXF_WORKSPACE_ID",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "tasks:coupling-list",
+      "pluginAlias": "@execufunction/cli",
+      "pluginName": "@execufunction/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "tasks",
+        "coupling-list.js"
       ]
     },
     "tasks:create": {
@@ -7429,6 +7344,130 @@
         "list.js"
       ]
     },
+    "tasks:planning-update": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Task ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Update CSN planning fields for a task",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "env": "EXF_TOKEN",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "env": "EXF_API_URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "env": "EXF_WORKSPACE_ID",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "cynefin-domain": {
+          "description": "Cynefin domain",
+          "name": "cynefin-domain",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "clear",
+            "complicated",
+            "complex",
+            "chaotic",
+            "aporetic"
+          ],
+          "type": "option"
+        },
+        "cynefin-confidence": {
+          "description": "Cynefin confidence (0-1)",
+          "name": "cynefin-confidence",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "cynefin-source": {
+          "description": "Source of the planning classification",
+          "name": "cynefin-source",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "user",
+            "assistant",
+            "classifier"
+          ],
+          "type": "option"
+        },
+        "cynefin-rationale": {
+          "description": "Why this domain fits",
+          "name": "cynefin-rationale",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "reversibility": {
+          "description": "Reversibility score (0-1)",
+          "name": "reversibility",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "duration-model": {
+          "description": "Duration model JSON, e.g. {\"kind\":\"point\",\"days\":2}",
+          "name": "duration-model",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "tasks:planning-update",
+      "pluginAlias": "@execufunction/cli",
+      "pluginName": "@execufunction/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "tasks",
+        "planning-update.js"
+      ]
+    },
     "tasks:update": {
       "aliases": [],
       "args": {
@@ -7617,6 +7656,484 @@
         "dist",
         "commands",
         "tasks",
+        "update.js"
+      ]
+    },
+    "vault:create": {
+      "aliases": [],
+      "args": {},
+      "description": "Store a new encrypted secret",
+      "examples": [
+        "<%= config.bin %> vault create --name \"API Key\" --payload '{\"key\":\"sk-xxx\"}'"
+      ],
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "env": "EXF_TOKEN",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "env": "EXF_API_URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "env": "EXF_WORKSPACE_ID",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "name": {
+          "description": "Secret name",
+          "name": "name",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "payload": {
+          "description": "JSON payload to encrypt",
+          "name": "payload",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "type": {
+          "description": "Entry type",
+          "name": "type",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "env_var",
+            "credential",
+            "oauth_token",
+            "ssh_key",
+            "certificate",
+            "note"
+          ],
+          "type": "option"
+        },
+        "slug": {
+          "description": "Machine-friendly identifier",
+          "name": "slug",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "description": {
+          "description": "Description",
+          "name": "description",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "tags": {
+          "description": "Comma-separated tags",
+          "name": "tags",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "category": {
+          "description": "Category",
+          "name": "category",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "url": {
+          "description": "Associated URL",
+          "name": "url",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "vault:create",
+      "pluginAlias": "@execufunction/cli",
+      "pluginName": "@execufunction/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "vault",
+        "create.js"
+      ]
+    },
+    "vault:list": {
+      "aliases": [],
+      "args": {},
+      "description": "List vault entries (metadata only)",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "env": "EXF_TOKEN",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "env": "EXF_API_URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "env": "EXF_WORKSPACE_ID",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "type": {
+          "description": "Filter by entry type",
+          "name": "type",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "env_var",
+            "credential",
+            "oauth_token",
+            "ssh_key",
+            "certificate",
+            "note"
+          ],
+          "type": "option"
+        },
+        "category": {
+          "description": "Filter by category",
+          "name": "category",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "limit": {
+          "description": "Maximum number of results",
+          "name": "limit",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "vault:list",
+      "pluginAlias": "@execufunction/cli",
+      "pluginName": "@execufunction/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "vault",
+        "list.js"
+      ]
+    },
+    "vault:read": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Vault entry ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Decrypt and read a vault secret (audit-logged)",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "env": "EXF_TOKEN",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "env": "EXF_API_URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "env": "EXF_WORKSPACE_ID",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "vault:read",
+      "pluginAlias": "@execufunction/cli",
+      "pluginName": "@execufunction/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "vault",
+        "read.js"
+      ]
+    },
+    "vault:search": {
+      "aliases": [],
+      "args": {
+        "query": {
+          "description": "Search query",
+          "name": "query",
+          "required": true
+        }
+      },
+      "description": "Search vault entries",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "env": "EXF_TOKEN",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "env": "EXF_API_URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "env": "EXF_WORKSPACE_ID",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "limit": {
+          "description": "Maximum number of results",
+          "name": "limit",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "vault:search",
+      "pluginAlias": "@execufunction/cli",
+      "pluginName": "@execufunction/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "vault",
+        "search.js"
+      ]
+    },
+    "vault:update": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Vault entry ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Update vault entry metadata",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "env": "EXF_TOKEN",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "env": "EXF_API_URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://execufunction.com",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "env": "EXF_WORKSPACE_ID",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "name": {
+          "description": "Entry name",
+          "name": "name",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "description": {
+          "description": "Description",
+          "name": "description",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "tags": {
+          "description": "Comma-separated tags",
+          "name": "tags",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "category": {
+          "description": "Category",
+          "name": "category",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "url": {
+          "description": "Associated URL",
+          "name": "url",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "vault:update",
+      "pluginAlias": "@execufunction/cli",
+      "pluginName": "@execufunction/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "vault",
         "update.js"
       ]
     },

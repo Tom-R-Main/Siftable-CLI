@@ -137,6 +137,56 @@ describe('tasks commands', () => {
     });
   });
 
+  describe('tasks planning and coupling', () => {
+    it('updates task planning fields', async () => {
+      mockFetch()
+        .on('PATCH', '/api/v1/tasks/task-001/planning')
+        .reply(200, {
+          planning: {
+            cynefinDomain: 'complicated',
+            cynefinConfidence: 0.8,
+            reversibility: 0.5,
+            criticalityIndex: 0.7,
+          },
+        })
+        .install();
+
+      const result = await runCommand([
+        'tasks',
+        'planning-update',
+        'task-001',
+        '--cynefin-domain',
+        'complicated',
+        '--cynefin-confidence',
+        '0.8',
+        '--token',
+        'exf_pat_test',
+      ]);
+
+      expect(result.stdout).toContain('complicated');
+      expect(result.stdout).toContain('0.7');
+    });
+
+    it('lists task coupling edges', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/tasks/task-001/coupling-edges')
+        .reply(200, {
+          edges: [{
+            id: 'edge-001',
+            sourceTaskId: 'task-001',
+            targetTaskId: 'task-002',
+            couplingType: 'info',
+            strength: 0.75,
+          }],
+        })
+        .install();
+
+      const result = await runCommand(['tasks', 'coupling-list', 'task-001', '--token', 'exf_pat_test']);
+      expect(result.stdout).toContain('edge-001');
+      expect(result.stdout).toContain('task-002');
+    });
+  });
+
   describe('tasks delete', () => {
     it('deletes task with --yes flag', async () => {
       mockFetch()

@@ -73,6 +73,28 @@ describe('projects commands', () => {
     });
   });
 
+  describe('projects planning', () => {
+    it('shows the canonical planning snapshot', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/projects/proj-001/planning')
+        .reply(200, {
+          state: {lastComputeStatus: 'success', dirty: false, lastComputedAt: '2026-01-01T00:00:00Z'},
+          snapshot: {
+            mcPercentiles: {p50: 3, p80: 5, p95: 8},
+            invalidCycles: [],
+            priorityRanking: [{taskId: 'task-001', priority: 0.9, reason: 'Highest leverage'}],
+            criticalCorridor: [{taskId: 'task-001', criticality: 0.8}],
+          },
+          tasks: [fixtures.task()],
+        })
+        .install();
+
+      const result = await runCommand(['projects', 'planning', 'proj-001', '--token', 'exf_pat_test']);
+      expect(result.stdout).toContain('Highest leverage');
+      expect(result.stdout).toContain('Critical corridor');
+    });
+  });
+
   describe('projects archive', () => {
     it('archives with --yes', async () => {
       mockFetch()
