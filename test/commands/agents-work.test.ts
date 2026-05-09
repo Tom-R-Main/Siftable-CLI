@@ -119,6 +119,7 @@ describe('work commands', () => {
             title: 'Run verification',
             status: 'queued',
             queueRank: 1,
+            claimToken: 'should-not-render',
           },
         ],
       })
@@ -128,6 +129,27 @@ describe('work commands', () => {
     const json = JSON.parse(result.stdout);
     expect(json).toHaveLength(1);
     expect(json[0].title).toBe('Run verification');
+    expect(json[0].claimToken).toBeUndefined();
+    expect(result.stdout).not.toContain('should-not-render');
+  });
+
+  it('redacts claim tokens from work get JSON output', async () => {
+    mockFetch()
+      .on('GET', '/api/v1/work-items/work-001')
+      .reply(200, {
+        workItem: {
+          id: 'work-001',
+          title: 'Run verification',
+          status: 'running',
+          claimToken: 'should-not-render',
+        },
+      })
+      .install();
+
+    const result = await runCommand(['work', 'get', 'work-001', '--token', 'sift_pat_test', '--json']);
+    const json = JSON.parse(result.stdout);
+    expect(json.claimToken).toBeUndefined();
+    expect(result.stdout).not.toContain('should-not-render');
   });
 
   it('claims work with an owner lease', async () => {

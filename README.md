@@ -141,7 +141,7 @@ Users plan commitments with `sift tasks`. Agents execute bounded queue items wit
 | `sift codebase register` | Register a repo for indexing |
 | `sift codebase status <id>` | Check indexing status |
 | `sift codebase index <id>` | Trigger indexing |
-| `sift codebase search <query>` | Semantic code search |
+| `sift codebase search <query> [--repo <id>\|--project <id>]` | Semantic code search scoped to the current registered repo by default |
 | `sift codebase snapshot <id>` | Get latest snapshot |
 | `sift codebase delete <id>` | Delete a repository |
 

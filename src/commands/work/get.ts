@@ -1,6 +1,11 @@
 import {Args} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
 
+function redactClaimToken(workItem: Record<string, unknown>): Record<string, unknown> {
+  const {claimToken: _claimToken, ...safeWorkItem} = workItem;
+  return safeWorkItem;
+}
+
 export default class WorkGet extends BaseCommand {
   static description = 'Get executable agent work item details';
 
@@ -17,7 +22,7 @@ export default class WorkGet extends BaseCommand {
     const client = await this.client(flags);
     const response = await client.getWorkItem(args.id);
     this.handleApiError(response);
-    const workItem = this.unwrapOne(response, 'workItem');
+    const workItem = redactClaimToken(this.unwrapOne(response, 'workItem'));
     if (!this.jsonEnabled()) {
       this.log(`${workItem.title}`);
       this.log(`Status: ${workItem.status}`);

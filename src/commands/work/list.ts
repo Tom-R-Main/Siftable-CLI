@@ -2,6 +2,11 @@ import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
 import {renderTable} from '../../lib/output.js';
 
+function redactClaimToken(workItem: Record<string, unknown>): Record<string, unknown> {
+  const {claimToken: _claimToken, ...safeWorkItem} = workItem;
+  return safeWorkItem;
+}
+
 export default class WorkList extends BaseCommand {
   static description = 'List executable agent work items';
 
@@ -25,7 +30,7 @@ export default class WorkList extends BaseCommand {
       limit: flags.limit,
     });
     this.handleApiError(response);
-    const workItems = this.unwrapList(response, 'workItems');
+    const workItems = this.unwrapList(response, 'workItems').map(redactClaimToken);
     if (!this.jsonEnabled()) {
       renderTable(workItems, [
         {key: 'id', header: 'ID'},

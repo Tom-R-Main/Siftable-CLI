@@ -29,7 +29,8 @@ export default class ProjectsContext extends BaseCommand {
         this.log('');
       }
 
-      const tasks = ctx.tasks as Record<string, unknown>[] | undefined;
+      const tasksValue = ctx.tasks as Record<string, unknown>[] | Record<string, unknown[]> | undefined;
+      const tasks = Array.isArray(tasksValue) ? tasksValue : (tasksValue?.open as Record<string, unknown>[] | undefined);
       if (tasks?.length) {
         this.log('Tasks:');
         renderTable(tasks, [
@@ -40,7 +41,9 @@ export default class ProjectsContext extends BaseCommand {
         this.log('');
       }
 
-      const notes = ctx.notes as Record<string, unknown>[] | undefined;
+      const knowledge = ctx.knowledge as Record<string, unknown> | undefined;
+      const notes = (ctx.notes as Record<string, unknown>[] | undefined)
+        ?? (knowledge?.recentNotes as Record<string, unknown>[] | undefined);
       if (notes?.length) {
         this.log('Notes:');
         renderTable(notes, [

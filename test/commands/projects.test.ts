@@ -47,8 +47,8 @@ describe('projects commands', () => {
         .on('GET', '/api/v1/projects/proj-001/context')
         .reply(200, {
           project: fixtures.project(),
-          tasks: [fixtures.task()],
-          notes: [fixtures.note()],
+          tasks: {open: [fixtures.task()], blocked: [], overdue: [], byGoal: []},
+          knowledge: {recentDecisions: [], meetingNotes: [], recentNotes: [fixtures.note()]},
         })
         .install();
 
@@ -59,8 +59,8 @@ describe('projects commands', () => {
     it('returns JSON context', async () => {
       const ctx = {
         project: fixtures.project(),
-        tasks: [fixtures.task()],
-        notes: [],
+        tasks: {open: [fixtures.task()], blocked: [], overdue: [], byGoal: []},
+        knowledge: {recentDecisions: [], meetingNotes: [], recentNotes: []},
       };
       mockFetch()
         .on('GET', '/api/v1/projects/proj-001/context')

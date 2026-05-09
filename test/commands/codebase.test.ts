@@ -59,6 +59,8 @@ describe('codebase commands', () => {
   describe('codebase search', () => {
     it('searches code', async () => {
       mockFetch()
+        .on('GET', '/api/v1/code/repositories')
+        .reply(200, {repositories: []})
         .on('POST', '/api/v1/code/search')
         .reply(200, {results: [{filePath: 'src/index.ts', symbolName: 'main', symbolType: 'function', score: 0.9}]})
         .install();
@@ -66,6 +68,44 @@ describe('codebase commands', () => {
       const result = await runCommand(['codebase', 'search', 'main function', '--token', 'exf_pat_test']);
       expect(result.stdout).toContain('src/index.ts');
       expect(result.stdout).toContain('main');
+    });
+
+    it('passes explicit repo scope', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/code/search')
+        .body((body) => (body as Record<string, unknown>).repositoryId === 'repo-123')
+        .reply(200, {results: []})
+        .install();
+
+      const result = await runCommand(['codebase', 'search', 'rate limit', '--repo', 'repo-123', '--token', 'exf_pat_test']);
+      expect(result.exitCode).toBe(0);
+    });
+
+    it('passes explicit project scope', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/code/search')
+        .body((body) => (body as Record<string, unknown>).projectId === 'proj-123')
+        .reply(200, {results: []})
+        .install();
+
+      const result = await runCommand(['codebase', 'search', 'rate limit', '--project', 'proj-123', '--token', 'exf_pat_test']);
+      expect(result.exitCode).toBe(0);
+    });
+
+    it('auto-scopes to the registered repository for the current working directory', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/code/repositories')
+        .reply(200, {repositories: [
+          fixtures.repository({id: 'repo-parent', rootPath: '/tmp'}),
+          fixtures.repository({id: 'repo-current', rootPath: process.cwd()}),
+        ]})
+        .on('POST', '/api/v1/code/search')
+        .body((body) => (body as Record<string, unknown>).repositoryId === 'repo-current')
+        .reply(200, {results: []})
+        .install();
+
+      const result = await runCommand(['codebase', 'search', 'rate limit', '--token', 'exf_pat_test']);
+      expect(result.exitCode).toBe(0);
     });
   });
 
