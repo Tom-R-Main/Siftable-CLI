@@ -1,6 +1,6 @@
 # @siftable/cli
 
-Command-line interface for [Siftable](https://execufunction.com) — an automation harness for tasks, agent work queues, calendar, knowledge, code indexing, and CRM.
+Command-line interface for [Siftable](https://execufunction.com) — an automation harness for human planning tasks, executable agent work queues, calendar, knowledge, code indexing, and CRM.
 
 ## Installation
 
@@ -39,6 +39,8 @@ sift work list --agent codex --json
 
 Users plan commitments with `sift tasks`. Agents execute bounded queue items with `sift work`. User-visible executor identities, aliases, capabilities, and default permissions live under `sift agents`.
 
+`sift tasks` is for human planning: outcomes, priority, acceptance criteria, project linkage, and human approval. `sift work` is for executable agent packets: claim leases, assigned aliases, write scope, verification commands, artifacts, and review state. Link them with `sift work create --task <task-id>` instead of assigning an executor directly to a task.
+
 `sift` is the primary command. `siftable` is an explicit product alias, and `exf` remains as a compatibility alias for older automations.
 
 ## Command Reference
@@ -53,12 +55,12 @@ Users plan commitments with `sift tasks`. Agents execute bounded queue items wit
 ### Tasks
 | Command | Description |
 |---------|-------------|
-| `sift tasks list` | List tasks (filterable by status, project) |
-| `sift tasks get <id>` | Get task details |
-| `sift tasks create` | Create a task |
-| `sift tasks update <id>` | Update a task |
-| `sift tasks complete <id>` | Mark a task complete |
-| `sift tasks delete <id>` | Delete a task |
+| `sift tasks list` | List human planning tasks (filterable by status, project) |
+| `sift tasks get <id>` | Get human planning task details |
+| `sift tasks create` | Create a human planning task |
+| `sift tasks update <id>` | Update a human planning task |
+| `sift tasks complete <id>` | Mark a human planning task complete |
+| `sift tasks delete <id>` | Delete a human planning task |
 
 ### Agents
 | Command | Description |
@@ -68,19 +70,19 @@ Users plan commitments with `sift tasks`. Agents execute bounded queue items wit
 | `sift agents create` | Create an agent alias |
 | `sift agents update <alias>` | Update alias metadata |
 | `sift agents disable <alias>` | Disable an alias without deleting history |
-| `sift agents work <alias>` | List work assigned to an alias |
+| `sift agents work <alias>` | List executable work assigned to an alias |
 
 ### Work
 | Command | Description |
 |---------|-------------|
-| `sift work list` | List agent work queue items |
-| `sift work create` | Create a bounded agent work item |
-| `sift work claim` | Claim queued work with a lease |
+| `sift work list` | List executable agent work queue items |
+| `sift work create` | Create a bounded executable agent work item |
+| `sift work claim` | Claim queued executable work with a lease |
 | `sift work start <id>` | Mark claimed work as running |
 | `sift work heartbeat <id>` | Extend a claim lease |
 | `sift work block <id>` | Mark work blocked |
 | `sift work review <id>` | Mark work as needing review |
-| `sift work complete <id>` | Complete work with summary/artifacts |
+| `sift work complete <id>` | Approve and complete work with summary/artifacts |
 | `sift work fail <id>` | Mark work failed |
 | `sift work release <id>` | Release a claim back to the queue |
 | `sift work cancel <id>` | Cancel work |
@@ -178,8 +180,11 @@ All commands support `--json` for structured output, making the CLI composable w
 # List tasks as JSON and filter with jq
 sift tasks list --json | jq '.[] | select(.status == "in_progress")'
 
-# Create a task and capture the ID
+# Create a human planning task and capture the ID
 TASK_ID=$(sift tasks create --title "Deploy v2" --json | jq -r '.task.id')
+
+# Create executable agent work linked to the human task
+sift work create --task "$TASK_ID" --agent codex --title "Implement Deploy v2" --verify "npm run build;npm test"
 
 # Use in CI/CD scripts
 export SIFT_TOKEN=sift_pat_...

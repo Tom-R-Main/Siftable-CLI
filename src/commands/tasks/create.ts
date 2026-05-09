@@ -2,7 +2,7 @@ import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
 
 export default class TasksCreate extends BaseCommand {
-  static description = 'Create a task';
+  static description = 'Create a human planning task';
 
   static examples = [
     '<%= config.bin %> tasks create --title "Review PR"',
@@ -27,10 +27,6 @@ export default class TasksCreate extends BaseCommand {
     effort: Flags.string({
       description: 'Effort estimate',
       options: ['trivial', 'small', 'medium', 'large', 'epic', 'unknown'],
-    }),
-    'executor-agent': Flags.string({
-      description: 'AI executor agent',
-      options: ['claude_code', 'openclaw', 'cursor', 'windsurf'],
     }),
     'acceptance-criteria': Flags.string({
       description: 'Acceptance criteria (semicolon-separated text, e.g. "tests pass; docs updated")',
@@ -72,7 +68,6 @@ export default class TasksCreate extends BaseCommand {
         projectId: flags.project,
         phase: flags.phase,
         effort: flags.effort,
-        executorAgent: flags['executor-agent'],
         acceptanceCriteria,
         scope,
       },
@@ -83,7 +78,8 @@ export default class TasksCreate extends BaseCommand {
     const task = this.unwrapOne(response, 'task');
 
     if (!this.jsonEnabled()) {
-      this.log(`Task created: ${task.id}`);
+      this.log(`Planning task created: ${task.id}`);
+      this.log(`Create executable agent work with: ${this.config.bin} work create --task ${task.id} --title "${task.title}" --agent <alias>`);
     }
 
     return response.data;

@@ -3,14 +3,14 @@ import {BaseCommand} from '../../lib/base-command.js';
 import {renderTable} from '../../lib/output.js';
 
 export default class WorkList extends BaseCommand {
-  static description = 'List agent work items';
+  static description = 'List executable agent work items';
 
   static flags = {
     ...BaseCommand.baseFlags,
     status: Flags.string({description: 'Filter by status'}),
     agent: Flags.string({description: 'Filter by assigned agent alias'}),
     project: Flags.string({description: 'Filter by project ID'}),
-    task: Flags.string({description: 'Filter by task ID'}),
+    task: Flags.string({description: 'Filter by parent human planning task ID'}),
     limit: Flags.integer({description: 'Maximum results'}),
   };
 
@@ -31,6 +31,11 @@ export default class WorkList extends BaseCommand {
         {key: 'id', header: 'ID'},
         {key: 'title', header: 'Title'},
         {key: 'status', header: 'Status'},
+        {key: 'taskId', header: 'Task', get: (r) => (r.taskId as string) || '-'},
+        {key: 'assignedAlias', header: 'Agent', get: (r) => {
+          const alias = r.assignedAlias as string | {alias?: string} | undefined;
+          return typeof alias === 'string' ? alias : alias?.alias || '-';
+        }},
         {key: 'queueRank', header: 'Rank'},
         {key: 'claimOwner', header: 'Owner', get: (r) => (r.claimOwner as string) || '-'},
       ]);

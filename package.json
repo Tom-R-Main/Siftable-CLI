@@ -1,7 +1,7 @@
 {
   "name": "@siftable/cli",
-  "version": "0.5.7",
-  "description": "Siftable CLI — tasks, knowledge, agents, work queues, and automation harness tools",
+  "version": "0.5.8",
+  "description": "Siftable CLI — human planning tasks, executable agent work queues, knowledge, and automation tools",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
@@ -30,7 +30,7 @@
         "description": "Authentication commands"
       },
       "tasks": {
-        "description": "Task management"
+        "description": "Human planning tasks"
       },
       "projects": {
         "description": "Project management"
@@ -69,7 +69,7 @@
         "description": "Agent aliases"
       },
       "work": {
-        "description": "Agent work queue"
+        "description": "Executable agent work queue"
       },
       "codex": {
         "description": "Codex automation helpers"
@@ -79,7 +79,7 @@
   "dependencies": {
     "@oclif/core": "^4",
     "@oclif/plugin-help": "^6",
-    "@siftable/mcp-server": "^1.2.6"
+    "@siftable/mcp-server": "^1.2.8"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",

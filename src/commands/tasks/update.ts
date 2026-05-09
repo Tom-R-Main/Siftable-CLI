@@ -2,7 +2,7 @@ import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
 
 export default class TasksUpdate extends BaseCommand {
-  static description = 'Update a task';
+  static description = 'Update a human planning task';
 
   static args = {
     id: Args.string({description: 'Task ID', required: true}),
@@ -30,10 +30,6 @@ export default class TasksUpdate extends BaseCommand {
       description: 'Effort estimate',
       options: ['trivial', 'small', 'medium', 'large', 'epic', 'unknown'],
     }),
-    'executor-agent': Flags.string({
-      description: 'AI executor agent',
-      options: ['claude_code', 'openclaw', 'cursor', 'windsurf'],
-    }),
     'blocked-reason': Flags.string({description: 'Reason task is blocked'}),
     'acceptance-criteria': Flags.string({
       description: 'Acceptance criteria (semicolon-separated text, e.g. "tests pass; docs updated")',
@@ -56,7 +52,6 @@ export default class TasksUpdate extends BaseCommand {
     if (flags.project !== undefined) updates.projectId = flags.project;
     if (flags.phase !== undefined) updates.phase = flags.phase;
     if (flags.effort !== undefined) updates.effort = flags.effort;
-    if (flags['executor-agent'] !== undefined) updates.executorAgent = flags['executor-agent'];
     if (flags['blocked-reason'] !== undefined) updates.blockedReason = flags['blocked-reason'];
     if (flags['acceptance-criteria'] !== undefined) {
       updates.acceptanceCriteria = flags['acceptance-criteria']

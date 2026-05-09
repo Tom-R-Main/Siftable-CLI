@@ -2,7 +2,7 @@ import {Args} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
 
 export default class WorkGet extends BaseCommand {
-  static description = 'Get an agent work item';
+  static description = 'Get executable agent work item details';
 
   static args = {
     id: Args.string({description: 'Work item ID', required: true}),
@@ -21,6 +21,7 @@ export default class WorkGet extends BaseCommand {
     if (!this.jsonEnabled()) {
       this.log(`${workItem.title}`);
       this.log(`Status: ${workItem.status}`);
+      if (workItem.taskId) this.log(`Parent task: ${workItem.taskId}`);
       if (workItem.assignedAlias) this.log(`Agent: ${(workItem.assignedAlias as any).alias}`);
       if (workItem.claimOwner) this.log(`Claim owner: ${workItem.claimOwner}`);
     }

@@ -82,9 +82,11 @@ class MockRouteBuilder {
     this.pathPattern = pathPattern;
   }
 
-  query(matcher: Record<string, string> | true): this {
+  query(matcher: Record<string, string> | true | ((url: URL) => boolean)): this {
     if (matcher === true) {
       this._queryMatcher = () => true;
+    } else if (typeof matcher === 'function') {
+      this._queryMatcher = matcher;
     } else {
       this._queryMatcher = (url: URL) => {
         for (const [key, value] of Object.entries(matcher)) {

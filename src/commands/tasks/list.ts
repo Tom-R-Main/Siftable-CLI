@@ -3,7 +3,7 @@ import {BaseCommand} from '../../lib/base-command.js';
 import {renderTable} from '../../lib/output.js';
 
 export default class TasksList extends BaseCommand {
-  static description = 'List tasks';
+  static description = 'List human planning tasks';
 
   static examples = [
     '<%= config.bin %> tasks list',
@@ -27,10 +27,6 @@ export default class TasksList extends BaseCommand {
       description: 'Filter by effort',
       options: ['trivial', 'small', 'medium', 'large', 'epic', 'unknown'],
     }),
-    'executor-agent': Flags.string({
-      description: 'Filter by executor agent',
-      options: ['claude_code', 'openclaw', 'cursor', 'windsurf'],
-    }),
     'title-starts-with': Flags.string({description: 'Title prefix filter'}),
     'title-contains': Flags.string({description: 'Title substring filter'}),
     'title-equals': Flags.string({description: 'Exact title filter'}),
@@ -45,7 +41,6 @@ export default class TasksList extends BaseCommand {
       limit: flags.limit,
       phase: flags.phase,
       effort: flags.effort,
-      executorAgent: flags['executor-agent'],
       titleStartsWith: flags['title-starts-with'],
       titleContains: flags['title-contains'],
       titleEquals: flags['title-equals'],

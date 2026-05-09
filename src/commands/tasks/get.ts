@@ -3,7 +3,7 @@ import {BaseCommand} from '../../lib/base-command.js';
 import {renderDetail, formatDate} from '../../lib/output.js';
 
 export default class TasksGet extends BaseCommand {
-  static description = 'Get task details';
+  static description = 'Get human planning task details';
 
   static args = {
     id: Args.string({description: 'Task ID', required: true}),
@@ -47,7 +47,7 @@ export default class TasksGet extends BaseCommand {
         ['Effort', task.effort || 'unknown'],
         ['Status', task.status],
         ['Priority', task.priority],
-        ['Executor', task.executorAgent || '—'],
+        ['Agent Work', `Use ${this.config.bin} work list --task ${task.id}`],
         ['Blocked Reason', task.blockedReason || '—'],
         ['Acceptance Criteria', acDisplay],
         ['Scope', scopeDisplay],

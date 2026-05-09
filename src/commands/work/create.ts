@@ -2,15 +2,15 @@ import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
 
 export default class WorkCreate extends BaseCommand {
-  static description = 'Create an agent work item';
+  static description = 'Create an executable agent work item';
 
   static flags = {
     ...BaseCommand.baseFlags,
-    title: Flags.string({description: 'Work item title', required: true}),
+    title: Flags.string({description: 'Executable work item title', required: true}),
     prompt: Flags.string({description: 'Agent prompt or instructions'}),
     agent: Flags.string({description: 'Assigned agent alias'}),
     project: Flags.string({description: 'Linked project ID'}),
-    task: Flags.string({description: 'Linked human task ID'}),
+    task: Flags.string({description: 'Parent human planning task ID'}),
     rank: Flags.integer({description: 'Queue rank', default: 0}),
     context: Flags.string({description: 'Input context JSON object'}),
     'acceptance-criteria': Flags.string({description: 'Acceptance criteria JSON array or semicolon-separated text'}),

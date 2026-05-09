@@ -41,18 +41,34 @@ describe('tasks commands', () => {
       const result = await runCommand(['tasks', 'list', '--token', 'exf_pat_test']);
       expect(result.stdout).toContain('No results');
     });
+
+    it('does not send legacy executor filters for human planning tasks', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/tasks')
+        .query((url) => !url.searchParams.has('executorAgent'))
+        .reply(200, {tasks: [fixtures.task()]})
+        .install();
+
+      const result = await runCommand(['tasks', 'list', '--token', 'exf_pat_test', '--phase', 'open']);
+      expect(result.error).toBeUndefined();
+      expect(result.stdout).toContain('Test task');
+    });
   });
 
   describe('tasks get', () => {
     it('shows task details', async () => {
       mockFetch()
         .on('GET', '/api/v1/tasks/task-001')
-        .reply(200, fixtures.task())
+        .reply(200, fixtures.task({executorAgent: 'codex'}))
         .install();
 
       const result = await runCommand(['tasks', 'get', 'task-001', '--token', 'exf_pat_test']);
       expect(result.stdout).toContain('Test task');
       expect(result.stdout).toContain('inbox');
+      expect(result.stdout).toContain('Agent Work');
+      expect(result.stdout).toContain('work list --task task-001');
+      expect(result.stdout).not.toContain('Executor');
+      expect(result.stdout).not.toContain('codex');
     });
 
     it('returns JSON for --json', async () => {
@@ -72,11 +88,13 @@ describe('tasks commands', () => {
     it('creates a task and shows confirmation', async () => {
       mockFetch()
         .on('POST', '/api/v1/tasks')
+        .body((body) => (body as any).title === 'New task' && !('executorAgent' in (body as any)))
         .reply(201, {task: fixtures.task({id: 'task-new', title: 'New task'})})
         .install();
 
       const result = await runCommand(['tasks', 'create', '--title', 'New task', '--token', 'exf_pat_test']);
-      expect(result.stdout).toContain('Task created');
+      expect(result.stdout).toContain('Planning task created: task-new');
+      expect(result.stdout).toContain('work create --task task-new');
     });
 
     it('returns created task as JSON', async () => {

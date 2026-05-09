@@ -7638,7 +7638,7 @@
     "tasks:create": {
       "aliases": [],
       "args": {},
-      "description": "Create a task",
+      "description": "Create a human planning task",
       "examples": [
         "<%= config.bin %> tasks create --title \"Review PR\"",
         "<%= config.bin %> tasks create --title \"Ship feature\" --priority do_now --due 2026-03-01",
@@ -7757,19 +7757,6 @@
           ],
           "type": "option"
         },
-        "executor-agent": {
-          "description": "AI executor agent",
-          "name": "executor-agent",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "claude_code",
-            "openclaw",
-            "cursor",
-            "windsurf"
-          ],
-          "type": "option"
-        },
         "acceptance-criteria": {
           "description": "Acceptance criteria (semicolon-separated text, e.g. \"tests pass; docs updated\")",
           "name": "acceptance-criteria",
@@ -7884,7 +7871,7 @@
           "required": true
         }
       },
-      "description": "Get task details",
+      "description": "Get human planning task details",
       "flags": {
         "json": {
           "description": "Format output as json.",
@@ -7945,7 +7932,7 @@
     "tasks:list": {
       "aliases": [],
       "args": {},
-      "description": "List tasks",
+      "description": "List human planning tasks",
       "examples": [
         "<%= config.bin %> tasks list",
         "<%= config.bin %> tasks list --status in_progress",
@@ -8048,19 +8035,6 @@
             "large",
             "epic",
             "unknown"
-          ],
-          "type": "option"
-        },
-        "executor-agent": {
-          "description": "Filter by executor agent",
-          "name": "executor-agent",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "claude_code",
-            "openclaw",
-            "cursor",
-            "windsurf"
           ],
           "type": "option"
         },
@@ -8232,7 +8206,7 @@
           "required": true
         }
       },
-      "description": "Update a task",
+      "description": "Update a human planning task",
       "flags": {
         "json": {
           "description": "Format output as json.",
@@ -8357,19 +8331,6 @@
             "large",
             "epic",
             "unknown"
-          ],
-          "type": "option"
-        },
-        "executor-agent": {
-          "description": "AI executor agent",
-          "name": "executor-agent",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "claude_code",
-            "openclaw",
-            "cursor",
-            "windsurf"
           ],
           "type": "option"
         },
@@ -8770,7 +8731,7 @@
           "required": false
         }
       },
-      "description": "Claim the next available agent work item",
+      "description": "Claim the next available executable agent work item",
       "flags": {
         "json": {
           "description": "Format output as json.",
@@ -8860,7 +8821,7 @@
           "required": true
         }
       },
-      "description": "Complete a work item",
+      "description": "Approve and complete an executable agent work item",
       "flags": {
         "json": {
           "description": "Format output as json.",
@@ -9029,7 +8990,7 @@
     "work:create": {
       "aliases": [],
       "args": {},
-      "description": "Create an agent work item",
+      "description": "Create an executable agent work item",
       "flags": {
         "json": {
           "description": "Format output as json.",
@@ -9071,7 +9032,7 @@
           "type": "option"
         },
         "title": {
-          "description": "Work item title",
+          "description": "Executable work item title",
           "name": "title",
           "required": true,
           "hasDynamicHelp": false,
@@ -9100,7 +9061,7 @@
           "type": "option"
         },
         "task": {
-          "description": "Linked human task ID",
+          "description": "Parent human planning task ID",
           "name": "task",
           "hasDynamicHelp": false,
           "multiple": false,
@@ -9350,7 +9311,7 @@
           "required": true
         }
       },
-      "description": "Get an agent work item",
+      "description": "Get executable agent work item details",
       "flags": {
         "json": {
           "description": "Format output as json.",
@@ -9586,7 +9547,7 @@
     "work:list": {
       "aliases": [],
       "args": {},
-      "description": "List agent work items",
+      "description": "List executable agent work items",
       "flags": {
         "json": {
           "description": "Format output as json.",
@@ -9649,7 +9610,7 @@
           "type": "option"
         },
         "task": {
-          "description": "Filter by task ID",
+          "description": "Filter by parent human planning task ID",
           "name": "task",
           "hasDynamicHelp": false,
           "multiple": false,
@@ -9863,7 +9824,7 @@
           "required": true
         }
       },
-      "description": "Mark a work item as needing review",
+      "description": "Mark executable agent work as needing human review",
       "flags": {
         "json": {
           "description": "Format output as json.",
@@ -10637,5 +10598,5 @@
       ]
     }
   },
-  "version": "0.5.7"
+  "version": "0.5.8"
 }

@@ -65,6 +65,49 @@ describe('agents commands', () => {
 });
 
 describe('work commands', () => {
+  it('creates executable work linked to a human planning task', async () => {
+    mockFetch()
+      .on('POST', '/api/v1/work-items')
+      .body((body) => {
+        const input = body as any;
+        return input.title === 'Implement Deploy v2'
+          && input.taskId === 'task-001'
+          && input.assignedAlias === 'codex'
+          && Array.isArray(input.verificationCommands)
+          && input.verificationCommands[0] === 'npm run build';
+      })
+      .reply(201, {
+        workItem: {
+          id: 'work-new',
+          taskId: 'task-001',
+          title: 'Implement Deploy v2',
+          status: 'queued',
+          assignedAlias: 'codex',
+        },
+      })
+      .install();
+
+    const result = await runCommand([
+      'work',
+      'create',
+      '--title',
+      'Implement Deploy v2',
+      '--task',
+      'task-001',
+      '--agent',
+      'codex',
+      '--verify',
+      'npm run build;npm test',
+      '--token',
+      'sift_pat_test',
+      '--json',
+    ]);
+
+    const json = JSON.parse(result.stdout);
+    expect(json.workItem.id).toBe('work-new');
+    expect(json.workItem.taskId).toBe('task-001');
+  });
+
   it('lists work items as JSON', async () => {
     mockFetch()
       .on('GET', '/api/v1/work-items')

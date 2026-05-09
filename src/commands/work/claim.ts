@@ -2,7 +2,7 @@ import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
 
 export default class WorkClaim extends BaseCommand {
-  static description = 'Claim the next available agent work item';
+  static description = 'Claim the next available executable agent work item';
 
   static args = {
     id: Args.string({description: 'Optional specific work item ID', required: false}),
