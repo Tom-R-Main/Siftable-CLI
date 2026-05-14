@@ -182,6 +182,127 @@ describe('work commands', () => {
     expect(json.workItem.status).toBe('claimed');
     expect(json.workItem.claimToken).toBe('claim-token');
   });
+
+  it('starts claimed work by positional ID', async () => {
+    mockFetch()
+      .on('POST', '/api/v1/work-items/work-001/start')
+      .body((body) => {
+        const input = body as any;
+        return input.claimOwner === 'codex-test'
+          && input.claimToken === 'claim-token'
+          && input.leaseSeconds === 900;
+      })
+      .reply(200, {
+        workItem: {
+          id: 'work-001',
+          title: 'Run verification',
+          status: 'running',
+          claimOwner: 'codex-test',
+        },
+      })
+      .install();
+
+    const result = await runCommand([
+      'work',
+      'start',
+      'work-001',
+      '--owner',
+      'codex-test',
+      '--claim-token',
+      'claim-token',
+      '--lease',
+      '900',
+      '--token',
+      'sift_pat_test',
+      '--json',
+    ]);
+    const json = JSON.parse(result.stdout);
+    expect(json.workItem.id).toBe('work-001');
+    expect(json.workItem.status).toBe('running');
+  });
+
+  it('blocks work by positional ID with a reason', async () => {
+    mockFetch()
+      .on('POST', '/api/v1/work-items/work-001/block')
+      .body((body) => {
+        const input = body as any;
+        return input.claimOwner === 'codex-test'
+          && input.claimToken === 'claim-token'
+          && input.blockedReason === 'Waiting on OAuth'
+          && input.failureReason === 'Waiting on OAuth';
+      })
+      .reply(200, {
+        workItem: {
+          id: 'work-001',
+          title: 'Run verification',
+          status: 'blocked',
+          blockedReason: 'Waiting on OAuth',
+        },
+      })
+      .install();
+
+    const result = await runCommand([
+      'work',
+      'block',
+      'work-001',
+      '--owner',
+      'codex-test',
+      '--claim-token',
+      'claim-token',
+      '--reason',
+      'Waiting on OAuth',
+      '--token',
+      'sift_pat_test',
+      '--json',
+    ]);
+    const json = JSON.parse(result.stdout);
+    expect(json.workItem.id).toBe('work-001');
+    expect(json.workItem.status).toBe('blocked');
+    expect(json.workItem.blockedReason).toBe('Waiting on OAuth');
+  });
+
+  it('completes work by positional ID with summary and artifacts', async () => {
+    mockFetch()
+      .on('POST', '/api/v1/work-items/work-001/complete')
+      .body((body) => {
+        const input = body as any;
+        return input.claimOwner === 'codex-test'
+          && input.claimToken === 'claim-token'
+          && input.resultSummary === 'Tests passed'
+          && Array.isArray(input.artifactRefs)
+          && input.artifactRefs[0]?.path === 'packages/exf-cli/test/commands/agents-work.test.ts';
+      })
+      .reply(200, {
+        workItem: {
+          id: 'work-001',
+          title: 'Run verification',
+          status: 'done',
+          resultSummary: 'Tests passed',
+        },
+      })
+      .install();
+
+    const result = await runCommand([
+      'work',
+      'complete',
+      'work-001',
+      '--owner',
+      'codex-test',
+      '--claim-token',
+      'claim-token',
+      '--summary',
+      'Tests passed',
+      '--artifacts',
+      '[{"path":"packages/exf-cli/test/commands/agents-work.test.ts"}]',
+      '--token',
+      'sift_pat_test',
+      '--json',
+    ]);
+    const json = JSON.parse(result.stdout);
+    expect(json.workItem.id).toBe('work-001');
+    expect(json.workItem.status).toBe('done');
+    expect(json.workItem.resultSummary).toBe('Tests passed');
+  });
 });
 
 describe('codex daily-review collect', () => {

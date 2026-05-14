@@ -16,8 +16,8 @@ export abstract class WorkActionCommand extends BaseCommand {
     reason: Flags.string({description: 'Block or failure reason'}),
   };
 
-  protected async runWorkAction(action: string, extra: Record<string, unknown> = {}): Promise<unknown> {
-    const {args, flags} = await this.parse((this.constructor as typeof WorkActionCommand));
+  protected async runWorkAction(command: typeof WorkActionCommand, action: string, extra: Record<string, unknown> = {}): Promise<unknown> {
+    const {args, flags} = await this.parse(command);
     const client = await this.client(flags);
     const response = await client.transitionWorkItem(args.id, action, {
       claimOwner: flags.owner,
