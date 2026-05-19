@@ -471,6 +471,91 @@ describe('dataset commands', () => {
       expect(parsed.summary.update).toBe(1);
       expect(parsed.operationId).toBe('op-import-1');
     });
+
+    it('persists, lists, shows, and applies server-side diff plans', async () => {
+      const file = join(dir, 'proposed.jsonl');
+      writeFileSync(file, '{"source_id":"s1","title":"Source 1"}\n');
+
+      mockFetch()
+        .on('POST', '/api/v1/datasets/ds-1/diff-plans')
+        .body((body) => {
+          const input = body as any;
+          return input.template === 'sources'
+            && input.upsertBy === 'source_id'
+            && input.source.file === file
+            && input.rows[0].fields.source_id === 's1';
+        })
+        .reply(201, {
+          ok: true,
+          plan: {
+            id: 'plan-1',
+            datasetId: 'ds-1',
+            status: 'validated',
+            summary: {create: 1, update: 0, skip: 0, invalid: 0, warning: 0},
+            proposedOperations: [{op: 'row.create', rowNumber: 1, fields: {source_id: 's1', title: 'Source 1'}}],
+          },
+          dryRunResult: {
+            ok: true,
+            dryRun: true,
+            datasetId: 'ds-1',
+            template: 'sources',
+            upsertBy: 'source_id',
+            summary: {create: 1, update: 0, skip: 0, invalid: 0, warning: 0},
+            errors: [],
+            warnings: [],
+          },
+        })
+        .on('GET', '/api/v1/datasets/diff-plans')
+        .query({datasetId: 'ds-1', status: 'validated', limit: '10'})
+        .reply(200, {ok: true, plans: [{id: 'plan-1', datasetId: 'ds-1', status: 'validated', summary: {create: 1}, createdAt: '2026-05-19T00:00:00.000Z'}]})
+        .on('GET', '/api/v1/datasets/diff-plans/plan-1')
+        .reply(200, {ok: true, plan: {id: 'plan-1', datasetId: 'ds-1', status: 'validated', proposedOperations: [{op: 'row.create', rowNumber: 1}]}})
+        .on('POST', '/api/v1/datasets/diff-plans/plan-1/apply')
+        .reply(201, {
+          ok: true,
+          plan: {id: 'plan-1', datasetId: 'ds-1', status: 'applied', appliedOperationId: 'op-1'},
+          result: {
+            ok: true,
+            dryRun: false,
+            datasetId: 'ds-1',
+            summary: {create: 1, update: 0, skip: 0, invalid: 0, warning: 0},
+            errors: [],
+            warnings: [],
+            operationId: 'op-1',
+          },
+        })
+        .install();
+
+      const diff = await runCommand([
+        'datasets',
+        'diff',
+        'ds-1',
+        '--from-file',
+        file,
+        '--template',
+        'sources',
+        '--upsert-by',
+        'source_id',
+        '--persist',
+        '--json',
+        '--token',
+        'exf_pat_test',
+      ]);
+      expect(diff.error).toBeUndefined();
+      expect(JSON.parse(diff.stdout).persistedPlan.id).toBe('plan-1');
+
+      const list = await runCommand(['datasets', 'diff-plans', 'list', '--dataset-id', 'ds-1', '--status', 'validated', '--limit', '10', '--json', '--token', 'exf_pat_test']);
+      expect(list.error).toBeUndefined();
+      expect(JSON.parse(list.stdout).plans[0].id).toBe('plan-1');
+
+      const show = await runCommand(['datasets', 'diff-plans', 'show', 'plan-1', '--json', '--token', 'exf_pat_test']);
+      expect(show.error).toBeUndefined();
+      expect(JSON.parse(show.stdout).plan.id).toBe('plan-1');
+
+      const applied = await runCommand(['datasets', 'apply-diff', 'plan-1', '--yes', '--json', '--token', 'exf_pat_test']);
+      expect(applied.error).toBeUndefined();
+      expect(JSON.parse(applied.stdout).operationId).toBe('op-1');
+    });
   });
 
   describe('spreadsheet-style dataset commands', () => {

@@ -23,6 +23,7 @@ export default class DatasetsDiff extends BaseCommand {
     'upsert-by': Flags.string({description: 'Field name used to match existing rows'}),
     'batch-size': Flags.integer({description: 'Records per backend batch', default: 100}),
     'save-plan': Flags.string({description: 'Write an applyable diff plan JSON file'}),
+    persist: Flags.boolean({description: 'Persist the diff plan in Siftable for later review/apply'}),
   };
 
   async run(): Promise<unknown> {
@@ -42,14 +43,26 @@ export default class DatasetsDiff extends BaseCommand {
     }
 
     const client = await this.client(flags);
-    const response = await client.planDatasetImport(args.id, {
-      rows: parsed.rows,
-      template: flags.template,
-      upsertBy: flags['upsert-by'],
-      batchSize: flags['batch-size'],
-    });
+    const response = flags.persist
+      ? await client.createDatasetDiffPlan(args.id, {
+        rows: parsed.rows,
+        template: flags.template,
+        upsertBy: flags['upsert-by'],
+        batchSize: flags['batch-size'],
+        source: { file: flags['from-file'] },
+        generatedBy: 'import',
+      })
+      : await client.planDatasetImport(args.id, {
+        rows: parsed.rows,
+        template: flags.template,
+        upsertBy: flags['upsert-by'],
+        batchSize: flags['batch-size'],
+      });
     this.handleApiError(response);
     const result = response.data as Record<string, unknown>;
+    const dryRunResult = (result.dryRunResult && typeof result.dryRunResult === 'object')
+      ? result.dryRunResult as Record<string, unknown>
+      : result;
 
     let planPath: string | undefined;
     if (flags['save-plan']) {
@@ -62,7 +75,7 @@ export default class DatasetsDiff extends BaseCommand {
         batchSize: flags['batch-size'],
         sourceFile: flags['from-file'],
         rows: parsed.rows,
-        dryRunResult: result,
+      dryRunResult,
       };
       writeFileSync(flags['save-plan'], `${JSON.stringify(plan, null, 2)}\n`);
       planPath = flags['save-plan'];
@@ -70,9 +83,12 @@ export default class DatasetsDiff extends BaseCommand {
 
     const output = {
       ok: true,
-      ...result,
+      ...dryRunResult,
+      persistedPlan: result.plan,
       planPath,
-      next: planPath
+      next: result.plan
+        ? [`Review persisted plan ${((result.plan as Record<string, unknown>).id)}`, `Run \`sift datasets apply-diff ${((result.plan as Record<string, unknown>).id)} --yes --json\` to apply it.`]
+        : planPath
         ? [`Review ${planPath}`, `Run \`sift datasets apply-diff ${planPath} --yes --json\` to apply the reviewed rows.`]
         : ['Run again with --save-plan <path> to create an applyable plan.'],
     };
