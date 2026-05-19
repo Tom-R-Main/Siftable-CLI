@@ -59,6 +59,42 @@ describe('dataset commands', () => {
     });
   });
 
+  describe('datasets delete', () => {
+    it('requires confirmation in non-interactive mode', async () => {
+      const result = await runCommand([
+        'datasets',
+        'delete',
+        'ds-1',
+        '--no-input',
+        '--token',
+        'exf_pat_test',
+      ]);
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.error?.message).toContain('Use --yes');
+    });
+
+    it('deletes a dataset through the dataset delete route', async () => {
+      mockFetch()
+        .on('DELETE', '/api/v1/datasets/ds-1')
+        .reply(204, {})
+        .install();
+
+      const result = await runCommand([
+        'datasets',
+        'delete',
+        'ds-1',
+        '--yes',
+        '--json',
+        '--token',
+        'exf_pat_test',
+      ]);
+
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed).toEqual({ok: true, deleted: true, id: 'ds-1'});
+    });
+  });
+
   describe('datasets validate', () => {
     it('returns stable JSON for template validation', async () => {
       mockFetch()
