@@ -1,6 +1,6 @@
 {
   "name": "@siftable/cli",
-  "version": "0.5.11",
+  "version": "0.5.12",
   "description": "Siftable CLI — human planning tasks, executable agent work queues, knowledge, and automation tools",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -14,8 +14,7 @@
     "test": "jest",
     "test:vitest": "vitest run --config vitest.config.ts",
     "prepublishOnly": "npm run build",
-    "prepack": "npm run build && oclif manifest",
-    "postpack": "rm -f oclif.manifest.json"
+    "prepack": "npm run build && oclif manifest"
   },
   "oclif": {
     "bin": "sift",
@@ -97,7 +96,7 @@
   "dependencies": {
     "@oclif/core": "^4",
     "@oclif/plugin-help": "^6",
-    "@siftable/mcp-server": "^1.2.10"
+    "@siftable/mcp-server": "^1.2.11"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",
