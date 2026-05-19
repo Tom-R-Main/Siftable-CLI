@@ -39,6 +39,8 @@ describe('events commands', () => {
 
     const parsed = JSON.parse(result.stdout);
     expect(parsed.item.id).toBe('fact-1');
+    expect(parsed.eventId).toBe('fact-1');
+    expect(parsed.eventRef).toBe('temporal_fact:fact-1');
   });
 
   it('lists events for a person by using timeline event filters', async () => {

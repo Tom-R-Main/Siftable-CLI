@@ -63,16 +63,23 @@ export default class EventsCreate extends BaseCommand {
     this.handleApiError(response);
     const result = response.data as Record<string, unknown>;
     const item = (result.item ?? result) as Record<string, unknown>;
+    const eventId = typeof item.id === 'string' ? item.id : undefined;
+    const normalizedResult = {
+      ...result,
+      eventId,
+      eventRef: eventId ? `temporal_fact:${eventId}` : undefined,
+    };
 
     if (!this.jsonEnabled()) {
       renderDetail([
         ['ID', item.id],
+        ['Ref', eventId ? `temporal_fact:${eventId}` : undefined],
         ['Title', item.title],
         ['Time', item.timeLabel],
         ['Participants', entities.length],
       ]);
     }
 
-    return result;
+    return normalizedResult;
   }
 }
