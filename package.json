@@ -1,6 +1,6 @@
 {
   "name": "@siftable/cli",
-  "version": "0.5.10",
+  "version": "0.5.11",
   "description": "Siftable CLI — human planning tasks, executable agent work queues, knowledge, and automation tools",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -62,6 +62,15 @@
       "datasets": {
         "description": "Structured datasets"
       },
+      "timeline": {
+        "description": "Timeline facts and narratives"
+      },
+      "events": {
+        "description": "Research events backed by timeline facts"
+      },
+      "graph": {
+        "description": "Entity graph search and neighborhoods"
+      },
       "documents": {
         "description": "Document upload"
       },
@@ -71,6 +80,12 @@
       "work": {
         "description": "Executable agent work queue"
       },
+      "recipes": {
+        "description": "Built-in research workflow recipes"
+      },
+      "research": {
+        "description": "Research workflow planning and orchestration"
+      },
       "codex": {
         "description": "Codex automation helpers"
       }
@@ -79,7 +94,7 @@
   "dependencies": {
     "@oclif/core": "^4",
     "@oclif/plugin-help": "^6",
-    "@siftable/mcp-server": "^1.2.9"
+    "@siftable/mcp-server": "^1.2.10"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",

@@ -6,6 +6,19 @@ export interface Column {
   get?: (row: Record<string, unknown>) => string;
 }
 
+export function sanitizeTerminalText(value: unknown): string {
+  if (value === null || value === undefined) return '—';
+  return String(value)
+    // ANSI CSI escape sequences.
+    .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, '')
+    // C0/C1 controls except tab/newline are not useful inside table cells.
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '')
+    // Bidirectional override/isolate controls can spoof terminal output.
+    .replace(/[\u202A-\u202E\u2066-\u2069]/g, '')
+    // Zero-width characters make copied/logged dataset values misleading.
+    .replace(/[\u200B-\u200F\uFEFF]/g, '');
+}
+
 export function renderTable(data: Record<string, unknown>[], columns: Column[]): void {
   if (data.length === 0) {
     console.log('No results found.');
@@ -14,7 +27,7 @@ export function renderTable(data: Record<string, unknown>[], columns: Column[]):
 
   const getValue = (row: Record<string, unknown>, col: Column): string => {
     const val = col.get ? col.get(row) : row[col.key];
-    return val != null ? String(val) : '—';
+    return sanitizeTerminalText(val);
   };
 
   const widths = columns.map(col => {
@@ -37,7 +50,7 @@ export function renderTable(data: Record<string, unknown>[], columns: Column[]):
 export function renderDetail(pairs: [string, unknown][]): void {
   const maxKey = Math.max(...pairs.map(([key]) => key.length));
   for (const [key, value] of pairs) {
-    console.log(`${key.padEnd(maxKey)}  ${value ?? '—'}`);
+    console.log(`${key.padEnd(maxKey)}  ${sanitizeTerminalText(value)}`);
   }
 }
 

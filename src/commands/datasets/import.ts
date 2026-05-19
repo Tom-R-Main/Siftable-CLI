@@ -2,20 +2,29 @@ import {Args, Flags} from '@oclif/core';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {BaseCommand} from '../../lib/base-command.js';
+import {parseDatasetRows, inferFieldType} from '../../lib/dataset-files.js';
+import {renderDatasetImportResult} from '../../lib/dataset-import-render.js';
 
 export default class DatasetsImport extends BaseCommand {
-  static description = 'Import a CSV file into a new or existing dataset';
+  static description = 'Import CSV, JSON, or JSONL rows into a new or existing dataset';
 
   static args = {
-    file: Args.string({description: 'Path to CSV file', required: true}),
+    file: Args.string({description: 'Path to CSV, JSON, or JSONL file', required: true}),
   };
 
   static flags = {
     ...BaseCommand.baseFlags,
     title: Flags.string({description: 'Dataset title (defaults to filename)'}),
     description: Flags.string({description: 'Dataset description'}),
-    'dataset-id': Flags.string({description: 'Append to existing dataset instead of creating new'}),
-    'batch-size': Flags.integer({description: 'Records per batch', default: 50}),
+    'dataset-id': Flags.string({description: 'Import into existing dataset instead of creating a new one'}),
+    template: Flags.string({
+      description: 'Built-in template name',
+      options: ['sources', 'people', 'events', 'claims'],
+    }),
+    'upsert-by': Flags.string({description: 'Field name used to update matching rows instead of creating duplicates'}),
+    'batch-size': Flags.integer({description: 'Records per backend batch', default: 100}),
+    'dry-run': Flags.boolean({description: 'Validate and plan the import without writing'}),
+    yes: Flags.boolean({description: 'Confirm mutating imports without prompting'}),
   };
 
   async run(): Promise<unknown> {
@@ -26,137 +35,96 @@ export default class DatasetsImport extends BaseCommand {
       this.error(`File not found: ${args.file}`);
     }
 
-    const text = fs.readFileSync(args.file, 'utf8');
-    const {headers, rows} = this.parseCSV(text);
-
-    if (rows.length === 0) {
-      this.error('CSV file has no data rows.');
+    let parsed;
+    try {
+      parsed = parseDatasetRows(args.file);
+    } catch (error) {
+      this.error(error instanceof Error ? error.message : 'Failed to parse import file.');
+    }
+    if (parsed.rows.length === 0) {
+      this.error('Import file has no data rows.');
     }
 
-    this.log(`Parsed: ${rows.length} rows, ${headers.length} columns`);
+    if (!this.jsonEnabled()) {
+      this.log(`Parsed: ${parsed.rows.length} rows, ${parsed.headers.length} columns`);
+    }
 
-    // Infer schema from sample data
-    const fields = headers.map(name => ({
-      name,
-      type: this.inferFieldType(rows.slice(0, 100).map(r => r[headers.indexOf(name)] ?? '')),
-    }));
+    if (flags['dry-run'] && !flags['dataset-id']) {
+      const result = {
+        ok: true,
+        dryRun: true,
+        datasetId: null,
+        template: flags.template,
+        upsertBy: flags['upsert-by'],
+        summary: {
+          create: parsed.rows.length,
+          update: 0,
+          skip: 0,
+          invalid: 0,
+          warning: 0,
+        },
+        warnings: [
+          {
+            type: 'dataset_not_created',
+            severity: 'warning',
+            message: 'Provide --dataset-id to validate/upsert against an existing dataset; dry-run does not create a new dataset.',
+          },
+        ],
+        inferredFields: parsed.headers.map((name) => ({
+          name,
+          fieldType: inferFieldType(parsed.rows.slice(0, 100).map((row) => row.fields[name])),
+        })),
+      };
+      this.renderImportResult(result);
+      return result;
+    }
+
+    if (!flags['dry-run']) {
+      const confirmed = await this.confirmAction(
+        `Import ${parsed.rows.length} rows${flags['dataset-id'] ? ` into ${flags['dataset-id']}` : ' into a new dataset'}?`,
+        flags,
+      );
+      if (!confirmed) {
+        this.log('Import cancelled.');
+        return {ok: false, cancelled: true};
+      }
+    }
 
     let datasetId = flags['dataset-id'];
-
     if (!datasetId) {
       const title = flags.title || path.basename(args.file, path.extname(args.file));
       const description = flags.description || `Imported from ${path.basename(args.file)}`;
+      const fields = parsed.headers.map(name => ({
+        name,
+        fieldType: inferFieldType(parsed.rows.slice(0, 100).map(row => row.fields[name])),
+      }));
 
-      this.log(`Creating dataset: "${title}"…`);
       const createResp = await client.createDataset({title, description, fields});
       this.handleApiError(createResp);
       const dataset = this.unwrapOne(createResp, 'dataset');
       datasetId = dataset.id as string;
-      this.log(`Created: ${datasetId}`);
     }
 
-    // Build records
-    const records = rows.map(row => {
-      const fieldMap: Record<string, unknown> = {};
-      headers.forEach((h, i) => {
-        fieldMap[h] = row[i] ?? '';
-      });
-      return {fields: fieldMap};
-    });
+    const payload = {
+      rows: parsed.rows,
+      template: flags.template,
+      upsertBy: flags['upsert-by'],
+      batchSize: flags['batch-size'],
+    };
+    const response = flags['dry-run']
+      ? await client.planDatasetImport(datasetId, payload)
+      : await client.applyDatasetImport(datasetId, payload);
 
-    // Batch insert
-    const batchSize = flags['batch-size'];
-    let inserted = 0;
-
-    this.log(`Inserting ${records.length} records…`);
-
-    for (let i = 0; i < records.length; i += batchSize) {
-      const batch = records.slice(i, i + batchSize);
-      const resp = await client.mutateDataset(datasetId, {
-        operation: 'create',
-        records: batch,
-      });
-      this.handleApiError(resp);
-      inserted += batch.length;
-
-      if (!this.jsonEnabled()) {
-        process.stderr.write(`  ${inserted}/${records.length}\r`);
-      }
-    }
-
-    if (!this.jsonEnabled()) {
-      this.log(`Inserted ${inserted} records into ${datasetId}`);
-    }
-
-    // Return summary
-    const summaryResp = await client.summarizeDataset(datasetId);
-    if (!summaryResp.error) {
-      const summary = this.unwrapOne(summaryResp, 'summary');
-      if (!this.jsonEnabled()) {
-        this.log(`Dataset: ${summary.title} — ${summary.rowCount} rows, ${summary.fieldCount} fields`);
-      }
-    }
-
-    return {datasetId, inserted, total: records.length};
+    this.handleApiError(response);
+    const result = response.data as Record<string, unknown>;
+    this.renderImportResult(result);
+    return result;
   }
 
-  private parseCSV(text: string): {headers: string[]; rows: string[][]} {
-    text = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    const rows: string[][] = [];
-    let i = 0;
-
-    while (i < text.length) {
-      const row: string[] = [];
-      while (i < text.length) {
-        if (text[i] === '"') {
-          i++;
-          let field = '';
-          while (i < text.length) {
-            if (text[i] === '"') {
-              if (text[i + 1] === '"') {
-                field += '"';
-                i += 2;
-              } else {
-                i++;
-                break;
-              }
-            } else {
-              field += text[i];
-              i++;
-            }
-          }
-          row.push(field);
-          if (text[i] === ',') i++;
-          else if (text[i] === '\n' || i >= text.length) { i++; break; }
-        } else {
-          let field = '';
-          while (i < text.length && text[i] !== ',' && text[i] !== '\n') {
-            field += text[i];
-            i++;
-          }
-          row.push(field);
-          if (text[i] === ',') i++;
-          else { i++; break; }
-        }
-      }
-      if (row.length > 0 && !(row.length === 1 && row[0] === '')) {
-        rows.push(row);
-      }
+  private renderImportResult(result: Record<string, unknown>): void {
+    if (this.jsonEnabled()) {
+      return;
     }
-
-    const headers = (rows[0] ?? []).map(h => h.trim());
-    return {headers, rows: rows.slice(1)};
-  }
-
-  private inferFieldType(values: string[]): string {
-    let nums = 0;
-    let total = 0;
-    for (const v of values) {
-      if (v === '' || v == null) continue;
-      total++;
-      if (!isNaN(Number(v)) && v.trim() !== '') nums++;
-    }
-    if (total === 0) return 'text';
-    return nums / total > 0.8 ? 'number' : 'text';
+    renderDatasetImportResult(result);
   }
 }
