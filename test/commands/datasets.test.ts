@@ -453,6 +453,7 @@ describe('dataset commands', () => {
           summary: {create: 0, update: 1, skip: 0, invalid: 0, warning: 0},
           errors: [],
           warnings: [],
+          operationId: 'op-import-1',
         })
         .install();
 
@@ -468,6 +469,7 @@ describe('dataset commands', () => {
       const parsed = JSON.parse(applied.stdout);
       expect(parsed.dryRun).toBe(false);
       expect(parsed.summary.update).toBe(1);
+      expect(parsed.operationId).toBe('op-import-1');
     });
   });
 
