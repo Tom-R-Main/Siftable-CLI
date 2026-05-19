@@ -80,6 +80,9 @@
       "work": {
         "description": "Executable agent work queue"
       },
+      "skills": {
+        "description": "Installable Siftable skillpacks"
+      },
       "recipes": {
         "description": "Built-in research workflow recipes"
       },

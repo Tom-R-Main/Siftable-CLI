@@ -63,6 +63,53 @@ describe('notes commands', () => {
       const result = await runCommand(['notes', 'create', '--title', 'New note', '--token', 'exf_pat_test']);
       expect(result.stdout).toContain('Note created');
     });
+
+    it('creates a note with metadata', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/notes')
+        .body((body) => {
+          const payload = body as {metadata?: Record<string, unknown>};
+          return payload.metadata?.kind === 'verdict' && payload.metadata?.entityName === 'react-query';
+        })
+        .reply(201, {note: fixtures.note({id: 'note-new'})})
+        .install();
+
+      const result = await runCommand([
+        'notes',
+        'create',
+        '--title',
+        'Verdict',
+        '--metadata',
+        '{"kind":"verdict","entityName":"react-query"}',
+        '--token',
+        'exf_pat_test',
+      ]);
+      expect(result.stdout).toContain('Note created');
+    });
+  });
+
+  describe('notes update', () => {
+    it('updates note metadata', async () => {
+      mockFetch()
+        .on('PATCH', '/api/v1/notes/note-001')
+        .body((body) => {
+          const payload = body as {metadata?: Record<string, unknown>};
+          return payload.metadata?.kind === 'verdict' && payload.metadata?.confidence === 'high';
+        })
+        .reply(200, {note: fixtures.note({id: 'note-001'})})
+        .install();
+
+      const result = await runCommand([
+        'notes',
+        'update',
+        'note-001',
+        '--metadata',
+        '{"kind":"verdict","confidence":"high"}',
+        '--token',
+        'exf_pat_test',
+      ]);
+      expect(result.stdout).toContain('updated');
+    });
   });
 
   describe('notes delete', () => {

@@ -105,6 +105,36 @@ export const RECIPES: Recipe[] = [
       'Completion evidence includes commands run and validation results.',
     ],
   },
+  {
+    id: 'grounding-verdict',
+    title: 'Create an evidence-backed grounding verdict',
+    goal: 'Ground a library, repository, model, or implementation-pattern decision in Siftable context plus deterministic evidence before acting.',
+    whenToUse: 'Use before adding dependencies, copying a reference repo, changing model routing, or implementing a pattern where prior context and live evidence matter.',
+    steps: [
+      {
+        command: 'sift notes search "verdict <entity-name>" --json',
+        purpose: 'Check for an existing Siftable verdict before fetching new evidence.',
+      },
+      {
+        command: 'sift code memory search "<entity-name>" --json',
+        purpose: 'Find prior integration facts, conventions, gotchas, and ownership notes.',
+      },
+      {
+        command: 'sift codebase search "<entity-name>" --repo <repo-id> --json',
+        purpose: 'Find current local usage or relevant implementation seams.',
+      },
+      {
+        command: 'sift notes create --title "Verdict: <entity-name>" --type reference --metadata \'{"kind":"verdict","entityType":"library","entityName":"<entity-name>","recommendation":"spike","confidence":"low","fetchedAt":"<iso>","freshnessTtlDays":30,"evidenceUrls":[],"signals":{}}\' --content "<verdict markdown>" --json',
+        purpose: 'Persist the structured verdict note once evidence has been reviewed.',
+        writes: true,
+      },
+    ],
+    verification: [
+      'Existing Siftable context was checked before external research.',
+      'Verdict metadata includes kind, entity type, recommendation, confidence, fetchedAt, freshness TTL, evidence URLs, and signals.',
+      'The markdown verdict includes recommendation, evidence, risks, alternatives, implementation plan, and verification commands.',
+    ],
+  },
 ];
 
 export function findRecipe(id: string): Recipe | undefined {

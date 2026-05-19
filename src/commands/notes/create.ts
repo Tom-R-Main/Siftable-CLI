@@ -13,17 +13,28 @@ export default class NotesCreate extends BaseCommand {
       options: ['note', 'concept', 'meeting', 'reference', 'daily', 'dataset'],
     }),
     project: Flags.string({description: 'Project ID'}),
+    metadata: Flags.string({description: 'Note metadata as JSON'}),
+    'metadata-file': Flags.string({description: 'Read note metadata JSON from a file'}),
   };
 
   async run(): Promise<unknown> {
     const {flags} = await this.parse(NotesCreate);
     const client = await this.client(flags);
+    const metadata = this.parseJsonInput<Record<string, unknown>>(
+      flags.metadata,
+      flags['metadata-file'],
+      'metadata',
+    );
+    if (metadata !== undefined && (metadata === null || Array.isArray(metadata) || typeof metadata !== 'object')) {
+      this.error('Metadata must be a JSON object.');
+    }
     const response = await client.createNote(
       {
         title: flags.title,
         content: flags.content,
         noteType: flags.type,
         projectId: flags.project,
+        metadata,
       },
       this.idempotencyKey(),
     );

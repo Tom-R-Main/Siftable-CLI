@@ -16,6 +16,8 @@ export default class NotesUpdate extends BaseCommand {
       description: 'Note type',
       options: ['note', 'concept', 'meeting', 'reference', 'daily', 'dataset'],
     }),
+    metadata: Flags.string({description: 'Replace note metadata with this JSON object'}),
+    'metadata-file': Flags.string({description: 'Read replacement note metadata JSON from a file'}),
   };
 
   async run(): Promise<unknown> {
@@ -26,6 +28,15 @@ export default class NotesUpdate extends BaseCommand {
     if (flags.title !== undefined) updates.title = flags.title;
     if (flags.content !== undefined) updates.content = flags.content;
     if (flags.type !== undefined) updates.noteType = flags.type;
+    const metadata = this.parseJsonInput<Record<string, unknown>>(
+      flags.metadata,
+      flags['metadata-file'],
+      'metadata',
+    );
+    if (metadata !== undefined && (metadata === null || Array.isArray(metadata) || typeof metadata !== 'object')) {
+      this.error('Metadata must be a JSON object.');
+    }
+    if (metadata !== undefined) updates.metadata = metadata;
 
     const response = await client.updateNote(args.id, updates, this.idempotencyKey());
     this.handleApiError(response);

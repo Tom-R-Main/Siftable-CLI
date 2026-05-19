@@ -20,6 +20,7 @@ const TOPICS = [
   {topic: 'codebase', description: 'Code indexing and semantic search'},
   {topic: 'code memory', description: 'Code memory and facts'},
   {topic: 'vault', description: 'Secrets vault'},
+  {topic: 'skills', description: 'Installable Siftable skillpacks'},
   {topic: 'recipes', description: 'Built-in research workflow recipes'},
   {topic: 'research', description: 'Research workflow planning and orchestration'},
   {topic: 'doctor', description: 'Local CLI environment diagnostics'},
@@ -43,6 +44,7 @@ export default class Commands extends BaseCommand {
       next: [
         'Run `sift doctor --json` to verify local auth and API configuration.',
         'Run `sift capabilities --json` to see what is ready, partial, or planned.',
+        'Run `sift skills list --json` to see installable Siftable skillpacks.',
         'Run `sift recipes list --json` to pick a deterministic workflow.',
       ],
     };
