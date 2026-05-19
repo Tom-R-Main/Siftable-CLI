@@ -8,6 +8,43 @@ afterAll(() => {
 });
 
 describe('dataset commands', () => {
+  describe('datasets create lifecycle metadata', () => {
+    it('tags scratch benchmark datasets with TTL metadata', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/datasets')
+        .body((body) => {
+          const input = body as any;
+          return input.title === 'Scratch'
+            && input.metadata.lifecycle.kind === 'scratch'
+            && input.metadata.lifecycle.tags.includes('benchmark')
+            && input.metadata.lifecycle.tags.includes('scratch')
+            && input.metadata.lifecycle.runId === 'run-1'
+            && typeof input.metadata.lifecycle.expiresAt === 'string';
+        })
+        .reply(201, {dataset: {id: 'ds-1', title: 'Scratch'}})
+        .install();
+
+      const result = await runCommand([
+        'datasets',
+        'create',
+        '--title',
+        'Scratch',
+        '--scratch',
+        '--tags',
+        'benchmark',
+        '--run-id',
+        'run-1',
+        '--ttl',
+        '7d',
+        '--json',
+        '--token',
+        'exf_pat_test',
+      ]);
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.dataset.id).toBe('ds-1');
+    });
+  });
+
   describe('datasets templates', () => {
     it('lists templates as stable JSON', async () => {
       mockFetch()
@@ -92,6 +129,125 @@ describe('dataset commands', () => {
 
       const parsed = JSON.parse(result.stdout);
       expect(parsed).toEqual({ok: true, deleted: true, id: 'ds-1'});
+    });
+  });
+
+  describe('datasets archive', () => {
+    it('requires confirmation in non-interactive mode', async () => {
+      const result = await runCommand([
+        'datasets',
+        'archive',
+        'ds-1',
+        '--no-input',
+        '--token',
+        'exf_pat_test',
+      ]);
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.error?.message).toContain('Use --yes');
+    });
+
+    it('archives through the dataset archive route', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/datasets/ds-1/archive')
+        .reply(200, {ok: true, archived: true, dataset: {id: 'ds-1'}})
+        .install();
+
+      const result = await runCommand([
+        'datasets',
+        'archive',
+        'ds-1',
+        '--yes',
+        '--json',
+        '--token',
+        'exf_pat_test',
+      ]);
+
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed).toMatchObject({ok: true, archived: true, id: 'ds-1'});
+    });
+  });
+
+  describe('datasets cleanup', () => {
+    it('dry-runs lifecycle cleanup by default', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/datasets/lifecycle/cleanup')
+        .body((body) => {
+          const input = body as any;
+          return input.dryRun === true
+            && input.tag === 'benchmark'
+            && input.olderThan === '7d'
+            && input.limit === 25;
+        })
+        .reply(200, {
+          ok: true,
+          dryRun: true,
+          filters: {tag: 'benchmark', olderThanMs: 604800000, now: '2026-05-19T00:00:00.000Z', limit: 25},
+          summary: {candidates: 1, deleted: 0},
+          candidates: [{id: 'ds-1', title: 'Scratch', rowCount: 0, createdAt: '2026-05-01T00:00:00.000Z', reasons: ['older_than']}],
+          deletedIds: [],
+        })
+        .install();
+
+      const result = await runCommand([
+        'datasets',
+        'cleanup',
+        '--tag',
+        'benchmark',
+        '--older-than',
+        '7d',
+        '--limit',
+        '25',
+        '--json',
+        '--token',
+        'exf_pat_test',
+      ]);
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.dryRun).toBe(true);
+      expect(parsed.summary.candidates).toBe(1);
+    });
+
+    it('requires confirmation before applying cleanup', async () => {
+      const denied = await runCommand([
+        'datasets',
+        'cleanup',
+        '--tag',
+        'benchmark',
+        '--no-dry-run',
+        '--no-input',
+        '--token',
+        'exf_pat_test',
+      ]);
+      expect(denied.exitCode).not.toBe(0);
+      expect(denied.error?.message).toContain('Use --yes');
+
+      mockFetch()
+        .on('POST', '/api/v1/datasets/lifecycle/cleanup')
+        .body((body) => (body as any).dryRun === false && (body as any).tag === 'benchmark')
+        .reply(202, {
+          ok: true,
+          dryRun: false,
+          filters: {tag: 'benchmark', now: '2026-05-19T00:00:00.000Z', limit: 100},
+          summary: {candidates: 1, deleted: 1},
+          candidates: [{id: 'ds-1', title: 'Scratch', reasons: ['expired']}],
+          deletedIds: ['ds-1'],
+        })
+        .install();
+
+      const applied = await runCommand([
+        'datasets',
+        'cleanup',
+        '--tag',
+        'benchmark',
+        '--no-dry-run',
+        '--yes',
+        '--json',
+        '--token',
+        'exf_pat_test',
+      ]);
+      const parsed = JSON.parse(applied.stdout);
+      expect(parsed.dryRun).toBe(false);
+      expect(parsed.summary.deleted).toBe(1);
     });
   });
 

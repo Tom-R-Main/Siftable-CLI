@@ -2,7 +2,7 @@ import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
 
 export default class DatasetsDelete extends BaseCommand {
-  static description = 'Delete a dataset and its physical table';
+  static description = 'Permanently delete a dataset and drop its physical table';
 
   static args = {
     id: Args.string({description: 'Dataset ID', required: true}),
