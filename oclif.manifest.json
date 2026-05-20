@@ -6309,6 +6309,12 @@
           "multiple": false,
           "type": "option"
         },
+        "orphaned": {
+          "description": "Include stale dataset notes that no longer have a backing dataset row",
+          "name": "orphaned",
+          "allowNo": false,
+          "type": "boolean"
+        },
         "older-than": {
           "description": "Only include datasets older than this duration, e.g. 12h, 7d",
           "name": "older-than",

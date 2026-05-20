@@ -300,9 +300,10 @@ describe('dataset commands', () => {
           ok: true,
           dryRun: true,
           filters: {tag: 'benchmark', olderThanMs: 604800000, now: '2026-05-19T00:00:00.000Z', limit: 25},
-          summary: {candidates: 1, deleted: 0},
+          summary: {candidates: 1, deleted: 0, archived: 0},
           candidates: [{id: 'ds-1', title: 'Scratch', rowCount: 0, createdAt: '2026-05-01T00:00:00.000Z', reasons: ['older_than']}],
           deletedIds: [],
+          archivedIds: [],
         })
         .install();
 
@@ -322,6 +323,40 @@ describe('dataset commands', () => {
       const parsed = JSON.parse(result.stdout);
       expect(parsed.dryRun).toBe(true);
       expect(parsed.summary.candidates).toBe(1);
+    });
+
+    it('can dry-run orphaned dataset note cleanup', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/datasets/lifecycle/cleanup')
+        .body((body) => {
+          const input = body as any;
+          return input.dryRun === true
+            && input.orphaned === true
+            && input.olderThan === '7d';
+        })
+        .reply(200, {
+          ok: true,
+          dryRun: true,
+          filters: {orphaned: true, olderThanMs: 604800000, now: '2026-05-19T00:00:00.000Z', limit: 100},
+          summary: {candidates: 1, deleted: 0, archived: 0},
+          candidates: [{id: 'note-orphan', title: 'Missing backing dataset', orphaned: true, reasons: ['orphaned_note']}],
+          deletedIds: [],
+          archivedIds: [],
+        })
+        .install();
+
+      const result = await runCommand([
+        'datasets',
+        'cleanup',
+        '--orphaned',
+        '--older-than',
+        '7d',
+        '--json',
+        '--token',
+        'exf_pat_test',
+      ]);
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.candidates[0].orphaned).toBe(true);
     });
 
     it('requires confirmation before applying cleanup', async () => {
@@ -345,9 +380,10 @@ describe('dataset commands', () => {
           ok: true,
           dryRun: false,
           filters: {tag: 'benchmark', now: '2026-05-19T00:00:00.000Z', limit: 100},
-          summary: {candidates: 1, deleted: 1},
+          summary: {candidates: 1, deleted: 1, archived: 0},
           candidates: [{id: 'ds-1', title: 'Scratch', reasons: ['expired']}],
           deletedIds: ['ds-1'],
+          archivedIds: [],
         })
         .install();
 

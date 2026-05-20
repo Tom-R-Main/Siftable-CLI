@@ -9,6 +9,7 @@ export default class DatasetsCleanup extends BaseCommand {
     ...BaseCommand.baseFlags,
     lifecycle: Flags.string({description: 'Lifecycle kind to clean, e.g. scratch, benchmark, research-run'}),
     tag: Flags.string({description: 'Lifecycle tag to clean, e.g. benchmark'}),
+    orphaned: Flags.boolean({description: 'Include stale dataset notes that no longer have a backing dataset row'}),
     'older-than': Flags.string({description: 'Only include datasets older than this duration, e.g. 12h, 7d'}),
     limit: Flags.integer({description: 'Maximum lifecycle datasets to inspect', default: 100}),
     now: Flags.string({description: 'Deterministic timestamp for tests and scheduled cleanup'}),
@@ -36,6 +37,7 @@ export default class DatasetsCleanup extends BaseCommand {
       dryRun,
       lifecycle: flags.lifecycle,
       tag: flags.tag,
+      orphaned: flags.orphaned,
       olderThan: flags['older-than'],
       limit: flags.limit,
       now: flags.now,
@@ -45,12 +47,13 @@ export default class DatasetsCleanup extends BaseCommand {
     const data = response.data as Record<string, unknown>;
     if (!this.jsonEnabled()) {
       const summary = data.summary as {candidates?: number; deleted?: number} | undefined;
-      this.log(`${dryRun ? 'Cleanup plan' : 'Cleanup applied'}: ${summary?.candidates ?? 0} candidate(s), ${summary?.deleted ?? 0} deleted.`);
+      this.log(`${dryRun ? 'Cleanup plan' : 'Cleanup applied'}: ${summary?.candidates ?? 0} candidate(s), ${summary?.deleted ?? 0} deleted, ${(summary as {archived?: number} | undefined)?.archived ?? 0} archived.`);
       renderTable(((data.candidates as Record<string, unknown>[] | undefined) ?? []), [
         {key: 'id', header: 'ID'},
         {key: 'title', header: 'Title'},
         {key: 'rowCount', header: 'Rows', get: (row) => String(row.rowCount ?? 0)},
         {key: 'createdAt', header: 'Created', get: (row) => formatDateTime(row.createdAt as string)},
+        {key: 'orphaned', header: 'Orphaned', get: (row) => row.orphaned ? 'yes' : 'no'},
         {key: 'reasons', header: 'Reasons', get: (row) => Array.isArray(row.reasons) ? row.reasons.join(',') : '—'},
       ]);
     }
