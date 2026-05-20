@@ -42,7 +42,7 @@ export function inferFieldType(values: unknown[]): string {
     total++;
     if (typeof value === 'boolean' || ['true', 'false'].includes(String(value).toLowerCase())) bools++;
     if (!Number.isNaN(Number(value)) && String(value).trim() !== '') nums++;
-    if (Number.isNaN(Number(value)) && !Number.isNaN(Date.parse(String(value)))) dates++;
+    if (Number.isNaN(Number(value)) && isDateLikeString(value)) dates++;
   }
 
   if (total === 0) return 'text';
@@ -50,6 +50,19 @@ export function inferFieldType(values: unknown[]): string {
   if (nums / total > 0.8) return 'number';
   if (dates / total > 0.8) return 'date';
   return 'text';
+}
+
+function isDateLikeString(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+
+  const hasExplicitDateShape =
+    /^\d{4}-\d{1,2}-\d{1,2}(?:[T\s].*)?$/.test(trimmed)
+    || /^\d{4}\/\d{1,2}\/\d{1,2}(?:\s.*)?$/.test(trimmed)
+    || /^\d{1,2}\/\d{1,2}\/\d{2,4}(?:\s.*)?$/.test(trimmed);
+
+  return hasExplicitDateShape && !Number.isNaN(Date.parse(trimmed));
 }
 
 function parseJSON(text: string): ParsedDatasetRows {

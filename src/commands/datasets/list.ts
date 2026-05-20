@@ -17,6 +17,10 @@ export default class DatasetsList extends BaseCommand {
     this.handleApiError(response);
 
     const datasets = this.unwrapList(response, 'datasets');
+    const result = {
+      ok: true,
+      datasets,
+    };
 
     if (!this.jsonEnabled()) {
       renderTable(datasets, [
@@ -27,6 +31,6 @@ export default class DatasetsList extends BaseCommand {
       ]);
     }
 
-    return datasets;
+    return result;
   }
 }

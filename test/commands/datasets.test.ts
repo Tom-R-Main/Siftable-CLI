@@ -2,12 +2,32 @@ import {mkdtempSync, writeFileSync, rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {mockFetch, runCommand, restoreFetch} from '../helpers/mock-api';
+import {inferFieldType} from '../../src/lib/dataset-files';
 
 afterAll(() => {
   restoreFetch();
 });
 
 describe('dataset commands', () => {
+  describe('datasets list', () => {
+    it('returns a stable object shape in JSON mode', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/datasets')
+        .query({limit: '50'})
+        .reply(200, {
+          datasets: [{id: 'ds-1', title: 'Sources', rowCount: 2}],
+        })
+        .install();
+
+      const result = await runCommand(['datasets', 'list', '--json', '--token', 'exf_pat_test']);
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed).toEqual({
+        ok: true,
+        datasets: [{id: 'ds-1', title: 'Sources', rowCount: 2}],
+      });
+    });
+  });
+
   describe('datasets create lifecycle metadata', () => {
     it('tags scratch benchmark datasets with TTL metadata', async () => {
       mockFetch()
@@ -142,6 +162,54 @@ describe('dataset commands', () => {
       expect(result.stdout).toContain('dataset-contract.v1');
       expect(result.stdout).toContain('source_id');
       expect(result.stdout).toContain('normalized_name_match');
+    });
+  });
+
+  describe('datasets impact', () => {
+    it('explains impact from a persisted diff plan without mutating', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/datasets/ds-1/impact')
+        .query({planId: 'plan-1'})
+        .reply(200, {
+          ok: true,
+          impactVersion: 'dataset-impact.v1',
+          datasetId: 'ds-1',
+          source: {type: 'diff_plan', id: 'plan-1', status: 'validated'},
+          changed: {
+            fields: [{id: 'fld-title', name: 'title', type: 'text', resolved: true}],
+            rows: {ids: ['row-1'], knownCount: 1},
+          },
+          stale: {
+            formulas: [{id: 'fld-score', name: 'score', stale: true}],
+            views: [],
+            graph: {stale: true},
+            materializedDatasets: [],
+            qualityWarnings: [],
+          },
+          recommendedActions: [{name: 'sync_graph_projection', reason: 'Dataset row/link projections may need graph sync for affected rows.'}],
+          mutates: false,
+        })
+        .install();
+
+      const result = await runCommand([
+        'datasets',
+        'impact',
+        'ds-1',
+        '--from-plan',
+        'plan-1',
+        '--token',
+        'exf_pat_test',
+      ]);
+
+      expect(result.stdout).toContain('dataset-impact.v1');
+      expect(result.stdout).toContain('title');
+      expect(result.stdout).toContain('sync_graph_projection');
+    });
+
+    it('requires exactly one impact source', async () => {
+      const result = await runCommand(['datasets', 'impact', 'ds-1', '--token', 'exf_pat_test']);
+      expect(result.exitCode).not.toBe(0);
+      expect(result.error?.message).toContain('Provide --from-plan');
     });
   });
 
@@ -396,6 +464,12 @@ describe('dataset commands', () => {
 
       expect(result.exitCode).not.toBe(0);
       expect(result.error?.message).toContain('Use --yes');
+    });
+
+    it('does not infer source-style identifiers as dates', () => {
+      expect(inferFieldType(['src-001', 'src-002'])).toBe('text');
+      expect(inferFieldType(['id-123', 'id-456'])).toBe('text');
+      expect(inferFieldType(['2026-05-19', '2026-05-20'])).toBe('date');
     });
   });
 
