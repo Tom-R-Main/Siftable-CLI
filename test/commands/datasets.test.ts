@@ -206,6 +206,50 @@ describe('dataset commands', () => {
       expect(result.stdout).toContain('sync_graph_projection');
     });
 
+    it('explains impact from a committed operation without mutating', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/datasets/ds-1/impact')
+        .query({operationId: 'op-1'})
+        .reply(200, {
+          ok: true,
+          impactVersion: 'dataset-impact.v1',
+          datasetId: 'ds-1',
+          source: {type: 'operation', id: 'op-1', status: 'committed', operationType: 'dataset.rows.import'},
+          changed: {
+            fields: [{id: 'fld-title', name: 'title', type: 'text', resolved: true}],
+            rows: {ids: ['row-1'], knownCount: 1},
+          },
+          stale: {
+            formulas: [],
+            views: [{id: 'view-1', name: 'Grid', stale: true}],
+            graph: {stale: true},
+            materializedDatasets: [],
+            qualityWarnings: [{stale: true, reason: 'Dataset quality warnings may change when fields or rows change.'}],
+          },
+          recommendedActions: [{name: 'run_quality_check', reason: 'Quality warnings may have changed.'}],
+          mutates: false,
+        })
+        .install();
+
+      const result = await runCommand([
+        'datasets',
+        'impact',
+        'ds-1',
+        '--operation',
+        'op-1',
+        '--json',
+        '--token',
+        'exf_pat_test',
+      ]);
+
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.mutates).toBe(false);
+      expect(parsed.source).toMatchObject({type: 'operation', id: 'op-1'});
+      expect(parsed.changed.rows.knownCount).toBe(1);
+      expect(parsed.stale.views[0]).toMatchObject({id: 'view-1', stale: true});
+      expect(parsed.recommendedActions[0].name).toBe('run_quality_check');
+    });
+
     it('requires exactly one impact source', async () => {
       const result = await runCommand(['datasets', 'impact', 'ds-1', '--token', 'exf_pat_test']);
       expect(result.exitCode).not.toBe(0);
