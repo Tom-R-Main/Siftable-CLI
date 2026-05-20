@@ -96,6 +96,55 @@ describe('dataset commands', () => {
     });
   });
 
+  describe('datasets contract', () => {
+    it('shows a dataset capability contract', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/datasets/ds-1/contract')
+        .query({template: 'sources', resolve: 'source id'})
+        .reply(200, {
+          ok: true,
+          contractVersion: 'dataset-contract.v1',
+          datasetId: 'ds-1',
+          dataset: {id: 'ds-1', title: 'Sources', rowCount: 2},
+          lifecycle: {kind: 'research-run'},
+          capabilities: {
+            import: 'diff-first',
+            mutate: 'operation-logged',
+            diffPlans: true,
+            formulas: {fieldCount: 0},
+            graph: {projection: 'not_configured'},
+          },
+          schema: {
+            fields: [
+              {id: 'fld-1', name: 'source_id', type: 'text', required: true, unique: true, capabilities: {editable: true}},
+            ],
+          },
+          safeOperations: [{name: 'datasets.profile'}],
+          dangerousOperations: [{name: 'datasets.delete'}],
+          fieldResolution: {
+            requested: [{input: 'source id', fieldName: 'source_id', strategy: 'normalized_name_match', confidence: 0.93}],
+          },
+        })
+        .install();
+
+      const result = await runCommand([
+        'datasets',
+        'contract',
+        'ds-1',
+        '--template',
+        'sources',
+        '--resolve',
+        'source id',
+        '--token',
+        'exf_pat_test',
+      ]);
+
+      expect(result.stdout).toContain('dataset-contract.v1');
+      expect(result.stdout).toContain('source_id');
+      expect(result.stdout).toContain('normalized_name_match');
+    });
+  });
+
   describe('datasets delete', () => {
     it('requires confirmation in non-interactive mode', async () => {
       const result = await runCommand([
