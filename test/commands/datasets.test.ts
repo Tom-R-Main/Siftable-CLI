@@ -116,6 +116,53 @@ describe('dataset commands', () => {
     });
   });
 
+  describe('datasets analyze', () => {
+    it('sends operational mode and renders decision signals', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/datasets/ds-1/analyze')
+        .body((body) => {
+          const input = body as any;
+          return input.analysisMode === 'operational'
+            && input.signalLimit === 8
+            && input.maxInsights === 4;
+        })
+        .reply(200, {
+          datasetId: 'ds-1',
+          summary: { title: 'Operational Notes', rowCount: 2, fieldCount: 4 },
+          insights: [{ claim: 'Dataset Operational Notes contains 2 rows and 4 fields.' }],
+          signals: [{
+            type: 'blocked_item',
+            title: 'Blocked procurement or security item',
+            severity: 'high',
+            claim: '1 row mentions procurement/security work that is blocked or waiting on approval.',
+            evidenceRows: [{ rowId: 'row-1', sourceId: 'security-1', fields: { source_id: 'security-1' } }],
+            recommendedNextAction: 'Escalate the blocker.',
+            confidence: 0.86,
+          }],
+          generatedAt: '2026-05-22T00:00:00.000Z',
+        })
+        .install();
+
+      const result = await runCommand([
+        'datasets',
+        'analyze',
+        'ds-1',
+        '--mode',
+        'operational',
+        '--signal-limit',
+        '8',
+        '--max-insights',
+        '4',
+        '--token',
+        'exf_pat_test',
+      ]);
+
+      expect(result.stdout).toContain('Blocked procurement or security item');
+      expect(result.stdout).toContain('Next action: Escalate the blocker.');
+      expect(result.stdout).toContain('Evidence: security-1');
+    });
+  });
+
   describe('datasets contract', () => {
     it('shows a dataset capability contract', async () => {
       mockFetch()
@@ -544,6 +591,99 @@ describe('dataset commands', () => {
 
       expect(result.exitCode).not.toBe(0);
       expect(result.error?.message).toContain('Use --yes');
+    });
+
+    it('tags newly created scratch imports with lifecycle metadata', async () => {
+      const file = join(dir, 'audit.jsonl');
+      writeFileSync(file, '{"source_id":"s1","title":"Source 1"}\n');
+
+      mockFetch()
+        .on('POST', '/api/v1/datasets')
+        .body((body) => {
+          const input = body as any;
+          return input.title === 'Audit import'
+            && input.metadata.audit === true
+            && input.metadata.lifecycle.kind === 'scratch'
+            && input.metadata.lifecycle.tags.includes('benchmark')
+            && input.metadata.lifecycle.tags.includes('scratch')
+            && input.metadata.lifecycle.runId === 'audit-1'
+            && typeof input.metadata.lifecycle.expiresAt === 'string';
+        })
+        .reply(201, {dataset: {id: 'ds-audit', title: 'Audit import'}})
+        .on('POST', '/api/v1/datasets/ds-audit/import')
+        .body((body) => {
+          const input = body as any;
+          return input.template === 'sources'
+            && input.upsertBy === 'source_id'
+            && input.rows[0].fields.source_id === 's1';
+        })
+        .reply(200, {
+          ok: true,
+          dryRun: false,
+          datasetId: 'ds-audit',
+          template: 'sources',
+          upsertBy: 'source_id',
+          summary: {create: 1, update: 0, skip: 0, invalid: 0, warning: 0},
+          errors: [],
+          warnings: [],
+        })
+        .install();
+
+      const result = await runCommand([
+        'datasets',
+        'import',
+        file,
+        '--title',
+        'Audit import',
+        '--template',
+        'sources',
+        '--upsert-by',
+        'source_id',
+        '--scratch',
+        '--tags',
+        'benchmark',
+        '--run-id',
+        'audit-1',
+        '--ttl',
+        '7d',
+        '--metadata',
+        '{"audit":true}',
+        '--yes',
+        '--json',
+        '--token',
+        'exf_pat_test',
+      ]);
+
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.datasetId).toBe('ds-audit');
+    });
+
+    it('fails invalid new dataset template imports before creating a dataset', async () => {
+      const file = join(dir, 'sources.csv');
+      writeFileSync(file, 'title\nSource without ID\n');
+
+      mockFetch().install();
+
+      const result = await runCommand([
+        'datasets',
+        'import',
+        file,
+        '--template',
+        'sources',
+        '--upsert-by',
+        'source_id',
+        '--yes',
+        '--json',
+        '--token',
+        'exf_pat_test',
+      ]);
+
+      expect(result.exitCode).not.toBe(0);
+      const message = result.error?.message ?? JSON.parse(result.stdout).error.message;
+      expect(message).toContain('missing required field');
+      expect(message).toContain('source_id');
+      expect(message).toContain('sift datasets create');
+      expect(global.fetch).not.toHaveBeenCalled();
     });
 
     it('does not infer source-style identifiers as dates', () => {

@@ -6,6 +6,23 @@ import {DatasetDiffPlan} from '../../lib/dataset-diff-plan.js';
 import {renderDatasetImportResult} from '../../lib/dataset-import-render.js';
 import {renderDetail} from '../../lib/output.js';
 
+const TEMPLATE_OPTIONS = [
+  'sources',
+  'people',
+  'events',
+  'claims',
+  'evidence_sources',
+  'evidence_source_fragments',
+  'evidence_claims',
+  'evidence_people',
+  'evidence_organizations',
+  'evidence_places',
+  'evidence_artifacts',
+  'evidence_events',
+  'evidence_relationships',
+  'evidence_contradictions',
+];
+
 export default class DatasetsDiff extends BaseCommand {
   static description = 'Preview dataset row changes from a CSV, JSON, or JSONL file';
 
@@ -18,7 +35,7 @@ export default class DatasetsDiff extends BaseCommand {
     'from-file': Flags.string({description: 'Path to CSV, JSON, or JSONL rows to compare', required: true}),
     template: Flags.string({
       description: 'Built-in template name',
-      options: ['sources', 'people', 'events', 'claims'],
+      options: TEMPLATE_OPTIONS,
     }),
     'upsert-by': Flags.string({description: 'Field name used to match existing rows'}),
     'batch-size': Flags.integer({description: 'Records per backend batch', default: 100}),

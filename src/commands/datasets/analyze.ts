@@ -12,6 +12,8 @@ export default class DatasetsAnalyze extends BaseCommand {
     ...BaseCommand.baseFlags,
     'focus-fields': Flags.string({description: 'Comma-separated field names to focus analysis on'}),
     'max-insights': Flags.integer({description: 'Max insights to generate', default: 5}),
+    mode: Flags.string({description: 'Analysis mode', options: ['descriptive', 'operational']}),
+    'signal-limit': Flags.integer({description: 'Max decision signals to return'}),
     filters: Flags.string({description: 'JSON array of filters'}),
   };
 
@@ -21,6 +23,8 @@ export default class DatasetsAnalyze extends BaseCommand {
 
     const options: Record<string, unknown> = {maxInsights: flags['max-insights']};
     if (flags['focus-fields']) options.focusFields = flags['focus-fields'].split(',').map((s) => s.trim());
+    if (flags.mode) options.analysisMode = flags.mode;
+    if (flags['signal-limit']) options.signalLimit = flags['signal-limit'];
     if (flags.filters) options.filters = JSON.parse(flags.filters);
 
     const response = await client.analyzeDataset(args.id, options as any);
@@ -30,6 +34,15 @@ export default class DatasetsAnalyze extends BaseCommand {
     if (!this.jsonEnabled()) {
       for (const insight of (data?.insights ?? [])) {
         this.log(`• ${insight.claim}`);
+      }
+      for (const signal of (data?.signals ?? [])) {
+        const rows = (signal.evidenceRows ?? [])
+          .map((row: any) => row.sourceId || row.sourceRef || row.rowId)
+          .filter(Boolean)
+          .join(', ');
+        this.log(`! ${signal.title}: ${signal.claim}`);
+        this.log(`  Next action: ${signal.recommendedNextAction}`);
+        if (rows) this.log(`  Evidence: ${rows}`);
       }
     }
 

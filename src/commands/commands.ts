@@ -23,6 +23,7 @@ const TOPICS = [
   {topic: 'skills', description: 'Installable Siftable skillpacks'},
   {topic: 'recipes', description: 'Built-in research workflow recipes'},
   {topic: 'research', description: 'Research workflow planning and orchestration'},
+  {topic: 'evidence', description: 'Evidence Graph setup and proof workflow orchestration'},
   {topic: 'doctor', description: 'Local CLI environment diagnostics'},
   {topic: 'capabilities', description: 'Capability readiness map'},
 ];

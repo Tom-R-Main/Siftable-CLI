@@ -2,13 +2,30 @@ import {Args} from '@oclif/core';
 import {BaseCommand} from '../../../lib/base-command.js';
 import {renderDetail, renderTable} from '../../../lib/output.js';
 
+const TEMPLATE_OPTIONS = [
+  'sources',
+  'people',
+  'events',
+  'claims',
+  'evidence_sources',
+  'evidence_source_fragments',
+  'evidence_claims',
+  'evidence_people',
+  'evidence_organizations',
+  'evidence_places',
+  'evidence_artifacts',
+  'evidence_events',
+  'evidence_relationships',
+  'evidence_contradictions',
+];
+
 export default class DatasetsTemplatesShow extends BaseCommand {
   static description = 'Show a built-in dataset template schema';
 
   static args = {
     template: Args.string({
       description: 'Template name',
-      options: ['sources', 'people', 'events', 'claims'],
+      options: TEMPLATE_OPTIONS,
       required: true,
     }),
   };

@@ -88,6 +88,18 @@
       "research": {
         "description": "Research workflow planning and orchestration"
       },
+      "evidence": {
+        "description": "Evidence Graph setup and proof workflow orchestration"
+      },
+      "evidence:diff": {
+        "description": "Evidence Graph diff plan review"
+      },
+      "evidence:sources": {
+        "description": "Evidence Graph source ledger commands"
+      },
+      "evidence:proof": {
+        "description": "Evidence Graph proof reports"
+      },
       "codex": {
         "description": "Codex automation helpers"
       }
