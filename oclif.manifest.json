@@ -15868,7 +15868,7 @@
       "aliases": [],
       "args": {
         "id": {
-          "description": "Persisted diff plan ID",
+          "description": "Persisted diff plan ID, or local when using --from-file",
           "name": "id",
           "required": true
         }
@@ -15984,6 +15984,13 @@
           "description": "Workspace org ID to scope operations to",
           "helpGroup": "GLOBAL",
           "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "from-file": {
+          "description": "Local diff plan JSON file to explain without API access",
+          "name": "from-file",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"

@@ -580,6 +580,83 @@ describe('evidence commands', () => {
     expect(parsed.timelineFacts[0].id).toBe('temporal_fact:event-public-launch');
   });
 
+  it('explains typed Evidence Graph diff impact from a local diff plan file without API access', async () => {
+    const planFile = join(dir, 'evidence-impact-plan.json');
+    writeFileSync(planFile, JSON.stringify({
+      id: 'plan-local-impact',
+      datasetId: 'evidence-ds',
+      status: 'validated',
+      proposedOperations: [
+        {
+          op: 'row.create',
+          template: 'evidence_sources',
+          rowNumber: 1,
+          fields: {source_id: 'src-founder-memo', title: 'Founder memo'},
+        },
+        {
+          op: 'row.create',
+          template: 'evidence_claims',
+          rowNumber: 2,
+          fields: {
+            claim_id: 'claim-launch-may',
+            claim_text: 'The company launched publicly in May.',
+            source_ref: 'src-founder-memo',
+            source_fragment_ref: 'frag-launch-may',
+          },
+        },
+        {
+          op: 'row.create',
+          template: 'evidence_events',
+          rowNumber: 3,
+          fields: {
+            event_id: 'event-public-launch',
+            title: 'Public launch',
+            claim_refs: ['claim-launch-may'],
+            source_refs: ['src-founder-memo'],
+          },
+        },
+        {
+          op: 'row.create',
+          template: 'evidence_contradictions',
+          rowNumber: 4,
+          fields: {
+            contradiction_id: 'contra-launch-month',
+            claim_refs: ['claim-launch-may', 'claim-april-launch'],
+            summary: 'April pilot and May public launch need review.',
+          },
+        },
+      ],
+    }));
+
+    const result = await runCommand([
+      'evidence',
+      'diff',
+      'impact',
+      'local',
+      '--from-file',
+      planFile,
+      '--json',
+    ]);
+
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.impact.impactVersion).toBe('evidence-impact.local.v1');
+    expect(parsed.evidenceSummary).toMatchObject({
+      sources: 1,
+      claims: 1,
+      events: 1,
+      contradictions: 1,
+      operations: 4,
+    });
+    expect(parsed.projectionPreview.semanticConsequences).toEqual(expect.arrayContaining([
+      {label: 'Create source', count: 1},
+      {label: 'Propose claim', count: 1},
+      {label: 'Project event', count: 1},
+      {label: 'Flag contradiction', count: 1},
+    ]));
+    expect(parsed.projectionPreview.timelineFacts[0].id).toBe('temporal_fact:event-public-launch');
+  });
+
   it('verifies an Evidence Graph packet and generates JSON and Markdown proof reports', async () => {
     const packet = join(dir, 'packet.json');
     writeFileSync(packet, JSON.stringify({
