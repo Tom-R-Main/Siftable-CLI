@@ -68,10 +68,42 @@ export abstract class BaseCommand extends Command {
       const payload = JSON.parse(error) as Record<string, unknown>;
       const title = typeof payload.title === 'string' ? payload.title : undefined;
       const detail = typeof payload.detail === 'string' ? payload.detail : undefined;
-      const message = [title, detail].filter(Boolean).join(': ') || error;
+      const message = [title, detail].filter(Boolean).join(': ')
+        || (typeof payload.message === 'string' ? payload.message : undefined)
+        || (typeof payload.error === 'string' ? payload.error : undefined)
+        || error;
       return {message, raw: error, payload};
     } catch {
       return {message: error, raw: error};
+    }
+  }
+
+  private apiErrorSuggestions(payload?: Record<string, unknown>): string[] | undefined {
+    switch (payload?.type) {
+      case 'workspace_token_mismatch':
+        return [
+          'Check --workspace or SIFT_WORKSPACE_ID; it must match the workspace bound to this service token.',
+          'Unset SIFT_WORKSPACE_ID to use the workspace service token default when the command does not need an override.',
+        ];
+      case 'insufficient_pat_scope':
+        return [
+          'Create or rotate the workspace service token with the required scope.',
+          'Use tasks:read/tasks:write for task commands and work:read/work:write for work commands.',
+        ];
+      default:
+        return undefined;
+    }
+  }
+
+  private apiErrorMessage(statusCode: number, parsed: {message: string; payload?: Record<string, unknown>}): string {
+    switch (parsed.payload?.type) {
+      case 'workspace_token_mismatch':
+        return `Workspace mismatch: ${parsed.message}`;
+      case 'insufficient_pat_scope':
+        return `Insufficient token scope: ${parsed.message}`;
+      default:
+        if (statusCode === 403) return `Permission denied: ${parsed.message}`;
+        return parsed.message;
     }
   }
 
@@ -102,10 +134,6 @@ export abstract class BaseCommand extends Command {
         this.error(`Authentication failed: ${parsed.message}\nRun \`sift auth login\` to authenticate.`);
       }
 
-      if (response.statusCode === 403) {
-        this.error(`Permission denied: ${parsed.message}`);
-      }
-
       if (response.statusCode === 404) {
         this.error(`Not found: ${parsed.message}`);
       }
@@ -119,11 +147,18 @@ export abstract class BaseCommand extends Command {
           code?: string;
           statusCode?: number;
           api?: Record<string, unknown>;
+          suggestions?: string[];
         };
+        error.message = this.apiErrorMessage(response.statusCode, parsed);
         error.code = parsed.payload.type as string | undefined;
         error.statusCode = response.statusCode;
         error.api = parsed.payload;
+        error.suggestions = this.apiErrorSuggestions(parsed.payload);
         this.error(error, {exit: response.statusCode});
+      }
+
+      if (response.statusCode === 403) {
+        this.error(`Permission denied: ${parsed.message}`);
       }
 
       const error = new Error(`API error (${response.statusCode}): ${parsed.message}`) as Error & {

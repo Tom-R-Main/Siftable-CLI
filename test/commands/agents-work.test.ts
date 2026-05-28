@@ -173,6 +173,47 @@ describe('work commands', () => {
     expect((global.fetch as jest.Mock).mock.calls[0][1].headers['X-Workspace-Id']).toBe('org-001');
   });
 
+  it('explains workspace token mismatches clearly', async () => {
+    mockFetch()
+      .on('GET', '/api/v1/work-items')
+      .query(true)
+      .reply(403, {
+        type: 'workspace_token_mismatch',
+        title: 'Forbidden',
+        detail: 'Workspace service token is bound to org-001 but the request used org-002.',
+      })
+      .install();
+
+    const result = await runCommand(['work', 'list', '--workspace', 'org-002', '--token', 'sift_pat_test', '--json']);
+    const json = JSON.parse(result.stdout);
+
+    expect(result.exitCode).toBe(1);
+    expect(json.error.message).toContain('Workspace mismatch');
+    expect(json.error.code).toBe('workspace_token_mismatch');
+    expect(json.error.suggestions.join(' ')).toContain('SIFT_WORKSPACE_ID');
+  });
+
+  it('explains missing work scopes clearly', async () => {
+    mockFetch()
+      .on('GET', '/api/v1/work-items')
+      .query(true)
+      .reply(403, {
+        type: 'insufficient_pat_scope',
+        title: 'Insufficient permissions',
+        detail: 'This token is missing required scope work:read.',
+        extra: {required: 'work:read', available: ['org:read']},
+      })
+      .install();
+
+    const result = await runCommand(['work', 'list', '--workspace', 'org-001', '--token', 'sift_pat_test', '--json']);
+    const json = JSON.parse(result.stdout);
+
+    expect(result.exitCode).toBe(1);
+    expect(json.error.message).toContain('Insufficient token scope');
+    expect(json.error.code).toBe('insufficient_pat_scope');
+    expect(json.error.suggestions.join(' ')).toContain('work:read/work:write');
+  });
+
   it('redacts claim tokens from work get JSON output', async () => {
     mockFetch()
       .on('GET', '/api/v1/work-items/work-001')
