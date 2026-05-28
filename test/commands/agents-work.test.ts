@@ -108,6 +108,34 @@ describe('work commands', () => {
     expect(json.workItem.taskId).toBe('task-001');
   });
 
+  it('sends workspace context when creating executable work', async () => {
+    mockFetch()
+      .on('POST', '/api/v1/work-items')
+      .body((body) => (body as any).title === 'Workspace work')
+      .reply(201, {
+        workItem: {
+          id: 'work-workspace',
+          title: 'Workspace work',
+          status: 'queued',
+        },
+      })
+      .install();
+
+    await runCommand([
+      'work',
+      'create',
+      '--workspace',
+      'org-001',
+      '--title',
+      'Workspace work',
+      '--token',
+      'sift_pat_test',
+      '--json',
+    ]);
+
+    expect((global.fetch as jest.Mock).mock.calls[0][1].headers['X-Workspace-Id']).toBe('org-001');
+  });
+
   it('lists work items as JSON', async () => {
     mockFetch()
       .on('GET', '/api/v1/work-items')
@@ -131,6 +159,18 @@ describe('work commands', () => {
     expect(json[0].title).toBe('Run verification');
     expect(json[0].claimToken).toBeUndefined();
     expect(result.stdout).not.toContain('should-not-render');
+  });
+
+  it('sends workspace context when listing executable work', async () => {
+    mockFetch()
+      .on('GET', '/api/v1/work-items')
+      .query(true)
+      .reply(200, {workItems: []})
+      .install();
+
+    await runCommand(['work', 'list', '--workspace', 'org-001', '--token', 'sift_pat_test', '--json']);
+
+    expect((global.fetch as jest.Mock).mock.calls[0][1].headers['X-Workspace-Id']).toBe('org-001');
   });
 
   it('redacts claim tokens from work get JSON output', async () => {
