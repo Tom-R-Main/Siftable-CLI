@@ -21,6 +21,40 @@ describe('auth commands', () => {
       expect(json.stored).toBe(true);
     });
 
+    it('starts device flow on the canonical Siftable API host', async () => {
+      global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(typeof input === 'string' ? input : input.toString());
+        if (url.pathname === '/auth/device') {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              device_code: 'device-123',
+              user_code: 'ABCD-EFGH',
+              verification_uri: 'https://siftable.io/app/device',
+              verification_uri_complete: 'https://siftable.io/app/device?code=ABCD-EFGH',
+              expires_in: 900,
+              interval: 0,
+            }),
+          } as Response;
+        }
+
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ access_token: 'sift_pat_device', token_type: 'Bearer' }),
+        } as Response;
+      }) as jest.Mock;
+
+      const result = await runCommand(['auth', 'login', '--no-input']);
+
+      expect(result.exitCode).toBe(0);
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://siftable.io/auth/device',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+
   });
 
   describe('auth status', () => {

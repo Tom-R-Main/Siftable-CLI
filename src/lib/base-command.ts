@@ -9,6 +9,8 @@ function envValue(primary: string, legacy: string): string | undefined {
   return process.env[primary] || process.env[legacy];
 }
 
+export const DEFAULT_API_URL = 'https://siftable.io';
+
 export abstract class BaseCommand extends Command {
   static enableJsonFlag = true;
 
@@ -19,7 +21,7 @@ export abstract class BaseCommand extends Command {
     }),
     'api-url': Flags.string({
       description: 'API base URL',
-      default: 'https://execufunction.com',
+      default: DEFAULT_API_URL,
       helpGroup: 'GLOBAL',
     }),
     'no-input': Flags.boolean({
@@ -39,7 +41,7 @@ export abstract class BaseCommand extends Command {
     }
 
     return new SiftClient({
-      apiUrl: flags['api-url'] || envValue('SIFT_API_URL', 'EXF_API_URL') || 'https://execufunction.com',
+      apiUrl: flags['api-url'] || envValue('SIFT_API_URL', 'EXF_API_URL') || DEFAULT_API_URL,
       pat: token,
       workspaceId: flags.workspace || envValue('SIFT_WORKSPACE_ID', 'EXF_WORKSPACE_ID'),
     });

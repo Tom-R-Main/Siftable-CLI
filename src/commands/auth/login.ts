@@ -1,6 +1,6 @@
 import {Flags} from '@oclif/core';
 import {execSync} from 'node:child_process';
-import {BaseCommand} from '../../lib/base-command.js';
+import {BaseCommand, DEFAULT_API_URL} from '../../lib/base-command.js';
 import {storeToken} from '../../lib/auth.js';
 import {getConfigDir} from '../../lib/config.js';
 
@@ -76,7 +76,7 @@ export default class AuthLogin extends BaseCommand {
     }
 
     // Device flow
-    const apiUrl = flags['api-url'] || process.env.SIFT_API_URL || process.env.EXF_API_URL || 'https://execufunction.com';
+    const apiUrl = flags['api-url'] || process.env.SIFT_API_URL || process.env.EXF_API_URL || DEFAULT_API_URL;
     return this.deviceFlow(apiUrl, flags['no-input'] ?? false);
   }
 

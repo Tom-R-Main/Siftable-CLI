@@ -1,6 +1,6 @@
 import {existsSync, readFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {BaseCommand} from '../lib/base-command.js';
+import {BaseCommand, DEFAULT_API_URL} from '../lib/base-command.js';
 import {resolveToken} from '../lib/auth.js';
 import {getConfigDir} from '../lib/config.js';
 import {renderDetail, renderTable} from '../lib/output.js';
@@ -41,7 +41,7 @@ export default class Doctor extends BaseCommand {
     const hasFlagToken = Boolean(flags.token);
     const hasSavedToken = Boolean(resolveToken());
     const tokenSource = hasFlagToken ? 'flag' : (envTokenSource || (hasSavedToken ? `config file (${getConfigDir()}/auth.json)` : null));
-    const apiUrl = flags['api-url'] || envValue('SIFT_API_URL', 'EXF_API_URL') || 'https://execufunction.com';
+    const apiUrl = flags['api-url'] || envValue('SIFT_API_URL', 'EXF_API_URL') || DEFAULT_API_URL;
     const envWorkspaceSource = process.env.SIFT_WORKSPACE_ID ? 'SIFT_WORKSPACE_ID' : (process.env.EXF_WORKSPACE_ID ? 'EXF_WORKSPACE_ID' : undefined);
     const workspace = flags.workspace || envValue('SIFT_WORKSPACE_ID', 'EXF_WORKSPACE_ID') || null;
     const workspaceSource = flags.workspace ? 'flag' : (workspace ? envWorkspaceSource || null : null);
