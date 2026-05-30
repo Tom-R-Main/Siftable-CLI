@@ -1,6 +1,6 @@
 import path from 'path';
 
-const API_URL = 'https://execufunction.com';
+const API_URL = 'https://siftable.io';
 
 /**
  * Mock global.fetch to intercept API calls.

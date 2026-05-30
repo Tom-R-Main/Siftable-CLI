@@ -1,6 +1,6 @@
 # @siftable/cli
 
-Command-line interface for [Siftable](https://execufunction.com) — an automation harness for human planning tasks, executable agent work queues, calendar, knowledge, code indexing, and CRM.
+Command-line interface for [Siftable](https://siftable.io) — an automation harness for human planning tasks, executable agent work queues, calendar, knowledge, code indexing, and CRM.
 
 ## Installation
 
@@ -168,7 +168,7 @@ Users plan commitments with `sift tasks`. Agents execute bounded queue items wit
 | Flag | Env Var | Description |
 |------|---------|-------------|
 | `--token` | `SIFT_TOKEN` | Personal access token |
-| `--api-url` | `SIFT_API_URL` | API base URL (default: `https://execufunction.com`) |
+| `--api-url` | `SIFT_API_URL` | API base URL (default: `https://siftable.io`) |
 | `--json` | — | Output raw JSON instead of tables |
 | `--no-input` | — | Disable interactive prompts |
 
@@ -196,7 +196,7 @@ sift tasks complete "$TASK_ID"
 | Variable | Description |
 |----------|-------------|
 | `SIFT_TOKEN` | Personal access token for authentication |
-| `SIFT_API_URL` | API base URL (default: `https://execufunction.com`) |
+| `SIFT_API_URL` | API base URL (default: `https://siftable.io`) |
 | `SIFT_WORKSPACE_ID` | Workspace org ID to scope operations |
 
 Legacy `EXF_TOKEN`, `EXF_API_URL`, `EXF_WORKSPACE_ID`, and `exf_pat_` tokens remain supported while older automation configs migrate.
