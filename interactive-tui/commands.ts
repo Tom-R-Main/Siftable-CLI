@@ -57,6 +57,27 @@ export interface InteractiveModelChoice {
   defaultEffort?: string;
 }
 
+export type ExplorerModeSetting = "auto" | "off" | "deterministic" | "scout" | "fanout";
+export type ExplorerBudgetSetting = "cheap" | "normal" | "deep";
+
+export interface ExplorerSettings {
+  mode: ExplorerModeSetting;
+  modelId: string;
+  budget: ExplorerBudgetSetting;
+}
+
+export interface ExplorerModeChoice {
+  id: ExplorerModeSetting;
+  label: string;
+  description: string;
+}
+
+export interface ExplorerBudgetChoice {
+  id: ExplorerBudgetSetting;
+  label: string;
+  description: string;
+}
+
 // gpt-5.x (Codex + OpenRouter) expose low/med/high/xhigh. Anthropic and Gemini
 // expose low/med/high (mapped to thinking budgets on the Anthropic path).
 const GPT5_EFFORTS = ["low", "medium", "high", "xhigh"];
@@ -219,6 +240,39 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
   },
 ];
 
+export const EXPLORER_MODE_CHOICES: ExplorerModeChoice[] = [
+  {id: "auto", label: "Auto", description: "recommended repo preflight"},
+  {id: "off", label: "Off", description: "skip Explorer"},
+  {id: "deterministic", label: "Deterministic only", description: "fastest, no scout model"},
+  {id: "scout", label: "Scout", description: "one read-only model helper"},
+  {id: "fanout", label: "Fan-out", description: "parallel read-only role scouts"},
+];
+
+export const EXPLORER_BUDGET_CHOICES: ExplorerBudgetChoice[] = [
+  {id: "cheap", label: "Cheap", description: "smaller model budget"},
+  {id: "normal", label: "Normal", description: "balanced default"},
+  {id: "deep", label: "Deep", description: "more reads and time"},
+];
+
+export const DEFAULT_EXPLORER_SETTINGS: ExplorerSettings = {
+  mode: "auto",
+  modelId: "openrouter/google/gemini-3.1-flash-lite",
+  budget: "normal",
+};
+
+export function explorerModelChoices(): InteractiveModelChoice[] {
+  return INTERACTIVE_MODEL_CHOICES.filter((choice) => choice.provider !== "codex");
+}
+
+export function explorerSettingsSummary(settings: ExplorerSettings): string {
+  const model = explorerModelChoices().find((choice) => choice.id === settings.modelId);
+  return [
+    `mode ${settings.mode}`,
+    model ? `model ${model.label}` : `model ${settings.modelId}`,
+    `budget ${settings.budget}`,
+  ].join(" · ");
+}
+
 /** Resolve a model choice by id/alias/label, or null. */
 export function findModelChoice(raw: string): InteractiveModelChoice | null {
   return resolveModelChoice(raw);
@@ -291,6 +345,37 @@ function effortSuffix(effort?: string): string {
 function missingKeyMessage(choice: InteractiveModelChoice): string | null {
   if (!choice.requiredEnv || process.env[choice.requiredEnv]) return null;
   return `${choice.label} needs ${choice.requiredEnv}. Run: ${choice.keyHint ?? `/key ${choice.provider} <key>`}`;
+}
+
+export function applyExplorerSettings(settings: ExplorerSettings): {ok: boolean; message: string} {
+  const model = explorerModelChoices().find((choice) => choice.id === settings.modelId);
+  if (!model) return {ok: false, message: `Explorer model not found: ${settings.modelId}`};
+  const keyMessage = missingKeyMessage(model);
+  if (keyMessage) return {ok: false, message: keyMessage};
+
+  process.env.SIFT_EXPLORER_BUDGET = settings.budget;
+  process.env.SIFT_EXPLORER_SCOUT_PROVIDER = model.provider;
+  process.env.SIFT_EXPLORER_SCOUT_MODEL = model.model;
+
+  if (settings.mode === "off") {
+    process.env.SIFT_EXPLORER = "off";
+    process.env.SIFT_EXPLORER_SCOUT = "0";
+    process.env.SIFT_EXPLORER_FANOUT = "0";
+  } else if (settings.mode === "scout") {
+    process.env.SIFT_EXPLORER = "on";
+    process.env.SIFT_EXPLORER_SCOUT = "1";
+    process.env.SIFT_EXPLORER_FANOUT = "0";
+  } else if (settings.mode === "fanout") {
+    process.env.SIFT_EXPLORER = "on";
+    process.env.SIFT_EXPLORER_SCOUT = "0";
+    process.env.SIFT_EXPLORER_FANOUT = "1";
+  } else {
+    process.env.SIFT_EXPLORER = "on";
+    process.env.SIFT_EXPLORER_SCOUT = "0";
+    process.env.SIFT_EXPLORER_FANOUT = "0";
+  }
+
+  return {ok: true, message: `Explorer -> ${explorerSettingsSummary(settings)}`};
 }
 
 async function selectCodexModel(ctx: InteractiveCommandContext, choice: InteractiveModelChoice, effort?: string): Promise<void> {
@@ -602,6 +687,17 @@ export const interactiveCommands: InteractiveCommand[] = [
         return;
       }
       await selectModel(ctx, id, effort);
+    },
+  },
+  {
+    name: "explorer",
+    aliases: ["explore"],
+    description: "configure repo Explorer",
+    run: (ctx) => {
+      ctx.push({
+        role: "system",
+        text: "Press Enter on /explorer to open the picker (↑/↓ navigate · Enter select · Esc close).",
+      });
     },
   },
   {

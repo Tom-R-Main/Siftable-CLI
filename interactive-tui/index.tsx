@@ -40,10 +40,17 @@ import { LocalControlClient } from "./localControlClient";
 import {SiftClient} from "@siftable/mcp-server/dist/exfClient.js";
 import {
   applyModelChoice,
+  applyExplorerSettings,
   commandSuggestions,
+  DEFAULT_EXPLORER_SETTINGS,
+  EXPLORER_BUDGET_CHOICES,
+  EXPLORER_MODE_CHOICES,
+  explorerModelChoices,
+  explorerSettingsSummary,
   runInteractiveCommand,
   INTERACTIVE_MODEL_CHOICES,
   type CommandMessage,
+  type ExplorerSettings,
 } from "./commands";
 import { copyTextToClipboard, readClipboardContent } from "./clipboard";
 import { analyzePaste, type PasteAnalysis } from "./composerPolicy";
@@ -149,6 +156,11 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
+function wrapIndex(index: number, length: number): number {
+  if (length <= 0) return 0;
+  return ((index % length) + length) % length;
+}
+
 function imageMimeFromPath(path: string): string {
   switch (extname(path).toLowerCase()) {
     case ".jpg":
@@ -197,10 +209,14 @@ function App() {
   const [queued, setQueued] = createSignal<QueuedPrompt[]>([]);
   const [awaitingLogin, setAwaitingLogin] = createSignal(false);
   const [showExplorerDetails, setShowExplorerDetails] = createSignal(false);
+  const [explorerSettings, setExplorerSettings] = createSignal<ExplorerSettings>({...DEFAULT_EXPLORER_SETTINGS});
   const [slashSel, setSlashSel] = createSignal(0);
   // Interactive model picker: stage "model" (↑/↓) → stage "effort" (←/→).
   const [picker, setPicker] = createSignal<
     { stage: "model" | "effort"; modelIdx: number; effortIdx: number } | null
+  >(null);
+  const [explorerPicker, setExplorerPicker] = createSignal<
+    { stage: "menu" | "mode" | "model" | "budget"; rowIdx: number; modeIdx: number; modelIdx: number; budgetIdx: number } | null
   >(null);
   const [transcriptSelected, setTranscriptSelected] = createSignal(false);
   // A1 write/edit approval: set by the confirm gate while a mutation waits.
@@ -637,6 +653,7 @@ function App() {
 
   function openModelPicker() {
     setText("");
+    setExplorerPicker(null);
     // Open on the currently active model when we can match it.
     const cur = model();
     const found = INTERACTIVE_MODEL_CHOICES.findIndex((c) => c.model === cur || c.id === cur);
@@ -663,12 +680,55 @@ function App() {
     await applyModelChoice(commandCtx(), choice, effort);
   }
 
+  function explorerPickerStateFor(settings = explorerSettings()) {
+    const models = explorerModelChoices();
+    return {
+      stage: "menu" as const,
+      rowIdx: 0,
+      modeIdx: Math.max(0, EXPLORER_MODE_CHOICES.findIndex((choice) => choice.id === settings.mode)),
+      modelIdx: Math.max(0, models.findIndex((choice) => choice.id === settings.modelId)),
+      budgetIdx: Math.max(0, EXPLORER_BUDGET_CHOICES.findIndex((choice) => choice.id === settings.budget)),
+    };
+  }
+
+  function openExplorerPicker() {
+    setText("");
+    setPicker(null);
+    setExplorerPicker(explorerPickerStateFor());
+  }
+
+  function settingsFromExplorerPicker(p: NonNullable<ReturnType<typeof explorerPicker>>): ExplorerSettings {
+    const model = explorerModelChoices()[p.modelIdx] ?? explorerModelChoices()[0];
+    return {
+      mode: EXPLORER_MODE_CHOICES[p.modeIdx]?.id ?? DEFAULT_EXPLORER_SETTINGS.mode,
+      modelId: model?.id ?? DEFAULT_EXPLORER_SETTINGS.modelId,
+      budget: EXPLORER_BUDGET_CHOICES[p.budgetIdx]?.id ?? DEFAULT_EXPLORER_SETTINGS.budget,
+    };
+  }
+
+  function previewExplorerSettings(p: NonNullable<ReturnType<typeof explorerPicker>>): ExplorerSettings {
+    return settingsFromExplorerPicker(p);
+  }
+
+  function applyExplorerPicker(p: NonNullable<ReturnType<typeof explorerPicker>>) {
+    const next = settingsFromExplorerPicker(p);
+    const result = applyExplorerSettings(next);
+    if (result.ok) setExplorerSettings(next);
+    push({ role: "system", text: result.message });
+    setStatus(result.ok ? explorerSettingsSummary(next) : result.message);
+    setExplorerPicker(null);
+  }
+
   async function handleSlash(cmd: string) {
     // Bare `/model` (no id) opens the interactive picker instead of dumping a
     // list — selection (model + reasoning effort) happens with the arrow keys.
     const bare = cmd.slice(1).trim().toLowerCase();
     if (bare === "model" || bare === "models") {
       openModelPicker();
+      return;
+    }
+    if (bare === "explorer" || bare === "explore") {
+      openExplorerPicker();
       return;
     }
     await runInteractiveCommand(commandCtx(), cmd);
@@ -727,6 +787,62 @@ function App() {
           setPicker({ ...pk, effortIdx: Math.min(efforts.length - 1, pk.effortIdx + 1) });
         else if (isEnter) void confirmPicker(INTERACTIVE_MODEL_CHOICES[pk.modelIdx], efforts[pk.effortIdx]);
         return;
+      }
+
+      const ep = explorerPicker();
+      if (ep) {
+        key.preventDefault?.();
+        key.stopPropagation?.();
+        const isEnter =
+          key.name === "return" || key.name === "enter" || key.sequence === "\r" || key.sequence === "\n";
+        const menuRows = 5;
+        const models = explorerModelChoices();
+        if (key.name === "escape") {
+          if (ep.stage === "menu") setExplorerPicker(null);
+          else setExplorerPicker({ ...ep, stage: "menu" });
+          return;
+        }
+        if (ep.stage === "menu") {
+          if (key.name === "up") setExplorerPicker({ ...ep, rowIdx: Math.max(0, ep.rowIdx - 1) });
+          else if (key.name === "down") setExplorerPicker({ ...ep, rowIdx: Math.min(menuRows - 1, ep.rowIdx + 1) });
+          else if (key.name === "left" || key.name === "right") {
+            const delta = key.name === "right" ? 1 : -1;
+            if (ep.rowIdx === 0) setExplorerPicker({ ...ep, modeIdx: wrapIndex(ep.modeIdx + delta, EXPLORER_MODE_CHOICES.length) });
+            else if (ep.rowIdx === 1) setExplorerPicker({ ...ep, modelIdx: wrapIndex(ep.modelIdx + delta, models.length) });
+            else if (ep.rowIdx === 2) setExplorerPicker({ ...ep, budgetIdx: wrapIndex(ep.budgetIdx + delta, EXPLORER_BUDGET_CHOICES.length) });
+          } else if (isEnter) {
+            if (ep.rowIdx === 0) setExplorerPicker({ ...ep, stage: "mode" });
+            else if (ep.rowIdx === 1) setExplorerPicker({ ...ep, stage: "model" });
+            else if (ep.rowIdx === 2) setExplorerPicker({ ...ep, stage: "budget" });
+            else if (ep.rowIdx === 3) applyExplorerPicker(ep);
+            else if (ep.rowIdx === 4) {
+              const reset = explorerPickerStateFor(DEFAULT_EXPLORER_SETTINGS);
+              setExplorerSettings({...DEFAULT_EXPLORER_SETTINGS});
+              const result = applyExplorerSettings(DEFAULT_EXPLORER_SETTINGS);
+              push({ role: "system", text: result.message });
+              setExplorerPicker(reset);
+            }
+          }
+          return;
+        }
+        if (ep.stage === "mode") {
+          if (key.name === "up") setExplorerPicker({ ...ep, modeIdx: Math.max(0, ep.modeIdx - 1) });
+          else if (key.name === "down") setExplorerPicker({ ...ep, modeIdx: Math.min(EXPLORER_MODE_CHOICES.length - 1, ep.modeIdx + 1) });
+          else if (isEnter) setExplorerPicker({ ...ep, stage: "menu" });
+          return;
+        }
+        if (ep.stage === "model") {
+          if (key.name === "up") setExplorerPicker({ ...ep, modelIdx: Math.max(0, ep.modelIdx - 1) });
+          else if (key.name === "down") setExplorerPicker({ ...ep, modelIdx: Math.min(models.length - 1, ep.modelIdx + 1) });
+          else if (isEnter) setExplorerPicker({ ...ep, stage: "menu" });
+          return;
+        }
+        if (ep.stage === "budget") {
+          if (key.name === "up") setExplorerPicker({ ...ep, budgetIdx: Math.max(0, ep.budgetIdx - 1) });
+          else if (key.name === "down") setExplorerPicker({ ...ep, budgetIdx: Math.min(EXPLORER_BUDGET_CHOICES.length - 1, ep.budgetIdx + 1) });
+          else if (isEnter) setExplorerPicker({ ...ep, stage: "menu" });
+          return;
+        }
       }
 
       const isCmd = Boolean(key.meta || (key as KeyEvent & { super?: boolean }).super);
@@ -1081,7 +1197,87 @@ function App() {
         }}
       </Show>
 
-      <Show when={!picker() && slashMatches().length > 0}>
+      <Show when={explorerPicker()}>
+        {(p) => {
+          const models = explorerModelChoices();
+          const preview = () => previewExplorerSettings(p());
+          const rows = () => [
+            {label: "Mode", value: EXPLORER_MODE_CHOICES[p().modeIdx]?.label ?? "-", desc: EXPLORER_MODE_CHOICES[p().modeIdx]?.description ?? ""},
+            {label: "Scout model", value: models[p().modelIdx]?.label ?? "-", desc: models[p().modelIdx]?.description ?? ""},
+            {label: "Budget", value: EXPLORER_BUDGET_CHOICES[p().budgetIdx]?.label ?? "-", desc: EXPLORER_BUDGET_CHOICES[p().budgetIdx]?.description ?? ""},
+            {label: "Apply for next turn", value: "", desc: explorerSettingsSummary(preview())},
+            {label: "Reset", value: "", desc: explorerSettingsSummary(DEFAULT_EXPLORER_SETTINGS)},
+          ];
+          const title = () => {
+            if (p().stage === "mode") return "Explorer mode    ↑/↓ choose · Enter save · Esc back";
+            if (p().stage === "model") return "Explorer scout model    ↑/↓ choose · Enter save · Esc back";
+            if (p().stage === "budget") return "Explorer budget    ↑/↓ choose · Enter save · Esc back";
+            return "Explorer    ↑/↓ navigate · ←/→ change · Enter select/apply · Esc close";
+          };
+          return (
+            <box
+              flexDirection="column"
+              flexShrink={0}
+              borderStyle="single"
+              borderColor={theme.accent}
+              backgroundColor={theme.bgMuted}
+              paddingLeft={1}
+              paddingRight={1}
+            >
+              <text fg={theme.accentStrong} selectable={false}>{title()}</text>
+              <Show when={p().stage === "menu"}>
+                <For each={rows()}>
+                  {(row, i) => (
+                    <box width="100%" height={1} backgroundColor={i() === p().rowIdx ? theme.border : theme.bgMuted} flexDirection="row">
+                      <text fg={i() === p().rowIdx ? theme.accentStrong : theme.muted} selectable={false}>
+                        {(i() === p().rowIdx ? "› " : "  ") +
+                          row.label.padEnd(20) +
+                          (row.value ? `${row.value.padEnd(30)} ` : "".padEnd(31)) +
+                          row.desc}
+                      </text>
+                    </box>
+                  )}
+                </For>
+              </Show>
+              <Show when={p().stage === "mode"}>
+                <For each={EXPLORER_MODE_CHOICES}>
+                  {(choice, i) => (
+                    <box width="100%" height={1} backgroundColor={i() === p().modeIdx ? theme.border : theme.bgMuted} flexDirection="row">
+                      <text fg={i() === p().modeIdx ? theme.accentStrong : theme.muted} selectable={false}>
+                        {(i() === p().modeIdx ? "› " : "  ") + choice.label.padEnd(22) + choice.description}
+                      </text>
+                    </box>
+                  )}
+                </For>
+              </Show>
+              <Show when={p().stage === "model"}>
+                <For each={models}>
+                  {(choice, i) => (
+                    <box width="100%" height={1} backgroundColor={i() === p().modelIdx ? theme.border : theme.bgMuted} flexDirection="row">
+                      <text fg={i() === p().modelIdx ? theme.accentStrong : theme.muted} selectable={false}>
+                        {(i() === p().modelIdx ? "› " : "  ") + choice.label.padEnd(34) + choice.description}
+                      </text>
+                    </box>
+                  )}
+                </For>
+              </Show>
+              <Show when={p().stage === "budget"}>
+                <For each={EXPLORER_BUDGET_CHOICES}>
+                  {(choice, i) => (
+                    <box width="100%" height={1} backgroundColor={i() === p().budgetIdx ? theme.border : theme.bgMuted} flexDirection="row">
+                      <text fg={i() === p().budgetIdx ? theme.accentStrong : theme.muted} selectable={false}>
+                        {(i() === p().budgetIdx ? "› " : "  ") + choice.label.padEnd(22) + choice.description}
+                      </text>
+                    </box>
+                  )}
+                </For>
+              </Show>
+            </box>
+          );
+        }}
+      </Show>
+
+      <Show when={!picker() && !explorerPicker() && slashMatches().length > 0}>
         <box
           flexDirection="column"
           flexShrink={0}

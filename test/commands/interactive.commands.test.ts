@@ -1,8 +1,21 @@
-import {runInteractiveCommand, commandSuggestions, type CommandMessage, type InteractiveCommandContext} from '../../interactive-tui/commands';
+import {
+  applyExplorerSettings,
+  DEFAULT_EXPLORER_SETTINGS,
+  explorerModelChoices,
+  runInteractiveCommand,
+  commandSuggestions,
+  type CommandMessage,
+  type InteractiveCommandContext,
+} from '../../interactive-tui/commands';
 import {collectDailyReviewContext} from '../../src/lib/daily-review-context';
 
 function response(data: unknown) {
   return Promise.resolve({statusCode: 200, data});
+}
+
+function restoreEnv(key: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
 }
 
 function buildContext(overrides: Partial<InteractiveCommandContext> = {}) {
@@ -67,6 +80,7 @@ describe('interactive command registry', () => {
       'help',
       'status',
       'copy',
+      'explorer',
       'queue',
       'handoff',
       'focus',
@@ -75,6 +89,40 @@ describe('interactive command registry', () => {
       'ship',
       'recap',
     ]));
+  });
+
+  it('applies explorer settings to runtime environment without touching the main model', () => {
+    const previousExplorer = process.env.SIFT_EXPLORER;
+    const previousScout = process.env.SIFT_EXPLORER_SCOUT;
+    const previousFanout = process.env.SIFT_EXPLORER_FANOUT;
+    const previousProvider = process.env.SIFT_EXPLORER_SCOUT_PROVIDER;
+    const previousModel = process.env.SIFT_EXPLORER_SCOUT_MODEL;
+    const previousBudget = process.env.SIFT_EXPLORER_BUDGET;
+
+    try {
+      const model = explorerModelChoices().find((choice) => choice.id === DEFAULT_EXPLORER_SETTINGS.modelId);
+      expect(model).toBeTruthy();
+      const result = applyExplorerSettings({
+        mode: 'fanout',
+        modelId: DEFAULT_EXPLORER_SETTINGS.modelId,
+        budget: 'cheap',
+      });
+
+      expect(result.ok).toBe(true);
+      expect(process.env.SIFT_EXPLORER).toBe('on');
+      expect(process.env.SIFT_EXPLORER_SCOUT).toBe('0');
+      expect(process.env.SIFT_EXPLORER_FANOUT).toBe('1');
+      expect(process.env.SIFT_EXPLORER_SCOUT_PROVIDER).toBe(model?.provider);
+      expect(process.env.SIFT_EXPLORER_SCOUT_MODEL).toBe(model?.model);
+      expect(process.env.SIFT_EXPLORER_BUDGET).toBe('cheap');
+    } finally {
+      restoreEnv('SIFT_EXPLORER', previousExplorer);
+      restoreEnv('SIFT_EXPLORER_SCOUT', previousScout);
+      restoreEnv('SIFT_EXPLORER_FANOUT', previousFanout);
+      restoreEnv('SIFT_EXPLORER_SCOUT_PROVIDER', previousProvider);
+      restoreEnv('SIFT_EXPLORER_SCOUT_MODEL', previousModel);
+      restoreEnv('SIFT_EXPLORER_BUDGET', previousBudget);
+    }
   });
 
   it('runs core commands through a context object', async () => {
