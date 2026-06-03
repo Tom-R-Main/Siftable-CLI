@@ -1,5 +1,8 @@
+import {mkdtemp, mkdir, writeFile, rm} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
 import {LocalControlClient} from '../../interactive-tui/localControlClient';
-import type {BrainEvent, BrainAskResult} from '../../interactive-tui/brain';
+import {setBrainModel, type BrainEvent, type BrainAskResult} from '../../interactive-tui/brain';
 import type {SseEvent} from '../../interactive-tui/controlClient';
 
 /** Build a fake openfunctionAsk that replays a scripted event stream. */
@@ -61,6 +64,64 @@ describe('LocalControlClient (in-process transport)', () => {
       await expect(
         client.send('hi', () => {}, ctrl.signal),
       ).rejects.toMatchObject({name: 'AbortError'});
+    });
+
+    it('headlessly exercises repo_explorer through the real local transport seam', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'sift-localclient-explorer-'));
+      let capturedInput: unknown;
+      const previousCwd = process.env.SIFT_USER_CWD;
+      const previousExplorer = process.env.SIFT_EXPLORER;
+      await mkdir(join(root, 'src'), {recursive: true});
+      await writeFile(join(root, 'package.json'), '{"name":"headless-explorer-fixture"}\n', 'utf8');
+      await writeFile(join(root, 'src', 'fsEngine.ts'), 'export const marker = "local search";\n', 'utf8');
+      await writeFile(join(root, 'src', 'brain.ts'), 'export const route = "local search routing";\n', 'utf8');
+      (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+        createChatAgent: async () => ({
+          chat: async function* (message: unknown) {
+            capturedInput = message;
+            yield {type: 'text', text: 'ok'};
+            yield {type: 'done', result: {content: 'ok'}};
+          },
+        }),
+        defineTool: (def: unknown) => def,
+        ok: (data: unknown, message?: string) => ({success: true, data, message}),
+        err: (error: string) => ({success: false, error}),
+      };
+      process.env.SIFT_USER_CWD = root;
+      setBrainModel({provider: 'openrouter', model: 'headless-smoke'});
+
+      try {
+        const client = new LocalControlClient();
+        const broadEvents: SseEvent[] = [];
+        await client.send('scour this repo and explain how local search works', (event) => broadEvents.push(event));
+
+        expect(broadEvents.some((event) => event.toolCall?.name === 'repo_explorer')).toBe(true);
+        expect(broadEvents.some((event) => event.toolResult?.name === 'repo_explorer')).toBe(true);
+        expect(broadEvents.find((event) => event.toolResult?.name === 'repo_explorer')?.toolResult?.output).toContain('char report');
+        expect(String(capturedInput)).toContain('<repo_explorer_report>');
+        expect(String(capturedInput)).toContain('Metrics:');
+        expect(String(capturedInput)).toContain('src/fsEngine.ts');
+
+        capturedInput = undefined;
+        const ordinaryEvents: SseEvent[] = [];
+        await client.send('explain why Napoleon lost in Russia', (event) => ordinaryEvents.push(event));
+        expect(ordinaryEvents.some((event) => event.toolCall?.name === 'repo_explorer')).toBe(false);
+        expect(String(capturedInput)).not.toContain('<repo_explorer_report>');
+
+        capturedInput = undefined;
+        process.env.SIFT_EXPLORER = 'off';
+        const disabledEvents: SseEvent[] = [];
+        await client.send('scour this repo and explain how local search works', (event) => disabledEvents.push(event));
+        expect(disabledEvents.some((event) => event.toolCall?.name === 'repo_explorer')).toBe(false);
+        expect(String(capturedInput)).not.toContain('<repo_explorer_report>');
+      } finally {
+        if (previousCwd === undefined) delete process.env.SIFT_USER_CWD;
+        else process.env.SIFT_USER_CWD = previousCwd;
+        if (previousExplorer === undefined) delete process.env.SIFT_EXPLORER;
+        else process.env.SIFT_EXPLORER = previousExplorer;
+        delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+        await rm(root, {recursive: true, force: true});
+      }
     });
   });
 
