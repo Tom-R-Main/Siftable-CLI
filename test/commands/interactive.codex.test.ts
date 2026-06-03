@@ -271,6 +271,16 @@ describe('model catalog + reasoning effort', () => {
     expect(direct?.auth).toBe('anthropic');
   });
 
+  it('catalogues cheap scout models across OpenRouter and first-party providers', () => {
+    expect(findModelChoice('haiku')?.model).toBe('anthropic/claude-haiku-4.5');
+    expect(findModelChoice('haiku-direct')?.provider).toBe('anthropic');
+    expect(findModelChoice('flash-lite')?.model).toBe('google/gemini-3.1-flash-lite');
+    expect(findModelChoice('gemini-direct')?.provider).toBe('gemini');
+    expect(findModelChoice('gpt-5.4-mini')?.model).toBe('openai/gpt-5.4-mini');
+    expect(findModelChoice('openai-mini')?.provider).toBe('openai');
+    expect(findModelChoice('nano')?.model).toBe('openai/gpt-5.4-nano');
+  });
+
   it('forwards the chosen reasoning effort to config and reports it', async () => {
     const config = jest.fn(async (input: {provider?: string; model?: string; effort?: string}) => ({
       provider: input.provider ?? 'openrouter',
@@ -284,6 +294,22 @@ describe('model catalog + reasoning effort', () => {
     expect(messages.at(-1)?.text).toContain('reasoning high');
   });
 
+  it('routes ad-hoc OpenRouter model ids through OpenRouter by default', async () => {
+    const config = jest.fn(async (input: {provider?: string; model?: string; effort?: string}) => ({
+      provider: input.provider ?? 'openrouter',
+      model: input.model ?? 'x',
+      effort: input.effort,
+    }));
+    const {ctx, messages} = buildCtx({config});
+
+    await runInteractiveCommand(ctx, '/model google/gemini-3.1-flash-lite low');
+    expect(config).toHaveBeenCalledWith({provider: 'openrouter', model: 'google/gemini-3.1-flash-lite', effort: 'low'});
+    expect(messages.at(-1)?.text).toContain('openrouter/google/gemini-3.1-flash-lite');
+
+    await runInteractiveCommand(ctx, '/model openrouter/moonshotai/kimi-k2');
+    expect(config).toHaveBeenLastCalledWith({provider: 'openrouter', model: 'moonshotai/kimi-k2'});
+  });
+
   it('gates the direct-Anthropic door behind an API key instead of failing a turn', async () => {
     const prev = process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
@@ -291,7 +317,7 @@ describe('model catalog + reasoning effort', () => {
     const {ctx, messages} = buildCtx({config});
     await applyModelChoice(ctx, findModelChoice('claude-api')!, 'high');
     expect(config).not.toHaveBeenCalled();
-    expect(messages.at(-1)?.text).toContain('Anthropic API key');
+    expect(messages.at(-1)?.text).toContain('ANTHROPIC_API_KEY');
     if (prev !== undefined) process.env.ANTHROPIC_API_KEY = prev;
   });
 });

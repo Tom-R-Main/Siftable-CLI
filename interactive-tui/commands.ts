@@ -43,6 +43,10 @@ export interface InteractiveModelChoice {
   description: string;
   aliases?: string[];
   auth?: "codex" | "api-key" | "anthropic";
+  /** Environment variable required by a first-party provider adapter. */
+  requiredEnv?: string;
+  /** Short setup hint shown when the provider key is missing. */
+  keyHint?: string;
   /**
    * Reasoning-effort levels this model supports, low→high. Drives the picker's
    * second stage. Omit (or leave empty) for models with no configurable
@@ -71,6 +75,17 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     defaultEffort: "medium",
   },
   {
+    id: "openrouter/google/gemini-3.1-flash-lite",
+    provider: "openrouter",
+    model: "google/gemini-3.1-flash-lite",
+    label: "Gemini 3.1 Flash-Lite",
+    description: "OpenRouter · cheap scout",
+    aliases: ["flash-lite", "gemini-lite", "gemini-3.1-flash-lite", "google/gemini-3.1-flash-lite"],
+    auth: "api-key",
+    reasoningEfforts: CLAUDE_EFFORTS,
+    defaultEffort: "low",
+  },
+  {
     id: "openrouter/google/gemini-3.5-flash",
     provider: "openrouter",
     model: "google/gemini-3.5-flash",
@@ -82,6 +97,43 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     defaultEffort: "medium",
   },
   {
+    id: "gemini/gemini-3.1-flash-lite",
+    provider: "gemini",
+    model: "gemini-3.1-flash-lite",
+    label: "Gemini 3.1 Flash-Lite (AI Studio)",
+    description: "Google AI Studio · cheap scout",
+    aliases: ["aistudio", "ai-studio", "gemini-direct", "gemini-lite-direct"],
+    auth: "api-key",
+    requiredEnv: "GEMINI_API_KEY",
+    keyHint: "/key gemini <key>",
+    reasoningEfforts: CLAUDE_EFFORTS,
+    defaultEffort: "low",
+  },
+  {
+    id: "openrouter/anthropic/claude-haiku-4.5",
+    provider: "openrouter",
+    model: "anthropic/claude-haiku-4.5",
+    label: "Claude Haiku 4.5",
+    description: "OpenRouter · fast scout",
+    aliases: ["haiku", "haiku-4.5", "claude-haiku", "anthropic/claude-haiku-4.5"],
+    auth: "api-key",
+    reasoningEfforts: CLAUDE_EFFORTS,
+    defaultEffort: "low",
+  },
+  {
+    id: "anthropic/claude-haiku-4-5",
+    provider: "anthropic",
+    model: "claude-haiku-4-5",
+    label: "Claude Haiku 4.5 (Anthropic)",
+    description: "direct Anthropic API · fast scout",
+    aliases: ["haiku-direct", "anthropic-haiku", "claude-haiku-4-5"],
+    auth: "anthropic",
+    requiredEnv: "ANTHROPIC_API_KEY",
+    keyHint: "/key anthropic <key>",
+    reasoningEfforts: CLAUDE_EFFORTS,
+    defaultEffort: "low",
+  },
+  {
     id: "openrouter/anthropic/claude-sonnet-4.6",
     provider: "openrouter",
     model: "anthropic/claude-sonnet-4.6",
@@ -91,6 +143,41 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     auth: "api-key",
     reasoningEfforts: CLAUDE_EFFORTS,
     defaultEffort: "medium",
+  },
+  {
+    id: "openrouter/openai/gpt-5.4-mini",
+    provider: "openrouter",
+    model: "openai/gpt-5.4-mini",
+    label: "GPT-5.4 Mini",
+    description: "OpenRouter · balanced scout",
+    aliases: ["gpt-5.4-mini", "mini", "openai/gpt-5.4-mini"],
+    auth: "api-key",
+    reasoningEfforts: GPT5_EFFORTS,
+    defaultEffort: "low",
+  },
+  {
+    id: "openrouter/openai/gpt-5.4-nano",
+    provider: "openrouter",
+    model: "openai/gpt-5.4-nano",
+    label: "GPT-5.4 Nano",
+    description: "OpenRouter · ultra cheap scout",
+    aliases: ["gpt-5.4-nano", "nano", "openai/gpt-5.4-nano"],
+    auth: "api-key",
+    reasoningEfforts: GPT5_EFFORTS,
+    defaultEffort: "low",
+  },
+  {
+    id: "openai/gpt-5.4-mini",
+    provider: "openai",
+    model: "gpt-5.4-mini",
+    label: "GPT-5.4 Mini (OpenAI)",
+    description: "direct OpenAI API · balanced scout",
+    aliases: ["openai-mini", "gpt-5.4-mini-direct"],
+    auth: "api-key",
+    requiredEnv: "OPENAI_API_KEY",
+    keyHint: "/key openai <key>",
+    reasoningEfforts: GPT5_EFFORTS,
+    defaultEffort: "low",
   },
   {
     id: "openrouter/openai/gpt-5.2",
@@ -125,6 +212,8 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     description: "direct Anthropic API · thinking · 💸💸",
     aliases: ["opus-direct", "claude-api", "anthropic-opus"],
     auth: "anthropic",
+    requiredEnv: "ANTHROPIC_API_KEY",
+    keyHint: "/key anthropic <key>",
     reasoningEfforts: CLAUDE_EFFORTS,
     defaultEffort: "high",
   },
@@ -199,6 +288,11 @@ function effortSuffix(effort?: string): string {
   return effort ? ` · reasoning ${effort}` : "";
 }
 
+function missingKeyMessage(choice: InteractiveModelChoice): string | null {
+  if (!choice.requiredEnv || process.env[choice.requiredEnv]) return null;
+  return `${choice.label} needs ${choice.requiredEnv}. Run: ${choice.keyHint ?? `/key ${choice.provider} <key>`}`;
+}
+
 async function selectCodexModel(ctx: InteractiveCommandContext, choice: InteractiveModelChoice, effort?: string): Promise<void> {
   if (!ctx.client.codexStatus || !ctx.client.codexLogin) {
     ctx.push({role: "system", text: "Codex models are only available in local mode (`sift interactive`)."});
@@ -255,11 +349,11 @@ export async function applyModelChoice(
     return;
   }
 
-  // Door B: the direct Anthropic API needs a key in-env (the OpenRouter path
-  // does not — OpenRouter holds its own key). Gate selection with a clear hint
-  // instead of letting the first turn fail with a raw adapter error.
-  if (choice.auth === "anthropic" && !process.env.ANTHROPIC_API_KEY) {
-    ctx.push({role: "system", text: `${choice.label} needs an Anthropic API key. Run: /key anthropic sk-ant-…  then reselect.`});
+  // First-party providers need their own key in-env. Gate selection with a
+  // clear hint instead of letting the first turn fail with a raw adapter error.
+  const keyMessage = missingKeyMessage(choice);
+  if (keyMessage) {
+    ctx.push({role: "system", text: keyMessage});
     return;
   }
 
@@ -280,12 +374,23 @@ async function selectModel(ctx: InteractiveCommandContext, raw: string, effort?:
   }
 
   try {
-    const result = await ctx.client.config({model: raw, ...(effort ? {effort} : {})});
+    const parsed = parseAdHocModel(raw);
+    const result = await ctx.client.config({...parsed, ...(effort ? {effort} : {})});
     ctx.setModel(result.model);
     ctx.push({role: "system", text: `model -> ${result.provider}/${result.model}${effortSuffix(effort)}`});
   } catch (err) {
     ctx.push({role: "system", text: `/model failed: ${err instanceof Error ? err.message : String(err)}`});
   }
+}
+
+function parseAdHocModel(raw: string): {provider?: string; model: string} {
+  const id = raw.trim();
+  if (id.startsWith("openrouter/")) return {provider: "openrouter", model: id.slice("openrouter/".length)};
+  if (id.startsWith("openai/")) return {provider: "openai", model: id.slice("openai/".length)};
+  if (id.startsWith("gemini/")) return {provider: "gemini", model: id.slice("gemini/".length)};
+  if (id.startsWith("anthropic/") && !id.includes(".")) return {provider: "anthropic", model: id.slice("anthropic/".length)};
+  if (/^[a-z0-9_.-]+\/[a-z0-9_.:-]+$/i.test(id)) return {provider: "openrouter", model: id};
+  return {model: id};
 }
 
 function splitList(raw: string): string[] {
