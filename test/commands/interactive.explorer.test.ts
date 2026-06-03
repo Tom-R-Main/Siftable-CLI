@@ -257,4 +257,89 @@ describe('interactive repo explorer preflight', () => {
       errorSpy.mockRestore();
     }
   });
+
+  it('tracks whether the main model uses suggested files after the report', async () => {
+    let capturedInput: unknown;
+    const previousCwd = process.env.SIFT_USER_CWD;
+    const previousDebug = process.env.SIFT_EXPLORER_DEBUG;
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+      createChatAgent: async () => ({
+        chat: async function* (message: unknown) {
+          capturedInput = message;
+          if (String(message).includes('src/fsEngine.ts')) {
+            yield {type: 'tool_call', toolCall: {name: 'read_file', args: {path: 'src/fsEngine.ts'}}};
+            yield {type: 'tool_result', toolResult: {name: 'read_file', success: true}};
+          }
+          yield {type: 'text', text: 'ok'};
+          yield {type: 'done', result: {content: 'ok'}};
+        },
+      }),
+      defineTool: (def: unknown) => def,
+      ok: (data: unknown, message?: string) => ({success: true, data, message}),
+      err: (error: string) => ({success: false, error}),
+    };
+    process.env.SIFT_USER_CWD = root;
+    process.env.SIFT_EXPLORER_DEBUG = '1';
+    setBrainModel({provider: 'openrouter', model: 'test-model'});
+
+    try {
+      const events: BrainEvent[] = [];
+      await openfunctionAsk('scour this repo and explain how local search works', (event) => events.push(event));
+
+      expect(String(capturedInput)).toContain('<repo_explorer_report>');
+      expect(events.some((event) => event.toolCall?.name === 'read_file')).toBe(true);
+      const summary = errorSpy.mock.calls
+        .map((call) => String(call[0]))
+        .find((line) => line.includes('repo_explorer_effectiveness:'));
+      expect(summary).toContain('usedSuggestedFiles=src/fsEngine.ts');
+      expect(summary).toContain('postExplorerReadCalls=1');
+      expect(summary).toContain('launchedRedundantBroadSearch=false');
+    } finally {
+      if (previousCwd === undefined) delete process.env.SIFT_USER_CWD;
+      else process.env.SIFT_USER_CWD = previousCwd;
+      if (previousDebug === undefined) delete process.env.SIFT_EXPLORER_DEBUG;
+      else process.env.SIFT_EXPLORER_DEBUG = previousDebug;
+      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('does not emit an effectiveness record when explorer is skipped or disabled', async () => {
+    const previousCwd = process.env.SIFT_USER_CWD;
+    const previousDebug = process.env.SIFT_EXPLORER_DEBUG;
+    const previousExplorer = process.env.SIFT_EXPLORER;
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+      createChatAgent: async () => ({
+        chat: async function* () {
+          yield {type: 'tool_call', toolCall: {name: 'read_file', args: {path: 'src/fsEngine.ts'}}};
+          yield {type: 'done', result: {content: 'ok'}};
+        },
+      }),
+      defineTool: (def: unknown) => def,
+      ok: (data: unknown, message?: string) => ({success: true, data, message}),
+      err: (error: string) => ({success: false, error}),
+    };
+    process.env.SIFT_USER_CWD = root;
+    process.env.SIFT_EXPLORER_DEBUG = '1';
+    setBrainModel({provider: 'openrouter', model: 'test-model'});
+
+    try {
+      await openfunctionAsk('explain why Napoleon lost in Russia', () => undefined);
+      process.env.SIFT_EXPLORER = 'off';
+      await openfunctionAsk('scour this repo and explain how local search works', () => undefined);
+
+      expect(errorSpy.mock.calls.some((call) => String(call[0]).includes('repo_explorer_effectiveness:'))).toBe(false);
+    } finally {
+      if (previousCwd === undefined) delete process.env.SIFT_USER_CWD;
+      else process.env.SIFT_USER_CWD = previousCwd;
+      if (previousDebug === undefined) delete process.env.SIFT_EXPLORER_DEBUG;
+      else process.env.SIFT_EXPLORER_DEBUG = previousDebug;
+      if (previousExplorer === undefined) delete process.env.SIFT_EXPLORER;
+      else process.env.SIFT_EXPLORER = previousExplorer;
+      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      errorSpy.mockRestore();
+    }
+  });
 });

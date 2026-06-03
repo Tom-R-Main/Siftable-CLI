@@ -29,7 +29,16 @@ import {
   writeText,
 } from './fsEngine';
 import { requestConfirm } from './confirmGate';
-import { chatInputText, classifyExplorerPrompt, prepareExplorerInput, clearRepoExplorerCache } from './explorer';
+import {
+  chatInputText,
+  classifyExplorerPrompt,
+  clearRepoExplorerCache,
+  createRepoExplorerEffectiveness,
+  formatRepoExplorerEffectiveness,
+  observeRepoExplorerToolCall,
+  prepareExplorerInput,
+  type RepoExplorerEffectiveness,
+} from './explorer';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 
 /** Relay-compatible event shape the TUI already understands (token, tool_call, tool_result, done, error). */
@@ -530,11 +539,30 @@ export async function openfunctionAsk(
   signal?: AbortSignal,
 ): Promise<BrainAskResult> {
   let preparedInput = input;
+  let explorerEffectiveness: RepoExplorerEffectiveness | null = null;
+  let explorerEffectivenessStartedAt = 0;
+  const debugExplorer = process.env.SIFT_EXPLORER_DEBUG === '1';
+  const emitPostExplorer = (event: BrainEvent) => {
+    if (explorerEffectiveness && event.type === 'tool_call') {
+      observeRepoExplorerToolCall(explorerEffectiveness, event.toolCall ?? {});
+    }
+    onEvent(event);
+  };
+  const finishExplorerEffectiveness = () => {
+    if (!debugExplorer || !explorerEffectiveness) return;
+    explorerEffectiveness.elapsedAfterExplorerMs = Math.max(0, Date.now() - explorerEffectivenessStartedAt);
+    console.error(formatRepoExplorerEffectiveness(explorerEffectiveness));
+  };
+
   if (!signal?.aborted && classifyExplorerPrompt(chatInputText(input)) !== 'skipped') {
     onEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer', detail: 'read-only preflight' } });
     try {
       const prepared = await prepareExplorerInput(input, { root: process.env.SIFT_USER_CWD || process.cwd() });
       preparedInput = prepared.input as ChatInput;
+      if (prepared.injected) {
+        explorerEffectiveness = createRepoExplorerEffectiveness(prepared.report);
+        explorerEffectivenessStartedAt = Date.now();
+      }
       if (prepared.injected && process.env.SIFT_EXPLORER_DEBUG === '1' && prepared.reportText) {
         console.error(prepared.reportText);
       }
@@ -569,7 +597,11 @@ export async function openfunctionAsk(
     // Pass the model only when it isn't the OpenFunction default, so a fresh
     // /codex switch lets app-server pick its own default model.
     const model = currentModel && currentModel !== DEFAULT_OPENFUNCTION_MODEL ? currentModel : undefined;
-    return codexAsk(preparedInput, onEvent, { signal, model, effort: currentEffort });
+    try {
+      return await codexAsk(preparedInput, emitPostExplorer, { signal, model, effort: currentEffort });
+    } finally {
+      finishExplorerEffectiveness();
+    }
   }
 
   let agent: Awaited<ReturnType<typeof getAgent>>;
@@ -587,21 +619,21 @@ export async function openfunctionAsk(
     for await (const chunk of agent.chat(preparedInput, { stream: true })) {
       if (chunk.type === 'text' && typeof chunk.text === 'string') {
         assembled += chunk.text;
-        onEvent({ type: 'token', content: chunk.text });
+        emitPostExplorer({ type: 'token', content: chunk.text });
       } else if (chunk.type === 'tool_call') {
         // Surface the call and a salient arg (path/query/command) so the user
         // sees what each tool is doing — the TUI derives a one-line label.
-        onEvent({
+        emitPostExplorer({
           type: 'tool_call',
           toolCall: { name: chunk.toolCall?.name ?? 'tool', args: chunk.toolCall?.args },
         });
       } else if (chunk.type === 'tool_result') {
-        onEvent({
+        emitPostExplorer({
           type: 'tool_result',
           toolResult: { name: chunk.toolResult?.name ?? 'tool', success: chunk.toolResult?.success ?? true },
         });
       } else if (chunk.type === 'done') {
-        onEvent({
+        emitPostExplorer({
           type: 'done',
           ...(chunk.result?.content ? { message: { content: chunk.result.content } } : {}),
         });
@@ -610,5 +642,7 @@ export async function openfunctionAsk(
     return { text: assembled };
   } catch (err) {
     return { text: assembled, error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    finishExplorerEffectiveness();
   }
 }

@@ -68,11 +68,31 @@ export interface RepoExplorerMetrics {
   fileSetId?: string;
 }
 
+export interface RepoExplorerEffectiveness {
+  triggered: boolean;
+  reportChars: number;
+  cacheHit: boolean;
+  suggestedFiles: string[];
+  postExplorerToolCalls: number;
+  postExplorerSearchCalls: number;
+  postExplorerReadCalls: number;
+  usedSuggestedFiles: string[];
+  ignoredSuggestedFiles: string[];
+  launchedRedundantBroadSearch: boolean;
+  elapsedAfterExplorerMs: number;
+}
+
 export interface ExplorerPrepareResult {
   input: ExplorerChatInput;
   report: ExplorerReport;
   injected: boolean;
   reportText?: string;
+}
+
+export interface ExplorerObservedToolCall {
+  name?: string;
+  args?: Record<string, unknown>;
+  detail?: string;
 }
 
 export interface ExplorerOptions {
@@ -158,6 +178,72 @@ export function clearRepoExplorerCache(root?: string): void {
   }
   explorerCache.clear();
   clearWorkspaceFileCache();
+}
+
+export function suggestedFilesForExplorerReport(report: ExplorerReport): string[] {
+  const files = [
+    ...report.recommendedReads.map((read) => read.path),
+    ...report.likelyFiles.map((file) => file.path),
+  ];
+  return [...new Set(files)].slice(0, 12);
+}
+
+export function createRepoExplorerEffectiveness(report: ExplorerReport): RepoExplorerEffectiveness {
+  const suggestedFiles = suggestedFilesForExplorerReport(report);
+  return {
+    triggered: report.mode !== 'skipped',
+    reportChars: report.metrics.reportChars,
+    cacheHit: report.metrics.cacheHit,
+    suggestedFiles,
+    postExplorerToolCalls: 0,
+    postExplorerSearchCalls: 0,
+    postExplorerReadCalls: 0,
+    usedSuggestedFiles: [],
+    ignoredSuggestedFiles: suggestedFiles,
+    launchedRedundantBroadSearch: false,
+    elapsedAfterExplorerMs: 0,
+  };
+}
+
+export function observeRepoExplorerToolCall(
+  effectiveness: RepoExplorerEffectiveness,
+  toolCall: ExplorerObservedToolCall,
+): void {
+  const name = String(toolCall.name || '').toLowerCase();
+  effectiveness.postExplorerToolCalls += 1;
+  if (isExplorerSearchTool(name)) {
+    effectiveness.postExplorerSearchCalls += 1;
+    if (effectiveness.usedSuggestedFiles.length === 0 && effectiveness.suggestedFiles.length > 0) {
+      effectiveness.launchedRedundantBroadSearch = true;
+    }
+  }
+  if (isExplorerReadTool(name)) effectiveness.postExplorerReadCalls += 1;
+
+  const argText = explorerToolCallText(toolCall).toLowerCase();
+  for (const file of effectiveness.suggestedFiles) {
+    if (argText.includes(file.toLowerCase()) && !effectiveness.usedSuggestedFiles.includes(file)) {
+      effectiveness.usedSuggestedFiles.push(file);
+    }
+  }
+  effectiveness.ignoredSuggestedFiles = effectiveness.suggestedFiles
+    .filter((file) => !effectiveness.usedSuggestedFiles.includes(file));
+}
+
+export function formatRepoExplorerEffectiveness(effectiveness: RepoExplorerEffectiveness): string {
+  return [
+    'repo_explorer_effectiveness:',
+    `triggered=${effectiveness.triggered}`,
+    `reportChars=${effectiveness.reportChars}`,
+    `cacheHit=${effectiveness.cacheHit}`,
+    `suggestedFiles=${effectiveness.suggestedFiles.length}`,
+    `usedSuggestedFiles=${effectiveness.usedSuggestedFiles.length ? effectiveness.usedSuggestedFiles.join(',') : 'none'}`,
+    `ignoredSuggestedFiles=${effectiveness.ignoredSuggestedFiles.length ? effectiveness.ignoredSuggestedFiles.join(',') : 'none'}`,
+    `postExplorerToolCalls=${effectiveness.postExplorerToolCalls}`,
+    `postExplorerSearchCalls=${effectiveness.postExplorerSearchCalls}`,
+    `postExplorerReadCalls=${effectiveness.postExplorerReadCalls}`,
+    `launchedRedundantBroadSearch=${effectiveness.launchedRedundantBroadSearch}`,
+    `elapsedAfterExplorerMs=${effectiveness.elapsedAfterExplorerMs}`,
+  ].join(' ');
 }
 
 export function classifyExplorerPrompt(text: string): ExplorerMode {
@@ -506,6 +592,26 @@ function isNativePath(path: string): boolean {
 function isConfigDocPath(path: string): boolean {
   return /(^|\/)(package\.json|tsconfig\.json|README\.md|readme\.md|AGENTS\.md|CLAUDE\.md)$/.test(path) ||
     /\.(md|json|ya?ml|toml)$/.test(path);
+}
+
+function isExplorerSearchTool(name: string): boolean {
+  return ['search_local_files', 'code_search', 'find_local_files', 'inspect_local_workspace', 'list_dir'].includes(name);
+}
+
+function isExplorerReadTool(name: string): boolean {
+  return ['read_file', 'batch_read_files'].includes(name);
+}
+
+function explorerToolCallText(toolCall: ExplorerObservedToolCall): string {
+  const parts = [toolCall.name || '', toolCall.detail || ''];
+  if (toolCall.args) {
+    try {
+      parts.push(JSON.stringify(toolCall.args));
+    } catch {
+      parts.push(String(toolCall.args));
+    }
+  }
+  return parts.join(' ');
 }
 
 function addFinding(

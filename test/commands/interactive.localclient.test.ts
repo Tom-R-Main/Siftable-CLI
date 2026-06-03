@@ -79,6 +79,10 @@ describe('LocalControlClient (in-process transport)', () => {
         createChatAgent: async () => ({
           chat: async function* (message: unknown) {
             capturedInput = message;
+            if (String(message).includes('src/fsEngine.ts')) {
+              yield {type: 'tool_call', toolCall: {name: 'read_file', args: {path: 'src/fsEngine.ts'}}};
+              yield {type: 'tool_result', toolResult: {name: 'read_file', success: true}};
+            }
             yield {type: 'text', text: 'ok'};
             yield {type: 'done', result: {content: 'ok'}};
           },
@@ -98,6 +102,7 @@ describe('LocalControlClient (in-process transport)', () => {
         expect(broadEvents.some((event) => event.toolCall?.name === 'repo_explorer')).toBe(true);
         expect(broadEvents.some((event) => event.toolResult?.name === 'repo_explorer')).toBe(true);
         expect(broadEvents.find((event) => event.toolResult?.name === 'repo_explorer')?.toolResult?.output).toContain('char report');
+        expect(broadEvents.some((event) => event.toolCall?.name === 'read_file')).toBe(true);
         expect(String(capturedInput)).toContain('<repo_explorer_report>');
         expect(String(capturedInput)).toContain('Metrics:');
         expect(String(capturedInput)).toContain('src/fsEngine.ts');
