@@ -10,6 +10,7 @@
  * QoL layer (agent-CLI muscle memory — readline + chat + command palette):
  *   Esc            stop the in-flight response (pause); when idle, clear draft
  *   Ctrl+C         interrupt / clear draft / quit when idle
+ *   Ctrl+O         show/hide explorer diagnostics
  *   ^⇧C            copy latest response   paste directly / bracketed paste
  *   Ctrl+A/E       line start / end       ←/→  char     Home/End  line ends
  *   Ctrl+U/K       kill to start / end    Ctrl+W  delete word     ⌥←/→  word
@@ -51,6 +52,7 @@ import { normalizeImageForModel } from "./imageEngine";
 import {
   asExplorerActivityView,
   explorerToolCallText,
+  formatExplorerActivityDetails,
   formatExplorerActivityLine,
   isExplorerToolName,
   toolCallLabel,
@@ -110,6 +112,7 @@ type Msg = {
   role: "you" | "assistant" | "system" | "shell" | "tool";
   text: string;
   out?: string;
+  explorer?: boolean;
 };
 type PasteTextAttachment = { type: "text"; id: number; label: string; text: string; analysis: PasteAnalysis };
 type ImageAttachment = {
@@ -193,6 +196,7 @@ function App() {
   const [busy, setBusy] = createSignal(false);
   const [queued, setQueued] = createSignal<QueuedPrompt[]>([]);
   const [awaitingLogin, setAwaitingLogin] = createSignal(false);
+  const [showExplorerDetails, setShowExplorerDetails] = createSignal(false);
   const [slashSel, setSlashSel] = createSignal(0);
   // Interactive model picker: stage "model" (↑/↓) → stage "effort" (←/→).
   const [picker, setPicker] = createSignal<
@@ -556,6 +560,8 @@ function App() {
               const activity = asExplorerActivityView(e.toolResult?.explorerActivity);
               if (activity) {
                 setMessages(toolIdx, "text", `${ok ? "✓" : "✗"} ${formatExplorerActivityLine(activity)}`);
+                setMessages(toolIdx, "out", formatExplorerActivityDetails(activity));
+                setMessages(toolIdx, "explorer", true);
                 if (activity.rawReport) {
                   latestExplorerReport = activity.rawReport;
                 }
@@ -744,6 +750,17 @@ function App() {
         key.stopPropagation?.();
         if (hasSelection) void copyCurrentSelection();
         else void copyLatestAssistant();
+        return;
+      }
+
+      if (key.ctrl && key.name === "o") {
+        key.preventDefault?.();
+        key.stopPropagation?.();
+        setShowExplorerDetails((show) => {
+          const next = !show;
+          setStatus(next ? "showing explorer diagnostics" : "hiding explorer diagnostics");
+          return next;
+        });
         return;
       }
 
@@ -958,7 +975,7 @@ function App() {
                 </Match>
                 <Match when={m.role === "tool"}>
                   <text fg={theme.tool}>{m.text}</text>
-                  <Show when={m.out}>
+                  <Show when={m.out && (!m.explorer || showExplorerDetails())}>
                     <text fg={theme.muted} selectable={false}>{gutterIndent(m.out!)}</text>
                   </Show>
                 </Match>

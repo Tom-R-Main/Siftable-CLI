@@ -117,10 +117,10 @@ export function isExplorerToolName(name: string | undefined): boolean {
 
 export function explorerToolCallText(name: string, detail?: string): string {
   const label = name === "repo_explorer_fanout"
-    ? "fan-out"
+    ? "checking repo in parallel"
     : name === "repo_explorer_scout"
-      ? "scout"
-      : "deterministic";
+      ? "checking repo"
+      : "checking repo";
   const d = (detail ?? "").trim();
   return `◇ Explorer · ${label}${d ? ` · ${clipLine(d, 44)}` : ""}`;
 }
@@ -146,20 +146,17 @@ function modeText(mode: ExplorerActivityView["mode"]): string {
 
 export function formatExplorerActivityLine(activity: ExplorerActivityView): string {
   const branchText = activity.mode === "fanout" && activity.branches?.length
-    ? `${activity.branches.filter((branch) => branch.status === "ok").length}/${activity.branches.length} branches ok`
+    ? `${activity.branches.filter((branch) => branch.status === "ok").length}/${activity.branches.length} scouts`
     : "";
   const warnings = activity.warnings?.length
     ? formatCount("warning", activity.warnings.length)
     : "";
   return [
     "◇ Explorer",
-    modeText(activity.mode),
+    "checked repo",
     branchText,
     formatCount("file", activity.suggestedFileCount),
-    typeof activity.usedSuggestedFileCount === "number" ? `${activity.usedSuggestedFileCount} used` : "",
-    `${formatReportSize(activity.reportChars)} report`,
     `${activity.elapsedMs}ms`,
-    cacheText(activity),
     warnings,
   ].filter(Boolean).join(" · ");
 }

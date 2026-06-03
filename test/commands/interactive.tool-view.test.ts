@@ -55,7 +55,7 @@ describe('toolView — tool call labels', () => {
     expect(isExplorerToolName('repo_explorer_fanout')).toBe(true);
     expect(isExplorerToolName('read_file')).toBe(false);
     expect(explorerToolCallText('repo_explorer_fanout', 'read-only parallel scouts')).toBe(
-      '◇ Explorer · fan-out · read-only parallel scouts',
+      '◇ Explorer · checking repo in parallel · read-only parallel scouts',
     );
   });
 });
@@ -90,7 +90,7 @@ describe('toolView — explorer activity', () => {
 
   it('formats collapsed explorer activity with the important counters', () => {
     expect(formatExplorerActivityLine(activity)).toBe(
-      '◇ Explorer · fan-out · 1/2 branches ok · 14 files · 5 used · 7.8KB report · 211ms · cache hit · 1 warning',
+      '◇ Explorer · checked repo · 1/2 scouts · 14 files · 211ms · 1 warning',
     );
   });
 

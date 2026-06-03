@@ -138,6 +138,7 @@ export function findModelChoice(raw: string): InteractiveModelChoice | null {
 const HOTKEYS = [
   "Esc            stop the response · clear the draft when idle",
   "^C             interrupt · clear draft · quit when idle",
+  "^O             show/hide explorer diagnostics",
   "^⇧C            copy the latest assistant response",
   "⌘A             select composer; empty draft selects transcript (terminal may eat ⌘A)",
   "/copy all      copy the whole transcript — works in any terminal",
