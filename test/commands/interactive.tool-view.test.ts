@@ -17,6 +17,15 @@ describe('toolView — tool call labels', () => {
     expect(toolArgPreview({cmd: 'git status'})).toBe('cmd=git status');
   });
 
+  it('toolArgPreview renders file descriptor arrays without object placeholders', () => {
+    expect(toolArgPreview({
+      files: [
+        {path: 'packages/exf-cli/interactive-tui/brain.ts', startLine: 344, endLine: 387},
+        {path: 'packages/exf-cli/interactive-tui/toolView.ts'},
+      ],
+    })).toBe('files=packages/exf-cli/interactive-tui/brain.ts:344-387 packages/exf-cli/intera…');
+  });
+
   it('toolArgPreview falls back to the first stringifiable arg', () => {
     expect(toolArgPreview({weird: 'value'})).toBe('weird=value');
     expect(toolArgPreview({})).toBe('');

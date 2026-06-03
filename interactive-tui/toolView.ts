@@ -34,7 +34,29 @@ export function toolArgPreview(args?: Record<string, unknown>): string {
   const keys = ["command", "cmd", "path", "file", "query", "title", "id", "name"];
   const stringify = (v: unknown): string => {
     if (typeof v === "string") return v;
-    if (Array.isArray(v)) return v.map((x) => String(x)).join(" ");
+    if (typeof v === "number" || typeof v === "boolean") return String(v);
+    if (Array.isArray(v)) return v.map((x) => stringify(x)).filter(Boolean).join(" ");
+    if (v && typeof v === "object") {
+      const record = v as Record<string, unknown>;
+      const path = typeof record.path === "string"
+        ? record.path
+        : typeof record.file === "string"
+          ? record.file
+          : "";
+      if (path) {
+        const start = typeof record.startLine === "number" ? record.startLine : undefined;
+        const end = typeof record.endLine === "number" ? record.endLine : undefined;
+        return start && end ? `${path}:${start}-${end}` : path;
+      }
+      return Object.entries(record)
+        .slice(0, 3)
+        .map(([key, value]) => {
+          const preview = stringify(value);
+          return preview ? `${key}:${preview}` : "";
+        })
+        .filter(Boolean)
+        .join(",");
+    }
     return "";
   };
   for (const k of keys) {
