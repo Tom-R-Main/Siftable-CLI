@@ -59,7 +59,7 @@ const LEAN_PROMPT =
   'Use your tools to answer about the user\'s tasks, work items, calendar, projects, people, and local code. ' +
   'For the local codebase, reach for the search tools (inspect_local_workspace, find_local_files, ' +
   'search_local_files, code_search, batch_read_files) before crawling file-by-file. ' +
-  'For broad content searches, start search_local_files with detail="paths" or detail="locations"; escalate to snippets/full only after narrowing candidates. ' +
+  'For broad content searches, start with file/path discovery or low-detail locations and a modest maxFiles cap; escalate scope and snippets/full only after narrowing candidates. ' +
   'Use code_search forceRefresh after external commands likely changed the workspace. ' +
   'If a search result is truncated/capped, describe it as partial and narrow or explicitly broaden before treating absence as definitive.';
 
@@ -213,6 +213,7 @@ function buildLocalTools(of: OfModule): unknown[] {
           description: 'Directory to search. Defaults to the directory where `sift interactive` was launched.',
         },
         query: { type: 'string', description: 'Literal text to search for (not regex)' },
+        maxFiles: { type: 'integer', description: 'Max files to scan. Use a lower cap for broad discovery; raise only when explicitly broadening scope.' },
         maxMatches: { type: 'integer', description: 'Max matches to return (default 100)' },
         includeHidden: { type: 'boolean', description: 'Include hidden files/directories (default false)' },
         includeVendor: { type: 'boolean', description: 'Include dependency/vendor directories such as node_modules and vendor (default false)' },
@@ -227,6 +228,7 @@ function buildLocalTools(of: OfModule): unknown[] {
         const query = String(params.query || '');
         if (!query) return of.err('query is required');
         const result = await searchLiteral(root, query, {
+          maxFiles: typeof params.maxFiles === 'number' ? params.maxFiles : undefined,
           maxMatches: typeof params.maxMatches === 'number' ? params.maxMatches : 100,
           includeHidden: params.includeHidden === true,
           includeVendor: params.includeVendor === true,
@@ -309,6 +311,7 @@ function buildLocalTools(of: OfModule): unknown[] {
         },
         intent: { type: 'string', description: 'The user question or investigation goal' },
         queries: { type: 'array', items: { type: 'string' }, description: 'Optional exact literals to search for' },
+        maxFiles: { type: 'integer', description: 'Max eligible files to search. Defaults to 500 for broad agent search; raise only when broadening a partial result.' },
         maxSpans: { type: 'integer', description: 'Max ranked spans to return (default 12)' },
         forceRefresh: { type: 'boolean', description: 'Bypass the session file-set cache when the workspace may have changed outside the fs tools.' },
         maxCacheAgeMs: { type: 'integer', description: 'Override the session file-set cache max age in milliseconds.' },
@@ -326,6 +329,7 @@ function buildLocalTools(of: OfModule): unknown[] {
           root,
           intent,
           queries,
+          maxFiles: typeof params.maxFiles === 'number' ? params.maxFiles : 500,
           maxSpans: typeof params.maxSpans === 'number' ? params.maxSpans : 12,
           forceRefresh: params.forceRefresh === true,
           maxCacheAgeMs: typeof params.maxCacheAgeMs === 'number' ? params.maxCacheAgeMs : undefined,
@@ -529,13 +533,16 @@ export async function openfunctionAsk(
     try {
       const prepared = await prepareExplorerInput(input, { root: process.env.SIFT_USER_CWD || process.cwd() });
       preparedInput = prepared.input as ChatInput;
+      if (prepared.injected && process.env.SIFT_EXPLORER_DEBUG === '1' && prepared.reportText) {
+        console.error(prepared.reportText);
+      }
       onEvent({
         type: 'tool_result',
         toolResult: {
           name: 'repo_explorer',
           success: true,
           output: prepared.injected
-            ? `${prepared.report.mode}; ${prepared.report.likelyFiles.length} likely file(s); ${prepared.report.queriesRun.length} querie(s)`
+            ? `${prepared.report.mode}; ${prepared.report.metrics.queriesRun} querie(s); ${prepared.report.likelyFiles.length} likely file(s); ${prepared.report.metrics.filesSearched} file(s) searched; ${prepared.report.metrics.reportChars} char report; ${prepared.report.metrics.elapsedMs}ms`
             : 'skipped',
         },
       });

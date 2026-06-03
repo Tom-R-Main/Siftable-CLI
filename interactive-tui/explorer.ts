@@ -35,16 +35,31 @@ export interface ExplorerReport {
     skippedByReason: Partial<SearchSkippedByReason>;
     errors: string[];
   };
+  metrics: RepoExplorerMetrics;
   workspace?: {
     languages: Array<{ language: string; files: number; bytes: number }>;
     keyFiles: Array<{ path: string; reason: string }>;
   };
 }
 
+export interface RepoExplorerMetrics {
+  triggered: boolean;
+  classification: 'none' | 'targeted' | 'broad';
+  elapsedMs: number;
+  queriesRun: number;
+  filesSearched: number;
+  bytesScanned: number;
+  matchesFound: number;
+  reportChars: number;
+  capped: boolean;
+  capReason: string | null;
+}
+
 export interface ExplorerPrepareResult {
   input: ExplorerChatInput;
   report: ExplorerReport;
   injected: boolean;
+  reportText?: string;
 }
 
 export interface ExplorerOptions {
@@ -61,6 +76,22 @@ const BROAD_RE = /\b(scour|audit|map|trace|find|where|why|how|look into|figure o
 const IDENT_RE = /\b[A-Za-z_$][A-Za-z0-9_$:-]{2,}\b/g;
 const QUOTED_RE = /["'`]([^"'`\n]{3,100})["'`]/g;
 const PATH_RE = /\b(?:\.?\.?\/)?[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+|[A-Za-z0-9_.-]+\.(?:ts|tsx|js|jsx|zig|rs|go|py|json|md)\b/g;
+const WORD_RE = /\b[A-Za-z][A-Za-z0-9_-]{2,}\b/g;
+const QUERY_PHRASE_TERMS = new Set([
+  'brain',
+  'code',
+  'engine',
+  'file',
+  'files',
+  'local',
+  'native',
+  'repo',
+  'search',
+  'test',
+  'tests',
+  'tool',
+  'tools',
+]);
 const STOP_WORDS = new Set([
   'about',
   'after',
@@ -124,6 +155,18 @@ export function compileExplorerQueries(text: string, maxQueries = 5): string[] {
     const basename = match[0].split(/[\\/]/).pop();
     if (basename) add(basename.replace(/\.(ts|tsx|js|jsx|zig|rs|go|py|json|md)$/i, ''), 800);
   }
+  if (/\blocal\s+search\b/i.test(text)) add('local search', 850);
+  const words = [...text.matchAll(WORD_RE)].map((match) => match[0]);
+  for (let i = 0; i < words.length; i += 1) {
+    for (const size of [3, 2]) {
+      const phraseWords = words.slice(i, i + size);
+      if (phraseWords.length !== size) continue;
+      const lowerWords = phraseWords.map((word) => word.toLowerCase());
+      if (lowerWords.every((word) => STOP_WORDS.has(word))) continue;
+      if (!lowerWords.some((word) => QUERY_PHRASE_TERMS.has(word))) continue;
+      add(phraseWords.join(' '), size === 3 ? 675 : 650);
+    }
+  }
   for (const match of text.matchAll(IDENT_RE)) {
     const token = match[0];
     const isIdentifierLike = /[A-Z_$:-]/.test(token.slice(1)) || token.length >= 6;
@@ -140,6 +183,7 @@ export async function buildExplorerReport(
   input: ExplorerChatInput,
   options: ExplorerOptions = {},
 ): Promise<ExplorerReport> {
+  const startedAt = Date.now();
   const text = chatInputText(input);
   const mode = options.enabled === false ? 'skipped' : classifyExplorerPrompt(text);
   const root = options.root || process.env.SIFT_USER_CWD || process.cwd();
@@ -151,13 +195,27 @@ export async function buildExplorerReport(
     skippedByReason: {},
     errors: [],
   };
+  const metrics: RepoExplorerMetrics = {
+    triggered: mode !== 'skipped',
+    classification: mode === 'skipped' ? 'none' : mode,
+    elapsedMs: 0,
+    queriesRun: 0,
+    filesSearched: 0,
+    bytesScanned: 0,
+    matchesFound: 0,
+    reportChars: 0,
+    capped: false,
+    capReason: null,
+  };
 
   if (mode === 'skipped') {
-    return { mode, confidence: 'low', root, queriesRun: [], likelyFiles: [], recommendedReads: [], diagnostics };
+    metrics.elapsedMs = Date.now() - startedAt;
+    return { mode, confidence: 'low', root, queriesRun: [], likelyFiles: [], recommendedReads: [], diagnostics, metrics };
   }
 
   const maxQueries = options.maxQueries ?? (mode === 'broad' ? 5 : 3);
   const queries = compileExplorerQueries(text, maxQueries);
+  metrics.queriesRun = queries.length;
   const fileScores = new Map<string, ExplorerFileFinding>();
   const workspace = await inspectLocalWorkspace(root).catch((err) => {
     diagnostics.errors.push(`inspect_local_workspace: ${err instanceof Error ? err.message : String(err)}`);
@@ -210,6 +268,7 @@ export async function buildExplorerReport(
     diagnostics.capped ||= item.result.stats.capped;
     diagnostics.capReason ??= item.result.stats.capReason;
     mergeSkipped(diagnostics.skippedByReason, item.result.stats.skippedByReason);
+    metrics.matchesFound += item.result.matches.length;
     for (const match of item.result.matches) {
       const finding = addFinding(fileScores, match.path, `literal match for "${item.query}"`, 700);
       const locations = finding.locations ?? [];
@@ -235,6 +294,11 @@ export async function buildExplorerReport(
     likelyFiles.some((file) => file.locations?.length) ? 'high' :
     likelyFiles.length >= 3 ? 'medium' :
     'low';
+  metrics.elapsedMs = Date.now() - startedAt;
+  metrics.filesSearched = diagnostics.filesSearched;
+  metrics.bytesScanned = diagnostics.bytesScanned;
+  metrics.capped = diagnostics.capped;
+  metrics.capReason = diagnostics.capReason;
 
   return {
     mode,
@@ -244,6 +308,7 @@ export async function buildExplorerReport(
     likelyFiles,
     recommendedReads,
     diagnostics,
+    metrics,
     ...(workspace ? {
       workspace: {
         languages: workspace.languages.slice(0, 8),
@@ -259,7 +324,8 @@ export async function prepareExplorerInput(
 ): Promise<ExplorerPrepareResult> {
   const report = await buildExplorerReport(input, options);
   if (report.mode === 'skipped') return { input, report, injected: false };
-  return { input: injectExplorerContext(input, formatExplorerReport(report)), report, injected: true };
+  const reportText = formatExplorerReport(report);
+  return { input: injectExplorerContext(input, reportText), report, injected: true, reportText };
 }
 
 export function injectExplorerContext(input: ExplorerChatInput, context: string): ExplorerChatInput {
@@ -293,11 +359,11 @@ export function formatExplorerReport(report: ExplorerReport): string {
   const errors = report.diagnostics.errors.length
     ? `\nErrors: ${report.diagnostics.errors.slice(0, 3).join(' | ')}`
     : '';
-
-  return [
+  const render = (reportChars: number) => [
     '<repo_explorer_report>',
     `Mode: ${report.mode}; confidence: ${report.confidence}; root: ${report.root}`,
     `Queries: ${report.queriesRun.join(', ') || 'none'}`,
+    `Metrics: triggered=${report.metrics.triggered}; classification=${report.metrics.classification}; elapsedMs=${report.metrics.elapsedMs}; queriesRun=${report.metrics.queriesRun}; filesSearched=${report.metrics.filesSearched}; bytesScanned=${report.metrics.bytesScanned}; matchesFound=${report.metrics.matchesFound}; reportChars=${reportChars}; capped=${report.metrics.capped}; capReason=${report.metrics.capReason ?? 'none'}`,
     `Workspace languages: ${languages}`,
     'Likely files:',
     likely,
@@ -307,6 +373,14 @@ export function formatExplorerReport(report: ExplorerReport): string {
     'Instruction: Treat this as search triage only. Verify important claims with targeted reads before final conclusions.',
     '</repo_explorer_report>',
   ].join('\n');
+
+  let text = render(report.metrics.reportChars);
+  for (let i = 0; i < 3; i += 1) {
+    if (text.length === report.metrics.reportChars) break;
+    report.metrics.reportChars = text.length;
+    text = render(report.metrics.reportChars);
+  }
+  return text;
 }
 
 function addFinding(

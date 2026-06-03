@@ -200,6 +200,10 @@ export interface CodeSearchContentCacheStats {
   missFiles: number;
   hitBytes: number;
   missBytes: number;
+  storedBytes: number;
+  currentBytes: number;
+  evictions: number;
+  skippedTooLarge: number;
 }
 
 export interface FileSearchResult {
@@ -570,19 +574,22 @@ export function clearWorkspaceFileCache(root?: string): void {
   workspaceContentCacheBytes = Math.max(0, workspaceContentCacheBytes);
 }
 
-function evictWorkspaceContentCache(maxBytes: number): void {
-  if (workspaceContentCacheBytes <= maxBytes) return;
+function evictWorkspaceContentCache(maxBytes: number): number {
+  if (workspaceContentCacheBytes <= maxBytes) return 0;
+  let evictions = 0;
   const entries = [...workspaceContentCache.entries()].sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
   for (const [key, entry] of entries) {
     if (workspaceContentCacheBytes <= maxBytes) break;
     workspaceContentCache.delete(key);
     workspaceContentCacheBytes -= entry.bytes;
+    evictions += 1;
   }
   workspaceContentCacheBytes = Math.max(0, workspaceContentCacheBytes);
+  return evictions;
 }
 
-function rememberWorkspaceContent(file: WorkspaceFile, text: string, bytes: number, mtimeMs: number, maxBytes: number): void {
-  if (bytes > maxBytes) return;
+function rememberWorkspaceContent(file: WorkspaceFile, text: string, bytes: number, mtimeMs: number, maxBytes: number): { storedBytes: number; evictions: number; skippedTooLarge: number } {
+  if (bytes > maxBytes) return { storedBytes: 0, evictions: 0, skippedTooLarge: 1 };
   const now = Date.now();
   const previous = workspaceContentCache.get(file.absPath);
   if (previous) workspaceContentCacheBytes -= previous.bytes;
@@ -595,7 +602,8 @@ function rememberWorkspaceContent(file: WorkspaceFile, text: string, bytes: numb
     lastUsedAt: now,
   });
   workspaceContentCacheBytes += bytes;
-  evictWorkspaceContentCache(maxBytes);
+  const evictions = evictWorkspaceContentCache(maxBytes);
+  return { storedBytes: bytes, evictions, skippedTooLarge: 0 };
 }
 
 function countOccurrencesTs(haystack: string, needle: string): number {
@@ -1192,6 +1200,10 @@ async function readWorkspaceFileForSearch(
     missFiles: 0,
     hitBytes: 0,
     missBytes: 0,
+    storedBytes: 0,
+    currentBytes: workspaceContentCacheBytes,
+    evictions: 0,
+    skippedTooLarge: 0,
   };
   const fileStat = await stat(file.absPath);
   const now = Date.now();
@@ -1207,6 +1219,7 @@ async function readWorkspaceFileForSearch(
     cached.lastUsedAt = now;
     contentCacheStats.hitFiles += 1;
     contentCacheStats.hitBytes += cached.bytes;
+    contentCacheStats.currentBytes = workspaceContentCacheBytes;
     return { text: cached.text, bytes: cached.bytes };
   }
 
@@ -1214,7 +1227,11 @@ async function readWorkspaceFileForSearch(
   const text = data.toString("utf8");
   contentCacheStats.missFiles += 1;
   contentCacheStats.missBytes += data.byteLength;
-  rememberWorkspaceContent(file, text, data.byteLength, fileStat.mtimeMs, maxBytes);
+  const remembered = rememberWorkspaceContent(file, text, data.byteLength, fileStat.mtimeMs, maxBytes);
+  contentCacheStats.storedBytes += remembered.storedBytes;
+  contentCacheStats.evictions += remembered.evictions;
+  contentCacheStats.skippedTooLarge += remembered.skippedTooLarge;
+  contentCacheStats.currentBytes = workspaceContentCacheBytes;
   return { text, bytes: data.byteLength };
 }
 
@@ -1262,6 +1279,10 @@ export async function codeSearch(input: {
     missFiles: 0,
     hitBytes: 0,
     missBytes: 0,
+    storedBytes: 0,
+    currentBytes: workspaceContentCacheBytes,
+    evictions: 0,
+    skippedTooLarge: 0,
   };
   let searchedFiles = 0;
   let searchedBytes = 0;

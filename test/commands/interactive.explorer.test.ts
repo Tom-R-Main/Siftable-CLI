@@ -17,15 +17,39 @@ describe('interactive repo explorer preflight', () => {
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'sift-explorer-'));
     await mkdir(join(root, 'src'), {recursive: true});
+    await mkdir(join(root, 'native'), {recursive: true});
+    await mkdir(join(root, 'test'), {recursive: true});
+    await mkdir(join(root, 'node_modules', 'junk'), {recursive: true});
+    await mkdir(join(root, 'dist'), {recursive: true});
     await writeFile(join(root, 'package.json'), '{"name":"explorer-fixture"}\n', 'utf8');
     await writeFile(
       join(root, 'src', 'fsEngine.ts'),
-      'export function searchLiteral() {\n  return "needle";\n}\n',
+      'export function searchLiteral() {\n  return "local search needle";\n}\n',
       'utf8',
     );
     await writeFile(
       join(root, 'src', 'brain.ts'),
-      'import { searchLiteral } from "./fsEngine";\nexport function openfunctionAsk() { return searchLiteral(); }\n',
+      'import { searchLiteral } from "./fsEngine";\nexport function openfunctionAsk() { return `local search ${searchLiteral()}`; }\n',
+      'utf8',
+    );
+    await writeFile(
+      join(root, 'native', 'fs_engine.zig'),
+      'pub fn sift_fs_search_literal() []const u8 { return "local search native"; }\n',
+      'utf8',
+    );
+    await writeFile(
+      join(root, 'test', 'interactive.fs-engine.test.ts'),
+      'it("covers local search", () => expect("local search").toContain("search"));\n',
+      'utf8',
+    );
+    await writeFile(
+      join(root, 'node_modules', 'junk', 'index.js'),
+      'module.exports = "local search vendor noise";\n',
+      'utf8',
+    );
+    await writeFile(
+      join(root, 'dist', 'bundle.js'),
+      'console.log("local search bundled noise");\n',
       'utf8',
     );
   });
@@ -56,6 +80,13 @@ describe('interactive repo explorer preflight', () => {
     expect(prepared.report.mode).toBe('broad');
     expect(prepared.report.likelyFiles.map((file) => file.path)).toContain('src/fsEngine.ts');
     expect(prepared.report.recommendedReads.some((read) => read.path === 'src/fsEngine.ts')).toBe(true);
+    expect(prepared.report.metrics).toMatchObject({
+      triggered: true,
+      classification: 'broad',
+      queriesRun: expect.any(Number),
+      capped: expect.any(Boolean),
+    });
+    expect(prepared.report.metrics.reportChars).toBeGreaterThan(0);
     expect(prepared.input).toEqual(expect.stringContaining('<repo_explorer_report>'));
     expect(prepared.input).toEqual(expect.stringContaining('User request:'));
   });
@@ -75,6 +106,32 @@ describe('interactive repo explorer preflight', () => {
     expect(report.likelyFiles.length).toBeLessThanOrEqual(12);
     expect(report.recommendedReads.length).toBeLessThanOrEqual(8);
     expect(formatted.length).toBeLessThan(2500);
+  });
+
+  it('goldens broad local-search reports without vendor or build noise', async () => {
+    const report = await buildExplorerReport('scour this repo and explain how local search works', {root});
+    const formatted = formatExplorerReport(report);
+
+    expect(formatted).toContain('<repo_explorer_report>');
+    expect(formatted).toContain('</repo_explorer_report>');
+    expect(formatted).toContain('src/fsEngine.ts');
+    expect(formatted).toContain('native/fs_engine.zig');
+    expect(formatted).toContain('src/brain.ts');
+    expect(formatted).toContain('test/interactive.fs-engine.test.ts');
+    expect(formatted).not.toContain('node_modules/junk');
+    expect(formatted).not.toContain('dist/bundle');
+    expect(formatted.length).toBeLessThan(12000);
+    expect(report.metrics).toMatchObject({
+      triggered: true,
+      classification: 'broad',
+      queriesRun: report.queriesRun.length,
+      filesSearched: report.diagnostics.filesSearched,
+      bytesScanned: report.diagnostics.bytesScanned,
+      reportChars: formatted.length,
+      capped: report.diagnostics.capped,
+      capReason: report.diagnostics.capReason,
+    });
+    expect(report.metrics.matchesFound).toBeGreaterThan(0);
   });
 
   it('preserves image parts while prepending the explorer report', async () => {
@@ -130,6 +187,43 @@ describe('interactive repo explorer preflight', () => {
       if (previousCwd === undefined) delete process.env.SIFT_USER_CWD;
       else process.env.SIFT_USER_CWD = previousCwd;
       delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+    }
+  });
+
+  it('prints the raw report when explorer debug is enabled', async () => {
+    let capturedInput: unknown;
+    const previousCwd = process.env.SIFT_USER_CWD;
+    const previousDebug = process.env.SIFT_EXPLORER_DEBUG;
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+      createChatAgent: async () => ({
+        chat: async function* (message: unknown) {
+          capturedInput = message;
+          yield {type: 'text', text: 'ok'};
+          yield {type: 'done', result: {content: 'ok'}};
+        },
+      }),
+      defineTool: (def: unknown) => def,
+      ok: (data: unknown, message?: string) => ({success: true, data, message}),
+      err: (error: string) => ({success: false, error}),
+    };
+    process.env.SIFT_USER_CWD = root;
+    process.env.SIFT_EXPLORER_DEBUG = '1';
+    setBrainModel({provider: 'openrouter', model: 'test-model'});
+
+    try {
+      await openfunctionAsk('scour this repo and explain how local search works', () => undefined);
+
+      expect(String(capturedInput)).toContain('<repo_explorer_report>');
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('<repo_explorer_report>'));
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Metrics:'));
+    } finally {
+      if (previousCwd === undefined) delete process.env.SIFT_USER_CWD;
+      else process.env.SIFT_USER_CWD = previousCwd;
+      if (previousDebug === undefined) delete process.env.SIFT_EXPLORER_DEBUG;
+      else process.env.SIFT_EXPLORER_DEBUG = previousDebug;
+      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      errorSpy.mockRestore();
     }
   });
 });

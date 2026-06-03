@@ -62,6 +62,10 @@ for (const scenario of scenarios) {
       `preview=${ms(timings?.previewWallMs)}`,
       `contentHitBytes=${content?.hitBytes ?? 0}`,
       `contentMissBytes=${content?.missBytes ?? 0}`,
+      `contentStoredBytes=${content?.storedBytes ?? 0}`,
+      `contentCurrentBytes=${content?.currentBytes ?? 0}`,
+      `contentEvictions=${content?.evictions ?? 0}`,
+      `contentSkippedTooLarge=${content?.skippedTooLarge ?? 0}`,
     ].join(" "));
   }
 }

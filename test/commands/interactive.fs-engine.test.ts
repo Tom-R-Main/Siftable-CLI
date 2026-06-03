@@ -265,6 +265,10 @@ describe('sift interactive — fs engine fallback policy', () => {
     expect(second.stats.contentCache).toMatchObject({enabled: true});
     expect(second.stats.contentCache?.hitFiles).toBeGreaterThan(0);
     expect(second.stats.contentCache?.hitBytes).toBeGreaterThan(0);
+    expect(first.stats.contentCache?.storedBytes).toBeGreaterThan(0);
+    expect(second.stats.contentCache?.currentBytes).toBeGreaterThan(0);
+    expect(second.stats.contentCache?.evictions).toBeGreaterThanOrEqual(0);
+    expect(second.stats.contentCache?.skippedTooLarge).toBeGreaterThanOrEqual(0);
   });
 
   it('reads several file ranges in one bounded call', async () => {
