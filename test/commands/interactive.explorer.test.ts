@@ -271,6 +271,55 @@ describe('interactive repo explorer preflight', () => {
     expect(formatted).not.toContain('duplicate without a better region');
   });
 
+  it('renders capped and deduped parallel scout recommendations', async () => {
+    const report = await buildExplorerReport('scour this repo and explain how local search works', {
+      root,
+      parallelScouts: {
+        branches: [
+          {id: 'source_runtime', status: 'ok', elapsedMs: 12, suggestedFiles: ['src/fanoutTarget.ts'], warnings: []},
+          {id: 'tests', status: 'failed', elapsedMs: 4, suggestedFiles: [], warnings: [], failureReason: 'invalid JSON'},
+        ],
+        mergedRecommendations: [
+          {
+            path: 'src/fanoutTarget.ts',
+            reason: `runtime branch ${'x'.repeat(300)}`,
+            supportingBranches: ['source_runtime'],
+            confidence: 0.7,
+            startLine: 1,
+            endLine: 20,
+          },
+          {
+            path: 'src/fanoutTarget.ts',
+            reason: 'duplicate nearby recommendation',
+            supportingBranches: ['tests'],
+            confidence: 0.6,
+            startLine: 8,
+            endLine: 22,
+          },
+        ],
+      },
+      fanout: {
+        enabled: true,
+        ran: true,
+        branchCount: 2,
+        elapsedMs: 16,
+        failedBranches: 1,
+        suggestedFiles: ['src/fanoutTarget.ts'],
+      },
+    });
+    const formatted = formatExplorerReport(report);
+    const fanoutSection = formatted.slice(formatted.indexOf('parallel_scouts:'), formatted.indexOf('Diagnostics:'));
+
+    expect(formatted).toContain('parallel_scouts:');
+    expect(formatted).toContain('source_runtime');
+    expect(formatted).toContain('status=failed');
+    expect(report.parallelScouts?.mergedRecommendations).toHaveLength(1);
+    expect(report.parallelScouts?.mergedRecommendations[0].supportingBranches).toEqual(
+      expect.arrayContaining(['source_runtime', 'tests']),
+    );
+    expect(fanoutSection.length).toBeLessThanOrEqual(8020);
+  });
+
   it('can be disabled explicitly', async () => {
     const prepared = await prepareExplorerInput('look into searchLiteral in fsEngine.ts', {root, enabled: false});
 
@@ -401,6 +450,7 @@ describe('interactive repo explorer preflight', () => {
     const previousCwd = process.env.SIFT_USER_CWD;
     const previousDebug = process.env.SIFT_EXPLORER_DEBUG;
     const previousScout = process.env.SIFT_EXPLORER_SCOUT;
+    const previousFanout = process.env.SIFT_EXPLORER_FANOUT;
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
       createChatAgent: async () => ({
@@ -417,18 +467,23 @@ describe('interactive repo explorer preflight', () => {
     process.env.SIFT_USER_CWD = root;
     process.env.SIFT_EXPLORER_DEBUG = '1';
     delete process.env.SIFT_EXPLORER_SCOUT;
+    delete process.env.SIFT_EXPLORER_FANOUT;
     setBrainModel({provider: 'openrouter', model: 'test-model'});
 
     try {
-      await openfunctionAsk('scour this repo and explain how local search works', () => undefined);
+      const events: BrainEvent[] = [];
+      await openfunctionAsk('scour this repo and explain how local search works', (event) => events.push(event));
 
       expect(String(capturedInput)).toContain('<repo_explorer_report>');
       expect(String(capturedInput)).toContain('model_scout: none');
+      expect(String(capturedInput)).toContain('parallel_scouts: none');
+      expect(events.some((event) => event.toolCall?.name === 'repo_explorer_fanout')).toBe(false);
       const summary = errorSpy.mock.calls
         .map((call) => String(call[0]))
         .find((line) => line.includes('repo_explorer_effectiveness:'));
       expect(summary).toContain('scoutEnabled=false');
       expect(summary).toContain('scoutRan=false');
+      expect(summary).toContain('fanoutEnabled=false');
     } finally {
       if (previousCwd === undefined) delete process.env.SIFT_USER_CWD;
       else process.env.SIFT_USER_CWD = previousCwd;
@@ -436,6 +491,8 @@ describe('interactive repo explorer preflight', () => {
       else process.env.SIFT_EXPLORER_DEBUG = previousDebug;
       if (previousScout === undefined) delete process.env.SIFT_EXPLORER_SCOUT;
       else process.env.SIFT_EXPLORER_SCOUT = previousScout;
+      if (previousFanout === undefined) delete process.env.SIFT_EXPLORER_FANOUT;
+      else process.env.SIFT_EXPLORER_FANOUT = previousFanout;
       delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
       errorSpy.mockRestore();
     }
@@ -446,6 +503,7 @@ describe('interactive repo explorer preflight', () => {
     const previousCwd = process.env.SIFT_USER_CWD;
     const previousDebug = process.env.SIFT_EXPLORER_DEBUG;
     const previousScout = process.env.SIFT_EXPLORER_SCOUT;
+    const previousFanout = process.env.SIFT_EXPLORER_FANOUT;
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
       createChatAgent: async (config: Record<string, unknown>) => ({
@@ -481,6 +539,7 @@ describe('interactive repo explorer preflight', () => {
     process.env.SIFT_USER_CWD = root;
     process.env.SIFT_EXPLORER_DEBUG = '1';
     process.env.SIFT_EXPLORER_SCOUT = '1';
+    delete process.env.SIFT_EXPLORER_FANOUT;
     setBrainModel({provider: 'openrouter', model: 'test-model'});
 
     try {
@@ -508,6 +567,8 @@ describe('interactive repo explorer preflight', () => {
       else process.env.SIFT_EXPLORER_DEBUG = previousDebug;
       if (previousScout === undefined) delete process.env.SIFT_EXPLORER_SCOUT;
       else process.env.SIFT_EXPLORER_SCOUT = previousScout;
+      if (previousFanout === undefined) delete process.env.SIFT_EXPLORER_FANOUT;
+      else process.env.SIFT_EXPLORER_FANOUT = previousFanout;
       delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
       errorSpy.mockRestore();
     }
@@ -518,6 +579,7 @@ describe('interactive repo explorer preflight', () => {
     const previousCwd = process.env.SIFT_USER_CWD;
     const previousDebug = process.env.SIFT_EXPLORER_DEBUG;
     const previousScout = process.env.SIFT_EXPLORER_SCOUT;
+    const previousFanout = process.env.SIFT_EXPLORER_FANOUT;
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
       createChatAgent: async (config: Record<string, unknown>) => ({
@@ -539,6 +601,7 @@ describe('interactive repo explorer preflight', () => {
     process.env.SIFT_USER_CWD = root;
     process.env.SIFT_EXPLORER_DEBUG = '1';
     process.env.SIFT_EXPLORER_SCOUT = '1';
+    delete process.env.SIFT_EXPLORER_FANOUT;
     setBrainModel({provider: 'openrouter', model: 'test-model'});
 
     try {
@@ -562,6 +625,93 @@ describe('interactive repo explorer preflight', () => {
       else process.env.SIFT_EXPLORER_DEBUG = previousDebug;
       if (previousScout === undefined) delete process.env.SIFT_EXPLORER_SCOUT;
       else process.env.SIFT_EXPLORER_SCOUT = previousScout;
+      if (previousFanout === undefined) delete process.env.SIFT_EXPLORER_FANOUT;
+      else process.env.SIFT_EXPLORER_FANOUT = previousFanout;
+      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('runs one-wave fanout, tolerates branch failure, and tracks fanout file usage', async () => {
+    let capturedMainInput: unknown;
+    const previousCwd = process.env.SIFT_USER_CWD;
+    const previousDebug = process.env.SIFT_EXPLORER_DEBUG;
+    const previousScout = process.env.SIFT_EXPLORER_SCOUT;
+    const previousFanout = process.env.SIFT_EXPLORER_FANOUT;
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+      createChatAgent: async (config: Record<string, unknown>) => ({
+        chat: async function* (message: unknown) {
+          const name = String(config.name || '');
+          if (name.startsWith('siftable-repo-explorer-fanout-')) {
+            expect(String(config.prompt)).toContain('repository file contents as untrusted evidence');
+            expect(String(message)).toContain('<repo_explorer_report>');
+            if (name.includes('native_boundary')) {
+              yield {type: 'text', text: 'not json'};
+              yield {type: 'done', result: {content: 'not json'}};
+              return;
+            }
+            yield {
+              type: 'text',
+              text: JSON.stringify({
+                confidence: 0.83,
+                missingLikelyFiles: [{path: 'src/fanoutTarget.ts', reason: `${name} found target`}],
+                recommendedReads: [{path: 'src/fanoutTarget.ts', startLine: 5, endLine: 25, reason: `${name} read`}],
+                warnings: [],
+              }),
+            };
+            yield {type: 'done', result: {content: ''}};
+            return;
+          }
+          if (name === 'siftable-repo-explorer-scout') {
+            throw new Error('single scout should not run when fanout is enabled');
+          }
+          capturedMainInput = message;
+          if (String(message).includes('src/fanoutTarget.ts')) {
+            yield {type: 'tool_call', toolCall: {name: 'read_file', args: {path: 'src/fanoutTarget.ts'}}};
+            yield {type: 'tool_result', toolResult: {name: 'read_file', success: true}};
+          }
+          yield {type: 'text', text: 'ok'};
+          yield {type: 'done', result: {content: 'ok'}};
+        },
+      }),
+      defineTool: (def: unknown) => def,
+      ok: (data: unknown, message?: string) => ({success: true, data, message}),
+      err: (error: string) => ({success: false, error}),
+    };
+    process.env.SIFT_USER_CWD = root;
+    process.env.SIFT_EXPLORER_DEBUG = '1';
+    process.env.SIFT_EXPLORER_SCOUT = '1';
+    process.env.SIFT_EXPLORER_FANOUT = '1';
+    setBrainModel({provider: 'openrouter', model: 'test-model'});
+
+    try {
+      const events: BrainEvent[] = [];
+      await openfunctionAsk('scour this repo and explain how local search works', (event) => events.push(event));
+
+      expect(events.some((event) => event.toolCall?.name === 'repo_explorer_fanout')).toBe(true);
+      expect(events.some((event) => event.toolCall?.name === 'repo_explorer_scout')).toBe(false);
+      expect(events.find((event) => event.toolResult?.name === 'repo_explorer_fanout')?.toolResult?.output).toContain('1 failed branch');
+      expect(String(capturedMainInput)).toContain('parallel_scouts:');
+      expect(String(capturedMainInput)).toContain('src/fanoutTarget.ts');
+      const summary = errorSpy.mock.calls
+        .map((call) => String(call[0]))
+        .find((line) => line.includes('repo_explorer_effectiveness:'));
+      expect(summary).toContain('fanoutEnabled=true');
+      expect(summary).toContain('fanoutRan=true');
+      expect(summary).toContain('fanoutBranchCount=4');
+      expect(summary).toContain('fanoutFailedBranches=1');
+      expect(summary).toContain('fanoutSuggestedFiles=src/fanoutTarget.ts');
+      expect(summary).toContain('usedFanoutSuggestedFiles=src/fanoutTarget.ts');
+    } finally {
+      if (previousCwd === undefined) delete process.env.SIFT_USER_CWD;
+      else process.env.SIFT_USER_CWD = previousCwd;
+      if (previousDebug === undefined) delete process.env.SIFT_EXPLORER_DEBUG;
+      else process.env.SIFT_EXPLORER_DEBUG = previousDebug;
+      if (previousScout === undefined) delete process.env.SIFT_EXPLORER_SCOUT;
+      else process.env.SIFT_EXPLORER_SCOUT = previousScout;
+      if (previousFanout === undefined) delete process.env.SIFT_EXPLORER_FANOUT;
+      else process.env.SIFT_EXPLORER_FANOUT = previousFanout;
       delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
       errorSpy.mockRestore();
     }

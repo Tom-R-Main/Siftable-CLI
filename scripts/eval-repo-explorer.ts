@@ -2,7 +2,7 @@
 import { performance } from 'node:perf_hooks';
 import { openfunctionAsk, setBrainModel, type BrainEvent } from '../interactive-tui/brain';
 
-type EvalMode = 'off' | 'deterministic' | 'scout';
+type EvalMode = 'off' | 'deterministic' | 'scout' | 'fanout';
 
 interface EvalRun {
   prompt: string;
@@ -20,6 +20,11 @@ interface EvalRun {
   scoutSuggestedFiles: string[];
   scoutFailed: boolean;
   scoutFailureReason?: string;
+  fanoutElapsedMs: number;
+  fanoutBranchCount: number;
+  fanoutFailedBranches: number;
+  fanoutSuggestedFiles: string[];
+  usedFanoutSuggestedFiles: string[];
   finalAnswerQualityNotes: string;
   error?: string;
 }
@@ -51,7 +56,7 @@ async function main(): Promise<void> {
   const root = process.env.SIFT_USER_CWD || process.cwd();
   const results: EvalRun[] = [];
   for (const prompt of prompts) {
-    for (const mode of ['off', 'deterministic', 'scout'] as EvalMode[]) {
+    for (const mode of ['off', 'deterministic', 'scout', 'fanout'] as EvalMode[]) {
       results.push(await runPrompt(prompt, mode, root));
     }
   }
@@ -66,6 +71,7 @@ async function main(): Promise<void> {
 async function runPrompt(prompt: string, mode: EvalMode, cwd: string): Promise<EvalRun> {
   const previousExplorer = process.env.SIFT_EXPLORER;
   const previousScout = process.env.SIFT_EXPLORER_SCOUT;
+  const previousFanout = process.env.SIFT_EXPLORER_FANOUT;
   const previousDebug = process.env.SIFT_EXPLORER_DEBUG;
   const previousCwd = process.env.SIFT_USER_CWD;
   const previousConsoleError = console.error;
@@ -77,9 +83,11 @@ async function runPrompt(prompt: string, mode: EvalMode, cwd: string): Promise<E
   if (mode === 'off') {
     process.env.SIFT_EXPLORER = 'off';
     delete process.env.SIFT_EXPLORER_SCOUT;
+    delete process.env.SIFT_EXPLORER_FANOUT;
   } else {
     process.env.SIFT_EXPLORER = 'on';
     process.env.SIFT_EXPLORER_SCOUT = mode === 'scout' ? '1' : '0';
+    process.env.SIFT_EXPLORER_FANOUT = mode === 'fanout' ? '1' : '0';
   }
   console.error = (...parts: unknown[]) => {
     debugLines.push(parts.map(String).join(' '));
@@ -107,6 +115,11 @@ async function runPrompt(prompt: string, mode: EvalMode, cwd: string): Promise<E
       scoutSuggestedFiles: splitList(effectiveness.scoutSuggestedFiles),
       scoutFailed: effectiveness.scoutFailed === 'true',
       ...(effectiveness.scoutFailureReason ? { scoutFailureReason: effectiveness.scoutFailureReason } : {}),
+      fanoutElapsedMs: Number(effectiveness.fanoutElapsedMs || 0),
+      fanoutBranchCount: Number(effectiveness.fanoutBranchCount || 0),
+      fanoutFailedBranches: Number(effectiveness.fanoutFailedBranches || 0),
+      fanoutSuggestedFiles: splitList(effectiveness.fanoutSuggestedFiles),
+      usedFanoutSuggestedFiles: splitList(effectiveness.usedFanoutSuggestedFiles),
       finalAnswerQualityNotes: '',
       ...(result.error ? { error: result.error } : {}),
     };
@@ -114,6 +127,7 @@ async function runPrompt(prompt: string, mode: EvalMode, cwd: string): Promise<E
     console.error = previousConsoleError;
     restoreEnv('SIFT_EXPLORER', previousExplorer);
     restoreEnv('SIFT_EXPLORER_SCOUT', previousScout);
+    restoreEnv('SIFT_EXPLORER_FANOUT', previousFanout);
     restoreEnv('SIFT_EXPLORER_DEBUG', previousDebug);
     restoreEnv('SIFT_USER_CWD', previousCwd);
   }
@@ -124,10 +138,11 @@ function installFakeOpenFunction(): void {
     createChatAgent: async (config: Record<string, unknown>) => ({
       chat: async function* (message: unknown) {
         const text = String(message);
-        if (config.name === 'siftable-repo-explorer-scout') {
+        const agentName = String(config.name || '');
+        if (agentName === 'siftable-repo-explorer-scout' || agentName.startsWith('siftable-repo-explorer-fanout-')) {
           yield {
             type: 'text',
-            text: JSON.stringify(fakeScoutReport(text)),
+            text: JSON.stringify(fakeScoutReport(text, agentName)),
           };
           yield { type: 'done', result: { content: '' } };
           return;
@@ -152,14 +167,14 @@ function installFakeOpenFunction(): void {
   };
 }
 
-function fakeScoutReport(input: string) {
+function fakeScoutReport(input: string, agentName = '') {
   const lower = input.toLowerCase();
   const path =
-    lower.includes('test') ? 'test/commands/interactive.explorer.test.ts' :
+    agentName.includes('tests') || lower.includes('test') ? 'test/commands/interactive.explorer.test.ts' :
     lower.includes('tool event') ? 'interactive-tui/toolView.ts' :
-    lower.includes('codex') ? 'interactive-tui/codexEngine.ts' :
-    lower.includes('native') ? 'interactive-tui/native/fs_engine.zig' :
-    lower.includes('repo_explorer') ? 'interactive-tui/brain.ts' :
+    agentName.includes('routing_config') || lower.includes('codex') ? 'interactive-tui/codexEngine.ts' :
+    agentName.includes('native_boundary') || lower.includes('native') ? 'interactive-tui/native/fs_engine.zig' :
+    agentName.includes('source_runtime') || agentName.includes('direct_source') || lower.includes('repo_explorer') ? 'interactive-tui/brain.ts' :
     'interactive-tui/fsEngine.ts';
   return {
     confidence: 0.74,
@@ -170,6 +185,8 @@ function fakeScoutReport(input: string) {
 }
 
 function firstSuggestedPath(text: string): string | null {
+  const fanout = text.match(/parallel_scouts:[\s\S]*?merged_recommendations:\n- ([^:\n]+)(?::\d+-\d+)?:/);
+  if (fanout?.[1]) return fanout[1].trim();
   const scout = text.match(/model_scout:[\s\S]*?recommended_reads:\n- ([^:\n]+)(?::\d+-\d+)?:/);
   if (scout?.[1]) return scout[1].trim();
   const deterministic = text.match(/Recommended reads:\n- ([^:\n]+)(?::\d+-\d+)?:/);
@@ -213,9 +230,9 @@ function printMarkdown(root: string, fakeAgent: boolean, runs: EvalRun[]): void 
   console.log(`# Repo Explorer Eval\n`);
   console.log(`root: \`${root}\``);
   console.log(`agent: \`${fakeAgent ? 'fake' : 'real'}\`\n`);
-  console.log('| mode | runs | avg elapsed | avg report chars | avg tools | avg searches | avg reads | scout used | redundant broad | scout failed |');
+  console.log('| mode | runs | avg elapsed | avg report chars | avg tools | avg searches | avg reads | scout/fanout used | redundant broad | scout failed |');
   console.log('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |');
-  for (const mode of ['off', 'deterministic', 'scout'] as EvalMode[]) {
+  for (const mode of ['off', 'deterministic', 'scout', 'fanout'] as EvalMode[]) {
     const slice = runs.filter((run) => run.mode === mode);
     console.log([
       `| ${mode}`,
@@ -225,7 +242,7 @@ function printMarkdown(root: string, fakeAgent: boolean, runs: EvalRun[]): void 
       avg(slice, 'postExplorerToolCalls'),
       avg(slice, 'postExplorerSearchCalls'),
       avg(slice, 'postExplorerReadCalls'),
-      slice.filter((run) => run.usedScoutSuggestedFiles.length > 0).length,
+      slice.filter((run) => run.usedScoutSuggestedFiles.length > 0 || run.usedFanoutSuggestedFiles.length > 0).length,
       slice.filter((run) => run.launchedRedundantBroadSearch).length,
       slice.filter((run) => run.scoutFailed).length,
       '|',
@@ -233,7 +250,7 @@ function printMarkdown(root: string, fakeAgent: boolean, runs: EvalRun[]): void 
   }
   console.log('\n## Runs\n');
   for (const run of runs) {
-    console.log(`- ${run.mode} | ${run.prompt} | elapsed=${run.elapsedMs}ms reportChars=${run.reportChars} tools=${run.postExplorerToolCalls} searches=${run.postExplorerSearchCalls} reads=${run.postExplorerReadCalls} scoutUsed=${run.usedScoutSuggestedFiles.join(',') || 'none'} redundantBroad=${run.launchedRedundantBroadSearch} scoutFailed=${run.scoutFailed}${run.error ? ` error=${run.error}` : ''}`);
+    console.log(`- ${run.mode} | ${run.prompt} | elapsed=${run.elapsedMs}ms reportChars=${run.reportChars} tools=${run.postExplorerToolCalls} searches=${run.postExplorerSearchCalls} reads=${run.postExplorerReadCalls} scoutUsed=${run.usedScoutSuggestedFiles.join(',') || 'none'} fanoutUsed=${run.usedFanoutSuggestedFiles.join(',') || 'none'} redundantBroad=${run.launchedRedundantBroadSearch} scoutFailed=${run.scoutFailed} fanoutFailedBranches=${run.fanoutFailedBranches}${run.error ? ` error=${run.error}` : ''}`);
   }
 }
 
