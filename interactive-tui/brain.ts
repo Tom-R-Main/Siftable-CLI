@@ -32,6 +32,7 @@ import { requestConfirm } from './confirmGate';
 import {
   attachRepoExplorerScout,
   attachRepoExplorerFanout,
+  assignRepoExplorerScoutRoles,
   buildExplorerReport,
   chatInputText,
   classifyExplorerPrompt,
@@ -45,7 +46,7 @@ import {
   observeRepoExplorerToolCall,
   parseRepoExplorerScoutReportDetailed,
   type ExplorerReport,
-  type ExplorerMode,
+  type ExplorerScoutRole,
   type RepoExplorerFanoutBranch,
   type RepoExplorerFanoutRecommendation,
   type RepoExplorerFanoutReport,
@@ -157,6 +158,7 @@ const FANOUT_BUDGET = {
 
 interface FanoutBranchSpec {
   id: string;
+  role: ExplorerScoutRole;
   focus: string;
 }
 
@@ -757,21 +759,6 @@ function buildRepoExplorerScoutTools(
   return [inspectWorkspace, searchLocalFiles, readFileRegion, readManyRegions];
 }
 
-function fanoutBranchesForMode(mode: ExplorerMode): FanoutBranchSpec[] {
-  if (mode === 'broad') {
-    return [
-      { id: 'source_runtime', focus: 'Find primary source files and runtime flow relevant to the user prompt.' },
-      { id: 'tests', focus: 'Find tests that prove or constrain behavior relevant to the user prompt.' },
-      { id: 'native_boundary', focus: 'Find native/FFI/Zig or fallback boundaries relevant to the user prompt.' },
-      { id: 'routing_config', focus: 'Find routing, config, environment flags, and integration seams relevant to the user prompt.' },
-    ];
-  }
-  return [
-    { id: 'direct_source', focus: 'Find direct implementation files.' },
-    { id: 'tests', focus: 'Find relevant tests.' },
-  ];
-}
-
 async function runRepoExplorerScout(
   input: ChatInput,
   deterministicReport: ExplorerReport,
@@ -825,7 +812,12 @@ async function runRepoExplorerFanout(
   deterministicReport: ExplorerReport,
 ): Promise<RepoExplorerFanoutState> {
   const startedAt = Date.now();
-  const branches = fanoutBranchesForMode(deterministicReport.mode).slice(0, FANOUT_BUDGET.maxConcurrentScouts);
+  const assignment = assignRepoExplorerScoutRoles(input, deterministicReport);
+  const branches = assignment.roles.slice(0, FANOUT_BUDGET.maxConcurrentScouts).map((role) => ({
+    id: role.id,
+    role,
+    focus: role.focus,
+  }));
   const state: RepoExplorerFanoutState = {
     enabled: true,
     ran: true,
@@ -833,14 +825,17 @@ async function runRepoExplorerFanout(
     elapsedMs: 0,
     failedBranches: 0,
     suggestedFiles: [],
+    assignedRoles: branches.map((branch) => branch.role.id),
+    promptClass: assignment.promptClass,
   };
   const results = await Promise.all(
     branches.map((branch) => runRepoExplorerFanoutBranch(input, deterministicReport, branch)),
   );
-  const report = reduceRepoExplorerFanout(results, deterministicReport);
+  const report = reduceRepoExplorerFanout(results, deterministicReport, assignment.promptClass);
   state.elapsedMs = Date.now() - startedAt;
   state.failedBranches = report.branches.filter((branch) => branch.status === 'failed').length;
   state.suggestedFiles = report.mergedRecommendations.map((item) => item.path);
+  state.assignedRoles = report.assignedRoles;
   attachRepoExplorerFanout(deterministicReport, report, state);
   return state;
 }
@@ -863,10 +858,10 @@ async function runRepoExplorerFanoutBranch(
       model,
       providers: ['execufunction'],
       tools: buildRepoExplorerScoutTools(of, {
-        maxToolCalls: FANOUT_BUDGET.maxScoutToolCalls,
-        maxSearches: FANOUT_BUDGET.maxSearchesPerScout,
-        maxFilesRead: FANOUT_BUDGET.maxFilesReadPerScout,
-        maxElapsedMs: FANOUT_BUDGET.maxElapsedMs,
+        maxToolCalls: Math.min(branch.role.budget.maxToolCalls, FANOUT_BUDGET.maxScoutToolCalls),
+        maxSearches: Math.min(branch.role.budget.maxSearches, FANOUT_BUDGET.maxSearchesPerScout),
+        maxFilesRead: Math.min(branch.role.budget.maxFilesRead, FANOUT_BUDGET.maxFilesReadPerScout),
+        maxElapsedMs: Math.min(branch.role.budget.maxElapsedMs, FANOUT_BUDGET.maxElapsedMs),
       }),
       memory: false,
       prompt: `${SCOUT_PROMPT} Branch id: ${branch.id}. Branch focus: ${branch.focus}`,
@@ -881,7 +876,14 @@ async function runRepoExplorerFanoutBranch(
       '',
       'Return JSON only.',
     ].join('\n');
-    const collected = await withTimeout(collectScoutText(scout.chat(scoutInput, { stream: true })), FANOUT_BUDGET.maxElapsedMs);
+    const timeoutMs = Math.min(branch.role.budget.maxElapsedMs, FANOUT_BUDGET.maxElapsedMs);
+    const collected = await withTimeout(
+      collectScoutText(scout.chat(scoutInput, { stream: true }), {
+        maxReturnedChars: Math.min(branch.role.budget.maxReturnedChars, FANOUT_BUDGET.maxScoutSectionChars),
+        maxToolCalls: Math.min(branch.role.budget.maxToolCalls, FANOUT_BUDGET.maxScoutToolCalls),
+      }),
+      timeoutMs,
+    );
     const parsed = parseScoutReportForFanout(collected.text);
     const suggestedFiles = [...new Set([
       ...parsed.report.recommendedReads.map((read) => read.path),
@@ -890,6 +892,7 @@ async function runRepoExplorerFanoutBranch(
     return {
       branch: {
         id: branch.id,
+        role: branch.role.id,
         status: 'ok',
         elapsedMs: Date.now() - startedAt,
         suggestedFiles,
@@ -901,6 +904,7 @@ async function runRepoExplorerFanoutBranch(
     return {
       branch: {
         id: branch.id,
+        role: branch.role.id,
         status: 'failed',
         elapsedMs: Date.now() - startedAt,
         suggestedFiles: [],
@@ -918,12 +922,24 @@ function parseScoutReportForFanout(text: string) {
 function reduceRepoExplorerFanout(
   results: Array<{ branch: RepoExplorerFanoutBranch; report?: ReturnType<typeof parseScoutReportForFanout> }>,
   deterministicReport: ExplorerReport,
+  promptClass?: RepoExplorerFanoutReport['promptClass'],
 ): RepoExplorerFanoutReport {
   const deterministicPaths = new Set([
     ...deterministicReport.recommendedReads.map((read) => read.path),
     ...deterministicReport.likelyFiles.map((file) => file.path),
   ]);
   const byKey = new Map<string, RepoExplorerFanoutRecommendation>();
+  const seenForBranchUtility = new Set(deterministicPaths);
+  const branches = results.map((result) => {
+    const newUnique = result.branch.suggestedFiles.filter((file) => !seenForBranchUtility.has(file));
+    const duplicate = result.branch.suggestedFiles.filter((file) => seenForBranchUtility.has(file));
+    for (const file of newUnique) seenForBranchUtility.add(file);
+    return {
+      ...result.branch,
+      duplicateSuggestions: duplicate.length,
+      newUniqueSuggestions: newUnique.length,
+    };
+  });
   for (const result of results) {
     if (!result.report) continue;
     const branchId = result.branch.id;
@@ -965,7 +981,7 @@ function reduceRepoExplorerFanout(
     }
   }
   return {
-    branches: results.map((result) => result.branch),
+    branches,
     mergedRecommendations: [...byKey.values()]
       .sort((a, b) =>
         b.supportingBranches.length - a.supportingBranches.length ||
@@ -973,10 +989,18 @@ function reduceRepoExplorerFanout(
         a.path.localeCompare(b.path)
       )
       .slice(0, 20),
+    assignedRoles: branches.map((branch) => branch.role).filter((role): role is NonNullable<typeof role> => Boolean(role)),
+    ...(promptClass ? { promptClass } : {}),
   };
 }
 
-async function collectScoutText(chunks: AsyncIterable<OfChunk>): Promise<{ text: string; truncated: boolean }> {
+async function collectScoutText(
+  chunks: AsyncIterable<OfChunk>,
+  budget: { maxReturnedChars: number; maxToolCalls: number } = {
+    maxReturnedChars: DEFAULT_SCOUT_BUDGET.maxReturnedChars,
+    maxToolCalls: DEFAULT_SCOUT_BUDGET.maxToolCalls,
+  },
+): Promise<{ text: string; truncated: boolean }> {
   let assembled = '';
   let doneContent = '';
   let observedToolCalls = 0;
@@ -984,13 +1008,13 @@ async function collectScoutText(chunks: AsyncIterable<OfChunk>): Promise<{ text:
   for await (const chunk of chunks) {
     if (chunk.type === 'text' && typeof chunk.text === 'string') {
       assembled += chunk.text;
-      if (assembled.length > DEFAULT_SCOUT_BUDGET.maxReturnedChars) {
+      if (assembled.length > budget.maxReturnedChars) {
         truncated = true;
         break;
       }
     } else if (chunk.type === 'tool_call') {
       observedToolCalls += 1;
-      if (observedToolCalls > DEFAULT_SCOUT_BUDGET.maxToolCalls) {
+      if (observedToolCalls > budget.maxToolCalls) {
         throw new Error('repo explorer scout budget exceeded: tool calls');
       }
     } else if (chunk.type === 'done' && chunk.result?.content) {
@@ -998,7 +1022,7 @@ async function collectScoutText(chunks: AsyncIterable<OfChunk>): Promise<{ text:
     }
   }
   const text = (assembled.trim() || doneContent.trim());
-  return { text: text.slice(0, DEFAULT_SCOUT_BUDGET.maxReturnedChars), truncated: truncated || text.length > DEFAULT_SCOUT_BUDGET.maxReturnedChars };
+  return { text: text.slice(0, budget.maxReturnedChars), truncated: truncated || text.length > budget.maxReturnedChars };
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

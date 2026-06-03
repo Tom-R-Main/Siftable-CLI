@@ -21,6 +21,7 @@ export const OUTPUT_MAX_BYTES = 2000;
 
 export type ExplorerActivityBranch = {
   id: string;
+  role?: string;
   status: "ok" | "failed" | "skipped";
   elapsedMs?: number;
   suggestedFileCount: number;
@@ -41,6 +42,7 @@ export type ExplorerActivityView = {
   primaryCandidates?: string[];
   scoutSuggestedFiles?: string[];
   fanoutSuggestedFiles?: string[];
+  assignedRoles?: string[];
   branches?: ExplorerActivityBranch[];
   warnings?: string[];
   rawReport?: string;
@@ -148,12 +150,16 @@ export function formatExplorerActivityLine(activity: ExplorerActivityView): stri
   const branchText = activity.mode === "fanout" && activity.branches?.length
     ? `${activity.branches.filter((branch) => branch.status === "ok").length}/${activity.branches.length} scouts`
     : "";
+  const roles = activity.mode === "fanout" && activity.assignedRoles?.length
+    ? clipLine(activity.assignedRoles.slice(0, 4).join("/"), 56)
+    : "";
   const warnings = activity.warnings?.length
     ? formatCount("warning", activity.warnings.length)
     : "";
   return [
     "◇ Explorer",
     "checked repo",
+    roles,
     branchText,
     formatCount("file", activity.suggestedFileCount),
     `${activity.elapsedMs}ms`,
@@ -174,6 +180,9 @@ export function formatExplorerActivityDetails(activity: ExplorerActivityView): s
   }
   if (typeof activity.redundantBroadSearch === "boolean") {
     lines.push(`Redundant broad search: ${activity.redundantBroadSearch ? "yes" : "no"}`);
+  }
+  if (activity.assignedRoles?.length) {
+    lines.push(`Assigned scouts: ${activity.assignedRoles.join(', ')}`);
   }
 
   const primary = activity.primaryCandidates ?? [];
@@ -198,7 +207,8 @@ export function formatExplorerActivityDetails(activity: ExplorerActivityView): s
       const icon = branch.status === "ok" ? "✓" : branch.status === "failed" ? "⚠" : "-";
       const warnings = branch.warningCount ? ` · ${formatCount("warning", branch.warningCount)}` : "";
       const failure = branch.failureReason ? ` · ${clipLine(branch.failureReason, 72)}` : "";
-      lines.push(`${icon} ${branch.id} · ${formatCount("file", branch.suggestedFileCount)} · ${branch.elapsedMs ?? 0}ms${warnings}${failure}`);
+      const role = branch.role && branch.role !== branch.id ? ` · ${branch.role}` : "";
+      lines.push(`${icon} ${branch.id}${role} · ${formatCount("file", branch.suggestedFileCount)} · ${branch.elapsedMs ?? 0}ms${warnings}${failure}`);
     }
   }
 

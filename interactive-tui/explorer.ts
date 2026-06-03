@@ -8,6 +8,25 @@ import {
 
 export type ExplorerMode = 'skipped' | 'targeted' | 'broad';
 export type ExplorerConfidence = 'low' | 'medium' | 'high';
+export type ExplorerPromptClass =
+  | 'implementation_trace'
+  | 'bug_debug'
+  | 'architecture_survey'
+  | 'test_discovery'
+  | 'native_boundary'
+  | 'ui_behavior'
+  | 'config_routing'
+  | 'performance_investigation'
+  | 'general_codebase';
+export type ExplorerScoutRoleId =
+  | 'source_runtime'
+  | 'tests'
+  | 'native_boundary'
+  | 'routing_config'
+  | 'ui_surface'
+  | 'error_path'
+  | 'docs_context'
+  | 'dependency_config';
 
 export type ExplorerChatInputPart =
   | { type: 'text'; text: string }
@@ -93,8 +112,10 @@ export interface RepoExplorerEffectiveness {
   fanoutBranchCount: number;
   fanoutElapsedMs: number;
   fanoutFailedBranches: number;
+  fanoutAssignedRoles: ExplorerScoutRoleId[];
   fanoutSuggestedFiles: string[];
   usedFanoutSuggestedFiles: string[];
+  fanoutBranches: ExplorerBranchEffectiveness[];
   postExplorerToolCalls: number;
   postExplorerSearchCalls: number;
   postExplorerReadCalls: number;
@@ -102,6 +123,48 @@ export interface RepoExplorerEffectiveness {
   ignoredSuggestedFiles: string[];
   launchedRedundantBroadSearch: boolean;
   elapsedAfterExplorerMs: number;
+}
+
+export interface ExplorerScoutRole {
+  id: ExplorerScoutRoleId;
+  description: string;
+  focus: string;
+  triggers: {
+    promptKeywords?: string[];
+    fileHints?: string[];
+    repoSignals?: string[];
+    promptClasses?: ExplorerPromptClass[];
+  };
+  tools: ReadonlyArray<'inspect_workspace' | 'search_local_files' | 'read_file_region' | 'read_many_regions'>;
+  budget: {
+    maxToolCalls: number;
+    maxSearches: number;
+    maxFilesRead: number;
+    maxElapsedMs: number;
+    maxReturnedChars: number;
+  };
+  outputCapChars: number;
+}
+
+export interface ExplorerRoleAssignment {
+  promptClass: ExplorerPromptClass;
+  roles: ExplorerScoutRole[];
+  fallbackUsed: boolean;
+  signals: string[];
+}
+
+export interface ExplorerBranchEffectiveness {
+  branchId: string;
+  branchRole?: ExplorerScoutRoleId;
+  assigned: boolean;
+  ran: boolean;
+  elapsedMs: number;
+  suggestedFiles: string[];
+  usedSuggestedFiles: string[];
+  duplicateSuggestions: number;
+  newUniqueSuggestions: number;
+  failed: boolean;
+  warningCount: number;
 }
 
 export interface ExplorerPrepareResult {
@@ -146,11 +209,14 @@ export interface RepoExplorerScoutState {
 
 export interface RepoExplorerFanoutBranch {
   id: string;
+  role?: ExplorerScoutRoleId;
   status: 'ok' | 'failed';
   elapsedMs: number;
   suggestedFiles: string[];
   warnings: string[];
   failureReason?: string;
+  duplicateSuggestions?: number;
+  newUniqueSuggestions?: number;
 }
 
 export interface RepoExplorerFanoutRecommendation {
@@ -165,6 +231,8 @@ export interface RepoExplorerFanoutRecommendation {
 export interface RepoExplorerFanoutReport {
   branches: RepoExplorerFanoutBranch[];
   mergedRecommendations: RepoExplorerFanoutRecommendation[];
+  assignedRoles?: ExplorerScoutRoleId[];
+  promptClass?: ExplorerPromptClass;
 }
 
 export interface RepoExplorerFanoutState {
@@ -174,10 +242,13 @@ export interface RepoExplorerFanoutState {
   elapsedMs: number;
   failedBranches: number;
   suggestedFiles: string[];
+  assignedRoles?: ExplorerScoutRoleId[];
+  promptClass?: ExplorerPromptClass;
 }
 
 export interface RepoExplorerActivityBranch {
   id: string;
+  role?: ExplorerScoutRoleId;
   status: 'ok' | 'failed' | 'skipped';
   elapsedMs?: number;
   suggestedFileCount: number;
@@ -198,6 +269,7 @@ export interface RepoExplorerActivityView {
   primaryCandidates: string[];
   scoutSuggestedFiles: string[];
   fanoutSuggestedFiles: string[];
+  assignedRoles?: ExplorerScoutRoleId[];
   branches?: RepoExplorerActivityBranch[];
   warnings: string[];
   rawReport?: string;
@@ -284,6 +356,101 @@ const DEFAULT_EXPLORER_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
 const MAX_SCOUT_SECTION_CHARS = 4_000;
 const MAX_FANOUT_SECTION_CHARS = 8_000;
 
+const DEFAULT_ROLE_BUDGET = {
+  maxToolCalls: 4,
+  maxSearches: 2,
+  maxFilesRead: 3,
+  maxElapsedMs: 6_000,
+  maxReturnedChars: 8_000,
+};
+
+export const EXPLORER_SCOUT_ROLES: Record<ExplorerScoutRoleId, ExplorerScoutRole> = {
+  source_runtime: {
+    id: 'source_runtime',
+    description: 'Find core source files and execution flow.',
+    focus: 'Find primary source files and runtime flow relevant to the user prompt.',
+    triggers: { promptClasses: ['implementation_trace', 'architecture_survey', 'general_codebase'] },
+    tools: ['inspect_workspace', 'search_local_files', 'read_file_region', 'read_many_regions'],
+    budget: DEFAULT_ROLE_BUDGET,
+    outputCapChars: DEFAULT_ROLE_BUDGET.maxReturnedChars,
+  },
+  tests: {
+    id: 'tests',
+    description: 'Find tests that prove or constrain behavior.',
+    focus: 'Find tests that prove or constrain behavior relevant to the user prompt.',
+    triggers: { promptKeywords: ['test', 'tests', 'spec', 'coverage', 'prove'], promptClasses: ['test_discovery'] },
+    tools: ['search_local_files', 'read_file_region', 'read_many_regions'],
+    budget: DEFAULT_ROLE_BUDGET,
+    outputCapChars: DEFAULT_ROLE_BUDGET.maxReturnedChars,
+  },
+  native_boundary: {
+    id: 'native_boundary',
+    description: 'Find native, FFI, Zig, or fallback boundaries.',
+    focus: 'Find native/FFI/Zig or fallback boundaries relevant to the user prompt.',
+    triggers: { promptKeywords: ['native', 'zig', 'ffi', 'fallback'], fileHints: ['.zig', 'native/'], promptClasses: ['native_boundary'] },
+    tools: ['inspect_workspace', 'search_local_files', 'read_file_region', 'read_many_regions'],
+    budget: DEFAULT_ROLE_BUDGET,
+    outputCapChars: DEFAULT_ROLE_BUDGET.maxReturnedChars,
+  },
+  routing_config: {
+    id: 'routing_config',
+    description: 'Find model routing, flags, environment config, and provider seams.',
+    focus: 'Find routing, config, environment flags, and integration seams relevant to the user prompt.',
+    triggers: { promptKeywords: ['config', 'env', 'flag', 'provider', 'codex', 'openfunction', 'model'], promptClasses: ['config_routing'] },
+    tools: ['inspect_workspace', 'search_local_files', 'read_file_region', 'read_many_regions'],
+    budget: DEFAULT_ROLE_BUDGET,
+    outputCapChars: DEFAULT_ROLE_BUDGET.maxReturnedChars,
+  },
+  ui_surface: {
+    id: 'ui_surface',
+    description: 'Find TUI rendering, event display, keyboard handling, and transcript state.',
+    focus: 'Find TUI rendering, event display, keyboard handling, and transcript state relevant to the user prompt.',
+    triggers: { promptKeywords: ['tui', 'ui', 'keyboard', 'hotkey', 'shortcut', 'transcript', 'render', 'row'], promptClasses: ['ui_behavior'] },
+    tools: ['search_local_files', 'read_file_region', 'read_many_regions'],
+    budget: DEFAULT_ROLE_BUDGET,
+    outputCapChars: DEFAULT_ROLE_BUDGET.maxReturnedChars,
+  },
+  error_path: {
+    id: 'error_path',
+    description: 'Find error handling, caps, fallbacks, and failure cases.',
+    focus: 'Find likely error handling, caps, fallback paths, and failure cases relevant to the user prompt.',
+    triggers: { promptKeywords: ['bug', 'error', 'failed', 'failure', 'skip', 'cap', 'fallback', 'unexpected'], promptClasses: ['bug_debug'] },
+    tools: ['search_local_files', 'read_file_region', 'read_many_regions'],
+    budget: DEFAULT_ROLE_BUDGET,
+    outputCapChars: DEFAULT_ROLE_BUDGET.maxReturnedChars,
+  },
+  docs_context: {
+    id: 'docs_context',
+    description: 'Find docs, manifests, README, and architecture notes.',
+    focus: 'Find docs, manifests, README, and architecture notes relevant to the user prompt.',
+    triggers: { promptKeywords: ['docs', 'readme', 'architecture', 'overview'], promptClasses: ['architecture_survey'] },
+    tools: ['inspect_workspace', 'search_local_files', 'read_file_region'],
+    budget: DEFAULT_ROLE_BUDGET,
+    outputCapChars: DEFAULT_ROLE_BUDGET.maxReturnedChars,
+  },
+  dependency_config: {
+    id: 'dependency_config',
+    description: 'Find package, build, test, and dependency configuration.',
+    focus: 'Find package/build/test/tooling configuration relevant to the user prompt.',
+    triggers: { promptKeywords: ['package', 'dependency', 'build', 'script', 'workspace'], promptClasses: ['config_routing'] },
+    tools: ['inspect_workspace', 'search_local_files', 'read_file_region'],
+    budget: DEFAULT_ROLE_BUDGET,
+    outputCapChars: DEFAULT_ROLE_BUDGET.maxReturnedChars,
+  },
+};
+
+const ROLE_ASSIGNMENTS: Record<ExplorerPromptClass, ExplorerScoutRoleId[]> = {
+  implementation_trace: ['source_runtime', 'tests', 'routing_config'],
+  bug_debug: ['source_runtime', 'tests', 'error_path'],
+  architecture_survey: ['source_runtime', 'routing_config', 'docs_context', 'tests'],
+  test_discovery: ['tests', 'source_runtime'],
+  native_boundary: ['native_boundary', 'source_runtime', 'tests'],
+  ui_behavior: ['ui_surface', 'source_runtime', 'tests'],
+  config_routing: ['routing_config', 'dependency_config', 'tests'],
+  performance_investigation: ['source_runtime', 'native_boundary', 'tests', 'error_path'],
+  general_codebase: [],
+};
+
 export function clearRepoExplorerCache(root?: string): void {
   if (root) {
     explorerCache.delete(root);
@@ -321,6 +488,19 @@ export function createRepoExplorerEffectiveness(report: ExplorerReport): RepoExp
   const suggestedFiles = suggestedFilesForExplorerReport(report);
   const scoutSuggestedFiles = scoutSuggestedFilesForExplorerReport(report);
   const fanoutSuggestedFiles = fanoutSuggestedFilesForExplorerReport(report);
+  const fanoutBranches = (report.parallelScouts?.branches ?? []).map((branch) => ({
+    branchId: branch.id,
+    ...(branch.role ? { branchRole: branch.role } : {}),
+    assigned: true,
+    ran: true,
+    elapsedMs: branch.elapsedMs,
+    suggestedFiles: branch.suggestedFiles,
+    usedSuggestedFiles: [],
+    duplicateSuggestions: branch.duplicateSuggestions ?? 0,
+    newUniqueSuggestions: branch.newUniqueSuggestions ?? branch.suggestedFiles.length,
+    failed: branch.status === 'failed',
+    warningCount: branch.warnings.length + (branch.failureReason ? 1 : 0),
+  }));
   return {
     triggered: report.mode !== 'skipped',
     reportChars: report.metrics.reportChars,
@@ -342,8 +522,10 @@ export function createRepoExplorerEffectiveness(report: ExplorerReport): RepoExp
     fanoutBranchCount: report.fanout?.branchCount ?? 0,
     fanoutElapsedMs: report.fanout?.elapsedMs ?? 0,
     fanoutFailedBranches: report.fanout?.failedBranches ?? 0,
+    fanoutAssignedRoles: report.fanout?.assignedRoles ?? report.parallelScouts?.assignedRoles ?? [],
     fanoutSuggestedFiles,
     usedFanoutSuggestedFiles: [],
+    fanoutBranches,
     postExplorerToolCalls: 0,
     postExplorerSearchCalls: 0,
     postExplorerReadCalls: 0,
@@ -384,6 +566,11 @@ export function observeRepoExplorerToolCall(
       ) {
         effectiveness.usedFanoutSuggestedFiles.push(file);
       }
+      for (const branch of effectiveness.fanoutBranches) {
+        if (branch.suggestedFiles.includes(file) && !branch.usedSuggestedFiles.includes(file)) {
+          branch.usedSuggestedFiles.push(file);
+        }
+      }
     }
   }
   effectiveness.ignoredSuggestedFiles = effectiveness.suggestedFiles
@@ -413,8 +600,10 @@ export function formatRepoExplorerEffectiveness(effectiveness: RepoExplorerEffec
     `fanoutBranchCount=${effectiveness.fanoutBranchCount}`,
     `fanoutElapsedMs=${effectiveness.fanoutElapsedMs}`,
     `fanoutFailedBranches=${effectiveness.fanoutFailedBranches}`,
+    `fanoutAssignedRoles=${effectiveness.fanoutAssignedRoles.length ? effectiveness.fanoutAssignedRoles.join(',') : 'none'}`,
     `fanoutSuggestedFiles=${effectiveness.fanoutSuggestedFiles.length ? effectiveness.fanoutSuggestedFiles.join(',') : 'none'}`,
     `usedFanoutSuggestedFiles=${effectiveness.usedFanoutSuggestedFiles.length ? effectiveness.usedFanoutSuggestedFiles.join(',') : 'none'}`,
+    `fanoutBranchUtility=${effectiveness.fanoutBranches.length ? effectiveness.fanoutBranches.map(formatBranchEffectiveness).join(';') : 'none'}`,
     `usedSuggestedFiles=${effectiveness.usedSuggestedFiles.length ? effectiveness.usedSuggestedFiles.join(',') : 'none'}`,
     `ignoredSuggestedFiles=${effectiveness.ignoredSuggestedFiles.length ? effectiveness.ignoredSuggestedFiles.join(',') : 'none'}`,
     `postExplorerToolCalls=${effectiveness.postExplorerToolCalls}`,
@@ -423,6 +612,27 @@ export function formatRepoExplorerEffectiveness(effectiveness: RepoExplorerEffec
     `launchedRedundantBroadSearch=${effectiveness.launchedRedundantBroadSearch}`,
     `elapsedAfterExplorerMs=${effectiveness.elapsedAfterExplorerMs}`,
   ].join(' ');
+}
+
+function formatBranchEffectiveness(branch: ExplorerBranchEffectiveness): string {
+  const score =
+    branch.usedSuggestedFiles.length * 3 +
+    branch.newUniqueSuggestions -
+    branch.duplicateSuggestions * 0.5 -
+    (branch.failed ? 2 : 0) -
+    Math.min(2, branch.elapsedMs / 3000) -
+    branch.warningCount * 0.25;
+  return [
+    branch.branchId,
+    `role:${branch.branchRole ?? 'none'}`,
+    `suggested:${branch.suggestedFiles.length}`,
+    `used:${branch.usedSuggestedFiles.length}`,
+    `new:${branch.newUniqueSuggestions}`,
+    `dup:${branch.duplicateSuggestions}`,
+    `failed:${branch.failed}`,
+    `warnings:${branch.warningCount}`,
+    `score:${Number(score.toFixed(2))}`,
+  ].join(':');
 }
 
 export function createRepoExplorerActivityView(
@@ -467,10 +677,12 @@ export function createRepoExplorerActivityView(
     ).slice(0, 8).map((file) => file.path),
     scoutSuggestedFiles: scoutSuggestedFiles.slice(0, 8),
     fanoutSuggestedFiles: fanoutSuggestedFiles.slice(0, 10),
+    assignedRoles: report.fanout?.assignedRoles ?? report.parallelScouts?.assignedRoles ?? [],
     ...(report.parallelScouts
       ? {
           branches: report.parallelScouts.branches.map((branch) => ({
             id: branch.id,
+            role: branch.role,
             status: branch.status,
             elapsedMs: branch.elapsedMs,
             suggestedFileCount: branch.suggestedFiles.length,
@@ -490,6 +702,79 @@ export function classifyExplorerPrompt(text: string): ExplorerMode {
   const hasCodeHint = CODE_HINT_RE.test(trimmed) || PATH_HINT_RE.test(trimmed);
   if (!hasCodeHint) return 'skipped';
   return BROAD_RE.test(trimmed) || trimmed.length > 180 ? 'broad' : 'targeted';
+}
+
+export function classifyExplorerPromptClass(text: string): ExplorerPromptClass {
+  const lower = text.toLowerCase();
+  if (/\b(tui|ui|keyboard|hotkey|shortcut|transcript|render|row|copy|ctrl|screen|panel)\b/.test(lower)) return 'ui_behavior';
+  if (/\b(native|zig|ffi|fallback boundary|native boundary)\b/.test(lower)) return 'native_boundary';
+  if (/\b(config|env|flag|provider|codex|openfunction|model routing|route|api key|kill switch)\b/.test(lower)) return 'config_routing';
+  if (/\b(performance|latency|slow|benchmark|cache|scan|speed|optimi[sz]e)\b/.test(lower)) return 'performance_investigation';
+  if (/\b(test|tests|spec|coverage|prove|regression)\b/.test(lower)) return 'test_discovery';
+  if (/\b(bug|debug|error|failed|failure|unexpected|skip|cap|capped|timeout|crash|why)\b/.test(lower)) return 'bug_debug';
+  if (/\b(architecture|overview|map|survey|explain|what is this repo|what is this codebase)\b/.test(lower)) return 'architecture_survey';
+  if (/\b(trace|where|path|flow|implemented|implementation|handled|wired|call)\b/.test(lower)) return 'implementation_trace';
+  return 'general_codebase';
+}
+
+export function assignRepoExplorerScoutRoles(input: ExplorerChatInput, report: ExplorerReport): ExplorerRoleAssignment {
+  const text = chatInputText(input);
+  const promptClass = classifyExplorerPromptClass(text);
+  const signals: string[] = [];
+  const assigned = new Set<ExplorerScoutRoleId>();
+  const add = (role: ExplorerScoutRoleId, signal?: string) => {
+    assigned.add(role);
+    if (signal) signals.push(signal);
+  };
+
+  for (const role of ROLE_ASSIGNMENTS[promptClass]) add(role, `class:${promptClass}`);
+
+  const paths = [
+    ...report.likelyFiles.map((file) => file.path),
+    ...report.recommendedReads.map((read) => read.path),
+    ...(report.workspace?.keyFiles.map((file) => file.path) ?? []),
+  ];
+  const pathText = paths.join('\n').toLowerCase();
+  const lower = text.toLowerCase();
+
+  if (/\b(tui|ui|keyboard|hotkey|shortcut|transcript|render|row|copy|ctrl)\b/.test(lower) || /interactive-tui|toolview|index\.tsx/.test(pathText)) {
+    add('ui_surface', 'signal:ui_surface');
+  }
+  if (/\b(native|zig|ffi|fallback|benchmark|latency|scan)\b/.test(lower) || /\.zig\b|native\//.test(pathText)) {
+    add('native_boundary', 'signal:native_boundary');
+  }
+  if (/\b(config|env|flag|provider|codex|openfunction|model|routing)\b/.test(lower) || /codexengine|package\.json|tsconfig|oclif|config/.test(pathText)) {
+    add('routing_config', 'signal:routing_config');
+  }
+  if (/\b(bug|debug|error|failed|failure|unexpected|skip|cap|capped|timeout|fallback)\b/.test(lower) || report.diagnostics.errors.length > 0) {
+    add('error_path', 'signal:error_path');
+  }
+  if (/\b(docs|readme|architecture|overview|codebase|repo)\b/.test(lower) || /readme|docs\//.test(pathText)) {
+    add('docs_context', 'signal:docs_context');
+  }
+  if (/\b(package|dependency|build|script|workspace)\b/.test(lower) || /package\.json|tsconfig|vitest|jest|oclif\.manifest/.test(pathText)) {
+    add('dependency_config', 'signal:dependency_config');
+  }
+  if (!paths.some((path) => /(?:^|\/)(test|tests|__tests__)\/|\.test\.|\.spec\./.test(path))) {
+    add('tests', 'signal:no_tests_in_deterministic_candidates');
+  }
+
+  const fallbackRoles = report.mode === 'broad'
+    ? ['source_runtime', 'tests', 'routing_config', 'native_boundary'] as ExplorerScoutRoleId[]
+    : ['source_runtime', 'tests'] as ExplorerScoutRoleId[];
+  let fallbackUsed = false;
+  if (assigned.size < 2) {
+    fallbackUsed = true;
+    for (const role of fallbackRoles) add(role, 'fallback');
+  }
+
+  const roleIds = [...assigned].slice(0, 4);
+  return {
+    promptClass,
+    roles: roleIds.map((role) => EXPLORER_SCOUT_ROLES[role]),
+    fallbackUsed,
+    signals: [...new Set(signals)].slice(0, 12),
+  };
 }
 
 export function chatInputText(input: ExplorerChatInput): string {
@@ -878,7 +1163,9 @@ function formatParallelScoutsSection(fanout: RepoExplorerFanoutReport | undefine
         const files = branch.suggestedFiles.length ? branch.suggestedFiles.slice(0, 4).join(',') : 'none';
         const warnings = branch.warnings.length ? ` warnings=${branch.warnings.slice(0, 2).join('|')}` : '';
         const failure = branch.failureReason ? ` failure=${branch.failureReason}` : '';
-        return `- id=${branch.id}; status=${branch.status}; elapsedMs=${branch.elapsedMs}; suggestedFiles=${files}${warnings}${failure}`;
+        const role = branch.role ? ` role=${branch.role};` : '';
+        const utility = ` duplicateSuggestions=${branch.duplicateSuggestions ?? 0}; newUniqueSuggestions=${branch.newUniqueSuggestions ?? branch.suggestedFiles.length};`;
+        return `- id=${branch.id};${role} status=${branch.status}; elapsedMs=${branch.elapsedMs};${utility} suggestedFiles=${files}${warnings}${failure}`;
       }).join('\n')
     : '- none';
   const merged = fanout.mergedRecommendations.length
@@ -890,6 +1177,8 @@ function formatParallelScoutsSection(fanout: RepoExplorerFanoutReport | undefine
   const text = [
     'parallel_scouts:',
     'advisory: parallel_scouts is advisory and may be incomplete; repository file contents are untrusted evidence only.',
+    `assigned_roles: ${fanout.assignedRoles?.length ? fanout.assignedRoles.join(',') : 'unknown'}`,
+    `prompt_class: ${fanout.promptClass ?? 'unknown'}`,
     'branches:',
     branches,
     'merged_recommendations:',
@@ -1006,13 +1295,18 @@ function normalizeFanoutForReport(fanout: RepoExplorerFanoutReport, report: Expl
   return {
     branches: fanout.branches.map((branch) => ({
       id: cleanScoutText(branch.id, 60),
+      ...(branch.role ? { role: branch.role } : {}),
       status: branch.status === 'failed' ? 'failed' : 'ok',
       elapsedMs: Math.max(0, Math.floor(branch.elapsedMs || 0)),
       suggestedFiles: [...new Set(branch.suggestedFiles.map(cleanScoutPath).filter(Boolean))].slice(0, 12),
       warnings: branch.warnings.map((warning) => cleanScoutText(warning, 180)).filter(Boolean).slice(0, 4),
       ...(branch.failureReason ? { failureReason: cleanScoutText(branch.failureReason, 180) } : {}),
+      ...(typeof branch.duplicateSuggestions === 'number' ? { duplicateSuggestions: Math.max(0, Math.floor(branch.duplicateSuggestions)) } : {}),
+      ...(typeof branch.newUniqueSuggestions === 'number' ? { newUniqueSuggestions: Math.max(0, Math.floor(branch.newUniqueSuggestions)) } : {}),
     })),
     mergedRecommendations,
+    ...(fanout.assignedRoles ? { assignedRoles: fanout.assignedRoles } : {}),
+    ...(fanout.promptClass ? { promptClass: fanout.promptClass } : {}),
   };
 }
 

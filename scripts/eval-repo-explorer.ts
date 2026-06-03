@@ -23,8 +23,10 @@ interface EvalRun {
   fanoutElapsedMs: number;
   fanoutBranchCount: number;
   fanoutFailedBranches: number;
+  fanoutAssignedRoles: string[];
   fanoutSuggestedFiles: string[];
   usedFanoutSuggestedFiles: string[];
+  fanoutBranchUtility: string[];
   finalAnswerQualityNotes: string;
   error?: string;
 }
@@ -118,8 +120,10 @@ async function runPrompt(prompt: string, mode: EvalMode, cwd: string): Promise<E
       fanoutElapsedMs: Number(effectiveness.fanoutElapsedMs || 0),
       fanoutBranchCount: Number(effectiveness.fanoutBranchCount || 0),
       fanoutFailedBranches: Number(effectiveness.fanoutFailedBranches || 0),
+      fanoutAssignedRoles: splitList(effectiveness.fanoutAssignedRoles),
       fanoutSuggestedFiles: splitList(effectiveness.fanoutSuggestedFiles),
       usedFanoutSuggestedFiles: splitList(effectiveness.usedFanoutSuggestedFiles),
+      fanoutBranchUtility: splitSemicolonList(effectiveness.fanoutBranchUtility),
       finalAnswerQualityNotes: '',
       ...(result.error ? { error: result.error } : {}),
     };
@@ -213,6 +217,11 @@ function splitList(value: string | undefined): string[] {
   return value.split(',').filter(Boolean);
 }
 
+function splitSemicolonList(value: string | undefined): string[] {
+  if (!value || value === 'none') return [];
+  return value.split(';').filter(Boolean);
+}
+
 function isSearchTool(name: string | undefined): boolean {
   return ['search_local_files', 'code_search', 'find_local_files', 'inspect_local_workspace', 'list_dir'].includes(String(name || ''));
 }
@@ -250,7 +259,7 @@ function printMarkdown(root: string, fakeAgent: boolean, runs: EvalRun[]): void 
   }
   console.log('\n## Runs\n');
   for (const run of runs) {
-    console.log(`- ${run.mode} | ${run.prompt} | elapsed=${run.elapsedMs}ms reportChars=${run.reportChars} tools=${run.postExplorerToolCalls} searches=${run.postExplorerSearchCalls} reads=${run.postExplorerReadCalls} scoutUsed=${run.usedScoutSuggestedFiles.join(',') || 'none'} fanoutUsed=${run.usedFanoutSuggestedFiles.join(',') || 'none'} redundantBroad=${run.launchedRedundantBroadSearch} scoutFailed=${run.scoutFailed} fanoutFailedBranches=${run.fanoutFailedBranches}${run.error ? ` error=${run.error}` : ''}`);
+    console.log(`- ${run.mode} | ${run.prompt} | elapsed=${run.elapsedMs}ms reportChars=${run.reportChars} tools=${run.postExplorerToolCalls} searches=${run.postExplorerSearchCalls} reads=${run.postExplorerReadCalls} scoutUsed=${run.usedScoutSuggestedFiles.join(',') || 'none'} fanoutRoles=${run.fanoutAssignedRoles.join(',') || 'none'} fanoutUsed=${run.usedFanoutSuggestedFiles.join(',') || 'none'} fanoutUtility=${run.fanoutBranchUtility.join(';') || 'none'} redundantBroad=${run.launchedRedundantBroadSearch} scoutFailed=${run.scoutFailed} fanoutFailedBranches=${run.fanoutFailedBranches}${run.error ? ` error=${run.error}` : ''}`);
   }
 }
 

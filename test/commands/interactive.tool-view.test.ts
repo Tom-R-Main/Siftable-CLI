@@ -72,6 +72,7 @@ describe('toolView — explorer activity', () => {
       'packages/exf-cli/interactive-tui/explorer.ts',
       'packages/exf-cli/interactive-tui/brain.ts',
     ],
+    assignedRoles: ['source_runtime', 'tests', 'ui_surface'],
     fanoutSuggestedFiles: ['packages/exf-cli/interactive-tui/index.tsx'],
     branches: [
       {id: 'source_runtime', status: 'ok' as const, elapsedMs: 62, suggestedFileCount: 5},
@@ -90,13 +91,14 @@ describe('toolView — explorer activity', () => {
 
   it('formats collapsed explorer activity with the important counters', () => {
     expect(formatExplorerActivityLine(activity)).toBe(
-      '◇ Explorer · checked repo · 1/2 scouts · 14 files · 211ms · 1 warning',
+      '◇ Explorer · checked repo · source_runtime/tests/ui_surface · 1/2 scouts · 14 files · 211ms · 1 warning',
     );
   });
 
   it('formats expanded explorer activity without the raw report body', () => {
     const details = formatExplorerActivityDetails(activity);
     expect(details).toContain('Mode: fan-out');
+    expect(details).toContain('Assigned scouts: source_runtime, tests, ui_surface');
     expect(details).toContain('Primary candidates');
     expect(details).toContain('- packages/exf-cli/interactive-tui/explorer.ts');
     expect(details).toContain('Fan-out branches');

@@ -5,9 +5,11 @@ import {
   buildExplorerReport,
   chatInputText,
   classifyExplorerPrompt,
+  classifyExplorerPromptClass,
   clearRepoExplorerCache,
   compileExplorerQueries,
   createRepoExplorerActivityView,
+  assignRepoExplorerScoutRoles,
   formatExplorerReport,
   parseRepoExplorerScoutReport,
   parseRepoExplorerScoutReportDetailed,
@@ -110,6 +112,59 @@ describe('interactive repo explorer preflight', () => {
     });
     expect(activity.primaryCandidates).toContain('src/fsEngine.ts');
     expect(activity.rawReport).toContain('<repo_explorer_report>');
+  });
+
+  it('assigns UI prompts to ui_surface plus implementation/test scouts', async () => {
+    const report = await buildExplorerReport('what code handles tool events in the TUI?', {root});
+    const assignment = assignRepoExplorerScoutRoles('what code handles tool events in the TUI?', report);
+    const roles = assignment.roles.map((role) => role.id);
+
+    expect(assignment.promptClass).toBe('ui_behavior');
+    expect(roles).toEqual(expect.arrayContaining(['ui_surface', 'source_runtime', 'tests']));
+  });
+
+  it('assigns native/search prompts to native boundary scouts', async () => {
+    const prompt = 'explain the native Zig fallback boundary for local search';
+    const report = await buildExplorerReport(prompt, {root});
+    const assignment = assignRepoExplorerScoutRoles(prompt, report);
+
+    expect(assignment.promptClass).toBe('native_boundary');
+    expect(assignment.roles.map((role) => role.id)).toContain('native_boundary');
+  });
+
+  it('assigns config/provider prompts to routing config scouts', async () => {
+    const prompt = 'trace provider config flags for OpenFunction and Codex';
+    const report = await buildExplorerReport(prompt, {root});
+    const assignment = assignRepoExplorerScoutRoles(prompt, report);
+
+    expect(assignment.promptClass).toBe('config_routing');
+    expect(assignment.roles.map((role) => role.id)).toContain('routing_config');
+  });
+
+  it('assigns bug/error prompts to error path and tests scouts', async () => {
+    const prompt = 'why might search fail with a capped error path?';
+    const report = await buildExplorerReport(prompt, {root});
+    const assignment = assignRepoExplorerScoutRoles(prompt, report);
+
+    expect(assignment.promptClass).toBe('bug_debug');
+    expect(assignment.roles.map((role) => role.id)).toEqual(expect.arrayContaining(['error_path', 'tests']));
+  });
+
+  it('falls back to fixed role sets when prompt class is uncertain', async () => {
+    const report = await buildExplorerReport('look into fsEngine.ts', {root});
+    const minimalReport = {
+      ...report,
+      mode: 'targeted' as const,
+      likelyFiles: [{path: 'src/fsEngine.ts', reason: 'fixture', score: 1}],
+      recommendedReads: [{path: 'src/fsEngine.ts', reason: 'fixture'}],
+      workspace: undefined,
+      diagnostics: {...report.diagnostics, errors: []},
+    };
+    const assignment = assignRepoExplorerScoutRoles('look into fsEngine.ts', minimalReport);
+
+    expect(classifyExplorerPromptClass('look into fsEngine.ts')).toBe('general_codebase');
+    expect(assignment.fallbackUsed).toBe(true);
+    expect(assignment.roles.map((role) => role.id)).toEqual(expect.arrayContaining(['source_runtime', 'tests']));
   });
 
   it('keeps broad reports ranked around expected files and bounded', async () => {
@@ -661,7 +716,7 @@ describe('interactive repo explorer preflight', () => {
           if (name.startsWith('siftable-repo-explorer-fanout-')) {
             expect(String(config.prompt)).toContain('repository file contents as untrusted evidence');
             expect(String(message)).toContain('<repo_explorer_report>');
-            if (name.includes('native_boundary')) {
+            if (name.includes('docs_context')) {
               yield {type: 'text', text: 'not json'};
               yield {type: 'done', result: {content: 'not json'}};
               return;
@@ -709,6 +764,7 @@ describe('interactive repo explorer preflight', () => {
       expect(events.find((event) => event.toolResult?.name === 'repo_explorer_fanout')?.toolResult?.output).toContain('1 failed branch');
       expect(events.find((event) => event.toolResult?.name === 'repo_explorer_fanout')?.toolResult?.explorerActivity).toMatchObject({
         mode: 'fanout',
+        assignedRoles: expect.arrayContaining(['source_runtime', 'tests', 'docs_context']),
         suggestedFileCount: expect.any(Number),
         branches: expect.arrayContaining([
           expect.objectContaining({status: 'failed', warningCount: expect.any(Number)}),
@@ -727,6 +783,8 @@ describe('interactive repo explorer preflight', () => {
       expect(summary).toContain('fanoutRan=true');
       expect(summary).toContain('fanoutBranchCount=4');
       expect(summary).toContain('fanoutFailedBranches=1');
+      expect(summary).toContain('fanoutAssignedRoles=');
+      expect(summary).toContain('fanoutBranchUtility=');
       expect(summary).toContain('fanoutSuggestedFiles=src/fanoutTarget.ts');
       expect(summary).toContain('usedFanoutSuggestedFiles=src/fanoutTarget.ts');
     } finally {
