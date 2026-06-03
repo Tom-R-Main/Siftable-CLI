@@ -210,7 +210,6 @@ export function formatExplorerActivityDetails(activity: ExplorerActivityView): s
     lines.push("", "Warnings", ...warnings.slice(0, 8).map((warning) => `- ${warning}`));
   }
 
-  if (activity.rawReport) lines.push("", "Raw report: press c on an empty prompt to copy latest explorer report");
   return lines.join("\n");
 }
 

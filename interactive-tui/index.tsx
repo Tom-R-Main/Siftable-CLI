@@ -51,7 +51,6 @@ import { normalizeImageForModel } from "./imageEngine";
 import {
   asExplorerActivityView,
   explorerToolCallText,
-  formatExplorerActivityDetails,
   formatExplorerActivityLine,
   isExplorerToolName,
   toolCallLabel,
@@ -111,7 +110,6 @@ type Msg = {
   role: "you" | "assistant" | "system" | "shell" | "tool";
   text: string;
   out?: string;
-  rawExplorerReport?: string;
 };
 type PasteTextAttachment = { type: "text"; id: number; label: string; text: string; analysis: PasteAnalysis };
 type ImageAttachment = {
@@ -558,10 +556,8 @@ function App() {
               const activity = asExplorerActivityView(e.toolResult?.explorerActivity);
               if (activity) {
                 setMessages(toolIdx, "text", `${ok ? "✓" : "✗"} ${formatExplorerActivityLine(activity)}`);
-                setMessages(toolIdx, "out", formatExplorerActivityDetails(activity));
                 if (activity.rawReport) {
                   latestExplorerReport = activity.rawReport;
-                  setMessages(toolIdx, "rawExplorerReport", activity.rawReport);
                 }
               } else {
                 setMessages(toolIdx, "text", (t) => t.replace(/^(⚙|◇)/, ok ? "✓" : "✗"));

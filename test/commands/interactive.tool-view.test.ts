@@ -101,7 +101,7 @@ describe('toolView — explorer activity', () => {
     expect(details).toContain('- packages/exf-cli/interactive-tui/explorer.ts');
     expect(details).toContain('Fan-out branches');
     expect(details).toContain('⚠ routing_config · 0 files · 55ms · 1 warning · timeout');
-    expect(details).toContain('Raw report: press c on an empty prompt to copy latest explorer report');
+    expect(details).not.toContain('Raw report');
     expect(details).not.toContain('<repo_explorer_report>');
   });
 
