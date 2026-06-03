@@ -138,6 +138,7 @@ type ComposerAttachment = PasteTextAttachment | ImageAttachment;
 type QueuedPrompt = { sendInput: ChatInput; displayText: string };
 
 const COMMANDS = commandSuggestions();
+const SLASH_COMMAND_COLUMN_WIDTH = Math.max(14, ...COMMANDS.map((command) => command.name.length + 5));
 
 const WORD = /\w/;
 const MAX_COMPOSER_LINES = 12;
@@ -1293,8 +1294,15 @@ function App() {
                 backgroundColor={i() === slashSelClamped() ? theme.border : theme.bgMuted}
                 flexDirection="row"
               >
+                <text
+                  width={SLASH_COMMAND_COLUMN_WIDTH}
+                  fg={i() === slashSelClamped() ? theme.accentStrong : theme.muted}
+                  selectable={false}
+                >
+                  {`/${c.name}`.padEnd(SLASH_COMMAND_COLUMN_WIDTH)}
+                </text>
                 <text fg={i() === slashSelClamped() ? theme.accentStrong : theme.muted} selectable={false}>
-                  {`/${c.name}`.padEnd(9) + c.desc + (i() === slashSelClamped() ? "   ↵" : "")}
+                  {c.desc + (i() === slashSelClamped() ? "   ↵" : "")}
                 </text>
               </box>
             )}
