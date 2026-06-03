@@ -71,15 +71,33 @@ describe('LocalControlClient (in-process transport)', () => {
       let capturedInput: unknown;
       const previousCwd = process.env.SIFT_USER_CWD;
       const previousExplorer = process.env.SIFT_EXPLORER;
+      const previousScout = process.env.SIFT_EXPLORER_SCOUT;
       await mkdir(join(root, 'src'), {recursive: true});
       await writeFile(join(root, 'package.json'), '{"name":"headless-explorer-fixture"}\n', 'utf8');
       await writeFile(join(root, 'src', 'fsEngine.ts'), 'export const marker = "local search";\n', 'utf8');
       await writeFile(join(root, 'src', 'brain.ts'), 'export const route = "local search routing";\n', 'utf8');
+      await writeFile(join(root, 'src', 'scoutTarget.ts'), 'export const scoutMarker = "local search scout";\n', 'utf8');
       (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
-        createChatAgent: async () => ({
+        createChatAgent: async (config: Record<string, unknown>) => ({
           chat: async function* (message: unknown) {
+            if (config.name === 'siftable-repo-explorer-scout') {
+              yield {
+                type: 'text',
+                text: JSON.stringify({
+                  confidence: 0.77,
+                  missingLikelyFiles: [{path: 'src/scoutTarget.ts', reason: 'scout-only related file'}],
+                  recommendedReads: [{path: 'src/scoutTarget.ts', startLine: 1, endLine: 5, reason: 'verify scout suggestion'}],
+                  warnings: [],
+                }),
+              };
+              yield {type: 'done', result: {content: ''}};
+              return;
+            }
             capturedInput = message;
-            if (String(message).includes('src/fsEngine.ts')) {
+            if (String(message).includes('src/scoutTarget.ts')) {
+              yield {type: 'tool_call', toolCall: {name: 'read_file', args: {path: 'src/scoutTarget.ts'}}};
+              yield {type: 'tool_result', toolResult: {name: 'read_file', success: true}};
+            } else if (String(message).includes('src/fsEngine.ts')) {
               yield {type: 'tool_call', toolCall: {name: 'read_file', args: {path: 'src/fsEngine.ts'}}};
               yield {type: 'tool_result', toolResult: {name: 'read_file', success: true}};
             }
@@ -92,6 +110,7 @@ describe('LocalControlClient (in-process transport)', () => {
         err: (error: string) => ({success: false, error}),
       };
       process.env.SIFT_USER_CWD = root;
+      process.env.SIFT_EXPLORER_SCOUT = '1';
       setBrainModel({provider: 'openrouter', model: 'headless-smoke'});
 
       try {
@@ -100,17 +119,22 @@ describe('LocalControlClient (in-process transport)', () => {
         await client.send('scour this repo and explain how local search works', (event) => broadEvents.push(event));
 
         expect(broadEvents.some((event) => event.toolCall?.name === 'repo_explorer')).toBe(true);
+        expect(broadEvents.some((event) => event.toolCall?.name === 'repo_explorer_scout')).toBe(true);
         expect(broadEvents.some((event) => event.toolResult?.name === 'repo_explorer')).toBe(true);
+        expect(broadEvents.find((event) => event.toolResult?.name === 'repo_explorer_scout')?.toolResult?.success).toBe(true);
         expect(broadEvents.find((event) => event.toolResult?.name === 'repo_explorer')?.toolResult?.output).toContain('char report');
         expect(broadEvents.some((event) => event.toolCall?.name === 'read_file')).toBe(true);
         expect(String(capturedInput)).toContain('<repo_explorer_report>');
         expect(String(capturedInput)).toContain('Metrics:');
         expect(String(capturedInput)).toContain('src/fsEngine.ts');
+        expect(String(capturedInput)).toContain('model_scout:');
+        expect(String(capturedInput)).toContain('src/scoutTarget.ts');
 
         capturedInput = undefined;
         const ordinaryEvents: SseEvent[] = [];
         await client.send('explain why Napoleon lost in Russia', (event) => ordinaryEvents.push(event));
         expect(ordinaryEvents.some((event) => event.toolCall?.name === 'repo_explorer')).toBe(false);
+        expect(ordinaryEvents.some((event) => event.toolCall?.name === 'repo_explorer_scout')).toBe(false);
         expect(String(capturedInput)).not.toContain('<repo_explorer_report>');
 
         capturedInput = undefined;
@@ -118,12 +142,15 @@ describe('LocalControlClient (in-process transport)', () => {
         const disabledEvents: SseEvent[] = [];
         await client.send('scour this repo and explain how local search works', (event) => disabledEvents.push(event));
         expect(disabledEvents.some((event) => event.toolCall?.name === 'repo_explorer')).toBe(false);
+        expect(disabledEvents.some((event) => event.toolCall?.name === 'repo_explorer_scout')).toBe(false);
         expect(String(capturedInput)).not.toContain('<repo_explorer_report>');
       } finally {
         if (previousCwd === undefined) delete process.env.SIFT_USER_CWD;
         else process.env.SIFT_USER_CWD = previousCwd;
         if (previousExplorer === undefined) delete process.env.SIFT_EXPLORER;
         else process.env.SIFT_EXPLORER = previousExplorer;
+        if (previousScout === undefined) delete process.env.SIFT_EXPLORER_SCOUT;
+        else process.env.SIFT_EXPLORER_SCOUT = previousScout;
         delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
         await rm(root, {recursive: true, force: true});
       }

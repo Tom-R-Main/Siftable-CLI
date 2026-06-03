@@ -30,13 +30,20 @@ import {
 } from './fsEngine';
 import { requestConfirm } from './confirmGate';
 import {
+  attachRepoExplorerScout,
+  buildExplorerReport,
   chatInputText,
   classifyExplorerPrompt,
   clearRepoExplorerCache,
   createRepoExplorerEffectiveness,
   formatRepoExplorerEffectiveness,
+  formatExplorerReport,
+  injectExplorerContext,
+  markRepoExplorerScoutState,
   observeRepoExplorerToolCall,
-  prepareExplorerInput,
+  parseRepoExplorerScoutReport,
+  type ExplorerReport,
+  type RepoExplorerScoutState,
   type RepoExplorerEffectiveness,
 } from './explorer';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
@@ -116,6 +123,19 @@ const DEFAULT_OPENFUNCTION_MODEL = 'google/gemini-3.5-flash';
 let currentProvider = process.env.EXECUTERM_MODEL_PROVIDER || 'openrouter';
 let currentModel = process.env.EXECUTERM_MODEL || DEFAULT_OPENFUNCTION_MODEL;
 let currentEffort: string | undefined = process.env.EXECUTERM_MODEL_EFFORT || undefined;
+
+const SCOUT_PROMPT =
+  'You are a read-only repo explorer scout. Given a deterministic <repo_explorer_report> and the user request, refine the map only. ' +
+  'Do not answer the user, do not edit files, do not run shell commands, and do not make architectural decisions. ' +
+  'Use only the provided read-only tools when needed. Return JSON only with keys: confidence, missingLikelyFiles, recommendedReads, warnings.';
+
+const DEFAULT_SCOUT_BUDGET = {
+  maxToolCalls: 6,
+  maxSearches: 3,
+  maxFilesRead: 6,
+  maxElapsedMs: 4_000,
+  maxReturnedChars: 8_000,
+};
 
 /** Current provider/model/effort — surfaced in /control/state and the status bar. */
 export function getBrainModel(): { provider: string; model: string; effort?: string } {
@@ -503,16 +523,20 @@ async function loadOpenFunctionEnv(): Promise<void> {
   }
 }
 
+async function loadOpenFunctionModule(): Promise<OfModule> {
+  await loadOpenFunctionEnv();
+  // A bun-compiled binary injects OpenFunction statically (dynamic import of
+  // its TS can't be bundled); dev resolves it lazily from EXECUTERM_OPENFUNCTION_PATH.
+  const injected = (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ as
+    | OfModule
+    | undefined;
+  return injected ?? ((await import(entryPath())) as unknown as OfModule);
+}
+
 async function getAgent() {
   if (!agentPromise) {
     agentPromise = (async () => {
-      await loadOpenFunctionEnv();
-      // A bun-compiled binary injects OpenFunction statically (dynamic import of
-      // its TS can't be bundled); dev resolves it lazily from EXECUTERM_OPENFUNCTION_PATH.
-      const injected = (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ as
-        | OfModule
-        | undefined;
-      const of = injected ?? ((await import(entryPath())) as unknown as OfModule);
+      const of = await loadOpenFunctionModule();
       return of.createChatAgent({
         name: 'siftable-control',
         provider: currentProvider,
@@ -526,6 +550,248 @@ async function getAgent() {
     })();
   }
   return agentPromise;
+}
+
+function explorerScoutEnabled(): boolean {
+  return process.env.SIFT_EXPLORER_SCOUT === '1';
+}
+
+function buildRepoExplorerScoutTools(of: OfModule): unknown[] {
+  const home = process.env.HOME || '';
+  const userCwd = process.env.SIFT_USER_CWD || process.cwd();
+  const startedAt = Date.now();
+  const usage = { toolCalls: 0, searches: 0, filesRead: 0 };
+  const resolveLocalPath = (p: string) => {
+    const input = p || '.';
+    if (input.startsWith('~')) return input.replace(/^~/, home);
+    if (isAbsolute(input)) return input;
+    return resolvePath(userCwd, input);
+  };
+  const checkBudget = (kind: 'tool' | 'search' | 'read', readCount = 0) => {
+    if (Date.now() - startedAt > DEFAULT_SCOUT_BUDGET.maxElapsedMs) {
+      throw new Error('repo explorer scout budget exceeded: elapsed time');
+    }
+    usage.toolCalls += 1;
+    if (usage.toolCalls > DEFAULT_SCOUT_BUDGET.maxToolCalls) {
+      throw new Error('repo explorer scout budget exceeded: tool calls');
+    }
+    if (kind === 'search') {
+      usage.searches += 1;
+      if (usage.searches > DEFAULT_SCOUT_BUDGET.maxSearches) {
+        throw new Error('repo explorer scout budget exceeded: searches');
+      }
+    }
+    if (kind === 'read') {
+      usage.filesRead += Math.max(1, readCount);
+      if (usage.filesRead > DEFAULT_SCOUT_BUDGET.maxFilesRead) {
+        throw new Error('repo explorer scout budget exceeded: files read');
+      }
+    }
+  };
+
+  const inspectWorkspace = of.defineTool({
+    name: 'inspect_workspace',
+    description: 'Read-only summary of the local workspace. Use for orientation only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        root: { type: 'string', description: 'Directory to inspect. Defaults to the interactive cwd.' },
+      },
+    },
+    handler: async (params) => {
+      try {
+        checkBudget('tool');
+        return of.ok(await inspectLocalWorkspace(resolveLocalPath(String(params.root || userCwd))));
+      } catch (e) {
+        return of.err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  });
+
+  const searchLocalFiles = of.defineTool({
+    name: 'search_local_files',
+    description: 'Read-only literal content search. Use locations or paths detail unless already narrowed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        root: { type: 'string', description: 'Directory to search. Defaults to the interactive cwd.' },
+        query: { type: 'string', description: 'Literal text to search for.' },
+        maxFiles: { type: 'integer', description: 'Max files to scan, capped by the scout.' },
+        maxMatches: { type: 'integer', description: 'Max matches to return, capped by the scout.' },
+        detail: { type: 'string', enum: ['paths', 'locations', 'snippets'] },
+      },
+      required: ['query'],
+    },
+    handler: async (params) => {
+      try {
+        checkBudget('search');
+        const query = String(params.query || '');
+        if (!query) return of.err('query is required');
+        const detail = ['paths', 'locations', 'snippets'].includes(String(params.detail))
+          ? String(params.detail) as 'paths' | 'locations' | 'snippets'
+          : 'locations';
+        const result = await searchLiteral(resolveLocalPath(String(params.root || userCwd)), query, {
+          detail,
+          maxFiles: Math.min(typeof params.maxFiles === 'number' ? params.maxFiles : 1000, 1000),
+          maxMatches: Math.min(typeof params.maxMatches === 'number' ? params.maxMatches : 30, 30),
+        });
+        return of.ok(result, `Found ${result.matches.length} match(es)`);
+      } catch (e) {
+        return of.err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  });
+
+  const readFileRegion = of.defineTool({
+    name: 'read_file_region',
+    description: 'Read one bounded line region from a local file. Read-only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        root: { type: 'string', description: 'Workspace root. Defaults to the interactive cwd.' },
+        path: { type: 'string', description: 'Workspace-relative file path.' },
+        startLine: { type: 'integer' },
+        endLine: { type: 'integer' },
+      },
+      required: ['path'],
+    },
+    handler: async (params) => {
+      try {
+        checkBudget('read', 1);
+        const root = resolveLocalPath(String(params.root || userCwd));
+        return of.ok(await batchReadFiles([{
+          path: String(params.path || ''),
+          startLine: typeof params.startLine === 'number' ? params.startLine : undefined,
+          endLine: typeof params.endLine === 'number' ? params.endLine : undefined,
+          maxBytes: 16 * 1024,
+        }], root));
+      } catch (e) {
+        return of.err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  });
+
+  const readManyRegions = of.defineTool({
+    name: 'read_many_regions',
+    description: 'Read several bounded line regions from local files. Read-only, max six files.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        root: { type: 'string', description: 'Workspace root. Defaults to the interactive cwd.' },
+        files: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              path: { type: 'string' },
+              startLine: { type: 'integer' },
+              endLine: { type: 'integer' },
+            },
+            required: ['path'],
+          },
+        },
+      },
+      required: ['files'],
+    },
+    handler: async (params) => {
+      try {
+        const rawFiles = Array.isArray(params.files) ? params.files.slice(0, 6) : [];
+        checkBudget('read', rawFiles.length || 1);
+        const root = resolveLocalPath(String(params.root || userCwd));
+        const files = rawFiles.map((item) => {
+          const record = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+          return {
+            path: String(record.path || ''),
+            startLine: typeof record.startLine === 'number' ? record.startLine : undefined,
+            endLine: typeof record.endLine === 'number' ? record.endLine : undefined,
+            maxBytes: 16 * 1024,
+          };
+        }).filter((item) => item.path);
+        return of.ok(await batchReadFiles(files, root));
+      } catch (e) {
+        return of.err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  });
+
+  return [inspectWorkspace, searchLocalFiles, readFileRegion, readManyRegions];
+}
+
+async function runRepoExplorerScout(
+  input: ChatInput,
+  deterministicReport: ExplorerReport,
+): Promise<RepoExplorerScoutState> {
+  const startedAt = Date.now();
+  const state: RepoExplorerScoutState = { enabled: true, ran: true, elapsedMs: 0, failed: false };
+  try {
+    const of = await loadOpenFunctionModule();
+    const provider = process.env.SIFT_EXPLORER_SCOUT_PROVIDER ||
+      (currentProvider === CODEX_PROVIDER ? 'openrouter' : currentProvider);
+    const model = process.env.SIFT_EXPLORER_SCOUT_MODEL ||
+      (currentProvider === CODEX_PROVIDER ? DEFAULT_OPENFUNCTION_MODEL : currentModel);
+    const scout = await of.createChatAgent({
+      name: 'siftable-repo-explorer-scout',
+      provider,
+      model,
+      providers: ['execufunction'],
+      tools: buildRepoExplorerScoutTools(of),
+      memory: false,
+      prompt: SCOUT_PROMPT,
+    });
+    const scoutInput = [
+      formatExplorerReport(deterministicReport),
+      '',
+      'User request:',
+      chatInputText(input),
+      '',
+      'Return JSON only.',
+    ].join('\n');
+    const raw = await withTimeout(collectScoutText(scout.chat(scoutInput, { stream: true })), DEFAULT_SCOUT_BUDGET.maxElapsedMs);
+    const report = parseRepoExplorerScoutReport(raw.slice(0, DEFAULT_SCOUT_BUDGET.maxReturnedChars));
+    state.elapsedMs = Date.now() - startedAt;
+    attachRepoExplorerScout(deterministicReport, report, state);
+    return state;
+  } catch (err) {
+    state.elapsedMs = Date.now() - startedAt;
+    state.failed = true;
+    state.failureReason = err instanceof Error ? err.message : String(err);
+    markRepoExplorerScoutState(deterministicReport, state);
+    return state;
+  }
+}
+
+async function collectScoutText(chunks: AsyncIterable<OfChunk>): Promise<string> {
+  let assembled = '';
+  let doneContent = '';
+  let observedToolCalls = 0;
+  for await (const chunk of chunks) {
+    if (chunk.type === 'text' && typeof chunk.text === 'string') {
+      assembled += chunk.text;
+      if (assembled.length > DEFAULT_SCOUT_BUDGET.maxReturnedChars) break;
+    } else if (chunk.type === 'tool_call') {
+      observedToolCalls += 1;
+      if (observedToolCalls > DEFAULT_SCOUT_BUDGET.maxToolCalls) {
+        throw new Error('repo explorer scout budget exceeded: tool calls');
+      }
+    } else if (chunk.type === 'done' && chunk.result?.content) {
+      doneContent = chunk.result.content;
+    }
+  }
+  return (assembled.trim() || doneContent.trim()).slice(0, DEFAULT_SCOUT_BUDGET.maxReturnedChars);
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('repo explorer scout timed out')), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 /**
@@ -557,22 +823,35 @@ export async function openfunctionAsk(
   if (!signal?.aborted && classifyExplorerPrompt(chatInputText(input)) !== 'skipped') {
     onEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer', detail: 'read-only preflight' } });
     try {
-      const prepared = await prepareExplorerInput(input, { root: process.env.SIFT_USER_CWD || process.cwd() });
-      preparedInput = prepared.input as ChatInput;
-      if (prepared.injected) {
-        explorerEffectiveness = createRepoExplorerEffectiveness(prepared.report);
-        explorerEffectivenessStartedAt = Date.now();
+      const report = await buildExplorerReport(input, { root: process.env.SIFT_USER_CWD || process.cwd() });
+      if (report.mode !== 'skipped' && explorerScoutEnabled()) {
+        onEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer_scout', detail: 'read-only model scout' } });
+        const scoutState = await runRepoExplorerScout(input, report);
+        onEvent({
+          type: 'tool_result',
+          toolResult: {
+            name: 'repo_explorer_scout',
+            success: !scoutState.failed,
+            output: scoutState.failed
+              ? `failed non-fatally: ${scoutState.failureReason ?? 'unknown error'}`
+              : `${report.modelScout?.recommendedReads.length ?? 0} scout read(s); ${report.modelScout?.missingLikelyFiles.length ?? 0} missing file(s); ${scoutState.elapsedMs}ms`,
+          },
+        });
       }
-      if (prepared.injected && process.env.SIFT_EXPLORER_DEBUG === '1' && prepared.reportText) {
-        console.error(prepared.reportText);
+      if (report.mode !== 'skipped') {
+        const reportText = formatExplorerReport(report);
+        preparedInput = injectExplorerContext(input, reportText) as ChatInput;
+        explorerEffectiveness = createRepoExplorerEffectiveness(report);
+        explorerEffectivenessStartedAt = Date.now();
+        if (debugExplorer) console.error(reportText);
       }
       onEvent({
         type: 'tool_result',
         toolResult: {
           name: 'repo_explorer',
           success: true,
-          output: prepared.injected
-            ? `${prepared.report.mode}; ${prepared.report.metrics.queriesRun} querie(s); ${prepared.report.likelyFiles.length} likely file(s); ${prepared.report.metrics.filesSearched} file(s) searched; ${prepared.report.metrics.reportChars} char report; ${prepared.report.metrics.elapsedMs}ms`
+          output: report.mode !== 'skipped'
+            ? `${report.mode}; ${report.metrics.queriesRun} querie(s); ${report.likelyFiles.length} likely file(s); ${report.metrics.filesSearched} file(s) searched; ${report.metrics.reportChars} char report; ${report.metrics.elapsedMs}ms`
             : 'skipped',
         },
       });

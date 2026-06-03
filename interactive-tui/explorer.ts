@@ -38,6 +38,8 @@ export interface ExplorerReport {
   };
   metrics: RepoExplorerMetrics;
   candidateGroups: ExplorerCandidateGroups;
+  modelScout?: RepoExplorerScoutReport;
+  scout?: RepoExplorerScoutState;
   workspace?: {
     languages: Array<{ language: string; files: number; bytes: number }>;
     keyFiles: Array<{ path: string; reason: string }>;
@@ -73,6 +75,13 @@ export interface RepoExplorerEffectiveness {
   reportChars: number;
   cacheHit: boolean;
   suggestedFiles: string[];
+  scoutEnabled: boolean;
+  scoutRan: boolean;
+  scoutElapsedMs: number;
+  scoutSuggestedFiles: string[];
+  usedScoutSuggestedFiles: string[];
+  scoutFailed: boolean;
+  scoutFailureReason?: string;
   postExplorerToolCalls: number;
   postExplorerSearchCalls: number;
   postExplorerReadCalls: number;
@@ -95,6 +104,21 @@ export interface ExplorerObservedToolCall {
   detail?: string;
 }
 
+export interface RepoExplorerScoutReport {
+  confidence: number;
+  missingLikelyFiles: Array<{ path: string; reason: string }>;
+  recommendedReads: Array<{ path: string; startLine?: number; endLine?: number; reason: string }>;
+  warnings: string[];
+}
+
+export interface RepoExplorerScoutState {
+  enabled: boolean;
+  ran: boolean;
+  elapsedMs: number;
+  failed: boolean;
+  failureReason?: string;
+}
+
 export interface ExplorerOptions {
   root?: string;
   enabled?: boolean;
@@ -102,6 +126,8 @@ export interface ExplorerOptions {
   maxMatchesPerQuery?: number;
   forceRefresh?: boolean;
   maxCacheAgeMs?: number;
+  modelScout?: RepoExplorerScoutReport;
+  scout?: RepoExplorerScoutState;
 }
 
 interface RepoExplorerCacheEntry {
@@ -184,17 +210,35 @@ export function suggestedFilesForExplorerReport(report: ExplorerReport): string[
   const files = [
     ...report.recommendedReads.map((read) => read.path),
     ...report.likelyFiles.map((file) => file.path),
+    ...(report.modelScout?.recommendedReads.map((read) => read.path) ?? []),
+    ...(report.modelScout?.missingLikelyFiles.map((file) => file.path) ?? []),
+  ];
+  return [...new Set(files)].slice(0, 12);
+}
+
+export function scoutSuggestedFilesForExplorerReport(report: ExplorerReport): string[] {
+  const files = [
+    ...(report.modelScout?.recommendedReads.map((read) => read.path) ?? []),
+    ...(report.modelScout?.missingLikelyFiles.map((file) => file.path) ?? []),
   ];
   return [...new Set(files)].slice(0, 12);
 }
 
 export function createRepoExplorerEffectiveness(report: ExplorerReport): RepoExplorerEffectiveness {
   const suggestedFiles = suggestedFilesForExplorerReport(report);
+  const scoutSuggestedFiles = scoutSuggestedFilesForExplorerReport(report);
   return {
     triggered: report.mode !== 'skipped',
     reportChars: report.metrics.reportChars,
     cacheHit: report.metrics.cacheHit,
     suggestedFiles,
+    scoutEnabled: report.scout?.enabled ?? false,
+    scoutRan: report.scout?.ran ?? false,
+    scoutElapsedMs: report.scout?.elapsedMs ?? 0,
+    scoutSuggestedFiles,
+    usedScoutSuggestedFiles: [],
+    scoutFailed: report.scout?.failed ?? false,
+    ...(report.scout?.failureReason ? { scoutFailureReason: report.scout.failureReason } : {}),
     postExplorerToolCalls: 0,
     postExplorerSearchCalls: 0,
     postExplorerReadCalls: 0,
@@ -223,6 +267,12 @@ export function observeRepoExplorerToolCall(
   for (const file of effectiveness.suggestedFiles) {
     if (argText.includes(file.toLowerCase()) && !effectiveness.usedSuggestedFiles.includes(file)) {
       effectiveness.usedSuggestedFiles.push(file);
+      if (
+        effectiveness.scoutSuggestedFiles.includes(file) &&
+        !effectiveness.usedScoutSuggestedFiles.includes(file)
+      ) {
+        effectiveness.usedScoutSuggestedFiles.push(file);
+      }
     }
   }
   effectiveness.ignoredSuggestedFiles = effectiveness.suggestedFiles
@@ -236,6 +286,13 @@ export function formatRepoExplorerEffectiveness(effectiveness: RepoExplorerEffec
     `reportChars=${effectiveness.reportChars}`,
     `cacheHit=${effectiveness.cacheHit}`,
     `suggestedFiles=${effectiveness.suggestedFiles.length}`,
+    `scoutEnabled=${effectiveness.scoutEnabled}`,
+    `scoutRan=${effectiveness.scoutRan}`,
+    `scoutElapsedMs=${effectiveness.scoutElapsedMs}`,
+    `scoutSuggestedFiles=${effectiveness.scoutSuggestedFiles.length ? effectiveness.scoutSuggestedFiles.join(',') : 'none'}`,
+    `usedScoutSuggestedFiles=${effectiveness.usedScoutSuggestedFiles.length ? effectiveness.usedScoutSuggestedFiles.join(',') : 'none'}`,
+    `scoutFailed=${effectiveness.scoutFailed}`,
+    ...(effectiveness.scoutFailureReason ? [`scoutFailureReason=${effectiveness.scoutFailureReason}`] : []),
     `usedSuggestedFiles=${effectiveness.usedSuggestedFiles.length ? effectiveness.usedSuggestedFiles.join(',') : 'none'}`,
     `ignoredSuggestedFiles=${effectiveness.ignoredSuggestedFiles.length ? effectiveness.ignoredSuggestedFiles.join(',') : 'none'}`,
     `postExplorerToolCalls=${effectiveness.postExplorerToolCalls}`,
@@ -458,6 +515,8 @@ export async function buildExplorerReport(
     diagnostics,
     metrics,
     candidateGroups,
+    ...(options.modelScout ? { modelScout: sanitizeRepoExplorerScoutReport(options.modelScout) } : {}),
+    ...(options.scout ? { scout: options.scout } : {}),
     ...(workspace ? {
       workspace: {
         languages: workspace.languages.slice(0, 8),
@@ -475,6 +534,37 @@ export async function prepareExplorerInput(
   if (report.mode === 'skipped') return { input, report, injected: false };
   const reportText = formatExplorerReport(report);
   return { input: injectExplorerContext(input, reportText), report, injected: true, reportText };
+}
+
+export function attachRepoExplorerScout(
+  report: ExplorerReport,
+  scout: RepoExplorerScoutReport,
+  state: RepoExplorerScoutState,
+): ExplorerReport {
+  report.modelScout = sanitizeRepoExplorerScoutReport(scout);
+  report.scout = state;
+  return report;
+}
+
+export function markRepoExplorerScoutState(
+  report: ExplorerReport,
+  state: RepoExplorerScoutState,
+): ExplorerReport {
+  report.scout = state;
+  return report;
+}
+
+export function parseRepoExplorerScoutReport(text: string): RepoExplorerScoutReport {
+  const trimmed = text.trim();
+  const jsonText = extractJsonObject(trimmed);
+  if (!jsonText) throw new Error('scout returned no JSON object');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch (err) {
+    throw new Error(`scout returned invalid JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return sanitizeRepoExplorerScoutReport(parsed);
 }
 
 export function injectExplorerContext(input: ExplorerChatInput, context: string): ExplorerChatInput {
@@ -503,6 +593,7 @@ export function formatExplorerReport(report: ExplorerReport): string {
   const errors = report.diagnostics.errors.length
     ? `\nErrors: ${report.diagnostics.errors.slice(0, 3).join(' | ')}`
     : '';
+  const scout = formatModelScoutSection(report.modelScout);
   const render = (reportChars: number) => [
     '<repo_explorer_report>',
     `Mode: ${report.mode}; confidence: ${report.confidence}; root: ${report.root}`,
@@ -521,8 +612,9 @@ export function formatExplorerReport(report: ExplorerReport): string {
     renderGroup(report.candidateGroups.configDocs),
     'Recommended reads:',
     reads,
+    scout,
     `Diagnostics: filesSearched=${report.diagnostics.filesSearched}; bytesScanned=${report.diagnostics.bytesScanned}; capped=${report.diagnostics.capped}; capReason=${report.diagnostics.capReason ?? 'none'}; skipped=${skipped}${errors}`,
-    'Instruction: This report is a preflight map, not exhaustive evidence. Prefer these candidate files first before launching broad additional searches, and verify important claims with targeted reads before final conclusions.',
+    'Instruction: This report is a preflight map, not exhaustive evidence. Prefer these candidate files first before launching broad additional searches, and verify important claims with targeted reads before final conclusions. The model_scout section is advisory; prefer deterministic candidates when scout confidence is low or scout warnings mention caps/uncertainty.',
     '</repo_explorer_report>',
   ].join('\n');
 
@@ -540,6 +632,104 @@ function formatFindingLine(file: ExplorerFileFinding): string {
     ? ` (${file.locations.slice(0, 3).map((loc) => `L${loc.line}:${loc.column ?? 1} ${loc.query}`).join(', ')})`
     : '';
   return `- ${file.path}: ${file.reason}${locs}`;
+}
+
+function formatModelScoutSection(scout: RepoExplorerScoutReport | undefined): string {
+  if (!scout) return 'model_scout: none';
+  const missing = scout.missingLikelyFiles.length
+    ? scout.missingLikelyFiles.slice(0, 6).map((file) => `- ${file.path}: ${file.reason}`).join('\n')
+    : '- none';
+  const reads = scout.recommendedReads.length
+    ? scout.recommendedReads.slice(0, 6).map((read) => {
+        const range = read.startLine && read.endLine ? `:${read.startLine}-${read.endLine}` : '';
+        return `- ${read.path}${range}: ${read.reason}`;
+      }).join('\n')
+    : '- none';
+  const warnings = scout.warnings.length
+    ? scout.warnings.slice(0, 4).map((warning) => `- ${warning}`).join('\n')
+    : '- none';
+  return [
+    'model_scout:',
+    `confidence=${scout.confidence}`,
+    'missing_likely_files:',
+    missing,
+    'recommended_reads:',
+    reads,
+    'warnings:',
+    warnings,
+  ].join('\n');
+}
+
+function extractJsonObject(text: string): string | null {
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const candidate = fence?.[1]?.trim() || text;
+  const start = candidate.indexOf('{');
+  const end = candidate.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  return candidate.slice(start, end + 1);
+}
+
+function sanitizeRepoExplorerScoutReport(input: unknown): RepoExplorerScoutReport {
+  if (!input || typeof input !== 'object') throw new Error('scout report must be an object');
+  const record = input as Record<string, unknown>;
+  const confidenceRaw = typeof record.confidence === 'number' ? record.confidence : Number(record.confidence);
+  const confidence = Number.isFinite(confidenceRaw) ? Math.max(0, Math.min(1, confidenceRaw)) : 0;
+  return {
+    confidence,
+    missingLikelyFiles: sanitizeScoutFiles(record.missingLikelyFiles).slice(0, 8),
+    recommendedReads: sanitizeScoutReads(record.recommendedReads).slice(0, 8),
+    warnings: Array.isArray(record.warnings)
+      ? record.warnings.map((warning) => cleanScoutText(String(warning), 180)).filter(Boolean).slice(0, 6)
+      : [],
+  };
+}
+
+function sanitizeScoutFiles(input: unknown): Array<{ path: string; reason: string }> {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((item) => {
+      const record = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+      const path = cleanScoutPath(record.path);
+      if (!path) return null;
+      return { path, reason: cleanScoutText(String(record.reason || 'scout suggested file'), 180) };
+    })
+    .filter((item): item is { path: string; reason: string } => Boolean(item));
+}
+
+function sanitizeScoutReads(input: unknown): Array<{ path: string; startLine?: number; endLine?: number; reason: string }> {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((item) => {
+      const record = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+      const path = cleanScoutPath(record.path);
+      if (!path) return null;
+      const startLine = positiveLine(record.startLine);
+      const endLine = positiveLine(record.endLine);
+      return {
+        path,
+        ...(startLine ? { startLine } : {}),
+        ...(endLine ? { endLine: Math.max(startLine ?? 1, endLine) } : {}),
+        reason: cleanScoutText(String(record.reason || 'scout recommended read'), 180),
+      };
+    })
+    .filter((item): item is { path: string; startLine?: number; endLine?: number; reason: string } => Boolean(item));
+}
+
+function cleanScoutPath(input: unknown): string {
+  const path = cleanScoutText(String(input || ''), 220);
+  if (!path || path.includes('\0') || path.startsWith('/')) return '';
+  if (path.includes('..')) return '';
+  return path;
+}
+
+function cleanScoutText(input: string, maxLength: number): string {
+  return input.replace(/\s+/g, ' ').trim().slice(0, maxLength);
+}
+
+function positiveLine(input: unknown): number | undefined {
+  const value = typeof input === 'number' ? input : Number(input);
+  if (!Number.isFinite(value) || value < 1) return undefined;
+  return Math.floor(value);
 }
 
 function emptyCandidateGroups(): ExplorerCandidateGroups {

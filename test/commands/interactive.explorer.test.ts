@@ -8,6 +8,7 @@ import {
   clearRepoExplorerCache,
   compileExplorerQueries,
   formatExplorerReport,
+  parseRepoExplorerScoutReport,
   prepareExplorerInput,
 } from '../../interactive-tui/explorer';
 import {openfunctionAsk, setBrainModel, type BrainEvent} from '../../interactive-tui/brain';
@@ -180,6 +181,26 @@ describe('interactive repo explorer preflight', () => {
     expect(parts.some((part) => part.type === 'image')).toBe(true);
   });
 
+  it('parses and renders a compact model scout section', async () => {
+    const scout = parseRepoExplorerScoutReport(JSON.stringify({
+      confidence: 0.72,
+      missingLikelyFiles: [{path: 'src/scoutTarget.ts', reason: 'nearby routing code'}],
+      recommendedReads: [{path: 'src/scoutTarget.ts', startLine: 3, endLine: 18, reason: 'check call site'}],
+      warnings: ['single scout pass'],
+    }));
+    const report = await buildExplorerReport('scour this repo and explain how local search works', {
+      root,
+      modelScout: scout,
+      scout: {enabled: true, ran: true, elapsedMs: 12, failed: false},
+    });
+    const formatted = formatExplorerReport(report);
+
+    expect(formatted).toContain('model_scout:');
+    expect(formatted).toContain('confidence=0.72');
+    expect(formatted).toContain('src/scoutTarget.ts:3-18');
+    expect(formatted.length).toBeLessThan(4000);
+  });
+
   it('can be disabled explicitly', async () => {
     const prepared = await prepareExplorerInput('look into searchLiteral in fsEngine.ts', {root, enabled: false});
 
@@ -300,6 +321,173 @@ describe('interactive repo explorer preflight', () => {
       else process.env.SIFT_USER_CWD = previousCwd;
       if (previousDebug === undefined) delete process.env.SIFT_EXPLORER_DEBUG;
       else process.env.SIFT_EXPLORER_DEBUG = previousDebug;
+      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('leaves the scout disabled by default', async () => {
+    let capturedInput: unknown;
+    const previousCwd = process.env.SIFT_USER_CWD;
+    const previousDebug = process.env.SIFT_EXPLORER_DEBUG;
+    const previousScout = process.env.SIFT_EXPLORER_SCOUT;
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+      createChatAgent: async () => ({
+        chat: async function* (message: unknown) {
+          capturedInput = message;
+          yield {type: 'text', text: 'ok'};
+          yield {type: 'done', result: {content: 'ok'}};
+        },
+      }),
+      defineTool: (def: unknown) => def,
+      ok: (data: unknown, message?: string) => ({success: true, data, message}),
+      err: (error: string) => ({success: false, error}),
+    };
+    process.env.SIFT_USER_CWD = root;
+    process.env.SIFT_EXPLORER_DEBUG = '1';
+    delete process.env.SIFT_EXPLORER_SCOUT;
+    setBrainModel({provider: 'openrouter', model: 'test-model'});
+
+    try {
+      await openfunctionAsk('scour this repo and explain how local search works', () => undefined);
+
+      expect(String(capturedInput)).toContain('<repo_explorer_report>');
+      expect(String(capturedInput)).toContain('model_scout: none');
+      const summary = errorSpy.mock.calls
+        .map((call) => String(call[0]))
+        .find((line) => line.includes('repo_explorer_effectiveness:'));
+      expect(summary).toContain('scoutEnabled=false');
+      expect(summary).toContain('scoutRan=false');
+    } finally {
+      if (previousCwd === undefined) delete process.env.SIFT_USER_CWD;
+      else process.env.SIFT_USER_CWD = previousCwd;
+      if (previousDebug === undefined) delete process.env.SIFT_EXPLORER_DEBUG;
+      else process.env.SIFT_EXPLORER_DEBUG = previousDebug;
+      if (previousScout === undefined) delete process.env.SIFT_EXPLORER_SCOUT;
+      else process.env.SIFT_EXPLORER_SCOUT = previousScout;
+      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('runs the optional scout, merges its suggestions, and tracks consumption', async () => {
+    let capturedMainInput: unknown;
+    const previousCwd = process.env.SIFT_USER_CWD;
+    const previousDebug = process.env.SIFT_EXPLORER_DEBUG;
+    const previousScout = process.env.SIFT_EXPLORER_SCOUT;
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+      createChatAgent: async (config: Record<string, unknown>) => ({
+        chat: async function* (message: unknown) {
+          if (config.name === 'siftable-repo-explorer-scout') {
+            expect(String(message)).toContain('<repo_explorer_report>');
+            yield {
+              type: 'text',
+              text: JSON.stringify({
+                confidence: 0.81,
+                missingLikelyFiles: [{path: 'src/scoutTarget.ts', reason: 'model scout found related routing'}],
+                recommendedReads: [{path: 'src/scoutTarget.ts', startLine: 1, endLine: 20, reason: 'confirm related routing'}],
+                warnings: ['single read-only pass'],
+              }),
+            };
+            yield {type: 'done', result: {content: ''}};
+            return;
+          }
+          capturedMainInput = message;
+          if (String(message).includes('src/scoutTarget.ts')) {
+            yield {type: 'tool_call', toolCall: {name: 'read_file', args: {path: 'src/scoutTarget.ts'}}};
+            yield {type: 'tool_result', toolResult: {name: 'read_file', success: true}};
+          }
+          yield {type: 'text', text: 'ok'};
+          yield {type: 'done', result: {content: 'ok'}};
+        },
+      }),
+      defineTool: (def: unknown) => def,
+      ok: (data: unknown, message?: string) => ({success: true, data, message}),
+      err: (error: string) => ({success: false, error}),
+    };
+    process.env.SIFT_USER_CWD = root;
+    process.env.SIFT_EXPLORER_DEBUG = '1';
+    process.env.SIFT_EXPLORER_SCOUT = '1';
+    setBrainModel({provider: 'openrouter', model: 'test-model'});
+
+    try {
+      const events: BrainEvent[] = [];
+      await openfunctionAsk('scour this repo and explain how local search works', (event) => events.push(event));
+
+      expect(events.some((event) => event.toolCall?.name === 'repo_explorer_scout')).toBe(true);
+      expect(events.find((event) => event.toolResult?.name === 'repo_explorer_scout')?.toolResult?.success).toBe(true);
+      expect(String(capturedMainInput)).toContain('model_scout:');
+      expect(String(capturedMainInput)).toContain('src/scoutTarget.ts');
+      const summary = errorSpy.mock.calls
+        .map((call) => String(call[0]))
+        .find((line) => line.includes('repo_explorer_effectiveness:'));
+      expect(summary).toContain('scoutEnabled=true');
+      expect(summary).toContain('scoutRan=true');
+      expect(summary).toContain('scoutSuggestedFiles=src/scoutTarget.ts');
+      expect(summary).toContain('usedScoutSuggestedFiles=src/scoutTarget.ts');
+      expect(summary).toContain('scoutFailed=false');
+    } finally {
+      if (previousCwd === undefined) delete process.env.SIFT_USER_CWD;
+      else process.env.SIFT_USER_CWD = previousCwd;
+      if (previousDebug === undefined) delete process.env.SIFT_EXPLORER_DEBUG;
+      else process.env.SIFT_EXPLORER_DEBUG = previousDebug;
+      if (previousScout === undefined) delete process.env.SIFT_EXPLORER_SCOUT;
+      else process.env.SIFT_EXPLORER_SCOUT = previousScout;
+      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('degrades to the deterministic report when the scout fails', async () => {
+    let capturedMainInput: unknown;
+    const previousCwd = process.env.SIFT_USER_CWD;
+    const previousDebug = process.env.SIFT_EXPLORER_DEBUG;
+    const previousScout = process.env.SIFT_EXPLORER_SCOUT;
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+      createChatAgent: async (config: Record<string, unknown>) => ({
+        chat: async function* (message: unknown) {
+          if (config.name === 'siftable-repo-explorer-scout') {
+            yield {type: 'text', text: 'not json'};
+            yield {type: 'done', result: {content: 'not json'}};
+            return;
+          }
+          capturedMainInput = message;
+          yield {type: 'text', text: 'ok'};
+          yield {type: 'done', result: {content: 'ok'}};
+        },
+      }),
+      defineTool: (def: unknown) => def,
+      ok: (data: unknown, message?: string) => ({success: true, data, message}),
+      err: (error: string) => ({success: false, error}),
+    };
+    process.env.SIFT_USER_CWD = root;
+    process.env.SIFT_EXPLORER_DEBUG = '1';
+    process.env.SIFT_EXPLORER_SCOUT = '1';
+    setBrainModel({provider: 'openrouter', model: 'test-model'});
+
+    try {
+      const events: BrainEvent[] = [];
+      await openfunctionAsk('scour this repo and explain how local search works', (event) => events.push(event));
+
+      expect(events.find((event) => event.toolResult?.name === 'repo_explorer_scout')?.toolResult?.success).toBe(false);
+      expect(String(capturedMainInput)).toContain('<repo_explorer_report>');
+      expect(String(capturedMainInput)).toContain('model_scout: none');
+      const summary = errorSpy.mock.calls
+        .map((call) => String(call[0]))
+        .find((line) => line.includes('repo_explorer_effectiveness:'));
+      expect(summary).toContain('scoutEnabled=true');
+      expect(summary).toContain('scoutRan=true');
+      expect(summary).toContain('scoutFailed=true');
+    } finally {
+      if (previousCwd === undefined) delete process.env.SIFT_USER_CWD;
+      else process.env.SIFT_USER_CWD = previousCwd;
+      if (previousDebug === undefined) delete process.env.SIFT_EXPLORER_DEBUG;
+      else process.env.SIFT_EXPLORER_DEBUG = previousDebug;
+      if (previousScout === undefined) delete process.env.SIFT_EXPLORER_SCOUT;
+      else process.env.SIFT_EXPLORER_SCOUT = previousScout;
       delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
       errorSpy.mockRestore();
     }
