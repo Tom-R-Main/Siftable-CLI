@@ -7,6 +7,7 @@ import {
   classifyExplorerPrompt,
   clearRepoExplorerCache,
   compileExplorerQueries,
+  createRepoExplorerActivityView,
   formatExplorerReport,
   parseRepoExplorerScoutReport,
   parseRepoExplorerScoutReportDetailed,
@@ -95,6 +96,20 @@ describe('interactive repo explorer preflight', () => {
     expect(prepared.report.metrics.reportChars).toBeGreaterThan(0);
     expect(prepared.input).toEqual(expect.stringContaining('<repo_explorer_report>'));
     expect(prepared.input).toEqual(expect.stringContaining('User request:'));
+  });
+
+  it('summarizes reports into TUI explorer activity metadata', async () => {
+    const prepared = await prepareExplorerInput('look into searchLiteral in fsEngine.ts', {root});
+    const activity = createRepoExplorerActivityView(prepared.report, {rawReport: prepared.reportText});
+
+    expect(activity).toMatchObject({
+      mode: 'deterministic',
+      classification: 'broad',
+      suggestedFileCount: expect.any(Number),
+      reportChars: expect.any(Number),
+    });
+    expect(activity.primaryCandidates).toContain('src/fsEngine.ts');
+    expect(activity.rawReport).toContain('<repo_explorer_report>');
   });
 
   it('keeps broad reports ranked around expected files and bounded', async () => {
@@ -692,6 +707,17 @@ describe('interactive repo explorer preflight', () => {
       expect(events.some((event) => event.toolCall?.name === 'repo_explorer_fanout')).toBe(true);
       expect(events.some((event) => event.toolCall?.name === 'repo_explorer_scout')).toBe(false);
       expect(events.find((event) => event.toolResult?.name === 'repo_explorer_fanout')?.toolResult?.output).toContain('1 failed branch');
+      expect(events.find((event) => event.toolResult?.name === 'repo_explorer_fanout')?.toolResult?.explorerActivity).toMatchObject({
+        mode: 'fanout',
+        suggestedFileCount: expect.any(Number),
+        branches: expect.arrayContaining([
+          expect.objectContaining({status: 'failed', warningCount: expect.any(Number)}),
+        ]),
+      });
+      expect(events.find((event) => event.toolResult?.name === 'repo_explorer')?.toolResult?.explorerActivity).toMatchObject({
+        mode: 'fanout',
+        rawReport: expect.stringContaining('<repo_explorer_report>'),
+      });
       expect(String(capturedMainInput)).toContain('parallel_scouts:');
       expect(String(capturedMainInput)).toContain('src/fanoutTarget.ts');
       const summary = errorSpy.mock.calls

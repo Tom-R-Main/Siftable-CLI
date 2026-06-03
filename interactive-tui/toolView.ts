@@ -19,6 +19,33 @@ const LABEL_MAX = 80;
 export const OUTPUT_MAX_LINES = 8;
 export const OUTPUT_MAX_BYTES = 2000;
 
+export type ExplorerActivityBranch = {
+  id: string;
+  status: "ok" | "failed" | "skipped";
+  elapsedMs?: number;
+  suggestedFileCount: number;
+  warningCount?: number;
+  failureReason?: string;
+};
+
+export type ExplorerActivityView = {
+  mode: "deterministic" | "scout" | "fanout";
+  classification?: string;
+  cacheHit?: boolean;
+  cacheMiss?: boolean;
+  elapsedMs: number;
+  reportChars: number;
+  suggestedFileCount: number;
+  usedSuggestedFileCount?: number;
+  redundantBroadSearch?: boolean;
+  primaryCandidates?: string[];
+  scoutSuggestedFiles?: string[];
+  fanoutSuggestedFiles?: string[];
+  branches?: ExplorerActivityBranch[];
+  warnings?: string[];
+  rawReport?: string;
+};
+
 function clipLine(s: string, max: number): string {
   const oneLine = s.replace(/\s+/g, " ").trim();
   return oneLine.length > max ? oneLine.slice(0, max - 1) + "…" : oneLine;
@@ -82,6 +109,123 @@ export function toolCallLabel(
   const d = (detail ?? "").trim();
   if (d) return clipLine(d, LABEL_MAX);
   return toolArgPreview(args);
+}
+
+export function isExplorerToolName(name: string | undefined): boolean {
+  return name === "repo_explorer" || name === "repo_explorer_scout" || name === "repo_explorer_fanout";
+}
+
+export function explorerToolCallText(name: string, detail?: string): string {
+  const label = name === "repo_explorer_fanout"
+    ? "fan-out"
+    : name === "repo_explorer_scout"
+      ? "scout"
+      : "deterministic";
+  const d = (detail ?? "").trim();
+  return `◇ Explorer · ${label}${d ? ` · ${clipLine(d, 44)}` : ""}`;
+}
+
+function formatCount(label: string, count: number | undefined): string {
+  return typeof count === "number" ? `${count} ${label}${count === 1 ? "" : "s"}` : "";
+}
+
+function formatReportSize(chars: number): string {
+  if (chars < 1024) return `${chars}B`;
+  return `${(chars / 1024).toFixed(1)}KB`;
+}
+
+function cacheText(activity: ExplorerActivityView): string {
+  if (activity.cacheHit) return "cache hit";
+  if (activity.cacheMiss) return "cache miss";
+  return "";
+}
+
+function modeText(mode: ExplorerActivityView["mode"]): string {
+  return mode === "fanout" ? "fan-out" : mode;
+}
+
+export function formatExplorerActivityLine(activity: ExplorerActivityView): string {
+  const branchText = activity.mode === "fanout" && activity.branches?.length
+    ? `${activity.branches.filter((branch) => branch.status === "ok").length}/${activity.branches.length} branches ok`
+    : "";
+  const warnings = activity.warnings?.length
+    ? formatCount("warning", activity.warnings.length)
+    : "";
+  return [
+    "◇ Explorer",
+    modeText(activity.mode),
+    branchText,
+    formatCount("file", activity.suggestedFileCount),
+    typeof activity.usedSuggestedFileCount === "number" ? `${activity.usedSuggestedFileCount} used` : "",
+    `${formatReportSize(activity.reportChars)} report`,
+    `${activity.elapsedMs}ms`,
+    cacheText(activity),
+    warnings,
+  ].filter(Boolean).join(" · ");
+}
+
+export function formatExplorerActivityDetails(activity: ExplorerActivityView): string {
+  const lines = [
+    `Mode: ${modeText(activity.mode)}`,
+    `Cache: ${cacheText(activity) || "unknown"}`,
+    `Elapsed: ${activity.elapsedMs}ms`,
+    `Report: ${formatReportSize(activity.reportChars)}`,
+    `Files suggested: ${activity.suggestedFileCount}`,
+  ];
+  if (typeof activity.usedSuggestedFileCount === "number") {
+    lines.push(`Used by model: ${activity.usedSuggestedFileCount}`);
+  }
+  if (typeof activity.redundantBroadSearch === "boolean") {
+    lines.push(`Redundant broad search: ${activity.redundantBroadSearch ? "yes" : "no"}`);
+  }
+
+  const primary = activity.primaryCandidates ?? [];
+  if (primary.length) {
+    lines.push("", "Primary candidates", ...primary.slice(0, 8).map((path) => `- ${path}`));
+  }
+
+  const scout = activity.scoutSuggestedFiles ?? [];
+  if (scout.length) {
+    lines.push("", "Scout suggestions", ...scout.slice(0, 8).map((path) => `- ${path}`));
+  }
+
+  const fanout = activity.fanoutSuggestedFiles ?? [];
+  if (fanout.length) {
+    lines.push("", "Fan-out suggestions", ...fanout.slice(0, 10).map((path) => `- ${path}`));
+  }
+
+  const branches = activity.branches ?? [];
+  if (branches.length) {
+    lines.push("", "Fan-out branches");
+    for (const branch of branches) {
+      const icon = branch.status === "ok" ? "✓" : branch.status === "failed" ? "⚠" : "-";
+      const warnings = branch.warningCount ? ` · ${formatCount("warning", branch.warningCount)}` : "";
+      const failure = branch.failureReason ? ` · ${clipLine(branch.failureReason, 72)}` : "";
+      lines.push(`${icon} ${branch.id} · ${formatCount("file", branch.suggestedFileCount)} · ${branch.elapsedMs ?? 0}ms${warnings}${failure}`);
+    }
+  }
+
+  const warnings = activity.warnings ?? [];
+  if (warnings.length) {
+    lines.push("", "Warnings", ...warnings.slice(0, 8).map((warning) => `- ${warning}`));
+  }
+
+  if (activity.rawReport) lines.push("", "Raw report: press c on an empty prompt to copy latest explorer report");
+  return lines.join("\n");
+}
+
+export function asExplorerActivityView(input: unknown): ExplorerActivityView | null {
+  if (!input || typeof input !== "object") return null;
+  const record = input as Partial<ExplorerActivityView>;
+  if (
+    (record.mode === "deterministic" || record.mode === "scout" || record.mode === "fanout") &&
+    typeof record.elapsedMs === "number" &&
+    typeof record.reportChars === "number" &&
+    typeof record.suggestedFileCount === "number"
+  ) {
+    return record as ExplorerActivityView;
+  }
+  return null;
 }
 
 /**

@@ -176,6 +176,33 @@ export interface RepoExplorerFanoutState {
   suggestedFiles: string[];
 }
 
+export interface RepoExplorerActivityBranch {
+  id: string;
+  status: 'ok' | 'failed' | 'skipped';
+  elapsedMs?: number;
+  suggestedFileCount: number;
+  warningCount?: number;
+  failureReason?: string;
+}
+
+export interface RepoExplorerActivityView {
+  mode: 'deterministic' | 'scout' | 'fanout';
+  classification: ExplorerMode;
+  cacheHit?: boolean;
+  cacheMiss?: boolean;
+  elapsedMs: number;
+  reportChars: number;
+  suggestedFileCount: number;
+  usedSuggestedFileCount?: number;
+  redundantBroadSearch?: boolean;
+  primaryCandidates: string[];
+  scoutSuggestedFiles: string[];
+  fanoutSuggestedFiles: string[];
+  branches?: RepoExplorerActivityBranch[];
+  warnings: string[];
+  rawReport?: string;
+}
+
 export interface ExplorerOptions {
   root?: string;
   enabled?: boolean;
@@ -396,6 +423,65 @@ export function formatRepoExplorerEffectiveness(effectiveness: RepoExplorerEffec
     `launchedRedundantBroadSearch=${effectiveness.launchedRedundantBroadSearch}`,
     `elapsedAfterExplorerMs=${effectiveness.elapsedAfterExplorerMs}`,
   ].join(' ');
+}
+
+export function createRepoExplorerActivityView(
+  report: ExplorerReport,
+  options: {
+    rawReport?: string;
+    effectiveness?: Pick<RepoExplorerEffectiveness, 'usedSuggestedFiles' | 'launchedRedundantBroadSearch'>;
+  } = {},
+): RepoExplorerActivityView {
+  const mode = report.fanout?.ran ? 'fanout' : report.scout?.ran ? 'scout' : 'deterministic';
+  const scoutSuggestedFiles = scoutSuggestedFilesForExplorerReport(report);
+  const fanoutSuggestedFiles = fanoutSuggestedFilesForExplorerReport(report);
+  const warnings = [
+    ...(report.modelScout?.warnings ?? []),
+    ...(report.scout?.failed && report.scout.failureReason ? [`scout failed: ${report.scout.failureReason}`] : []),
+    ...(report.parallelScouts?.branches
+      .filter((branch) => branch.status === 'failed')
+      .map((branch) => `${branch.id} failed${branch.failureReason ? `: ${branch.failureReason}` : ''}`) ?? []),
+    ...report.diagnostics.errors,
+  ].slice(0, 8);
+  return {
+    mode,
+    classification: report.mode,
+    cacheHit: report.metrics.cacheHit,
+    cacheMiss: report.metrics.cacheMiss,
+    elapsedMs: report.fanout?.ran
+      ? report.fanout.elapsedMs
+      : report.scout?.ran
+        ? report.scout.elapsedMs
+        : report.metrics.elapsedMs,
+    reportChars: report.metrics.reportChars,
+    suggestedFileCount: suggestedFilesForExplorerReport(report).length,
+    ...(options.effectiveness
+      ? {
+          usedSuggestedFileCount: options.effectiveness.usedSuggestedFiles.length,
+          redundantBroadSearch: options.effectiveness.launchedRedundantBroadSearch,
+        }
+      : {}),
+    primaryCandidates: (report.candidateGroups.primaryCandidates.length
+      ? report.candidateGroups.primaryCandidates
+      : report.likelyFiles
+    ).slice(0, 8).map((file) => file.path),
+    scoutSuggestedFiles: scoutSuggestedFiles.slice(0, 8),
+    fanoutSuggestedFiles: fanoutSuggestedFiles.slice(0, 10),
+    ...(report.parallelScouts
+      ? {
+          branches: report.parallelScouts.branches.map((branch) => ({
+            id: branch.id,
+            status: branch.status,
+            elapsedMs: branch.elapsedMs,
+            suggestedFileCount: branch.suggestedFiles.length,
+            warningCount: branch.warnings.length + (branch.failureReason ? 1 : 0),
+            ...(branch.failureReason ? { failureReason: branch.failureReason } : {}),
+          })),
+        }
+      : {}),
+    warnings,
+    ...(options.rawReport ? { rawReport: options.rawReport } : {}),
+  };
 }
 
 export function classifyExplorerPrompt(text: string): ExplorerMode {

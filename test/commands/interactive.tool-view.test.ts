@@ -1,4 +1,9 @@
 import {
+  asExplorerActivityView,
+  explorerToolCallText,
+  formatExplorerActivityDetails,
+  formatExplorerActivityLine,
+  isExplorerToolName,
   toolArgPreview,
   toolCallLabel,
   clipOutput,
@@ -43,6 +48,67 @@ describe('toolView — tool call labels', () => {
     const label = toolCallLabel(long, undefined);
     expect(label.length).toBeLessThanOrEqual(80);
     expect(label.endsWith('…')).toBe(true);
+  });
+
+  it('special-cases explorer tool calls', () => {
+    expect(isExplorerToolName('repo_explorer')).toBe(true);
+    expect(isExplorerToolName('repo_explorer_fanout')).toBe(true);
+    expect(isExplorerToolName('read_file')).toBe(false);
+    expect(explorerToolCallText('repo_explorer_fanout', 'read-only parallel scouts')).toBe(
+      '◇ Explorer · fan-out · read-only parallel scouts',
+    );
+  });
+});
+
+describe('toolView — explorer activity', () => {
+  const activity = {
+    mode: 'fanout' as const,
+    cacheHit: true,
+    elapsedMs: 211,
+    reportChars: 7980,
+    suggestedFileCount: 14,
+    usedSuggestedFileCount: 5,
+    primaryCandidates: [
+      'packages/exf-cli/interactive-tui/explorer.ts',
+      'packages/exf-cli/interactive-tui/brain.ts',
+    ],
+    fanoutSuggestedFiles: ['packages/exf-cli/interactive-tui/index.tsx'],
+    branches: [
+      {id: 'source_runtime', status: 'ok' as const, elapsedMs: 62, suggestedFileCount: 5},
+      {
+        id: 'routing_config',
+        status: 'failed' as const,
+        elapsedMs: 55,
+        suggestedFileCount: 0,
+        warningCount: 1,
+        failureReason: 'timeout',
+      },
+    ],
+    warnings: ['routing_config failed: timeout'],
+    rawReport: '<repo_explorer_report>...</repo_explorer_report>',
+  };
+
+  it('formats collapsed explorer activity with the important counters', () => {
+    expect(formatExplorerActivityLine(activity)).toBe(
+      '◇ Explorer · fan-out · 1/2 branches ok · 14 files · 5 used · 7.8KB report · 211ms · cache hit · 1 warning',
+    );
+  });
+
+  it('formats expanded explorer activity without the raw report body', () => {
+    const details = formatExplorerActivityDetails(activity);
+    expect(details).toContain('Mode: fan-out');
+    expect(details).toContain('Primary candidates');
+    expect(details).toContain('- packages/exf-cli/interactive-tui/explorer.ts');
+    expect(details).toContain('Fan-out branches');
+    expect(details).toContain('⚠ routing_config · 0 files · 55ms · 1 warning · timeout');
+    expect(details).toContain('Raw report: press c on an empty prompt to copy latest explorer report');
+    expect(details).not.toContain('<repo_explorer_report>');
+  });
+
+  it('validates explorer activity payloads defensively', () => {
+    expect(asExplorerActivityView(activity)?.mode).toBe('fanout');
+    expect(asExplorerActivityView({mode: 'fanout'})).toBeNull();
+    expect(asExplorerActivityView({mode: 'bad', elapsedMs: 1, reportChars: 1, suggestedFileCount: 1})).toBeNull();
   });
 });
 

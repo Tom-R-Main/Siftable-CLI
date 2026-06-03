@@ -36,6 +36,7 @@ import {
   chatInputText,
   classifyExplorerPrompt,
   clearRepoExplorerCache,
+  createRepoExplorerActivityView,
   createRepoExplorerEffectiveness,
   formatRepoExplorerEffectiveness,
   formatExplorerReport,
@@ -60,7 +61,7 @@ export interface BrainEvent {
   content?: string;
   error?: string;
   toolCall?: { name: string; args?: Record<string, unknown>; detail?: string };
-  toolResult?: { name: string; success?: boolean; output?: string };
+  toolResult?: { name: string; success?: boolean; output?: string; explorerActivity?: unknown };
   message?: { content?: string };
   [key: string]: unknown;
 }
@@ -1053,6 +1054,7 @@ export async function openfunctionAsk(
             name: 'repo_explorer_fanout',
             success: true,
             output: `${fanoutState.branchCount} branch(es); ${fanoutState.suggestedFiles.length} suggested file(s); ${fanoutState.failedBranches} failed branch(es); ${fanoutState.elapsedMs}ms`,
+            explorerActivity: createRepoExplorerActivityView(report),
           },
         });
       } else if (report.mode !== 'skipped' && explorerScoutEnabled()) {
@@ -1066,14 +1068,17 @@ export async function openfunctionAsk(
             output: scoutState.failed
               ? `failed non-fatally: ${scoutState.failureReason ?? 'unknown error'}`
               : `${report.modelScout?.recommendedReads.length ?? 0} scout read(s); ${report.modelScout?.missingLikelyFiles.length ?? 0} missing file(s); ${scoutState.elapsedMs}ms`,
+            explorerActivity: createRepoExplorerActivityView(report),
           },
         });
       }
+      let explorerActivity: unknown;
       if (report.mode !== 'skipped') {
         const reportText = formatExplorerReport(report);
         preparedInput = injectExplorerContext(input, reportText) as ChatInput;
         explorerEffectiveness = createRepoExplorerEffectiveness(report);
         explorerEffectivenessStartedAt = Date.now();
+        explorerActivity = createRepoExplorerActivityView(report, { rawReport: reportText });
         if (debugExplorer) console.error(reportText);
       }
       onEvent({
@@ -1084,6 +1089,7 @@ export async function openfunctionAsk(
           output: report.mode !== 'skipped'
             ? `${report.mode}; ${report.metrics.queriesRun} querie(s); ${report.likelyFiles.length} likely file(s); ${report.metrics.filesSearched} file(s) searched; ${report.metrics.reportChars} char report; ${report.metrics.elapsedMs}ms`
             : 'skipped',
+          ...(explorerActivity ? { explorerActivity } : {}),
         },
       });
     } catch (err) {

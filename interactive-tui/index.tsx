@@ -48,7 +48,16 @@ import { copyTextToClipboard, readClipboardContent } from "./clipboard";
 import { analyzePaste, type PasteAnalysis } from "./composerPolicy";
 import { setConfirmListener, resolveApproval, type ConfirmRequest, type ApprovalDecision } from "./confirmGate";
 import { normalizeImageForModel } from "./imageEngine";
-import { toolCallLabel, clipOutput, gutterIndent } from "./toolView";
+import {
+  asExplorerActivityView,
+  explorerToolCallText,
+  formatExplorerActivityDetails,
+  formatExplorerActivityLine,
+  isExplorerToolName,
+  toolCallLabel,
+  clipOutput,
+  gutterIndent,
+} from "./toolView";
 import { serializeConversation } from "./transcript";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, extname, isAbsolute, resolve as resolvePath } from "node:path";
@@ -98,7 +107,12 @@ if (LOCAL) {
   client = new ControlClient(baseUrl, process.env.EXECUTERM_DASHBOARD_TOKEN);
 }
 
-type Msg = { role: "you" | "assistant" | "system" | "shell" | "tool"; text: string; out?: string };
+type Msg = {
+  role: "you" | "assistant" | "system" | "shell" | "tool";
+  text: string;
+  out?: string;
+  rawExplorerReport?: string;
+};
 type PasteTextAttachment = { type: "text"; id: number; label: string; text: string; analysis: PasteAnalysis };
 type ImageAttachment = {
   type: "image";
@@ -192,6 +206,7 @@ function App() {
 
   let abortController: AbortController | null = null;
   let inputRef: TextareaRenderable | null = null;
+  let latestExplorerReport = "";
   const history: string[] = [];
   const attachments = new Map<string, ComposerAttachment>();
   let attachmentSeq = 0;
@@ -367,6 +382,14 @@ function App() {
     push({ role: "system", text: await copyText(latestAssistantText()) });
   }
 
+  async function copyLatestExplorerReport(): Promise<void> {
+    if (!latestExplorerReport) {
+      setStatus("no explorer report to copy yet");
+      return;
+    }
+    setStatus(await copyText(latestExplorerReport));
+  }
+
   async function copyCurrentSelection(): Promise<boolean> {
     if (transcriptSelected()) {
       const text = conversationText();
@@ -495,6 +518,7 @@ function App() {
     // starts a fresh one below the step.
     let assistantIdx: number | null = null;
     let lastToolIdx: number | null = null;
+    const toolIndexes = new Map<string, number[]>();
     let got = false;
     let done: SseEvent | null = null;
     const ensureAssistant = () => {
@@ -515,16 +539,35 @@ function App() {
             setMessages(ensureAssistant(), "text", (t) => t + delta);
           } else if (e.type === "tool_call" && e.toolCall) {
             const label = toolCallLabel(e.toolCall.detail, e.toolCall.args);
+            const text = isExplorerToolName(e.toolCall.name)
+              ? explorerToolCallText(e.toolCall.name, e.toolCall.detail)
+              : `⚙ ${e.toolCall.name}${label ? `  ${label}` : ""}`;
             lastToolIdx = messages.length;
-            push({ role: "tool", text: `⚙ ${e.toolCall.name}${label ? `  ${label}` : ""}` });
+            const indexes = toolIndexes.get(e.toolCall.name) ?? [];
+            indexes.push(lastToolIdx);
+            toolIndexes.set(e.toolCall.name, indexes);
+            push({ role: "tool", text });
             assistantIdx = null; // next text opens a fresh bubble below this step
             setStatus(`⚙ ${e.toolCall.name}… (Esc to stop)`);
           } else if (e.type === "tool_result") {
-            if (lastToolIdx !== null) {
+            const name = e.toolResult?.name ?? "";
+            const matchingIndexes = toolIndexes.get(name);
+            const toolIdx = matchingIndexes?.length ? matchingIndexes[matchingIndexes.length - 1] : lastToolIdx;
+            if (toolIdx !== null && toolIdx !== undefined) {
               const ok = e.toolResult?.success !== false;
-              setMessages(lastToolIdx, "text", (t) => t.replace(/^⚙/, ok ? "✓" : "✗"));
-              const preview = clipOutput(e.toolResult?.output ?? "");
-              if (preview) setMessages(lastToolIdx, "out", preview);
+              const activity = asExplorerActivityView(e.toolResult?.explorerActivity);
+              if (activity) {
+                setMessages(toolIdx, "text", `${ok ? "✓" : "✗"} ${formatExplorerActivityLine(activity)}`);
+                setMessages(toolIdx, "out", formatExplorerActivityDetails(activity));
+                if (activity.rawReport) {
+                  latestExplorerReport = activity.rawReport;
+                  setMessages(toolIdx, "rawExplorerReport", activity.rawReport);
+                }
+              } else {
+                setMessages(toolIdx, "text", (t) => t.replace(/^(⚙|◇)/, ok ? "✓" : "✗"));
+                const preview = clipOutput(e.toolResult?.output ?? "");
+                if (preview) setMessages(toolIdx, "out", preview);
+              }
             }
             setStatus("working… (Esc to stop)");
           } else if (e.type === "error") {
@@ -732,6 +775,21 @@ function App() {
         key.preventDefault?.();
         key.stopPropagation?.();
         void copyCurrentSelection();
+        return;
+      }
+      if (
+        !busy() &&
+        !input() &&
+        latestExplorerReport &&
+        key.name === "c" &&
+        key.sequence === "c" &&
+        !key.ctrl &&
+        !key.meta &&
+        !key.shift
+      ) {
+        key.preventDefault?.();
+        key.stopPropagation?.();
+        void copyLatestExplorerReport();
         return;
       }
       if (key.ctrl && key.name === "d" && !input()) {
