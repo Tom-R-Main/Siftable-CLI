@@ -1,4 +1,5 @@
 import {
+  clearWorkspaceFileCache,
   findLocalFiles,
   inspectLocalWorkspace,
   searchLiteral,
@@ -36,10 +37,19 @@ export interface ExplorerReport {
     errors: string[];
   };
   metrics: RepoExplorerMetrics;
+  candidateGroups: ExplorerCandidateGroups;
   workspace?: {
     languages: Array<{ language: string; files: number; bytes: number }>;
     keyFiles: Array<{ path: string; reason: string }>;
   };
+}
+
+export interface ExplorerCandidateGroups {
+  primaryCandidates: ExplorerFileFinding[];
+  supportingCandidates: ExplorerFileFinding[];
+  tests: ExplorerFileFinding[];
+  native: ExplorerFileFinding[];
+  configDocs: ExplorerFileFinding[];
 }
 
 export interface RepoExplorerMetrics {
@@ -53,6 +63,9 @@ export interface RepoExplorerMetrics {
   reportChars: number;
   capped: boolean;
   capReason: string | null;
+  cacheHit: boolean;
+  cacheMiss: boolean;
+  fileSetId?: string;
 }
 
 export interface ExplorerPrepareResult {
@@ -67,6 +80,15 @@ export interface ExplorerOptions {
   enabled?: boolean;
   maxQueries?: number;
   maxMatchesPerQuery?: number;
+  forceRefresh?: boolean;
+  maxCacheAgeMs?: number;
+}
+
+interface RepoExplorerCacheEntry {
+  root: string;
+  createdAtMs: number;
+  fileSetId?: string;
+  lastMetrics?: RepoExplorerMetrics;
 }
 
 const CODE_HINT_RE =
@@ -125,6 +147,18 @@ const STOP_WORDS = new Set([
   'with',
   'would',
 ]);
+const explorerCache = new Map<string, RepoExplorerCacheEntry>();
+const DEFAULT_EXPLORER_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
+
+export function clearRepoExplorerCache(root?: string): void {
+  if (root) {
+    explorerCache.delete(root);
+    clearWorkspaceFileCache(root);
+    return;
+  }
+  explorerCache.clear();
+  clearWorkspaceFileCache();
+}
 
 export function classifyExplorerPrompt(text: string): ExplorerMode {
   const trimmed = text.trim();
@@ -187,6 +221,9 @@ export async function buildExplorerReport(
   const text = chatInputText(input);
   const mode = options.enabled === false ? 'skipped' : classifyExplorerPrompt(text);
   const root = options.root || process.env.SIFT_USER_CWD || process.cwd();
+  const cacheMaxAgeMs = Math.max(0, options.maxCacheAgeMs ?? DEFAULT_EXPLORER_CACHE_MAX_AGE_MS);
+  const cached = !options.forceRefresh ? explorerCache.get(root) : undefined;
+  const cachedUsable = Boolean(cached && Date.now() - cached.createdAtMs <= cacheMaxAgeMs);
   const diagnostics: ExplorerReport['diagnostics'] = {
     filesSearched: 0,
     bytesScanned: 0,
@@ -206,21 +243,38 @@ export async function buildExplorerReport(
     reportChars: 0,
     capped: false,
     capReason: null,
+    cacheHit: false,
+    cacheMiss: false,
   };
 
   if (mode === 'skipped') {
     metrics.elapsedMs = Date.now() - startedAt;
-    return { mode, confidence: 'low', root, queriesRun: [], likelyFiles: [], recommendedReads: [], diagnostics, metrics };
+    return {
+      mode,
+      confidence: 'low',
+      root,
+      queriesRun: [],
+      likelyFiles: [],
+      recommendedReads: [],
+      diagnostics,
+      metrics,
+      candidateGroups: emptyCandidateGroups(),
+    };
   }
 
   const maxQueries = options.maxQueries ?? (mode === 'broad' ? 5 : 3);
   const queries = compileExplorerQueries(text, maxQueries);
   metrics.queriesRun = queries.length;
   const fileScores = new Map<string, ExplorerFileFinding>();
+  if (options.forceRefresh) clearRepoExplorerCache(root);
   const workspace = await inspectLocalWorkspace(root).catch((err) => {
     diagnostics.errors.push(`inspect_local_workspace: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   });
+  const fileSetId = workspace?.stats.fileSetId;
+  metrics.fileSetId = fileSetId;
+  metrics.cacheHit = Boolean(cachedUsable && fileSetId && cached?.fileSetId === fileSetId && workspace?.stats.cacheHit);
+  metrics.cacheMiss = !metrics.cacheHit;
 
   if (workspace) {
     for (const file of workspace.keyFiles.slice(0, 8)) {
@@ -282,6 +336,7 @@ export async function buildExplorerReport(
   const likelyFiles = [...fileScores.values()]
     .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
     .slice(0, 12);
+  const candidateGroups = groupCandidateFiles(likelyFiles);
   const recommendedReads = likelyFiles.slice(0, 8).map((file) => {
     const first = file.locations?.[0];
     return {
@@ -299,6 +354,13 @@ export async function buildExplorerReport(
   metrics.bytesScanned = diagnostics.bytesScanned;
   metrics.capped = diagnostics.capped;
   metrics.capReason = diagnostics.capReason;
+  const entry: RepoExplorerCacheEntry = {
+    root,
+    createdAtMs: Date.now(),
+    fileSetId,
+    lastMetrics: { ...metrics },
+  };
+  explorerCache.set(root, entry);
 
   return {
     mode,
@@ -309,6 +371,7 @@ export async function buildExplorerReport(
     recommendedReads,
     diagnostics,
     metrics,
+    candidateGroups,
     ...(workspace ? {
       workspace: {
         languages: workspace.languages.slice(0, 8),
@@ -335,14 +398,9 @@ export function injectExplorerContext(input: ExplorerChatInput, context: string)
 }
 
 export function formatExplorerReport(report: ExplorerReport): string {
-  const likely = report.likelyFiles.length
-    ? report.likelyFiles.slice(0, 10).map((file) => {
-        const locs = file.locations?.length
-          ? ` (${file.locations.slice(0, 3).map((loc) => `L${loc.line}:${loc.column ?? 1} ${loc.query}`).join(', ')})`
-          : '';
-        return `- ${file.path}: ${file.reason}${locs}`;
-      }).join('\n')
-    : '- none found';
+  const renderGroup = (files: ExplorerFileFinding[]) => files.length
+    ? files.map(formatFindingLine).join('\n')
+    : '- none';
   const reads = report.recommendedReads.length
     ? report.recommendedReads.map((read) => {
         const range = read.startLine && read.endLine ? `:${read.startLine}-${read.endLine}` : '';
@@ -363,14 +421,22 @@ export function formatExplorerReport(report: ExplorerReport): string {
     '<repo_explorer_report>',
     `Mode: ${report.mode}; confidence: ${report.confidence}; root: ${report.root}`,
     `Queries: ${report.queriesRun.join(', ') || 'none'}`,
-    `Metrics: triggered=${report.metrics.triggered}; classification=${report.metrics.classification}; elapsedMs=${report.metrics.elapsedMs}; queriesRun=${report.metrics.queriesRun}; filesSearched=${report.metrics.filesSearched}; bytesScanned=${report.metrics.bytesScanned}; matchesFound=${report.metrics.matchesFound}; reportChars=${reportChars}; capped=${report.metrics.capped}; capReason=${report.metrics.capReason ?? 'none'}`,
+    `Metrics: triggered=${report.metrics.triggered}; classification=${report.metrics.classification}; elapsedMs=${report.metrics.elapsedMs}; queriesRun=${report.metrics.queriesRun}; filesSearched=${report.metrics.filesSearched}; bytesScanned=${report.metrics.bytesScanned}; matchesFound=${report.metrics.matchesFound}; reportChars=${reportChars}; capped=${report.metrics.capped}; capReason=${report.metrics.capReason ?? 'none'}; cacheHit=${report.metrics.cacheHit}; cacheMiss=${report.metrics.cacheMiss}; fileSetId=${report.metrics.fileSetId ?? 'none'}`,
     `Workspace languages: ${languages}`,
-    'Likely files:',
-    likely,
+    'primary_candidates:',
+    renderGroup(report.candidateGroups.primaryCandidates),
+    'supporting_candidates:',
+    renderGroup(report.candidateGroups.supportingCandidates),
+    'tests:',
+    renderGroup(report.candidateGroups.tests),
+    'native:',
+    renderGroup(report.candidateGroups.native),
+    'config_docs:',
+    renderGroup(report.candidateGroups.configDocs),
     'Recommended reads:',
     reads,
     `Diagnostics: filesSearched=${report.diagnostics.filesSearched}; bytesScanned=${report.diagnostics.bytesScanned}; capped=${report.diagnostics.capped}; capReason=${report.diagnostics.capReason ?? 'none'}; skipped=${skipped}${errors}`,
-    'Instruction: Treat this as search triage only. Verify important claims with targeted reads before final conclusions.',
+    'Instruction: This report is a preflight map, not exhaustive evidence. Prefer these candidate files first before launching broad additional searches, and verify important claims with targeted reads before final conclusions.',
     '</repo_explorer_report>',
   ].join('\n');
 
@@ -381,6 +447,65 @@ export function formatExplorerReport(report: ExplorerReport): string {
     text = render(report.metrics.reportChars);
   }
   return text;
+}
+
+function formatFindingLine(file: ExplorerFileFinding): string {
+  const locs = file.locations?.length
+    ? ` (${file.locations.slice(0, 3).map((loc) => `L${loc.line}:${loc.column ?? 1} ${loc.query}`).join(', ')})`
+    : '';
+  return `- ${file.path}: ${file.reason}${locs}`;
+}
+
+function emptyCandidateGroups(): ExplorerCandidateGroups {
+  return {
+    primaryCandidates: [],
+    supportingCandidates: [],
+    tests: [],
+    native: [],
+    configDocs: [],
+  };
+}
+
+function groupCandidateFiles(files: ExplorerFileFinding[]): ExplorerCandidateGroups {
+  const groups = emptyCandidateGroups();
+  const seen = new Set<string>();
+  const add = (bucket: ExplorerFileFinding[], file: ExplorerFileFinding) => {
+    if (seen.has(file.path)) return;
+    seen.add(file.path);
+    bucket.push(file);
+  };
+
+  for (const file of files) {
+    if (isTestPath(file.path)) add(groups.tests, file);
+    else if (isNativePath(file.path)) add(groups.native, file);
+    else if (isConfigDocPath(file.path)) add(groups.configDocs, file);
+    else if (groups.primaryCandidates.length < 4) add(groups.primaryCandidates, file);
+    else add(groups.supportingCandidates, file);
+  }
+
+  for (const group of [
+    groups.primaryCandidates,
+    groups.supportingCandidates,
+    groups.tests,
+    groups.native,
+    groups.configDocs,
+  ]) {
+    group.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+  }
+  return groups;
+}
+
+function isTestPath(path: string): boolean {
+  return /(^|\/)(test|tests|__tests__)\//.test(path) || /\.(test|spec)\.[cm]?[jt]sx?$/.test(path);
+}
+
+function isNativePath(path: string): boolean {
+  return /(^|\/)native\//.test(path) || /\.(zig|rs|go|c|cc|cpp|h|hpp)$/.test(path);
+}
+
+function isConfigDocPath(path: string): boolean {
+  return /(^|\/)(package\.json|tsconfig\.json|README\.md|readme\.md|AGENTS\.md|CLAUDE\.md)$/.test(path) ||
+    /\.(md|json|ya?ml|toml)$/.test(path);
 }
 
 function addFinding(

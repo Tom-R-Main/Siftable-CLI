@@ -5,6 +5,7 @@ import {
   buildExplorerReport,
   chatInputText,
   classifyExplorerPrompt,
+  clearRepoExplorerCache,
   compileExplorerQueries,
   formatExplorerReport,
   prepareExplorerInput,
@@ -15,6 +16,7 @@ describe('interactive repo explorer preflight', () => {
   let root: string;
 
   beforeEach(async () => {
+    clearRepoExplorerCache();
     root = await mkdtemp(join(tmpdir(), 'sift-explorer-'));
     await mkdir(join(root, 'src'), {recursive: true});
     await mkdir(join(root, 'native'), {recursive: true});
@@ -55,6 +57,7 @@ describe('interactive repo explorer preflight', () => {
   });
 
   afterEach(async () => {
+    clearRepoExplorerCache();
     await rm(root, {recursive: true, force: true});
   });
 
@@ -108,6 +111,22 @@ describe('interactive repo explorer preflight', () => {
     expect(formatted.length).toBeLessThan(2500);
   });
 
+  it('reuses and explicitly invalidates the session explorer cache', async () => {
+    const first = await buildExplorerReport('scour this repo and explain how local search works', {root});
+    const second = await buildExplorerReport('scour this repo and explain how local search works', {root});
+
+    expect(first.metrics.cacheMiss).toBe(true);
+    expect(first.metrics.cacheHit).toBe(false);
+    expect(second.metrics.cacheHit).toBe(true);
+    expect(second.metrics.cacheMiss).toBe(false);
+    expect(second.metrics.fileSetId).toBe(first.metrics.fileSetId);
+
+    clearRepoExplorerCache(root);
+    const afterClear = await buildExplorerReport('scour this repo and explain how local search works', {root});
+    expect(afterClear.metrics.cacheHit).toBe(false);
+    expect(afterClear.metrics.cacheMiss).toBe(true);
+  });
+
   it('goldens broad local-search reports without vendor or build noise', async () => {
     const report = await buildExplorerReport('scour this repo and explain how local search works', {root});
     const formatted = formatExplorerReport(report);
@@ -118,9 +137,19 @@ describe('interactive repo explorer preflight', () => {
     expect(formatted).toContain('native/fs_engine.zig');
     expect(formatted).toContain('src/brain.ts');
     expect(formatted).toContain('test/interactive.fs-engine.test.ts');
+    expect(formatted).toContain('primary_candidates:');
+    expect(formatted).toContain('supporting_candidates:');
+    expect(formatted).toContain('tests:');
+    expect(formatted).toContain('native:');
+    expect(formatted).toContain('config_docs:');
     expect(formatted).not.toContain('node_modules/junk');
     expect(formatted).not.toContain('dist/bundle');
     expect(formatted.length).toBeLessThan(12000);
+    expect(report.candidateGroups.primaryCandidates.map((file) => file.path)).toEqual(
+      expect.arrayContaining(['src/fsEngine.ts', 'src/brain.ts']),
+    );
+    expect(report.candidateGroups.native.map((file) => file.path)).toContain('native/fs_engine.zig');
+    expect(report.candidateGroups.tests.map((file) => file.path)).toContain('test/interactive.fs-engine.test.ts');
     expect(report.metrics).toMatchObject({
       triggered: true,
       classification: 'broad',
@@ -130,6 +159,8 @@ describe('interactive repo explorer preflight', () => {
       reportChars: formatted.length,
       capped: report.diagnostics.capped,
       capReason: report.diagnostics.capReason,
+      cacheMiss: expect.any(Boolean),
+      cacheHit: expect.any(Boolean),
     });
     expect(report.metrics.matchesFound).toBeGreaterThan(0);
   });

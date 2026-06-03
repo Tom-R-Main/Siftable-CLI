@@ -29,7 +29,7 @@ import {
   writeText,
 } from './fsEngine';
 import { requestConfirm } from './confirmGate';
-import { chatInputText, classifyExplorerPrompt, prepareExplorerInput } from './explorer';
+import { chatInputText, classifyExplorerPrompt, prepareExplorerInput, clearRepoExplorerCache } from './explorer';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 
 /** Relay-compatible event shape the TUI already understands (token, tool_call, tool_result, done, error). */
@@ -415,6 +415,7 @@ function buildLocalTools(of: OfModule): unknown[] {
           makePath: true,
           createOnly: params.createOnly === true,
         });
+        clearRepoExplorerCache(workspaceRoot);
         return of.ok(result, `Wrote ${result.bytesWritten} bytes${result.created ? ' (created)' : ''}`);
       } catch (e) {
         return of.err(e instanceof Error ? e.message : String(e));
@@ -444,6 +445,7 @@ function buildLocalTools(of: OfModule): unknown[] {
         const approved = await requestConfirm({ kind: 'edit', path, detail: `replace ${oldStr.length}→${newStr.length} chars` });
         if (!approved) return of.err('edit declined by user');
         const result = await editText(path, oldStr, newStr, { root: workspaceRoot });
+        clearRepoExplorerCache(workspaceRoot);
         return of.ok(result, `Edited (${result.replacements} replacement${result.replacements === 1 ? '' : 's'})`);
       } catch (e) {
         return of.err(e instanceof Error ? e.message : String(e));
