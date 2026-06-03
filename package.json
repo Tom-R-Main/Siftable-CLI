@@ -15,6 +15,7 @@
     "interactive:dev": "npm run build && npm run manifest && (cd interactive-tui && bun run native:build) && node ./bin/run.js interactive",
     "interactive:help": "npm run build && npm run manifest && node ./bin/run.js interactive --help",
     "interactive:image-fixtures": "node scripts/create-interactive-image-fixtures.mjs",
+    "explorer:eval": "tsx scripts/eval-repo-explorer.ts",
     "test": "jest",
     "test:vitest": "vitest run --config vitest.config.ts",
     "prepublishOnly": "npm run build",
