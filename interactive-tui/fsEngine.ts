@@ -7,8 +7,9 @@
  * strings, status codes, and compact JSON result frames.
  */
 import { existsSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
-import { extname, join, resolve as resolvePath, relative } from "node:path";
+import { readdir, readFile, writeFile, rename, mkdir, stat, chmod, unlink } from "node:fs/promises";
+import { extname, join, dirname, resolve as resolvePath, relative, isAbsolute } from "node:path";
+import { performance } from "node:perf_hooks";
 
 export interface ReadTextResult {
   path: string;
@@ -18,6 +19,39 @@ export interface ReadTextResult {
   source: "zig" | "ts";
 }
 
+export interface WriteTextResult {
+  path: string;
+  bytesWritten: number;
+  created: boolean;
+  source: "zig" | "ts";
+}
+
+export interface EditTextResult {
+  path: string;
+  bytesWritten: number;
+  replacements: number;
+  /** FNV-1a 32 of the new content — caller can use it as the next freshness token. */
+  newHash: number;
+  source: "zig" | "ts";
+}
+
+export interface WriteTextOptions {
+  /** Writable root the target must sit within. Empty/undefined disables the jail. */
+  root?: string;
+  /** Fail with "already exists" instead of overwriting. */
+  createOnly?: boolean;
+  /** Create missing parent directories. */
+  makePath?: boolean;
+}
+
+export interface EditTextOptions {
+  root?: string;
+  /** Reject the edit if `oldString` matches more than once (default true). */
+  requireUnique?: boolean;
+  /** FNV-1a 32 of the content the caller last read; mismatch → stale, edit refused. */
+  expectedHash?: number;
+}
+
 export interface SearchCaps {
   maxFiles?: number;
   maxMatches?: number;
@@ -25,7 +59,12 @@ export interface SearchCaps {
   maxFileBytes?: number;
   previewBytes?: number;
   includeHidden?: boolean;
+  includeVendor?: boolean;
+  includeBuildOutputs?: boolean;
+  detail?: SearchDetail;
 }
+
+export type SearchDetail = "paths" | "locations" | "snippets" | "full";
 
 export interface SearchMatch {
   path: string;
@@ -36,6 +75,19 @@ export interface SearchMatch {
   preview: string;
 }
 
+export interface SearchSkippedByReason {
+  hidden: number;
+  vendor: number;
+  buildOutput: number;
+  binary: number;
+  tooLarge: number;
+  invalidUtf8: number;
+  ioError: number;
+  depth: number;
+  nonFile: number;
+  other: number;
+}
+
 export interface SearchResult {
   matches: SearchMatch[];
   stats: {
@@ -44,8 +96,20 @@ export interface SearchResult {
     matchedFiles: number;
     matches: number;
     truncated: number;
+    capped: boolean;
+    capReason: SearchCapReason | null;
+    bytesScanned: number;
+    skippedByReason: SearchSkippedByReason;
+    phaseTimings?: SearchPhaseTimings;
   };
   source: "zig" | "ts";
+}
+
+export type SearchCapReason = "maxMatches" | "maxFiles" | "maxBytes" | "maxDepth";
+
+export interface SearchPhaseTimings {
+  searchReadWallMs: number;
+  searchScanWallMs: number;
 }
 
 export interface WorkspaceFile {
@@ -79,6 +143,8 @@ export interface InspectLocalWorkspaceResult {
     skippedFiles: number;
     binaryFiles: number;
     truncated: boolean;
+    cacheHit?: boolean;
+    fileSetId?: string;
   };
   source: "ts";
 }
@@ -96,7 +162,44 @@ export interface CodeSearchResult {
     symbol?: string;
   }>;
   followups: Array<{ tool: "batch_read_files"; args: { path: string; startLine: number; endLine: number }; reason: string }>;
-  stats: { searchedFiles: number; matchedFiles: number; searchedBytes: number; truncated: boolean };
+  stats: {
+    searchedFiles: number;
+    matchedFiles: number;
+    searchedBytes: number;
+    truncated: boolean;
+    cacheHit?: boolean;
+    fileSetId?: string;
+    eligibleFiles?: number;
+    phaseTimings?: CodeSearchPhaseTimings;
+    contentCache?: CodeSearchContentCacheStats;
+  };
+}
+
+export interface CodeSearchPhaseTimings {
+  totalWallMs: number;
+  cacheLookupWallMs: number;
+  /** Full eligible-file collection phase. On cache hits this is zero. */
+  fileSetBuildWallMs: number;
+  /** Directory enumeration during file-set collection; a subcomponent of fileSetBuildWallMs. */
+  fileSetStatWallMs: number;
+  /** File reads during file-set collection; a subcomponent of fileSetBuildWallMs. */
+  fileSetReadWallMs: number;
+  /** Wall time spent inside content search across all compiled queries. */
+  searchWallMs: number;
+  /** File reads during content search; a subcomponent of searchWallMs. */
+  searchReadWallMs: number;
+  /** UTF-8 decode plus literal scan time for content search. */
+  searchScanWallMs: number;
+  shapeWallMs: number;
+  previewWallMs: number;
+}
+
+export interface CodeSearchContentCacheStats {
+  enabled: boolean;
+  hitFiles: number;
+  missFiles: number;
+  hitBytes: number;
+  missBytes: number;
 }
 
 export interface FileSearchResult {
@@ -107,7 +210,7 @@ export interface FileSearchResult {
     language: string;
     reason?: WorkspaceFile["keyReason"];
   }>;
-  stats: { scannedFiles: number; skippedFiles: number; truncated: boolean };
+  stats: { scannedFiles: number; skippedFiles: number; truncated: boolean; cacheHit?: boolean; fileSetId?: string };
   source: "ts";
 }
 
@@ -129,14 +232,80 @@ const decoder = new TextDecoder("utf-8", { fatal: false });
 
 const STATUS_OK = 0;
 const STATUS_OUTPUT_TOO_SMALL = 9;
+const WRITE_FLAG_CREATE_ONLY = 0x1;
+const WRITE_FLAG_MAKE_PATH = 0x2;
+const EDIT_FLAG_REQUIRE_UNIQUE = 0x1;
+const EDIT_FLAG_CHECK_FRESHNESS = 0x2;
+const SEARCH_FLAG_INCLUDE_HIDDEN = 0x1;
+const SEARCH_FLAG_INCLUDE_VENDOR = 0x8;
+const SEARCH_FLAG_INCLUDE_BUILD_OUTPUTS = 0x10;
+const SEARCH_DETAIL_SHIFT = 24;
+const SEARCH_DETAIL_PATHS = 1 << SEARCH_DETAIL_SHIFT;
+const SEARCH_DETAIL_LOCATIONS = 2 << SEARCH_DETAIL_SHIFT;
+const SEARCH_DETAIL_FULL = 3 << SEARCH_DETAIL_SHIFT;
 const DEFAULT_READ_BYTES = 64 * 1024;
 const DEFAULT_MAX_FILES = 5000;
 const DEFAULT_MAX_MATCHES = 100;
 const DEFAULT_MAX_DEPTH = 8;
 const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
 const DEFAULT_PREVIEW_BYTES = 240;
-const NOISY_DIRS = new Set([".git", "node_modules", "dist", "build", ".next", ".cache", "coverage", "tmp", ".zig-cache", "zig-out"]);
+const WORKSPACE_FILE_CACHE_TTL_MS = 30_000;
+const WORKSPACE_CONTENT_CACHE_TTL_MS = 30_000;
+const DEFAULT_MAX_CONTENT_CACHE_BYTES = 64 * 1024 * 1024;
+const VENDOR_DIRS = new Set([
+  "node_modules",
+  "vendor",
+]);
+const BUILD_OUTPUT_DIRS = new Set([
+  "dist",
+  "build",
+  ".next",
+  ".turbo",
+  ".cache",
+  "coverage",
+  "tmp",
+  "target",
+  "zig-cache",
+  ".zig-cache",
+  "zig-out",
+]);
+const NOISY_DIRS = new Set([".git", ...VENDOR_DIRS, ...BUILD_OUTPUT_DIRS]);
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".zig", ".rs", ".go", ".py", ".swift", ".java", ".kt", ".rb", ".php", ".css", ".scss", ".html", ".json", ".md", ".toml", ".yaml", ".yml"]);
+
+type WorkspaceFileCollection = {
+  files: WorkspaceFile[];
+  skippedFiles: number;
+  truncated: boolean;
+  cacheHit: boolean;
+  fileSetId: string;
+  phaseTimings: WorkspaceFilePhaseTimings;
+};
+
+type WorkspaceFileCacheEntry = {
+  createdAt: number;
+  result: WorkspaceFileCollection;
+};
+
+type WorkspaceFilePhaseTimings = {
+  cacheLookupWallMs: number;
+  fileSetBuildWallMs: number;
+  fileSetStatWallMs: number;
+  fileSetReadWallMs: number;
+};
+
+const workspaceFileCache = new Map<string, WorkspaceFileCacheEntry>();
+
+type WorkspaceContentCacheEntry = {
+  absPath: string;
+  text: string;
+  bytes: number;
+  mtimeMs: number;
+  createdAt: number;
+  lastUsedAt: number;
+};
+
+const workspaceContentCache = new Map<string, WorkspaceContentCacheEntry>();
+let workspaceContentCacheBytes = 0;
 
 type NativeSymbols = {
   sift_fs_read_text: (
@@ -159,6 +328,32 @@ type NativeSymbols = {
     written: Uint32Array,
     needed: Uint32Array,
     stats: Uint32Array,
+  ) => number;
+  sift_fs_write_text: (
+    root: Uint8Array,
+    rootLen: number,
+    path: Uint8Array,
+    pathLen: number,
+    content: Uint8Array,
+    contentLen: number,
+    flags: number,
+    out: Uint8Array,
+    outCap: number,
+    written: Uint32Array,
+    needed: Uint32Array,
+  ) => number;
+  sift_fs_edit_text: (
+    root: Uint8Array,
+    rootLen: number,
+    path: Uint8Array,
+    pathLen: number,
+    oldStr: Uint8Array,
+    newStr: Uint8Array,
+    params: Uint32Array,
+    out: Uint8Array,
+    outCap: number,
+    written: Uint32Array,
+    needed: Uint32Array,
   ) => number;
 };
 
@@ -197,6 +392,38 @@ function nativeSymbols(): NativeSymbols | null {
       ],
       returns: FFIType.u32,
     },
+    sift_fs_write_text: {
+      args: [
+        FFIType.ptr,
+        FFIType.u32,
+        FFIType.ptr,
+        FFIType.u32,
+        FFIType.ptr,
+        FFIType.u32,
+        FFIType.u32,
+        FFIType.ptr,
+        FFIType.u32,
+        FFIType.ptr,
+        FFIType.ptr,
+      ],
+      returns: FFIType.u32,
+    },
+    sift_fs_edit_text: {
+      args: [
+        FFIType.ptr,
+        FFIType.u32,
+        FFIType.ptr,
+        FFIType.u32,
+        FFIType.ptr,
+        FFIType.ptr,
+        FFIType.ptr,
+        FFIType.ptr,
+        FFIType.u32,
+        FFIType.ptr,
+        FFIType.ptr,
+      ],
+      returns: FFIType.u32,
+    },
   });
 
   native = lib.symbols as NativeSymbols;
@@ -221,7 +448,9 @@ export async function readText(path: string, maxBytes = DEFAULT_READ_BYTES): Pro
       const written = new Uint32Array(1);
       const needed = new Uint32Array(1);
       const status = symbols.sift_fs_read_text(pathBytes, pathBytes.byteLength, maxBytes, out, out.byteLength, written, needed);
-      if (status === STATUS_OK) return { ...JSON.parse(readJsonFromOut(out, written)), source: "zig" };
+      if (status === STATUS_OK) {
+        return { ...JSON.parse(readJsonFromOut(out, written)), source: "zig" };
+      }
       if (status === STATUS_OUTPUT_TOO_SMALL) {
         cap = grow(cap, needed);
         continue;
@@ -243,7 +472,7 @@ export async function searchLiteral(root: string, query: string, caps: SearchCap
       caps.maxDepth ?? DEFAULT_MAX_DEPTH,
       caps.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES,
       caps.previewBytes ?? DEFAULT_PREVIEW_BYTES,
-      caps.includeHidden ? 1 : 0,
+      searchFlags(caps),
     ]);
 
     let cap = 256 * 1024;
@@ -275,6 +504,20 @@ export async function searchLiteral(root: string, query: string, caps: SearchCap
   return searchLiteralFallback(root, query, caps);
 }
 
+function searchFlags(caps: SearchCaps): number {
+  return (caps.includeHidden ? SEARCH_FLAG_INCLUDE_HIDDEN : 0) |
+    (caps.includeVendor ? SEARCH_FLAG_INCLUDE_VENDOR : 0) |
+    (caps.includeBuildOutputs ? SEARCH_FLAG_INCLUDE_BUILD_OUTPUTS : 0) |
+    detailFlag(caps.detail);
+}
+
+function detailFlag(detail: SearchDetail | undefined): number {
+  if (detail === "paths") return SEARCH_DETAIL_PATHS;
+  if (detail === "locations") return SEARCH_DETAIL_LOCATIONS;
+  if (detail === "full") return SEARCH_DETAIL_FULL;
+  return 0;
+}
+
 function nativeStatusMessage(status: number, op: string): string {
   const label =
     status === 1 ? "invalid arguments" :
@@ -285,14 +528,327 @@ function nativeStatusMessage(status: number, op: string): string {
     status === 6 ? "binary file skipped" :
     status === 7 ? "file too large" :
     status === 8 ? "invalid UTF-8" :
+    status === 10 ? "file already exists" :
+    status === 11 ? "no match for the text to replace" :
+    status === 12 ? "ambiguous edit: the text to replace appears more than once" :
     status === 13 ? "I/O error" :
+    status === 14 ? "stale: the file changed since it was read" :
+    status === 15 ? "path is outside the writable root" :
     `native status ${status}`;
   return `${op}: ${label}`;
 }
 
+// FNV-1a 32, mirrored from native/fs_engine.zig (hashes UTF-8 bytes so the
+// native and fallback paths agree on freshness tokens).
+export function contentHash(text: string): number {
+  const bytes = encoder.encode(text);
+  let h = 2166136261 >>> 0;
+  for (const b of bytes) {
+    h ^= b;
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h >>> 0;
+}
+
+export function clearWorkspaceFileCache(root?: string): void {
+  if (!root) {
+    workspaceFileCache.clear();
+    workspaceContentCache.clear();
+    workspaceContentCacheBytes = 0;
+    return;
+  }
+  const absRoot = resolvePath(root || ".");
+  for (const key of workspaceFileCache.keys()) {
+    if (key.startsWith(`${absRoot}|`)) workspaceFileCache.delete(key);
+  }
+  for (const [key, entry] of workspaceContentCache.entries()) {
+    if (entry.absPath.startsWith(`${absRoot}/`) || entry.absPath === absRoot) {
+      workspaceContentCache.delete(key);
+      workspaceContentCacheBytes -= entry.bytes;
+    }
+  }
+  workspaceContentCacheBytes = Math.max(0, workspaceContentCacheBytes);
+}
+
+function evictWorkspaceContentCache(maxBytes: number): void {
+  if (workspaceContentCacheBytes <= maxBytes) return;
+  const entries = [...workspaceContentCache.entries()].sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
+  for (const [key, entry] of entries) {
+    if (workspaceContentCacheBytes <= maxBytes) break;
+    workspaceContentCache.delete(key);
+    workspaceContentCacheBytes -= entry.bytes;
+  }
+  workspaceContentCacheBytes = Math.max(0, workspaceContentCacheBytes);
+}
+
+function rememberWorkspaceContent(file: WorkspaceFile, text: string, bytes: number, mtimeMs: number, maxBytes: number): void {
+  if (bytes > maxBytes) return;
+  const now = Date.now();
+  const previous = workspaceContentCache.get(file.absPath);
+  if (previous) workspaceContentCacheBytes -= previous.bytes;
+  workspaceContentCache.set(file.absPath, {
+    absPath: file.absPath,
+    text,
+    bytes,
+    mtimeMs,
+    createdAt: now,
+    lastUsedAt: now,
+  });
+  workspaceContentCacheBytes += bytes;
+  evictWorkspaceContentCache(maxBytes);
+}
+
+function countOccurrencesTs(haystack: string, needle: string): number {
+  if (!needle) return 0;
+  let count = 0;
+  let i = 0;
+  for (;;) {
+    const found = haystack.indexOf(needle, i);
+    if (found === -1) break;
+    count += 1;
+    i = found + needle.length;
+  }
+  return count;
+}
+
+type LineCursor = {
+  offset: number;
+  byteOffset: number;
+  line: number;
+  lineStartByte: number;
+};
+
+function utf8WidthAt(text: string, offset: number): number {
+  const codePoint = text.codePointAt(offset);
+  if (codePoint == null) return 0;
+  if (codePoint <= 0x7f) return 1;
+  if (codePoint <= 0x7ff) return 2;
+  if (codePoint <= 0xffff) return 3;
+  return 4;
+}
+
+function advanceLineCursor(text: string, cursor: LineCursor, targetOffset: number): void {
+  while (cursor.offset < targetOffset) {
+    const codePoint = text.codePointAt(cursor.offset);
+    if (codePoint == null) break;
+    const width = utf8WidthAt(text, cursor.offset);
+    if (text.charCodeAt(cursor.offset) === 0x0a) {
+      cursor.line += 1;
+      cursor.lineStartByte = cursor.byteOffset + 1;
+    }
+    cursor.byteOffset += width;
+    cursor.offset += codePoint > 0xffff ? 2 : 1;
+  }
+}
+
+function columnForCursor(cursor: LineCursor): number {
+  return cursor.byteOffset - cursor.lineStartByte + 1;
+}
+
+function pathHasDotDot(p: string): boolean {
+  return p.split(/[\\/]/).some((part) => part === "..");
+}
+
+function withinRoot(root: string, p: string): boolean {
+  if (!p || p.includes("\0") || pathHasDotDot(p)) return false;
+  if (!root) return true;
+  if (!isAbsolute(p)) return false;
+  if (!p.startsWith(root)) return false;
+  if (p.length === root.length) return true;
+  const c = p[root.length];
+  return c === "/" || c === "\\";
+}
+
+function isSearchExcludedDir(name: string, caps: SearchCaps): boolean {
+  if (name === ".git") return true;
+  if (!caps.includeVendor && VENDOR_DIRS.has(name)) return true;
+  if (!caps.includeBuildOutputs && BUILD_OUTPUT_DIRS.has(name)) return true;
+  return false;
+}
+
+type SearchSkipReason = keyof SearchSkippedByReason;
+
+function emptySearchSkippedByReason(): SearchSkippedByReason {
+  return {
+    hidden: 0,
+    vendor: 0,
+    buildOutput: 0,
+    binary: 0,
+    tooLarge: 0,
+    invalidUtf8: 0,
+    ioError: 0,
+    depth: 0,
+    nonFile: 0,
+    other: 0,
+  };
+}
+
+function searchExcludeReason(name: string, caps: SearchCaps): SearchSkipReason | null {
+  if (name === ".git") return "other";
+  if (!caps.includeVendor && VENDOR_DIRS.has(name)) return "vendor";
+  if (!caps.includeBuildOutputs && BUILD_OUTPUT_DIRS.has(name)) return "buildOutput";
+  return null;
+}
+
+function isLikelyBinaryBuffer(data: Buffer): boolean {
+  return data.subarray(0, Math.min(data.byteLength, 8192)).includes(0);
+}
+
+function isValidUtf8(data: Buffer): boolean {
+  try {
+    new TextDecoder("utf-8", {fatal: true}).decode(data);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Temp-file + rename, preserving the existing mode. Mirrors the Zig atomic write. */
+async function atomicWriteTs(path: string, content: string, makePath: boolean): Promise<void> {
+  if (makePath) await mkdir(dirname(path), { recursive: true });
+  let mode: number | undefined;
+  try {
+    mode = (await stat(path)).mode;
+  } catch {
+    mode = undefined;
+  }
+  const tmp = `${path}.sift-tmp-${process.pid}`;
+  try {
+    await writeFile(tmp, content, "utf8");
+    if (mode !== undefined) await chmod(tmp, mode);
+    await rename(tmp, path);
+  } catch (err) {
+    await unlink(tmp).catch(() => {});
+    throw err;
+  }
+}
+
+export async function writeText(path: string, content: string, opts: WriteTextOptions = {}): Promise<WriteTextResult> {
+  const root = opts.root ?? "";
+  const symbols = nativeSymbols();
+  if (symbols) {
+    const rootBytes = encoder.encode(root);
+    const pathBytes = encoder.encode(path);
+    const contentBytes = encoder.encode(content);
+    const flags = (opts.createOnly ? WRITE_FLAG_CREATE_ONLY : 0) | (opts.makePath ? WRITE_FLAG_MAKE_PATH : 0);
+    let cap = 4096;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const out = new Uint8Array(cap);
+      const written = new Uint32Array(1);
+      const needed = new Uint32Array(1);
+      const status = symbols.sift_fs_write_text(
+        rootBytes,
+        rootBytes.byteLength,
+        pathBytes,
+        pathBytes.byteLength,
+        contentBytes,
+        contentBytes.byteLength,
+        flags,
+        out,
+        out.byteLength,
+        written,
+        needed,
+      );
+      if (status === STATUS_OK) {
+        clearWorkspaceFileCache();
+        return { ...JSON.parse(readJsonFromOut(out, written)), source: "zig" };
+      }
+      if (status === STATUS_OUTPUT_TOO_SMALL) {
+        cap = grow(cap, needed);
+        continue;
+      }
+      throw new Error(nativeStatusMessage(status, "write_file"));
+    }
+  }
+  return writeTextFallback(path, content, opts);
+}
+
+export async function editText(
+  path: string,
+  oldString: string,
+  newString: string,
+  opts: EditTextOptions = {},
+): Promise<EditTextResult> {
+  const root = opts.root ?? "";
+  const requireUnique = opts.requireUnique ?? true;
+  const checkFreshness = opts.expectedHash != null;
+  const symbols = nativeSymbols();
+  if (symbols) {
+    const rootBytes = encoder.encode(root);
+    const pathBytes = encoder.encode(path);
+    const oldBytes = encoder.encode(oldString);
+    const newBytes = encoder.encode(newString);
+    const flags = (requireUnique ? EDIT_FLAG_REQUIRE_UNIQUE : 0) | (checkFreshness ? EDIT_FLAG_CHECK_FRESHNESS : 0);
+    const params = new Uint32Array([oldBytes.byteLength, newBytes.byteLength, (opts.expectedHash ?? 0) >>> 0, flags]);
+    let cap = 4096;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const out = new Uint8Array(cap);
+      const written = new Uint32Array(1);
+      const needed = new Uint32Array(1);
+      const status = symbols.sift_fs_edit_text(
+        rootBytes,
+        rootBytes.byteLength,
+        pathBytes,
+        pathBytes.byteLength,
+        oldBytes,
+        newBytes,
+        params,
+        out,
+        out.byteLength,
+        written,
+        needed,
+      );
+      if (status === STATUS_OK) {
+        clearWorkspaceFileCache();
+        return { ...JSON.parse(readJsonFromOut(out, written)), source: "zig" };
+      }
+      if (status === STATUS_OUTPUT_TOO_SMALL) {
+        cap = grow(cap, needed);
+        continue;
+      }
+      throw new Error(nativeStatusMessage(status, "edit_file"));
+    }
+  }
+  return editTextFallback(path, oldString, newString, opts);
+}
+
+async function writeTextFallback(path: string, content: string, opts: WriteTextOptions): Promise<WriteTextResult> {
+  const root = opts.root ?? "";
+  if (!withinRoot(root, path)) throw new Error("write_file: path is outside the writable root");
+  const created = !existsSync(path);
+  if (opts.createOnly && !created) throw new Error("write_file: file already exists");
+  await atomicWriteTs(path, content, Boolean(opts.makePath));
+  clearWorkspaceFileCache();
+  return { path, bytesWritten: Buffer.byteLength(content), created, source: "ts" };
+}
+
+async function editTextFallback(
+  path: string,
+  oldString: string,
+  newString: string,
+  opts: EditTextOptions,
+): Promise<EditTextResult> {
+  const root = opts.root ?? "";
+  if (!oldString) throw new Error("edit_file: the text to replace must not be empty");
+  if (!withinRoot(root, path)) throw new Error("edit_file: path is outside the writable root");
+  const data = (await readFile(path)).toString("utf8");
+  if (opts.expectedHash != null && contentHash(data) !== (opts.expectedHash >>> 0)) {
+    throw new Error("edit_file: stale: the file changed since it was read");
+  }
+  const occ = countOccurrencesTs(data, oldString);
+  if (occ === 0) throw new Error("edit_file: no match for the text to replace");
+  if ((opts.requireUnique ?? true) && occ > 1) {
+    throw new Error("edit_file: ambiguous edit: the text to replace appears more than once");
+  }
+  const next = data.split(oldString).join(newString);
+  await atomicWriteTs(path, next, false);
+  clearWorkspaceFileCache();
+  return { path, bytesWritten: Buffer.byteLength(next), replacements: occ, newHash: contentHash(next), source: "ts" };
+}
+
 async function readTextFallback(path: string, maxBytes: number): Promise<ReadTextResult> {
   const data = await readFile(path);
-  if (data.subarray(0, Math.min(data.byteLength, 8192)).includes(0)) throw new Error("read_file: binary file skipped");
+  if (isLikelyBinaryBuffer(data)) throw new Error("read_file: binary file skipped");
   const truncated = data.byteLength > maxBytes;
   return {
     path,
@@ -311,19 +867,47 @@ async function searchLiteralFallback(root: string, query: string, caps: SearchCa
   const maxFileBytes = caps.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
   const previewBytes = caps.previewBytes ?? DEFAULT_PREVIEW_BYTES;
   const includeHidden = Boolean(caps.includeHidden);
+  const detail = caps.detail ?? "snippets";
+  const queryBytes = Buffer.byteLength(query);
   const matches: SearchMatch[] = [];
-  const stats = { searchedFiles: 0, skippedFiles: 0, matchedFiles: 0, matches: 0, truncated: 0 };
+  const stats: SearchResult["stats"] = {
+    searchedFiles: 0,
+    skippedFiles: 0,
+    matchedFiles: 0,
+    matches: 0,
+    truncated: 0,
+    capped: false,
+    capReason: null as SearchCapReason | null,
+    bytesScanned: 0,
+    skippedByReason: emptySearchSkippedByReason(),
+  };
+  const skip = (reason: SearchSkipReason) => {
+    stats.skippedFiles += 1;
+    stats.skippedByReason[reason] += 1;
+  };
+  const cap = (reason: SearchCapReason) => {
+    stats.truncated = 1;
+    stats.capped = true;
+    stats.capReason ??= reason;
+  };
 
   async function walk(dir: string, depth: number): Promise<void> {
     if (depth > maxDepth || stats.searchedFiles >= maxFiles || matches.length >= maxMatches) {
-      stats.truncated = 1;
+      if (depth > maxDepth) {
+        cap("maxDepth");
+        skip("depth");
+      } else if (stats.searchedFiles >= maxFiles) {
+        cap("maxFiles");
+      } else {
+        cap("maxMatches");
+      }
       return;
     }
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
     } catch {
-      stats.skippedFiles += 1;
+      skip("ioError");
       return;
     }
     for (const entry of entries) {
@@ -331,19 +915,20 @@ async function searchLiteralFallback(root: string, query: string, caps: SearchCa
       const abs = join(dir, name);
       const rel = relative(absRoot, abs) || name;
       if (!includeHidden && rel.split(/[\\/]/).some((part) => part.startsWith("."))) {
-        stats.skippedFiles += 1;
+        skip("hidden");
         continue;
       }
       if (entry.isDirectory()) {
-        if (NOISY_DIRS.has(name)) {
-          stats.skippedFiles += 1;
+        const excludedReason = searchExcludeReason(name, caps);
+        if (excludedReason) {
+          skip(excludedReason);
           continue;
         }
         await walk(abs, depth + 1);
         continue;
       }
       if (!entry.isFile()) {
-        stats.skippedFiles += 1;
+        skip("nonFile");
         continue;
       }
       if (stats.searchedFiles >= maxFiles || matches.length >= maxMatches) {
@@ -351,40 +936,68 @@ async function searchLiteralFallback(root: string, query: string, caps: SearchCa
         return;
       }
       try {
+        const fileStat = await stat(abs);
+        if (fileStat.size > maxFileBytes) {
+          skip("tooLarge");
+          continue;
+        }
         const data = await readFile(abs);
-        if (data.byteLength > maxFileBytes || data.subarray(0, Math.min(data.byteLength, 8192)).includes(0)) {
-          stats.skippedFiles += 1;
+        if (isLikelyBinaryBuffer(data)) {
+          skip("binary");
+          continue;
+        }
+        if (!isValidUtf8(data)) {
+          skip("invalidUtf8");
           continue;
         }
         const text = data.toString("utf8");
         stats.searchedFiles += 1;
+        if (stats.searchedFiles >= maxFiles) cap("maxFiles");
+        stats.bytesScanned += data.byteLength;
         let foundInFile = false;
         let offset = 0;
+        const cursor: LineCursor = {offset: 0, byteOffset: 0, line: 1, lineStartByte: 0};
         while (offset < text.length) {
           const index = text.indexOf(query, offset);
           if (index === -1) break;
           const end = index + query.length;
-          const startPreview = Math.max(0, index - Math.floor(previewBytes / 2));
-          const endPreview = Math.min(text.length, end + Math.floor(previewBytes / 2));
+          let line = 0;
+          let column = 0;
+          let byteStart = 0;
+          let byteEnd = 0;
+          let preview = "";
+          if (detail !== "paths") {
+            advanceLineCursor(text, cursor, index);
+            byteStart = cursor.byteOffset;
+            byteEnd = byteStart + queryBytes;
+            line = cursor.line;
+            column = columnForCursor(cursor);
+            if (detail === "snippets" || detail === "full") {
+              const startPreview = Math.max(0, index - Math.floor(previewBytes / 2));
+              const endPreview = Math.min(text.length, end + Math.floor(previewBytes / 2));
+              preview = text.slice(startPreview, endPreview);
+            }
+          }
           matches.push({
             path: rel,
-            line: text.slice(0, index).split("\n").length,
-            column: index - text.lastIndexOf("\n", index - 1),
-            byteStart: Buffer.byteLength(text.slice(0, index)),
-            byteEnd: Buffer.byteLength(text.slice(0, end)),
-            preview: text.slice(startPreview, endPreview),
+            line,
+            column,
+            byteStart,
+            byteEnd,
+            preview,
           });
           stats.matches = matches.length;
           foundInFile = true;
           if (matches.length >= maxMatches) {
-            stats.truncated = 1;
+            cap("maxMatches");
             break;
           }
+          if (detail === "paths") break;
           offset = end;
         }
         if (foundInFile) stats.matchedFiles += 1;
       } catch {
-        stats.skippedFiles += 1;
+        skip("ioError");
       }
     }
   }
@@ -447,9 +1060,162 @@ export async function inspectLocalWorkspace(root = process.env.SIFT_USER_CWD || 
       skippedFiles: files.skippedFiles,
       binaryFiles,
       truncated: files.truncated,
+      cacheHit: files.cacheHit,
+      fileSetId: files.fileSetId,
     },
     source: "ts",
   };
+}
+
+async function searchWorkspaceFiles(
+  root: string,
+  files: WorkspaceFile[],
+  query: string,
+  caps: SearchCaps & {
+    useContentCache?: boolean;
+    maxContentCacheBytes?: number;
+    contentCacheStats?: CodeSearchContentCacheStats;
+  },
+): Promise<SearchResult> {
+  const absRoot = resolvePath(root || ".");
+  const maxFiles = caps.maxFiles ?? DEFAULT_MAX_FILES;
+  const maxMatches = caps.maxMatches ?? DEFAULT_MAX_MATCHES;
+  const detail = caps.detail ?? "snippets";
+  const previewBytes = caps.previewBytes ?? DEFAULT_PREVIEW_BYTES;
+  const queryBytes = Buffer.byteLength(query);
+  const matches: SearchMatch[] = [];
+  let searchReadWallMs = 0;
+  let searchScanWallMs = 0;
+  const stats: SearchResult["stats"] = {
+    searchedFiles: 0,
+    skippedFiles: 0,
+    matchedFiles: 0,
+    matches: 0,
+    truncated: 0,
+    capped: false,
+    capReason: null as SearchCapReason | null,
+    bytesScanned: 0,
+    skippedByReason: emptySearchSkippedByReason(),
+  };
+  const cap = (reason: SearchCapReason) => {
+    stats.truncated = 1;
+    stats.capped = true;
+    stats.capReason ??= reason;
+  };
+
+  for (const file of files.slice(0, maxFiles)) {
+    if (matches.length >= maxMatches) {
+      cap("maxMatches");
+      break;
+    }
+    try {
+      const readStart = performance.now();
+      const data = await readWorkspaceFileForSearch(file, caps);
+      searchReadWallMs += performance.now() - readStart;
+      stats.searchedFiles += 1;
+      stats.bytesScanned += data.bytes;
+      const scanStart = performance.now();
+      const text = data.text;
+      let foundInFile = false;
+      let offset = 0;
+      const cursor: LineCursor = {offset: 0, byteOffset: 0, line: 1, lineStartByte: 0};
+      while (offset < text.length) {
+        const index = text.indexOf(query, offset);
+        if (index === -1) break;
+        const end = index + query.length;
+        let line = 0;
+        let column = 0;
+        let byteStart = 0;
+        let byteEnd = 0;
+        let preview = "";
+        if (detail !== "paths") {
+          advanceLineCursor(text, cursor, index);
+          byteStart = cursor.byteOffset;
+          byteEnd = byteStart + queryBytes;
+          line = cursor.line;
+          column = columnForCursor(cursor);
+          if (detail === "snippets" || detail === "full") {
+            const startPreview = Math.max(0, index - Math.floor(previewBytes / 2));
+            const endPreview = Math.min(text.length, end + Math.floor(previewBytes / 2));
+            preview = text.slice(startPreview, endPreview);
+          }
+        }
+        matches.push({
+          path: relative(absRoot, file.absPath) || file.path,
+          line,
+          column,
+          byteStart,
+          byteEnd,
+          preview,
+        });
+        stats.matches = matches.length;
+        foundInFile = true;
+        if (matches.length >= maxMatches) {
+          cap("maxMatches");
+          break;
+        }
+        if (detail === "paths") break;
+        offset = end;
+      }
+      searchScanWallMs += performance.now() - scanStart;
+      if (foundInFile) stats.matchedFiles += 1;
+    } catch {
+      stats.skippedFiles += 1;
+      stats.skippedByReason.ioError += 1;
+    }
+  }
+  if (files.length > maxFiles) cap("maxFiles");
+  stats.phaseTimings = {
+    searchReadWallMs,
+    searchScanWallMs,
+  };
+  return { matches, stats, source: "ts" };
+}
+
+async function readWorkspaceFileForSearch(
+  file: WorkspaceFile,
+  opts: {
+    useContentCache?: boolean;
+    maxContentCacheBytes?: number;
+    contentCacheStats?: CodeSearchContentCacheStats;
+  },
+): Promise<{ text: string; bytes: number }> {
+  if (!opts.useContentCache) {
+    const data = await readFile(file.absPath);
+    return { text: data.toString("utf8"), bytes: data.byteLength };
+  }
+
+  const maxBytes = Math.max(0, opts.maxContentCacheBytes ?? DEFAULT_MAX_CONTENT_CACHE_BYTES);
+  const contentCacheStats = opts.contentCacheStats ?? {
+    enabled: true,
+    hitFiles: 0,
+    missFiles: 0,
+    hitBytes: 0,
+    missBytes: 0,
+  };
+  const fileStat = await stat(file.absPath);
+  const now = Date.now();
+  const cached = workspaceContentCache.get(file.absPath);
+  if (
+    maxBytes > 0 &&
+    cached &&
+    cached.bytes <= maxBytes &&
+    cached.bytes === fileStat.size &&
+    cached.mtimeMs === fileStat.mtimeMs &&
+    now - cached.createdAt <= WORKSPACE_CONTENT_CACHE_TTL_MS
+  ) {
+    cached.lastUsedAt = now;
+    contentCacheStats.hitFiles += 1;
+    contentCacheStats.hitBytes += cached.bytes;
+    return { text: cached.text, bytes: cached.bytes };
+  }
+
+  const data = await readFile(file.absPath);
+  const text = data.toString("utf8");
+  contentCacheStats.missFiles += 1;
+  contentCacheStats.missBytes += data.byteLength;
+  rememberWorkspaceContent(file, text, data.byteLength, fileStat.mtimeMs, maxBytes);
+  return { text, bytes: data.byteLength };
 }
 
 export async function codeSearch(input: {
@@ -460,17 +1226,47 @@ export async function codeSearch(input: {
   maxFiles?: number;
   maxSpans?: number;
   contextLines?: number;
+  forceRefresh?: boolean;
+  maxCacheAgeMs?: number;
+  useContentCache?: boolean;
+  maxContentCacheBytes?: number;
 }): Promise<CodeSearchResult> {
+  const totalStart = performance.now();
   const root = resolvePath(input.root || process.env.SIFT_USER_CWD || ".");
   const maxSpans = input.maxSpans ?? 12;
   const contextLines = input.contextLines ?? 2;
   const queries = compileQueries(input.intent, input.queries).slice(0, 8);
-  const files = await collectWorkspaceFiles(root, { maxFiles: input.maxFiles ?? 2000, maxDepth: 10 });
+  const files = await collectWorkspaceFiles(root, {
+    maxFiles: input.maxFiles ?? 2000,
+    maxDepth: 10,
+    forceRefresh: input.forceRefresh,
+    maxCacheAgeMs: input.maxCacheAgeMs,
+  });
+  const phaseTimings: CodeSearchPhaseTimings = {
+    totalWallMs: 0,
+    cacheLookupWallMs: files.phaseTimings.cacheLookupWallMs,
+    fileSetBuildWallMs: files.phaseTimings.fileSetBuildWallMs,
+    fileSetStatWallMs: files.phaseTimings.fileSetStatWallMs,
+    fileSetReadWallMs: files.phaseTimings.fileSetReadWallMs,
+    searchWallMs: 0,
+    searchReadWallMs: 0,
+    searchScanWallMs: 0,
+    shapeWallMs: 0,
+    previewWallMs: 0,
+  };
   const fileScores = new Map<string, { score: number; reasons: Set<string>; symbols: Set<string> }>();
   const spans: CodeSearchResult["spans"] = [];
+  const contentCacheStats: CodeSearchContentCacheStats = {
+    enabled: input.useContentCache === true,
+    hitFiles: 0,
+    missFiles: 0,
+    hitBytes: 0,
+    missBytes: 0,
+  };
   let searchedFiles = 0;
   let searchedBytes = 0;
 
+  let shapeStart = performance.now();
   for (const file of files.files) {
     const bucket = fileScores.get(file.path) ?? { score: 0, reasons: new Set<string>(), symbols: new Set<string>() };
     if (file.keyReason) {
@@ -486,42 +1282,74 @@ export async function codeSearch(input: {
     }
     fileScores.set(file.path, bucket);
   }
+  phaseTimings.shapeWallMs += performance.now() - shapeStart;
 
   for (const query of queries) {
-    const result = await searchLiteral(root, query, {
+    const searchStart = performance.now();
+    const result = await searchWorkspaceFiles(root, files.files, query, {
       maxMatches: Math.max(maxSpans * 3, 24),
       maxFiles: input.maxFiles ?? 2000,
-      previewBytes: 320,
+      detail: "locations",
+      useContentCache: input.useContentCache,
+      maxContentCacheBytes: input.maxContentCacheBytes,
+      contentCacheStats,
     });
+    phaseTimings.searchWallMs += performance.now() - searchStart;
+    phaseTimings.searchReadWallMs += result.stats.phaseTimings?.searchReadWallMs ?? 0;
+    phaseTimings.searchScanWallMs += result.stats.phaseTimings?.searchScanWallMs ?? 0;
     searchedFiles = Math.max(searchedFiles, result.stats.searchedFiles);
+    searchedBytes += result.stats.bytesScanned;
+    shapeStart = performance.now();
     for (const match of result.matches) {
       const bucket = fileScores.get(match.path) ?? { score: 0, reasons: new Set<string>(), symbols: new Set<string>() };
       bucket.score += exactBoost(input.intent, query);
       bucket.reasons.add(`literal:${query}`);
       fileScores.set(match.path, bucket);
-      searchedBytes += match.preview.length;
       spans.push({
         path: match.path,
         startLine: Math.max(1, match.line - contextLines),
         endLine: match.line + contextLines,
-        preview: match.preview,
+        preview: "",
         matchedQueries: [query],
         score: bucket.score,
       });
     }
+    phaseTimings.shapeWallMs += performance.now() - shapeStart;
   }
 
-  const dedupedSpans = dedupeSpans(spans)
+  shapeStart = performance.now();
+  const candidateSpans = dedupeSpans(spans)
     .sort((a, b) => b.score - a.score)
     .slice(0, maxSpans);
+  phaseTimings.shapeWallMs += performance.now() - shapeStart;
+  const previewStart = performance.now();
+  const previewReads = await batchReadFiles(candidateSpans.map((span) => ({
+    path: span.path,
+    startLine: span.startLine,
+    endLine: span.endLine,
+    maxBytes: 8 * 1024,
+  })), root);
+  phaseTimings.previewWallMs += performance.now() - previewStart;
+  shapeStart = performance.now();
+  const previewBySpan = new Map(
+    previewReads.files.map((file) => [`${file.path}:${file.startLine}:${file.endLine}`, file.content]),
+  );
+  const dedupedSpans = candidateSpans.map((span) => ({
+    ...span,
+    preview: previewBySpan.get(`${span.path}:${span.startLine}:${span.endLine}`) ?? span.preview,
+  }));
   const rankedFiles = [...fileScores.entries()]
     .filter(([, info]) => info.score > 0)
     .sort((a, b) => b[1].score - a[1].score)
     .slice(0, 12)
     .map(([path, info]) => ({ path, score: info.score, reasons: [...info.reasons], symbols: [...info.symbols] }));
+  phaseTimings.shapeWallMs += performance.now() - shapeStart;
+  phaseTimings.totalWallMs = performance.now() - totalStart;
 
   return {
-    answerHint: dedupedSpans.length
+    answerHint: files.truncated
+      ? "Search was partial because the eligible file set was capped. Narrow the query/path or explicitly broaden scope before treating absence as definitive."
+      : dedupedSpans.length
       ? "Use the ranked spans first; call batch_read_files only for the files needed to answer."
       : "No literal spans matched. Use inspect_local_workspace for a repo map or try more exact identifiers.",
     files: rankedFiles,
@@ -536,6 +1364,11 @@ export async function codeSearch(input: {
       matchedFiles: new Set(dedupedSpans.map((span) => span.path)).size,
       searchedBytes,
       truncated: files.truncated || dedupedSpans.length >= maxSpans,
+      cacheHit: files.cacheHit,
+      fileSetId: files.fileSetId,
+      eligibleFiles: files.files.length,
+      phaseTimings,
+      contentCache: contentCacheStats,
     },
   };
 }
@@ -576,7 +1409,13 @@ export async function findLocalFiles(input: {
 
   return {
     matches,
-    stats: { scannedFiles: files.files.length, skippedFiles: files.skippedFiles, truncated: files.truncated },
+    stats: {
+      scannedFiles: files.files.length,
+      skippedFiles: files.skippedFiles,
+      truncated: files.truncated,
+      cacheHit: files.cacheHit,
+      fileSetId: files.fileSetId,
+    },
     source: "ts",
   };
 }
@@ -619,11 +1458,53 @@ export async function batchReadFiles(
   return { files: output, truncated };
 }
 
-async function collectWorkspaceFiles(root: string, opts: { maxFiles: number; maxDepth: number }): Promise<{ files: WorkspaceFile[]; skippedFiles: number; truncated: boolean }> {
+function workspaceFileCacheKey(absRoot: string, opts: { maxFiles: number; maxDepth: number }): string {
+  return `${absRoot}|maxFiles=${opts.maxFiles}|maxDepth=${opts.maxDepth}|maxFileBytes=${DEFAULT_MAX_FILE_BYTES}|sourceOnly=1|hidden=0|vendor=0|build=0`;
+}
+
+function workspaceFileSetId(cacheKey: string, files: WorkspaceFile[]): string {
+  return contentHash(`${cacheKey}|${files.map((file) => `${file.path}:${file.bytes}`).join("|")}`).toString(16);
+}
+
+function cloneWorkspaceFileCollection(
+  result: WorkspaceFileCollection,
+  cacheHit: boolean,
+  phaseTimings?: WorkspaceFilePhaseTimings,
+): WorkspaceFileCollection {
+  return {
+    files: result.files.map((file) => ({ ...file })),
+    skippedFiles: result.skippedFiles,
+    truncated: result.truncated,
+    cacheHit,
+    fileSetId: result.fileSetId,
+    phaseTimings: phaseTimings ?? { ...result.phaseTimings },
+  };
+}
+
+async function collectWorkspaceFiles(
+  root: string,
+  opts: { maxFiles: number; maxDepth: number; forceRefresh?: boolean; maxCacheAgeMs?: number },
+): Promise<WorkspaceFileCollection> {
+  const collectStart = performance.now();
   const files: WorkspaceFile[] = [];
   let skippedFiles = 0;
   let truncated = false;
+  let fileSetStatWallMs = 0;
+  let fileSetReadWallMs = 0;
   const absRoot = resolvePath(root || ".");
+  const cacheKey = workspaceFileCacheKey(absRoot, opts);
+  const cacheLookupStart = performance.now();
+  const cached = workspaceFileCache.get(cacheKey);
+  const cacheLookupWallMs = performance.now() - cacheLookupStart;
+  const maxCacheAgeMs = Math.max(0, opts.maxCacheAgeMs ?? WORKSPACE_FILE_CACHE_TTL_MS);
+  if (!opts.forceRefresh && cached && Date.now() - cached.createdAt <= maxCacheAgeMs) {
+    return cloneWorkspaceFileCollection(cached.result, true, {
+      cacheLookupWallMs,
+      fileSetBuildWallMs: 0,
+      fileSetStatWallMs: 0,
+      fileSetReadWallMs: 0,
+    });
+  }
 
   async function walk(dir: string, depth: number): Promise<void> {
     if (depth > opts.maxDepth || files.length >= opts.maxFiles) {
@@ -632,7 +1513,9 @@ async function collectWorkspaceFiles(root: string, opts: { maxFiles: number; max
     }
     let entries;
     try {
+      const statStart = performance.now();
       entries = await readdir(dir, { withFileTypes: true });
+      fileSetStatWallMs += performance.now() - statStart;
     } catch {
       skippedFiles += 1;
       return;
@@ -657,7 +1540,9 @@ async function collectWorkspaceFiles(root: string, opts: { maxFiles: number; max
         continue;
       }
       try {
+        const readStart = performance.now();
         const data = await readFile(abs);
+        fileSetReadWallMs += performance.now() - readStart;
         if (data.byteLength > DEFAULT_MAX_FILE_BYTES || data.subarray(0, Math.min(data.byteLength, 8192)).includes(0)) {
           skippedFiles += 1;
           continue;
@@ -681,7 +1566,24 @@ async function collectWorkspaceFiles(root: string, opts: { maxFiles: number; max
   }
 
   await walk(absRoot, 0);
-  return { files, skippedFiles, truncated };
+  const result: WorkspaceFileCollection = {
+    files,
+    skippedFiles,
+    truncated,
+    cacheHit: false,
+    fileSetId: workspaceFileSetId(cacheKey, files),
+    phaseTimings: {
+      cacheLookupWallMs,
+      fileSetBuildWallMs: performance.now() - collectStart,
+      fileSetStatWallMs,
+      fileSetReadWallMs,
+    },
+  };
+  workspaceFileCache.set(cacheKey, {
+    createdAt: Date.now(),
+    result: cloneWorkspaceFileCollection(result, false),
+  });
+  return result;
 }
 
 function isLikelySource(path: string): boolean {

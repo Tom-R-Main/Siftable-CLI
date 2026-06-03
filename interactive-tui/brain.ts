@@ -21,11 +21,15 @@
 import {
   batchReadFiles,
   codeSearch,
+  editText,
   findLocalFiles,
   inspectLocalWorkspace,
   readText,
   searchLiteral,
+  writeText,
 } from './fsEngine';
+import { requestConfirm } from './confirmGate';
+import { chatInputText, classifyExplorerPrompt, prepareExplorerInput } from './explorer';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 
 /** Relay-compatible event shape the TUI already understands (token, tool_call, tool_result, done, error). */
@@ -33,8 +37,8 @@ export interface BrainEvent {
   type: 'token' | 'tool_call' | 'tool_result' | 'done' | 'error';
   content?: string;
   error?: string;
-  toolCall?: { name: string; args?: Record<string, unknown> };
-  toolResult?: { name: string; success?: boolean };
+  toolCall?: { name: string; args?: Record<string, unknown>; detail?: string };
+  toolResult?: { name: string; success?: boolean; output?: string };
   message?: { content?: string };
   [key: string]: unknown;
 }
@@ -51,18 +55,22 @@ export type ChatInput = string | ChatInputPart[];
 
 const LEAN_PROMPT =
   'You are the Siftable terminal copilot — an executive-function assistant in the user\'s terminal. ' +
-  'Be terse and concrete. Use your tools to answer about the user\'s tasks, work items, calendar, ' +
-  'projects, and people. Surface facts only when relevant to the question; never restate the user\'s ' +
-  'timezone, identity, or context unprompted. Prefer a direct answer over a preamble. ' +
-  'For local codebase questions, do not crawl with repeated list_dir/read_file calls. ' +
-  'Use inspect_local_workspace for repo orientation, find_local_files for file/path/name search, ' +
-  'search_local_files for exact content search, code_search for broad content-oriented code questions, ' +
-  'and batch_read_files to read several ranked files at once. Use read_file/list_dir only for targeted follow-up.';
+  'Be terse and concrete; prefer a direct answer over a preamble. ' +
+  'Use your tools to answer about the user\'s tasks, work items, calendar, projects, people, and local code. ' +
+  'For the local codebase, reach for the search tools (inspect_local_workspace, find_local_files, ' +
+  'search_local_files, code_search, batch_read_files) before crawling file-by-file. ' +
+  'For broad content searches, start search_local_files with detail="paths" or detail="locations"; escalate to snippets/full only after narrowing candidates. ' +
+  'Use code_search forceRefresh after external commands likely changed the workspace. ' +
+  'If a search result is truncated/capped, describe it as partial and narrow or explicitly broaden before treating absence as definitive.';
 
 function entryPath(): string {
+  // The launcher (interactive.ts) normally sets EXECUTERM_OPENFUNCTION_PATH to a
+  // resolved entry. This bare fallback only fires if the brain is run without
+  // it; the repo ships `.ts` (no build), and Bun won't resolve `.js`→`.ts`, so
+  // default to the source file that actually exists.
   return (
     process.env.EXECUTERM_OPENFUNCTION_PATH ||
-    `${process.env.HOME}/projects/OpenFunction/src/framework/index.js`
+    `${process.env.HOME}/projects/OpenFunction/src/framework/index.ts`
   );
 }
 
@@ -91,44 +99,58 @@ interface OfModule {
 let agentPromise: Promise<{ chat: (msg: ChatInput, o: { stream: true }) => AsyncIterable<OfChunk> }> | null =
   null;
 
-let currentProvider = process.env.EXECUTERM_MODEL_PROVIDER || 'openrouter';
-let currentModel = process.env.EXECUTERM_MODEL || 'google/gemini-3.5-flash';
+/** Provider id that routes the brain to the Codex app-server engine. */
+const CODEX_PROVIDER = 'codex';
+/** OpenFunction's default model — used to decide when to pass a model override to Codex. */
+const DEFAULT_OPENFUNCTION_MODEL = 'google/gemini-3.5-flash';
 
-/** Current provider/model — surfaced in /control/state and the status bar. */
-export function getBrainModel(): { provider: string; model: string } {
-  return { provider: currentProvider, model: currentModel };
+let currentProvider = process.env.EXECUTERM_MODEL_PROVIDER || 'openrouter';
+let currentModel = process.env.EXECUTERM_MODEL || DEFAULT_OPENFUNCTION_MODEL;
+let currentEffort: string | undefined = process.env.EXECUTERM_MODEL_EFFORT || undefined;
+
+/** Current provider/model/effort — surfaced in /control/state and the status bar. */
+export function getBrainModel(): { provider: string; model: string; effort?: string } {
+  return { provider: currentProvider, model: currentModel, effort: currentEffort };
 }
 
 /**
- * Switch the model/provider and/or store a provider API key (the /model and
- * /key commands). Rebuilds the agent lazily.
+ * Switch the model/provider/reasoning-effort and/or store a provider API key
+ * (the /model and /key commands). Rebuilds the agent lazily.
  */
 export function setBrainModel(input: {
   provider?: string;
   model?: string;
   apiKey?: string;
-}): { provider: string; model: string } {
+  effort?: string;
+}): { provider: string; model: string; effort?: string } {
   if (input.provider) currentProvider = input.provider;
   if (input.model) currentModel = input.model;
+  // effort is explicitly settable to "" to clear it back to provider default.
+  if (input.effort !== undefined) currentEffort = input.effort || undefined;
   if (input.apiKey && input.provider) {
     // OpenFunction adapters read provider keys from env (e.g. OPENROUTER_API_KEY).
     process.env[`${input.provider.toUpperCase()}_API_KEY`] = input.apiKey;
   }
-  agentPromise = null; // force rebuild with the new model/key on next ask
+  agentPromise = null; // force rebuild with the new model/key/effort on next ask
   return getBrainModel();
 }
 
 const MAX_READ_BYTES = 64 * 1024;
 
 /**
- * A0 local-filesystem READ tools ONLY. Write/edit/run are sequenced to A1
- * (behind a real TUI confirm round-trip); dispatch to A2. Keeping A0 read-only
- * is the acceptance criterion — there is no mutating surface and therefore no
- * auto-approve footgun to defend against.
+ * Local-filesystem tools.
+ *
+ * Reads (A0) are always available. Writes (A1) — write_file / edit_file — are
+ * registered only when SIFT_WORKSPACE_ROOT is set, and every mutation goes
+ * through `requestConfirm` (a real TUI Y/N round-trip) before touching disk.
+ * There is no auto-approve path: the confirm gate denies if no UI is listening,
+ * and the Zig layer independently jails writes to the workspace root.
  */
 function buildLocalTools(of: OfModule): unknown[] {
   const home = process.env.HOME || '';
   const userCwd = process.env.SIFT_USER_CWD || process.cwd();
+  // Writable root for A1. Empty → write/edit tools are not registered at all.
+  const workspaceRoot = process.env.SIFT_WORKSPACE_ROOT || '';
   const resolveLocalPath = (p: string) => {
     const input = p || '.';
     if (input.startsWith('~')) return input.replace(/^~/, home);
@@ -193,6 +215,9 @@ function buildLocalTools(of: OfModule): unknown[] {
         query: { type: 'string', description: 'Literal text to search for (not regex)' },
         maxMatches: { type: 'integer', description: 'Max matches to return (default 100)' },
         includeHidden: { type: 'boolean', description: 'Include hidden files/directories (default false)' },
+        includeVendor: { type: 'boolean', description: 'Include dependency/vendor directories such as node_modules and vendor (default false)' },
+        includeBuildOutputs: { type: 'boolean', description: 'Include build/generated-output directories such as dist, target, .turbo, and zig-cache (default false)' },
+        detail: { type: 'string', enum: ['paths', 'locations', 'snippets', 'full'], description: 'Result detail level. Use paths for broad discovery, locations for line/column only, and snippets/full only after narrowing candidate files. If capped/truncated is true, the result is partial.' },
       },
       required: ['query'],
     },
@@ -204,6 +229,9 @@ function buildLocalTools(of: OfModule): unknown[] {
         const result = await searchLiteral(root, query, {
           maxMatches: typeof params.maxMatches === 'number' ? params.maxMatches : 100,
           includeHidden: params.includeHidden === true,
+          includeVendor: params.includeVendor === true,
+          includeBuildOutputs: params.includeBuildOutputs === true,
+          detail: ['paths', 'locations', 'snippets', 'full'].includes(String(params.detail)) ? String(params.detail) as 'paths' | 'locations' | 'snippets' | 'full' : undefined,
         });
         return of.ok(result, `Found ${result.matches.length} match(es)`);
       } catch (e) {
@@ -282,6 +310,9 @@ function buildLocalTools(of: OfModule): unknown[] {
         intent: { type: 'string', description: 'The user question or investigation goal' },
         queries: { type: 'array', items: { type: 'string' }, description: 'Optional exact literals to search for' },
         maxSpans: { type: 'integer', description: 'Max ranked spans to return (default 12)' },
+        forceRefresh: { type: 'boolean', description: 'Bypass the session file-set cache when the workspace may have changed outside the fs tools.' },
+        maxCacheAgeMs: { type: 'integer', description: 'Override the session file-set cache max age in milliseconds.' },
+        useContentCache: { type: 'boolean', description: 'Experimental: reuse recently read file contents for repeated broad searches. Disabled by default.' },
       },
       required: ['intent'],
     },
@@ -296,6 +327,9 @@ function buildLocalTools(of: OfModule): unknown[] {
           intent,
           queries,
           maxSpans: typeof params.maxSpans === 'number' ? params.maxSpans : 12,
+          forceRefresh: params.forceRefresh === true,
+          maxCacheAgeMs: typeof params.maxCacheAgeMs === 'number' ? params.maxCacheAgeMs : undefined,
+          useContentCache: params.useContentCache === true,
         }));
       } catch (e) {
         return of.err(e instanceof Error ? e.message : String(e));
@@ -353,7 +387,67 @@ function buildLocalTools(of: OfModule): unknown[] {
     },
   });
 
-  return [
+  const writeFile = of.defineTool({
+    name: 'write_file',
+    description:
+      "Create or overwrite a UTF-8 text file on the user's machine. Requires interactive user approval and is restricted to the current workspace. Writes are atomic (temp file + rename).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute, ~-relative, or workspace-relative file path' },
+        content: { type: 'string', description: 'Full file contents to write' },
+        createOnly: { type: 'boolean', description: 'Fail if the file already exists instead of overwriting (default false)' },
+      },
+      required: ['path', 'content'],
+    },
+    handler: async (params) => {
+      try {
+        const path = resolveLocalPath(String(params.path));
+        const content = String(params.content ?? '');
+        const approved = await requestConfirm({ kind: 'write', path, detail: `${content.length} bytes` });
+        if (!approved) return of.err('write declined by user');
+        const result = await writeText(path, content, {
+          root: workspaceRoot,
+          makePath: true,
+          createOnly: params.createOnly === true,
+        });
+        return of.ok(result, `Wrote ${result.bytesWritten} bytes${result.created ? ' (created)' : ''}`);
+      } catch (e) {
+        return of.err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  });
+
+  const editFile = of.defineTool({
+    name: 'edit_file',
+    description:
+      "Replace an exact, unique string in a file in place. Requires interactive user approval and is restricted to the current workspace. The `old` text must appear exactly once; reads the file first and refuses ambiguous matches.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute, ~-relative, or workspace-relative file path' },
+        old: { type: 'string', description: 'Exact text to replace — must match exactly once in the file' },
+        new: { type: 'string', description: 'Replacement text' },
+      },
+      required: ['path', 'old', 'new'],
+    },
+    handler: async (params) => {
+      try {
+        const path = resolveLocalPath(String(params.path));
+        const oldStr = String(params.old ?? '');
+        const newStr = String(params.new ?? '');
+        if (!oldStr) return of.err("edit_file: 'old' must not be empty");
+        const approved = await requestConfirm({ kind: 'edit', path, detail: `replace ${oldStr.length}→${newStr.length} chars` });
+        if (!approved) return of.err('edit declined by user');
+        const result = await editText(path, oldStr, newStr, { root: workspaceRoot });
+        return of.ok(result, `Edited (${result.replacements} replacement${result.replacements === 1 ? '' : 's'})`);
+      } catch (e) {
+        return of.err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  });
+
+  const tools: unknown[] = [
     inspectWorkspace,
     findLocalFilesTool,
     searchLocalFiles,
@@ -362,6 +456,10 @@ function buildLocalTools(of: OfModule): unknown[] {
     readFile,
     listDir,
   ];
+  // A1 write surface: only when a workspace root is set. Each call is still
+  // confirm-gated and Zig-jailed; registration just exposes the tools.
+  if (workspaceRoot) tools.push(writeFile, editFile);
+  return tools;
 }
 
 /**
@@ -404,6 +502,7 @@ async function getAgent() {
         name: 'siftable-control',
         provider: currentProvider,
         model: currentModel,
+        ...(currentEffort ? { reasoningEffort: currentEffort } : {}),
         providers: ['execufunction'],
         tools: buildLocalTools(of),
         memory: false,
@@ -422,7 +521,48 @@ async function getAgent() {
 export async function openfunctionAsk(
   input: ChatInput,
   onEvent: (event: BrainEvent) => void,
+  signal?: AbortSignal,
 ): Promise<BrainAskResult> {
+  let preparedInput = input;
+  if (!signal?.aborted && classifyExplorerPrompt(chatInputText(input)) !== 'skipped') {
+    onEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer', detail: 'read-only preflight' } });
+    try {
+      const prepared = await prepareExplorerInput(input, { root: process.env.SIFT_USER_CWD || process.cwd() });
+      preparedInput = prepared.input as ChatInput;
+      onEvent({
+        type: 'tool_result',
+        toolResult: {
+          name: 'repo_explorer',
+          success: true,
+          output: prepared.injected
+            ? `${prepared.report.mode}; ${prepared.report.likelyFiles.length} likely file(s); ${prepared.report.queriesRun.length} querie(s)`
+            : 'skipped',
+        },
+      });
+    } catch (err) {
+      onEvent({
+        type: 'tool_result',
+        toolResult: {
+          name: 'repo_explorer',
+          success: false,
+          output: err instanceof Error ? err.message : String(err),
+        },
+      });
+    }
+  }
+
+  // Codex engine: when the active provider is `codex`, drive the OpenAI
+  // `codex app-server` sidecar (ChatGPT-subscription auth) instead of the
+  // OpenFunction agent. Lazily imported to avoid a static import cycle
+  // (codexEngine type-imports this module).
+  if (currentProvider === CODEX_PROVIDER) {
+    const { codexAsk } = await import('./codexEngine');
+    // Pass the model only when it isn't the OpenFunction default, so a fresh
+    // /codex switch lets app-server pick its own default model.
+    const model = currentModel && currentModel !== DEFAULT_OPENFUNCTION_MODEL ? currentModel : undefined;
+    return codexAsk(preparedInput, onEvent, { signal, model, effort: currentEffort });
+  }
+
   let agent: Awaited<ReturnType<typeof getAgent>>;
   try {
     agent = await getAgent();
@@ -435,13 +575,17 @@ export async function openfunctionAsk(
 
   let assembled = '';
   try {
-    for await (const chunk of agent.chat(input, { stream: true })) {
+    for await (const chunk of agent.chat(preparedInput, { stream: true })) {
       if (chunk.type === 'text' && typeof chunk.text === 'string') {
         assembled += chunk.text;
         onEvent({ type: 'token', content: chunk.text });
       } else if (chunk.type === 'tool_call') {
-        // Slim notice only — never stream tool args/results payloads to the UI.
-        onEvent({ type: 'tool_call', toolCall: { name: chunk.toolCall?.name ?? 'tool' } });
+        // Surface the call and a salient arg (path/query/command) so the user
+        // sees what each tool is doing — the TUI derives a one-line label.
+        onEvent({
+          type: 'tool_call',
+          toolCall: { name: chunk.toolCall?.name ?? 'tool', args: chunk.toolCall?.args },
+        });
       } else if (chunk.type === 'tool_result') {
         onEvent({
           type: 'tool_result',

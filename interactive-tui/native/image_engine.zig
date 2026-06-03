@@ -12,7 +12,7 @@ const MIME_GIF: u32 = 3;
 const MIME_WEBP: u32 = 4;
 const MIME_BMP: u32 = 5;
 
-const ImageInfo = extern struct {
+pub const ImageInfo = extern struct {
     mime_code: u32,
     width: u32,
     height: u32,
@@ -152,7 +152,7 @@ fn parseImage(input: []const u8) ?ImageInfo {
         parseBmp(input);
 }
 
-export fn sift_image_probe(
+pub export fn sift_image_probe(
     ptr: [*]const u8,
     len: u32,
     max_bytes: u32,

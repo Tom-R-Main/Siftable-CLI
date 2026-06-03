@@ -1,6 +1,6 @@
 import {spawnSync} from 'node:child_process';
 import {existsSync} from 'node:fs';
-import {join} from 'node:path';
+import {dirname, join, resolve} from 'node:path';
 import {BaseCommand, DEFAULT_API_URL} from '../lib/base-command.js';
 import {resolveToken} from '../lib/auth.js';
 
@@ -26,6 +26,8 @@ export function buildChildEnv(opts: {
   workspaceId?: string;
   openfunctionPath?: string;
   userCwd?: string;
+  /** Writable root for A1 write/edit tools. Defaults to the repo root above userCwd. */
+  workspaceRoot?: string;
   model?: string;
   provider?: string;
   baseEnv?: NodeJS.ProcessEnv;
@@ -41,15 +43,52 @@ export function buildChildEnv(opts: {
   if (opts.workspaceId) env.SIFT_WORKSPACE_ID = opts.workspaceId;
   if (opts.userCwd) env.SIFT_USER_CWD = opts.userCwd;
 
+  // The writable root for A1 write/edit. The copilot is launched from a subdir
+  // but should orient at the repo root, not believe it is jailed to the launch
+  // directory — so default to the nearest ancestor containing `.git`. This is
+  // the boundary /status reports and the Zig write path enforces.
+  const workspaceRoot = opts.workspaceRoot ?? (opts.userCwd ? resolveWorkspaceRoot(opts.userCwd) : undefined);
+  if (workspaceRoot) env.SIFT_WORKSPACE_ROOT = workspaceRoot;
+
   env.EXECUTERM_OPENFUNCTION_PATH =
     opts.openfunctionPath ||
     env.EXECUTERM_OPENFUNCTION_PATH ||
-    `${env.HOME}/projects/OpenFunction/src/framework/index.js`;
+    defaultOpenfunctionPath(env.HOME);
 
   if (opts.model) env.EXECUTERM_MODEL = opts.model;
   if (opts.provider) env.EXECUTERM_MODEL_PROVIDER = opts.provider;
 
   return env;
+}
+
+/**
+ * Default OpenFunction framework entry. The repo ships TypeScript source
+ * (`index.ts`) and has no build step, so the entry is `.ts` — Bun imports it
+ * directly. Prefer a built `.js` when one exists (future-proofs a compiled
+ * checkout), else fall back to the `.ts` source. A bare `index.js` literal
+ * would silently fail: Bun does NOT resolve a `.js` path to a `.ts` file.
+ */
+export function defaultOpenfunctionPath(home: string | undefined): string {
+  const base = `${home}/projects/OpenFunction/src/framework`;
+  const built = join(base, 'index.js');
+  return existsSync(built) ? built : join(base, 'index.ts');
+}
+
+/**
+ * The repo root for `startDir`: the nearest ancestor (inclusive) containing a
+ * `.git` entry, or `startDir` itself if none is found. This becomes the
+ * writable root so the copilot can act across the whole repo from any subdir,
+ * rather than the misleading "jailed to the launch directory" behavior.
+ */
+export function resolveWorkspaceRoot(startDir: string): string {
+  let dir = resolve(startDir);
+  for (let i = 0; i < 64; i += 1) {
+    if (existsSync(join(dir, '.git'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break; // reached the filesystem root
+    dir = parent;
+  }
+  return resolve(startDir);
 }
 
 /** Locate the bun executable, or null if it isn't installed. */

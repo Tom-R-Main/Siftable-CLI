@@ -83,6 +83,9 @@
       "work": {
         "description": "Executable agent work queue"
       },
+      "worker": {
+        "description": "Local executable work runners"
+      },
       "skills": {
         "description": "Installable Siftable skillpacks"
       },

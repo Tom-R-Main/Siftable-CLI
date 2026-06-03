@@ -1,5 +1,6 @@
+import {existsSync} from 'node:fs';
 import {join} from 'node:path';
-import {buildChildEnv, findBun, resolveTuiDir} from '../../src/commands/interactive.js';
+import {buildChildEnv, findBun, resolveTuiDir, resolveWorkspaceRoot} from '../../src/commands/interactive.js';
 
 describe('sift interactive — launcher env', () => {
   describe('buildChildEnv', () => {
@@ -47,10 +48,19 @@ describe('sift interactive — launcher env', () => {
       expect(env.SIFT_USER_CWD).toBe('/home/me/proj');
     });
 
+    it('sets SIFT_WORKSPACE_ROOT from an explicit workspaceRoot and omits it when there is no cwd', () => {
+      const withRoot = buildChildEnv({...base, workspaceRoot: '/repo', userCwd: '/repo/sub', baseEnv: {}});
+      expect(withRoot.SIFT_WORKSPACE_ROOT).toBe('/repo');
+      const noCwd = buildChildEnv({...base, baseEnv: {}});
+      expect(noCwd.SIFT_WORKSPACE_ROOT).toBeUndefined();
+    });
+
     it('defaults EXECUTERM_OPENFUNCTION_PATH from HOME and honors an explicit override', () => {
+      // No built .js exists under a fake HOME, so the resolver falls back to the
+      // .ts source (Bun imports it directly; a bare .js literal would not resolve).
       const def = buildChildEnv({...base, baseEnv: {HOME: '/home/me'}});
       expect(def.EXECUTERM_OPENFUNCTION_PATH).toBe(
-        '/home/me/projects/OpenFunction/src/framework/index.js',
+        '/home/me/projects/OpenFunction/src/framework/index.ts',
       );
       const override = buildChildEnv({
         ...base,
@@ -64,6 +74,17 @@ describe('sift interactive — launcher env', () => {
       const baseEnv = {EXECUTERM_AUTO_APPROVE: '1', PATH: '/usr/bin'};
       buildChildEnv({...base, baseEnv});
       expect(baseEnv.EXECUTERM_AUTO_APPROVE).toBe('1'); // original untouched
+    });
+  });
+
+  describe('resolveWorkspaceRoot', () => {
+    it('walks up to the repo root containing .git', () => {
+      const root = resolveWorkspaceRoot(__dirname);
+      expect(existsSync(join(root, '.git'))).toBe(true);
+    });
+
+    it('falls back to the start dir when no .git ancestor exists', () => {
+      expect(resolveWorkspaceRoot('/tmp')).toBe('/tmp');
     });
   });
 

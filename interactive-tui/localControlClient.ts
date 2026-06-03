@@ -20,7 +20,22 @@ import {
   getBrainModel,
   type BrainEvent,
 } from "./brain";
-import type { ChatInput, ControlState, ControlTransport, SseEvent } from "./controlClient";
+import {
+  getCodexAccount,
+  getCodexInstallState,
+  startCodexLogin,
+  codexLogout,
+  CODEX_PROVIDER,
+  CODEX_DEFAULT_MODEL,
+} from "./codexEngine";
+import type {
+  ChatInput,
+  CodexLogin,
+  CodexStatus,
+  ControlState,
+  ControlTransport,
+  SseEvent,
+} from "./controlClient";
 
 export interface LocalBrainDeps {
   ask: typeof openfunctionAsk;
@@ -28,6 +43,8 @@ export interface LocalBrainDeps {
   getModel: typeof getBrainModel;
   /** Resolve the Siftable token from env (launcher sets SIFT_PAT). */
   getToken: () => string | undefined;
+  /** Read the Codex account (memoized in the engine); null when logged out. */
+  getCodexAccount: typeof getCodexAccount;
 }
 
 const defaultDeps: LocalBrainDeps = {
@@ -35,6 +52,7 @@ const defaultDeps: LocalBrainDeps = {
   setModel: setBrainModel,
   getModel: getBrainModel,
   getToken: () => process.env.SIFT_PAT || process.env.EXF_PAT,
+  getCodexAccount,
 };
 
 export class LocalControlClient implements ControlTransport {
@@ -45,17 +63,58 @@ export class LocalControlClient implements ControlTransport {
   }
 
   async state(): Promise<ControlState> {
+    const model = this.deps.getModel();
+    // When Codex is the active engine, auth is gated by the Codex account, not
+    // the Siftable token (which still backs the read tools either way).
+    if (model.provider === CODEX_PROVIDER) {
+      const account = await this.deps.getCodexAccount().catch(() => null);
+      const authed = Boolean(account);
+      return {
+        available: authed,
+        model,
+        authStatus: authed ? "authenticated" : "unauthenticated",
+        context: { surface: "local", runningAgents: [] },
+      };
+    }
     const authed = Boolean(this.deps.getToken());
     return {
       available: authed,
-      model: this.deps.getModel(),
+      model,
       authStatus: authed ? "authenticated" : "unauthenticated",
       context: { surface: "local", runningAgents: [] },
     };
   }
 
-  async config(input: { provider?: string; model?: string; apiKey?: string }): Promise<{ provider: string; model: string }> {
+  async config(input: { provider?: string; model?: string; apiKey?: string; effort?: string }): Promise<{ provider: string; model: string; effort?: string }> {
     return this.deps.setModel(input);
+  }
+
+  async codexStatus(): Promise<CodexStatus> {
+    const account = await this.deps.getCodexAccount().catch(() => null);
+    const model = this.deps.getModel();
+    return {
+      installed: getCodexInstallState() !== "missing",
+      account,
+      active: model.provider === CODEX_PROVIDER,
+      model: model.provider === CODEX_PROVIDER ? model.model : CODEX_DEFAULT_MODEL,
+    };
+  }
+
+  async codexLogin(): Promise<CodexLogin> {
+    const { verificationUri, userCode, completion } = await startCodexLogin();
+    return { verificationUri, userCode, completion };
+  }
+
+  async codexLogout(): Promise<void> {
+    await codexLogout();
+  }
+
+  async codexSetActive(active: boolean): Promise<{ provider: string; model: string }> {
+    if (active) {
+      return this.deps.setModel({ provider: CODEX_PROVIDER, model: CODEX_DEFAULT_MODEL });
+    }
+    // Restore the OpenFunction default engine.
+    return this.deps.setModel({ provider: "openrouter", model: "google/gemini-3.5-flash" });
   }
 
   async login(): Promise<{ verificationUri: string; userCode: string }> {
@@ -82,7 +141,7 @@ export class LocalControlClient implements ControlTransport {
       if (!stopped) onEvent(e as SseEvent);
     };
 
-    const askPromise = this.deps.ask(input, forward).then((result) => {
+    const askPromise = this.deps.ask(input, forward, signal).then((result) => {
       if (stopped) return;
       // openfunctionAsk never throws; a brain failure arrives as {error}.
       // Surface it as an SSE error event the TUI already renders.

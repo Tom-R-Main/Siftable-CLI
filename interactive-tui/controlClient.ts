@@ -17,7 +17,7 @@ export interface RunningAgent {
 
 export interface ControlState {
   available: boolean;
-  model?: { provider: string; model: string } | null;
+  model?: { provider: string; model: string; effort?: string | null } | null;
   authStatus?: string;
   context: { surface: string; runningAgents: RunningAgent[] } | null;
 }
@@ -26,8 +26,8 @@ export interface SseEvent {
   type: string;
   content?: string;
   text?: string;
-  toolCall?: { name: string; args?: Record<string, unknown> };
-  toolResult?: { name: string; success?: boolean };
+  toolCall?: { name: string; args?: Record<string, unknown>; detail?: string };
+  toolResult?: { name: string; success?: boolean; output?: string };
   message?: { content?: string };
   result?: { content?: string } | unknown;
   error?: string;
@@ -39,12 +39,41 @@ export type ChatInputPart =
   | { type: "image"; mime: string; dataUrl: string; detail?: "auto" | "low" | "high" };
 export type ChatInput = string | ChatInputPart[];
 
-/** Common surface both transports implement so the TUI is transport-agnostic. */
+/** Codex (ChatGPT-subscription) engine status, surfaced by `/codex`. */
+export interface CodexStatus {
+  /** Whether the `codex` CLI is installed/reachable. */
+  installed: boolean;
+  /** Signed-in account, or null when logged out / unavailable. */
+  account: { type: string; email?: string; planType?: string } | null;
+  /** Whether Codex is the active brain engine. */
+  active: boolean;
+  /** The model that would be used for Codex turns. */
+  model: string;
+}
+
+/** Device-code login handle for the in-TUI Codex sign-in. */
+export interface CodexLogin {
+  verificationUri: string;
+  userCode: string;
+  /** Resolves when sign-in finishes (local mode only). */
+  completion?: Promise<{ success: boolean; email?: string; error?: string }>;
+}
+
+/**
+ * Common surface both transports implement so the TUI is transport-agnostic.
+ * The `codex*` ops are optional because Codex is an in-process (local) engine;
+ * the daemon transport does not implement them.
+ */
 export interface ControlTransport {
   state(): Promise<ControlState>;
-  config(input: { provider?: string; model?: string; apiKey?: string }): Promise<{ provider: string; model: string }>;
+  config(input: { provider?: string; model?: string; apiKey?: string; effort?: string }): Promise<{ provider: string; model: string; effort?: string }>;
   login(): Promise<{ verificationUri: string; userCode: string }>;
   send(input: ChatInput, onEvent: (event: SseEvent) => void, signal?: AbortSignal): Promise<void>;
+  codexStatus?(): Promise<CodexStatus>;
+  codexLogin?(): Promise<CodexLogin>;
+  codexLogout?(): Promise<void>;
+  /** Switch the active brain engine to/from Codex; returns the new model state. */
+  codexSetActive?(active: boolean): Promise<{ provider: string; model: string }>;
 }
 
 export class ControlClient implements ControlTransport {
@@ -59,7 +88,7 @@ export class ControlClient implements ControlTransport {
     return (await res.json()) as ControlState;
   }
 
-  async config(input: { provider?: string; model?: string; apiKey?: string }): Promise<{ provider: string; model: string }> {
+  async config(input: { provider?: string; model?: string; apiKey?: string; effort?: string }): Promise<{ provider: string; model: string; effort?: string }> {
     const res = await fetch(`${this.baseUrl}/control/config`, {
       method: "POST",
       headers: {
@@ -69,7 +98,7 @@ export class ControlClient implements ControlTransport {
       body: JSON.stringify(input),
     });
     if (!res.ok) throw new Error(`/control/config HTTP ${res.status}`);
-    return (await res.json()) as { provider: string; model: string };
+    return (await res.json()) as { provider: string; model: string; effort?: string };
   }
 
   async login(): Promise<{ verificationUri: string; userCode: string }> {

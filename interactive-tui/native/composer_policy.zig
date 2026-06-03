@@ -99,19 +99,19 @@ fn looksStructured(input: []const u8) bool {
         hasIndentedCodeLine(input);
 }
 
-export fn sift_paste_char_count(ptr: [*]const u8, len: u32) u32 {
+pub export fn sift_paste_char_count(ptr: [*]const u8, len: u32) u32 {
     return countCodepoints(bytes(ptr, len));
 }
 
-export fn sift_paste_line_count(ptr: [*]const u8, len: u32) u32 {
+pub export fn sift_paste_line_count(ptr: [*]const u8, len: u32) u32 {
     return countLines(bytes(ptr, len));
 }
 
-export fn sift_paste_looks_structured(ptr: [*]const u8, len: u32) bool {
+pub export fn sift_paste_looks_structured(ptr: [*]const u8, len: u32) bool {
     return looksStructured(bytes(ptr, len));
 }
 
-export fn sift_should_chip_paste(ptr: [*]const u8, len: u32) u32 {
+pub export fn sift_should_chip_paste(ptr: [*]const u8, len: u32) u32 {
     const input = bytes(ptr, len);
     const chars = countCodepoints(input);
     const lines = countLines(input);

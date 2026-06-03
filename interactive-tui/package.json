@@ -5,7 +5,10 @@
   "description": "Bun/opentui TUI spawned by `sift interactive` (runs the OpenFunction brain in-process)",
   "scripts": {
     "native:build": "./scripts/build-native.sh",
-    "native:test": "zig test native/composer_policy.zig && zig test native/fs_engine.zig"
+    "native:test": "zig build test",
+    "native:bench": "zig build bench -Dbench-optimize=ReleaseFast",
+    "native:bench:build": "zig build bench-install -Dbench-optimize=ReleaseFast",
+    "probe:code-search": "bun scripts/probe-code-search.ts"
   },
   "dependencies": {
     "@opentui/core": "^0.3.1",

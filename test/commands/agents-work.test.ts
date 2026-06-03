@@ -416,3 +416,69 @@ describe('codex daily-review collect', () => {
     expect(json.localGit.skipped).toBe(true);
   });
 });
+
+describe('worker run command', () => {
+  it('claims, starts, runs, heartbeats, and marks work as needing review', async () => {
+    const transitions: string[] = [];
+    mockFetch()
+      .on('POST', '/api/v1/work-items/claim')
+      .body((body) => {
+        const input = body as any;
+        return input.assignedAlias === 'codex'
+          && input.claimOwner === 'codex@test'
+          && input.leaseSeconds === 60;
+      })
+      .reply(200, {
+        workItem: {
+          id: 'work-run',
+          title: 'Run worker',
+          status: 'claimed',
+          claimToken: 'claim-token',
+          inputContext: {cwd: process.cwd()},
+        },
+      })
+      .on('POST', '/api/v1/work-items/work-run/start')
+      .body((body) => {
+        transitions.push('start');
+        return (body as any).claimToken === 'claim-token';
+      })
+      .reply(200, {workItem: {id: 'work-run', status: 'running'}})
+      .on('POST', '/api/v1/work-items/work-run/heartbeat')
+      .body((body) => {
+        transitions.push('heartbeat');
+        return (body as any).claimToken === 'claim-token';
+      })
+      .reply(200, {workItem: {id: 'work-run', status: 'running'}})
+      .on('POST', '/api/v1/work-items/work-run/review')
+      .body((body) => {
+        const input = body as any;
+        transitions.push('review');
+        return input.claimToken === 'claim-token'
+          && input.resultSummary.includes('Exit code: 0')
+          && input.artifactRefs[0]?.type === 'worker_run';
+      })
+      .reply(200, {workItem: {id: 'work-run', status: 'needs_review'}})
+      .install();
+
+    const result = await runCommand([
+      'worker',
+      'run',
+      '--agent',
+      'codex',
+      '--owner',
+      'codex@test',
+      '--command',
+      'printf worker-ok',
+      '--lease',
+      '60',
+      '--token',
+      'sift_pat_test',
+      '--json',
+    ]);
+    const json = JSON.parse(result.stdout);
+
+    expect(transitions).toEqual(['start', 'heartbeat', 'review']);
+    expect(json.workItem.status).toBe('needs_review');
+    expect(json.command.exitCode).toBe(0);
+  });
+});
