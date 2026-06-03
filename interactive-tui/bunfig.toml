@@ -1,0 +1,4 @@
+# Registers @opentui/solid's bun plugin so .tsx is compiled with the Solid
+# JSX transform (not bun's automatic runtime). Without this, bun resolves
+# jsx-runtime.d.ts and errors with "Export named 'jsxDEV' not found".
+preload = ["@opentui/solid/preload"]

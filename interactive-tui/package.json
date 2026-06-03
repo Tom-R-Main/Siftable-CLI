@@ -1,0 +1,16 @@
+{
+  "name": "@siftable/interactive-tui",
+  "private": true,
+  "type": "module",
+  "description": "Bun/opentui TUI spawned by `sift interactive` (runs the OpenFunction brain in-process)",
+  "scripts": {
+    "native:build": "./scripts/build-native.sh",
+    "native:test": "zig test native/composer_policy.zig && zig test native/fs_engine.zig"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.3.1",
+    "@opentui/solid": "^0.3.1",
+    "@opentui/keymap": "^0.3.1",
+    "solid-js": "^1.9.10"
+  }
+}

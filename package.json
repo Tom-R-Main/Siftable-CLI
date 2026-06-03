@@ -11,6 +11,10 @@
   },
   "scripts": {
     "build": "tsc",
+    "manifest": "oclif manifest",
+    "interactive:dev": "npm run build && npm run manifest && (cd interactive-tui && bun run native:build) && node ./bin/run.js interactive",
+    "interactive:help": "npm run build && npm run manifest && node ./bin/run.js interactive --help",
+    "interactive:image-fixtures": "node scripts/create-interactive-image-fixtures.mjs",
     "test": "jest",
     "test:vitest": "vitest run --config vitest.config.ts",
     "prepublishOnly": "npm run build",
@@ -108,7 +112,8 @@
   "dependencies": {
     "@oclif/core": "^4",
     "@oclif/plugin-help": "^6",
-    "@siftable/mcp-server": "^1.2.14"
+    "@siftable/mcp-server": "^1.2.14",
+    "sharp": "^0.34.4"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",
