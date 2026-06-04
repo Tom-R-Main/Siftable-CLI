@@ -55,13 +55,9 @@ describe('sift interactive — launcher env', () => {
       expect(noCwd.SIFT_WORKSPACE_ROOT).toBeUndefined();
     });
 
-    it('defaults EXECUTERM_OPENFUNCTION_PATH from HOME and honors an explicit override', () => {
-      // No built .js exists under a fake HOME, so the resolver falls back to the
-      // .ts source (Bun imports it directly; a bare .js literal would not resolve).
+    it('uses the vendored OpenFunction runtime by default and honors an explicit dev override', () => {
       const def = buildChildEnv({...base, baseEnv: {HOME: '/home/me'}});
-      expect(def.EXECUTERM_OPENFUNCTION_PATH).toBe(
-        '/home/me/projects/OpenFunction/src/framework/index.ts',
-      );
+      expect(def.EXECUTERM_OPENFUNCTION_PATH).toBeUndefined();
       const override = buildChildEnv({
         ...base,
         openfunctionPath: '/custom/of/index.js',

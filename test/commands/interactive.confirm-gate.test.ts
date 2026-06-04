@@ -88,8 +88,25 @@ describe('sift interactive — 4-way approval gate', () => {
     setConfirmListener((req) => { captured = req; });
     const p = requestApproval({kind: 'edit', path: '/repo/a.ts', detail: 'replace 2→3'});
     expect(captured!.allowAlways).toBe(true);
+    expect(captured!.allowBypass).toBe(true);
     resolveApproval(captured!.id, 'allow');
     await p;
+  });
+
+  it('can suppress session-wide bypass on sensitive approvals', async () => {
+    let captured: ConfirmRequest | null = null;
+    setConfirmListener((req) => { captured = req; });
+    const p = requestApproval({
+      kind: 'command',
+      path: 'vault read API key',
+      detail: 'Use secret for this session',
+      allowAlways: false,
+      allowBypass: false,
+    });
+    expect(captured!.allowAlways).toBe(false);
+    expect(captured!.allowBypass).toBe(false);
+    resolveApproval(captured!.id, 'allow');
+    await expect(p).resolves.toBe('allow');
   });
 
   it('"bypass" lifts the gate for the rest of the session', async () => {

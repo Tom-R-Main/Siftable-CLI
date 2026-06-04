@@ -1,0 +1,321 @@
+/**
+ * OpenAI Adapter (Responses API) + OpenAI-Compatible Adapters
+ *
+ * - createOpenAIAdapter: Uses the modern stateful Responses API (OPENAI_API_KEY)
+ * - createOpenRouterAdapter: OpenAI-compatible Chat Completions (OPENROUTER_API_KEY)
+ *
+ * Any OpenAI-compatible provider can be added with createChatCompletionsAdapter().
+ */
+
+import type { AIAdapter, AdapterConfig, ChatMessage, ChatOptions, AdapterResponse, ReasoningEffort } from "./types.js";
+import type { ToolRegistry } from "../registry.js";
+import { chatContentToText, imageDataUrl, normalizeChatContent } from "./content.js";
+
+// ─── OpenAI Responses API ──────────────────────────────────────────────────
+
+export function createOpenAIAdapter(config?: Partial<AdapterConfig>): AIAdapter {
+  const apiKey = config?.apiKey ?? process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      "OPENAI_API_KEY not set.\nGet one at: https://platform.openai.com/api-keys"
+    );
+  }
+
+  // Default to gpt-5.5 (released 2026-04-23). Per OpenAI's "Using GPT-5.5"
+  // guide, treat it as a new model family — defaults to medium reasoning
+  // effort and tends to produce more concise, efficient output. Override
+  // via config.model (e.g. "gpt-5.5-2026-04-23" for a pinned version, or
+  // an earlier model like "gpt-5.4" for back-compat).
+  const model = config?.model ?? "gpt-5.5";
+  const systemPrompt = config?.systemPrompt ?? "You are a helpful assistant with access to tools. Use tools when they're relevant.";
+  let previousResponseId: string | undefined;
+
+  return {
+    name: config?.name ?? "OpenAI",
+    model,
+
+    async chat(messages: ChatMessage[], registry: ToolRegistry, options?: ChatOptions): Promise<AdapterResponse> {
+      // resetSession: caller is starting a new logical conversation
+      // (e.g. a different agent in a crew). Clear the cached id so we
+      // don't thread the new turn onto a prior session.
+      if (options?.resetSession) {
+        previousResponseId = undefined;
+      }
+      let input: any;
+      // oneShot calls don't participate in session continuity at all.
+      const useSession = previousResponseId && !options?.oneShot;
+
+      if (useSession) {
+        const lastMsg = messages[messages.length - 1];
+        if (lastMsg.role === "tool") {
+          input = [{
+            type: "function_call_output",
+            call_id: lastMsg.toolCallId!,
+            output: chatContentToText(lastMsg.content),
+          }];
+        } else {
+          // User follow-up after a completed turn. Keep the
+          // previous_response_id so OpenAI threads this turn onto the
+          // prior conversation server-side. Previously we discarded
+          // the id here, which restarted context every user message.
+          input = responsesInputContent(lastMsg.content);
+        }
+      } else {
+        const lastUser = messages.filter((m) => m.role === "user").pop();
+        input = lastUser ? responsesInputContent(lastUser.content) : "";
+      }
+
+      const tools = registry.getAll().map((tool) => ({
+        type: "function" as const,
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.inputSchema,
+      }));
+
+      const body: Record<string, unknown> = {
+        model,
+        input,
+        tools,
+        temperature: 0.7,
+        // Disable parallel tool calls — adapter only returns one tool_call
+        // per round; running multiple in parallel orphans the rest. See
+        // anthropic.ts for the same conservative fix.
+        parallel_tool_calls: false,
+      };
+
+      if (useSession) {
+        body.previous_response_id = previousResponseId;
+      } else {
+        body.instructions = options?.systemPrompt ?? systemPrompt;
+      }
+
+      // Tool choice support
+      if (options?.toolChoice === "required") {
+        body.tool_choice = "required";
+      } else if (typeof options?.toolChoice === "object") {
+        body.tool_choice = { type: "function", name: options.toolChoice.name };
+      }
+
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`OpenAI API error (${response.status}): ${error}`);
+      }
+
+      const data = await response.json();
+      // Only update session state when not in oneShot mode.
+      if (!options?.oneShot) {
+        previousResponseId = data.id;
+      }
+
+      for (const item of data.output ?? []) {
+        if (item.type === "function_call") {
+          return {
+            toolCall: {
+              id: item.call_id,
+              name: item.name,
+              args: JSON.parse(item.arguments || "{}"),
+            },
+          };
+        }
+
+        if (item.type === "message") {
+          const text = item.content?.find((c: any) => c.type === "output_text")?.text;
+          if (text) return { text };
+        }
+      }
+
+      return { text: "(no response)" };
+    },
+  };
+}
+
+// ─── OpenAI-Compatible Chat Completions (shared by OpenRouter, xAI, etc.) ──
+
+interface ChatCompletionsConfig {
+  name: string;
+  model: string;
+  apiKey: string;
+  baseUrl: string;
+  systemPrompt?: string;
+  reasoningEffort?: ReasoningEffort;
+}
+
+/**
+ * Generic adapter for any OpenAI-compatible Chat Completions API.
+ * Used by OpenRouter and any other compatible provider.
+ */
+function createChatCompletionsAdapter(config: ChatCompletionsConfig): AIAdapter {
+  const { name, model, apiKey, baseUrl, reasoningEffort } = config;
+  const sysPrompt = config.systemPrompt ?? "You are a helpful assistant with access to tools. Use tools when they're relevant.";
+
+  return {
+    name,
+    model,
+
+    async chat(messages: ChatMessage[], registry: ToolRegistry, options?: ChatOptions): Promise<AdapterResponse> {
+      const openaiMessages: any[] = [{
+        role: "system",
+        content: options?.systemPrompt ?? sysPrompt,
+      }];
+
+      for (const msg of messages) {
+        if (msg.role === "tool") {
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: msg.toolCallId!,
+            content: chatContentToText(msg.content),
+          });
+        } else if (msg.role === "assistant" && msg.toolCalls?.length) {
+          // Parallel tool calls — one assistant message carrying every call.
+          openaiMessages.push({
+            role: "assistant",
+            content: null,
+            tool_calls: msg.toolCalls.map((c) => ({
+              id: c.id,
+              type: "function",
+              function: { name: c.name, arguments: JSON.stringify(c.args) },
+            })),
+          });
+        } else if (msg.role === "assistant" && msg.toolCallId) {
+          openaiMessages.push({
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: msg.toolCallId,
+              type: "function",
+              function: {
+                name: msg.toolName!,
+                arguments: chatContentToText(msg.content),
+              },
+            }],
+          });
+        } else {
+          openaiMessages.push({
+            role: msg.role,
+            content: chatCompletionsContent(msg.content),
+          });
+        }
+      }
+
+      const body: Record<string, unknown> = {
+        model,
+        messages: openaiMessages,
+        tools: registry.toOpenAIFormat(),
+        // Allow the model to fan out — the agent loop executes parallel tool
+        // calls concurrently and returns one tool result per call id.
+        parallel_tool_calls: true,
+        // max_tokens is intentionally omitted: a hardcoded cap truncates real
+        // answers (and reasoning models spend output tokens on thinking too).
+        // Matches codex-cli / t3-code, which let the model answer to its limit.
+      };
+
+      // Temperature is only meaningful for non-reasoning turns — reasoning
+      // models reject or ignore it (opencode strips it, codex never sends it).
+      if (!reasoningEffort || reasoningEffort === "none") {
+        body.temperature = 0.7;
+      }
+
+      // Reasoning effort. OpenRouter's unified `reasoning` field normalizes
+      // across model families: OpenAI-style `effort`, Anthropic-style thinking
+      // budgets, and Gemini all accept `{ effort }`. `none` disables it.
+      if (reasoningEffort && reasoningEffort !== "none") {
+        body.reasoning = { effort: reasoningEffort };
+      }
+
+      // Tool choice support
+      if (options?.toolChoice === "required") {
+        body.tool_choice = "required";
+      } else if (typeof options?.toolChoice === "object") {
+        body.tool_choice = { type: "function", function: { name: options.toolChoice.name } };
+      }
+
+      const response = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`${name} API error (${response.status}): ${error}`);
+      }
+
+      const data = await response.json();
+      const choice = data.choices?.[0];
+      if (!choice) throw new Error(`No response from ${name}`);
+
+      const rawToolCalls: any[] = choice.message?.tool_calls ?? [];
+      const parsedCalls = rawToolCalls.map((tc) => ({
+        id: tc.id,
+        name: tc.function.name,
+        args: JSON.parse(tc.function.arguments || "{}"),
+      }));
+      // A lone call stays on `toolCall` (single-call path unchanged); only a
+      // genuine fan-out uses `toolCalls`.
+      if (parsedCalls.length === 1) return { toolCall: parsedCalls[0] };
+      if (parsedCalls.length > 1) return { toolCalls: parsedCalls };
+
+      return { text: choice.message?.content ?? "(no response)" };
+    },
+  };
+}
+
+function responsesInputContent(content: ChatMessage["content"]): unknown {
+  if (typeof content === "string") return content;
+  return [{
+    role: "user",
+    content: content.map((part) =>
+      part.type === "text"
+        ? { type: "input_text", text: part.text }
+        : { type: "input_image", image_url: imageDataUrl(part), detail: part.detail ?? "auto" }
+    ),
+  }];
+}
+
+function chatCompletionsContent(content: ChatMessage["content"]): unknown {
+  if (typeof content === "string") return content;
+  return normalizeChatContent(content).map((part) =>
+    part.type === "text"
+      ? { type: "text", text: part.text }
+      : { type: "image_url", image_url: { url: imageDataUrl(part), detail: part.detail ?? "auto" } }
+  );
+}
+
+// ─── OpenRouter ────────────────────────────────────────────────────────────
+
+/**
+ * OpenRouter — any model from any provider via a unified API.
+ *
+ * Env: OPENROUTER_API_KEY
+ * Default model: google/gemini-3-flash-preview
+ * Browse models: https://openrouter.ai/models
+ */
+export function createOpenRouterAdapter(config?: Partial<AdapterConfig>): AIAdapter {
+  const apiKey = config?.apiKey ?? process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      "OPENROUTER_API_KEY not set.\nGet one at: https://openrouter.ai/keys"
+    );
+  }
+
+  return createChatCompletionsAdapter({
+    name: config?.name ?? "OpenRouter",
+    model: config?.model ?? "google/gemini-3-flash-preview",
+    apiKey,
+    baseUrl: "https://openrouter.ai/api/v1",
+    systemPrompt: config?.systemPrompt,
+    reasoningEffort: config?.reasoningEffort,
+  });
+}

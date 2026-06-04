@@ -1,0 +1,207 @@
+/**
+ * OpenFunction — Tool Registry
+ *
+ * Manages all registered tools and provides format adapters for
+ * different AI providers. Derived from ExecuFunction's ToolRegistry,
+ * stripped down for simplicity.
+ *
+ * Key concept: you define your tools ONCE, and the registry makes them
+ * available to any AI (Claude via MCP, Gemini via function calling,
+ * OpenAI via tools API) without rewriting anything.
+ */
+
+import type {
+  ToolDefinition,
+  ToolResult,
+  GeminiFunctionDeclaration,
+  AnthropicTool,
+  OpenAIFunction,
+} from "./types.js";
+import { validateParams, formatValidationErrors } from "./validate.js";
+
+export class ToolRegistry {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private tools: Map<string, ToolDefinition<any, any>> = new Map();
+
+  // ── Registration ─────────────────────────────────────────────────────────
+
+  /**
+   * Register a single tool.
+   *
+   * @param opts.overwrite When false, an existing tool with the same name
+   *   wins — the new tool is skipped and a warning is logged. Used by the
+   *   framework to register memory + context-provider tools without silently
+   *   shadowing user tools of the same name. Default: true (back-compat).
+   */
+  register(
+    tool: ToolDefinition<any, any>,
+    opts: { overwrite?: boolean } = {},
+  ): void {
+    if (this.tools.has(tool.name)) {
+      if (opts.overwrite === false) {
+        console.warn(
+          `⚠️  Tool "${tool.name}" is already registered — keeping existing definition (skipping new one).`,
+        );
+        return;
+      }
+      console.warn(
+        `⚠️  Tool "${tool.name}" is already registered — overwriting.`,
+      );
+    }
+    this.tools.set(tool.name, tool);
+  }
+
+  /** Register multiple tools at once. See register() for opts. */
+  registerAll(
+    tools: ToolDefinition<any, any>[],
+    opts: { overwrite?: boolean } = {},
+  ): void {
+    for (const tool of tools) {
+      this.register(tool, opts);
+    }
+  }
+
+  /**
+   * Remove a tool by name. Returns true if the tool existed and was
+   * removed, false otherwise. Used by ChatAgent.destroy() to clean up
+   * provider/memory tools so long-lived processes that create and
+   * destroy agents don't accumulate ghost tools in shared registries.
+   */
+  unregister(name: string): boolean {
+    return this.tools.delete(name);
+  }
+
+  // ── Lookup ───────────────────────────────────────────────────────────────
+
+  /** Get a tool by name */
+  get(name: string): ToolDefinition<any, any> | undefined {
+    return this.tools.get(name);
+  }
+
+  /** Get all registered tools */
+  getAll(): ToolDefinition<any, any>[] {
+    return Array.from(this.tools.values());
+  }
+
+  /** Get tools matching a tag */
+  getByTag(tag: string): ToolDefinition<any, any>[] {
+    return this.getAll().filter((t) => t.tags?.includes(tag));
+  }
+
+  /** List all tool names */
+  listNames(): string[] {
+    return Array.from(this.tools.keys());
+  }
+
+  // ── Execution ────────────────────────────────────────────────────────────
+
+  /** Execute a tool by name with the given parameters */
+  async execute(
+    name: string,
+    params: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const tool = this.tools.get(name);
+    if (!tool) {
+      return { success: false, error: `Unknown tool: "${name}"` };
+    }
+
+    // ── Validate parameters against schema ────────────────────────────────
+    const validationErrors = validateParams(params, tool.inputSchema);
+    if (validationErrors.length > 0) {
+      const message = formatValidationErrors(name, validationErrors);
+      console.error(`\n⚠️  ${message}\n`);
+      return { success: false, error: message };
+    }
+
+    const start = Date.now();
+    try {
+      const result = await tool.handler(params);
+      const duration = Date.now() - start;
+      console.log(`✅ ${name} completed in ${duration}ms`);
+      return result;
+    } catch (error) {
+      const duration = Date.now() - start;
+      const message =
+        error instanceof Error ? error.message : "Unknown error";
+      const stack =
+        error instanceof Error ? error.stack?.split("\n")[1]?.trim() : "";
+
+      // ── Rich error output ──────────────────────────────────────────────
+      console.error(`\n❌ ${name} failed after ${duration}ms`);
+      console.error(`   Error: ${message}`);
+      console.error(`   Input: ${JSON.stringify(params)}`);
+      if (stack) {
+        console.error(`   At:    ${stack}`);
+      }
+
+      // Provide hints for common mistakes
+      const hints: string[] = [];
+      if (message.includes("Cannot read properties of undefined")) {
+        hints.push(
+          "A parameter might be missing — check that required fields are provided"
+        );
+      }
+      if (message.includes("is not a function")) {
+        hints.push(
+          "Check that you're importing the right modules and calling functions correctly"
+        );
+      }
+      if (message.includes("fetch") || message.includes("ECONNREFUSED")) {
+        hints.push(
+          "Network request failed — check the URL and your internet connection"
+        );
+      }
+      if (message.includes("ENOENT")) {
+        hints.push("File not found — check the file path");
+      }
+      for (const hint of hints) {
+        console.error(`   Hint:  ${hint}`);
+      }
+      console.error();
+
+      return { success: false, error: message };
+    }
+  }
+
+  // ── Provider Format Adapters ─────────────────────────────────────────────
+  //
+  // These convert your tool definitions into the format each AI provider
+  // expects. This is the "write once, use everywhere" magic.
+
+  /** Convert tools to Gemini function calling format */
+  toGeminiFormat(): GeminiFunctionDeclaration[] {
+    return this.getAll().map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      parameters: {
+        type: "object" as const,
+        properties: tool.inputSchema.properties,
+        required: tool.inputSchema.required,
+      },
+    }));
+  }
+
+  /** Convert tools to Anthropic/Claude format */
+  toAnthropicFormat(): AnthropicTool[] {
+    return this.getAll().map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.inputSchema,
+    }));
+  }
+
+  /** Convert tools to OpenAI format */
+  toOpenAIFormat(): OpenAIFunction[] {
+    return this.getAll().map((tool) => ({
+      type: "function" as const,
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.inputSchema,
+      },
+    }));
+  }
+}
+
+/** Global registry instance — import this to register and access tools */
+export const registry = new ToolRegistry();

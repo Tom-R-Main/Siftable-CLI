@@ -32,6 +32,8 @@ export interface ConfirmSpec {
   detail: string;
   /** Whether to offer the "always allow this action" option (default true). */
   allowAlways?: boolean;
+  /** Whether to offer the session-wide bypass option (default true). */
+  allowBypass?: boolean;
 }
 
 export interface ConfirmRequest extends ConfirmSpec {
@@ -65,7 +67,7 @@ export function requestApproval(spec: ConfirmSpec): Promise<ApprovalDecision> {
   const id = randomUUID();
   return new Promise<ApprovalDecision>((resolve) => {
     pending.set(id, resolve);
-    listener!({ allowAlways: true, ...spec, id });
+    listener!({ allowAlways: true, allowBypass: true, ...spec, id });
   });
 }
 

@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import {LocalControlClient} from '../../interactive-tui/localControlClient';
 import {setBrainModel, type BrainEvent, type BrainAskResult} from '../../interactive-tui/brain';
 import type {SseEvent} from '../../interactive-tui/controlClient';
+import {rejectAllConfirms, resetBypass, resolveApproval, setConfirmListener} from '../../interactive-tui/confirmGate';
 
 /** Build a fake openfunctionAsk that replays a scripted event stream. */
 function fakeAsk(
@@ -17,6 +18,12 @@ function fakeAsk(
 }
 
 describe('LocalControlClient (in-process transport)', () => {
+  afterEach(() => {
+    rejectAllConfirms();
+    setConfirmListener(null);
+    resetBypass();
+  });
+
   describe('send() event translation', () => {
     it('forwards token / tool_call / tool_result / done events unchanged to the TUI', async () => {
       const stream: BrainEvent[] = [
@@ -64,6 +71,97 @@ describe('LocalControlClient (in-process transport)', () => {
       await expect(
         client.send('hi', () => {}, ctrl.signal),
       ).rejects.toMatchObject({name: 'AbortError'});
+    });
+
+    it('lets the brain change the persistent session workdir and resolve later paths from it', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'sift-localclient-cwd-'));
+      const previousCwd = process.env.SIFT_USER_CWD;
+      const previousRoot = process.env.SIFT_WORKSPACE_ROOT;
+      await mkdir(join(root, '.git'), {recursive: true});
+      await mkdir(join(root, 'nested'), {recursive: true});
+      await writeFile(join(root, 'nested', 'target.txt'), 'dynamic cwd works\n', 'utf8');
+      let readResult: any;
+      (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+        createChatAgent: async (config: Record<string, any>) => ({
+          chat: async function* () {
+            const changeDirectory = config.tools.find((tool: any) => tool.name === 'change_directory');
+            const readFile = config.tools.find((tool: any) => tool.name === 'read_file');
+            yield {type: 'tool_call', toolCall: {name: 'change_directory', args: {path: 'nested'}}};
+            const cdResult = await changeDirectory.handler({path: 'nested'});
+            yield {type: 'tool_result', toolResult: {name: 'change_directory', success: cdResult.success}};
+            yield {type: 'tool_call', toolCall: {name: 'read_file', args: {path: 'target.txt'}}};
+            readResult = await readFile.handler({path: 'target.txt'});
+            yield {type: 'tool_result', toolResult: {name: 'read_file', success: readResult.success}};
+            yield {type: 'done', result: {content: 'done'}};
+          },
+        }),
+        defineTool: (def: unknown) => def,
+        ok: (data: unknown, message?: string) => ({success: true, data, message}),
+        err: (error: string) => ({success: false, error}),
+      };
+      process.env.SIFT_USER_CWD = root;
+      process.env.SIFT_WORKSPACE_ROOT = root;
+      setBrainModel({provider: 'openrouter', model: 'cwd-smoke'});
+
+      try {
+        const client = new LocalControlClient();
+        const events: SseEvent[] = [];
+        await client.send('cd nested and read target', (event) => events.push(event));
+
+        expect(process.env.SIFT_USER_CWD).toBe(join(root, 'nested'));
+        expect(process.env.SIFT_WORKSPACE_ROOT).toBe(root);
+        expect(readResult.success).toBe(true);
+        expect(readResult.data.content).toContain('dynamic cwd works');
+        expect(events.some((event) => event.toolCall?.name === 'change_directory')).toBe(true);
+      } finally {
+        if (previousCwd === undefined) delete process.env.SIFT_USER_CWD;
+        else process.env.SIFT_USER_CWD = previousCwd;
+        if (previousRoot === undefined) delete process.env.SIFT_WORKSPACE_ROOT;
+        else process.env.SIFT_WORKSPACE_ROOT = previousRoot;
+        delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+        await rm(root, {recursive: true, force: true});
+      }
+    });
+
+    it('runs terminal commands only after approval', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'sift-localclient-command-'));
+      const previousCwd = process.env.SIFT_USER_CWD;
+      let commandResult: any;
+      let approvedCommand = '';
+      setConfirmListener((req) => {
+        approvedCommand = req.path;
+        resolveApproval(req.id, 'allow');
+      });
+      (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+        createChatAgent: async (config: Record<string, any>) => ({
+          chat: async function* () {
+            const runCommand = config.tools.find((tool: any) => tool.name === 'run_terminal_command');
+            yield {type: 'tool_call', toolCall: {name: 'run_terminal_command', args: {command: 'printf model-command'}}};
+            commandResult = await runCommand.handler({command: 'printf model-command'});
+            yield {type: 'tool_result', toolResult: {name: 'run_terminal_command', success: commandResult.success}};
+            yield {type: 'done', result: {content: 'done'}};
+          },
+        }),
+        defineTool: (def: unknown) => def,
+        ok: (data: unknown, message?: string) => ({success: true, data, message}),
+        err: (error: string) => ({success: false, error}),
+      };
+      process.env.SIFT_USER_CWD = root;
+      setBrainModel({provider: 'openrouter', model: 'command-smoke'});
+
+      try {
+        const client = new LocalControlClient();
+        await client.send('run printf', () => {});
+
+        expect(approvedCommand).toBe('printf model-command');
+        expect(commandResult.success).toBe(true);
+        expect(commandResult.data.output).toBe('model-command');
+      } finally {
+        if (previousCwd === undefined) delete process.env.SIFT_USER_CWD;
+        else process.env.SIFT_USER_CWD = previousCwd;
+        delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+        await rm(root, {recursive: true, force: true});
+      }
     });
 
     it('headlessly exercises repo_explorer through the real local transport seam', async () => {

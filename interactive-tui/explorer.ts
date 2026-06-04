@@ -5,6 +5,7 @@ import {
   searchLiteral,
   type SearchSkippedByReason,
 } from './fsEngine';
+import { getSessionCwd, getWorkspaceRoot } from './navigation';
 
 export type ExplorerMode = 'skipped' | 'targeted' | 'broad';
 export type ExplorerConfidence = 'low' | 'medium' | 'high';
@@ -829,7 +830,7 @@ export async function buildExplorerReport(
   const startedAt = Date.now();
   const text = chatInputText(input);
   const mode = options.enabled === false ? 'skipped' : classifyExplorerPrompt(text);
-  const root = options.root || process.env.SIFT_USER_CWD || process.cwd();
+  const root = options.root || getWorkspaceRoot() || getSessionCwd();
   const cacheMaxAgeMs = Math.max(0, options.maxCacheAgeMs ?? DEFAULT_EXPLORER_CACHE_MAX_AGE_MS);
   const cached = !options.forceRefresh ? explorerCache.get(root) : undefined;
   const cachedUsable = Boolean(cached && Date.now() - cached.createdAtMs <= cacheMaxAgeMs);

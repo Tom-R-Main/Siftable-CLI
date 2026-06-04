@@ -8,8 +8,9 @@
  */
 import { existsSync } from "node:fs";
 import { readdir, readFile, writeFile, rename, mkdir, stat, chmod, unlink } from "node:fs/promises";
-import { extname, join, dirname, resolve as resolvePath, relative, isAbsolute } from "node:path";
+import { extname, join, dirname, resolve as resolvePath, relative, isAbsolute, sep } from "node:path";
 import { performance } from "node:perf_hooks";
+import { getSessionCwd, getWorkspaceRoot } from "./navigation";
 
 export interface ReadTextResult {
   path: string;
@@ -61,6 +62,7 @@ export interface SearchCaps {
   includeHidden?: boolean;
   includeVendor?: boolean;
   includeBuildOutputs?: boolean;
+  respectGitignore?: boolean;
   detail?: SearchDetail;
 }
 
@@ -83,6 +85,7 @@ export interface SearchSkippedByReason {
   tooLarge: number;
   invalidUtf8: number;
   ioError: number;
+  gitignore: number;
   depth: number;
   nonFile: number;
   other: number;
@@ -116,6 +119,7 @@ export interface WorkspaceFile {
   path: string;
   absPath: string;
   bytes: number;
+  mtimeMs: number;
   depth: number;
   language: string;
   keyReason?: "package" | "entrypoint" | "config" | "test" | "readme" | "native" | "build";
@@ -243,6 +247,7 @@ const EDIT_FLAG_CHECK_FRESHNESS = 0x2;
 const SEARCH_FLAG_INCLUDE_HIDDEN = 0x1;
 const SEARCH_FLAG_INCLUDE_VENDOR = 0x8;
 const SEARCH_FLAG_INCLUDE_BUILD_OUTPUTS = 0x10;
+const SEARCH_FLAG_IGNORE_GITIGNORE = 0x20;
 const SEARCH_DETAIL_SHIFT = 24;
 const SEARCH_DETAIL_PATHS = 1 << SEARCH_DETAIL_SHIFT;
 const SEARCH_DETAIL_LOCATIONS = 2 << SEARCH_DETAIL_SHIFT;
@@ -273,7 +278,6 @@ const BUILD_OUTPUT_DIRS = new Set([
   ".zig-cache",
   "zig-out",
 ]);
-const NOISY_DIRS = new Set([".git", ...VENDOR_DIRS, ...BUILD_OUTPUT_DIRS]);
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".zig", ".rs", ".go", ".py", ".swift", ".java", ".kt", ".rb", ".php", ".css", ".scss", ".html", ".json", ".md", ".toml", ".yaml", ".yml"]);
 
 type WorkspaceFileCollection = {
@@ -295,6 +299,40 @@ type WorkspaceFilePhaseTimings = {
   fileSetBuildWallMs: number;
   fileSetStatWallMs: number;
   fileSetReadWallMs: number;
+};
+
+type TraversalFile = {
+  path: string;
+  absPath: string;
+  bytes: number;
+  mtimeMs: number;
+  depth: number;
+};
+
+type TraversalPolicy = {
+  maxFiles: number;
+  maxDepth: number;
+  maxFileBytes: number;
+  caps: SearchCaps;
+  sourceOnly: boolean;
+  respectGitignore: boolean;
+};
+
+type TraversalResult = {
+  files: TraversalFile[];
+  skippedFiles: number;
+  skippedByReason: SearchSkippedByReason;
+  truncated: boolean;
+  capReason: SearchCapReason | null;
+  fileSetStatWallMs: number;
+};
+
+type GitignoreRule = {
+  pattern: string;
+  negated: boolean;
+  directoryOnly: boolean;
+  hasSlash: boolean;
+  baseRel: string;
 };
 
 const workspaceFileCache = new Map<string, WorkspaceFileCacheEntry>();
@@ -512,6 +550,7 @@ function searchFlags(caps: SearchCaps): number {
   return (caps.includeHidden ? SEARCH_FLAG_INCLUDE_HIDDEN : 0) |
     (caps.includeVendor ? SEARCH_FLAG_INCLUDE_VENDOR : 0) |
     (caps.includeBuildOutputs ? SEARCH_FLAG_INCLUDE_BUILD_OUTPUTS : 0) |
+    (caps.respectGitignore === false ? SEARCH_FLAG_IGNORE_GITIGNORE : 0) |
     detailFlag(caps.detail);
 }
 
@@ -667,13 +706,6 @@ function withinRoot(root: string, p: string): boolean {
   return c === "/" || c === "\\";
 }
 
-function isSearchExcludedDir(name: string, caps: SearchCaps): boolean {
-  if (name === ".git") return true;
-  if (!caps.includeVendor && VENDOR_DIRS.has(name)) return true;
-  if (!caps.includeBuildOutputs && BUILD_OUTPUT_DIRS.has(name)) return true;
-  return false;
-}
-
 type SearchSkipReason = keyof SearchSkippedByReason;
 
 function emptySearchSkippedByReason(): SearchSkippedByReason {
@@ -685,6 +717,7 @@ function emptySearchSkippedByReason(): SearchSkippedByReason {
     tooLarge: 0,
     invalidUtf8: 0,
     ioError: 0,
+    gitignore: 0,
     depth: 0,
     nonFile: 0,
     other: 0,
@@ -696,6 +729,221 @@ function searchExcludeReason(name: string, caps: SearchCaps): SearchSkipReason |
   if (!caps.includeVendor && VENDOR_DIRS.has(name)) return "vendor";
   if (!caps.includeBuildOutputs && BUILD_OUTPUT_DIRS.has(name)) return "buildOutput";
   return null;
+}
+
+function pathToSearchRel(absRoot: string, absPath: string, fallback: string): string {
+  return toSlash(relative(absRoot, absPath) || fallback);
+}
+
+function toSlash(path: string): string {
+  return path.split(sep).join("/");
+}
+
+async function collectTraversalFiles(root: string, policy: TraversalPolicy): Promise<TraversalResult> {
+  const absRoot = resolvePath(root || ".");
+  const files: TraversalFile[] = [];
+  const skippedByReason = emptySearchSkippedByReason();
+  const gitRoot = policy.respectGitignore ? findGitRoot(absRoot) : null;
+  const ancestorRules = gitRoot ? await loadAncestorGitignoreRules(gitRoot, absRoot) : [];
+  let skippedFiles = 0;
+  let truncated = false;
+  let capReason: SearchCapReason | null = null;
+  let fileSetStatWallMs = 0;
+  const skip = (reason: SearchSkipReason) => {
+    skippedFiles += 1;
+    skippedByReason[reason] += 1;
+  };
+  const cap = (reason: SearchCapReason) => {
+    truncated = true;
+    capReason ??= reason;
+  };
+
+  async function walk(dir: string, depth: number, inheritedRules: GitignoreRule[]): Promise<void> {
+    if (depth > policy.maxDepth) {
+      cap("maxDepth");
+      skip("depth");
+      return;
+    }
+    if (files.length >= policy.maxFiles) {
+      cap("maxFiles");
+      return;
+    }
+
+    let entries;
+    try {
+      const statStart = performance.now();
+      entries = (await readdir(dir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
+      fileSetStatWallMs += performance.now() - statStart;
+    } catch {
+      skip("ioError");
+      return;
+    }
+
+    const relDir = toSlash(relative(absRoot, dir));
+    const localRules = gitRoot ? await loadGitignoreRules(dir, relDir) : [];
+    const rules = localRules.length ? inheritedRules.concat(localRules) : inheritedRules;
+
+    for (const entry of entries) {
+      if (files.length >= policy.maxFiles) {
+        cap("maxFiles");
+        return;
+      }
+      const abs = join(dir, entry.name);
+      const rel = pathToSearchRel(absRoot, abs, entry.name);
+      const isDir = entry.isDirectory();
+      const excludedReason = isDir ? searchExcludeReason(entry.name, policy.caps) : null;
+      if (excludedReason) {
+        skip(excludedReason);
+        continue;
+      }
+      if (!policy.caps.includeHidden && rel.split("/").some((part) => part.startsWith("."))) {
+        skip("hidden");
+        continue;
+      }
+      if (gitRoot && gitignoreDecision(rules, rel, isDir)) {
+        skip("gitignore");
+        continue;
+      }
+      if (isDir) {
+        await walk(abs, depth + 1, rules);
+        continue;
+      }
+      if (!entry.isFile()) {
+        skip("nonFile");
+        continue;
+      }
+      if (policy.sourceOnly && !isLikelySource(rel)) {
+        skip("other");
+        continue;
+      }
+
+      try {
+        const statStart = performance.now();
+        const fileStat = await stat(abs);
+        fileSetStatWallMs += performance.now() - statStart;
+        if (fileStat.size > policy.maxFileBytes) {
+          skip("tooLarge");
+          continue;
+        }
+        files.push({
+          path: rel,
+          absPath: abs,
+          bytes: fileStat.size,
+          mtimeMs: fileStat.mtimeMs,
+          depth,
+        });
+      } catch {
+        skip("ioError");
+      }
+    }
+  }
+
+  await walk(absRoot, 0, ancestorRules);
+  return {
+    files,
+    skippedFiles,
+    skippedByReason,
+    truncated,
+    capReason,
+    fileSetStatWallMs,
+  };
+}
+
+function findGitRoot(absRoot: string): string | null {
+  let current = absRoot;
+  for (;;) {
+    if (existsSync(join(current, ".git"))) return current;
+    const parent = dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+async function loadAncestorGitignoreRules(gitRoot: string, absRoot: string): Promise<GitignoreRule[]> {
+  const rules: GitignoreRule[] = [];
+  let current = gitRoot;
+  for (;;) {
+    rules.push(...await loadGitignoreRules(current, toSlash(relative(absRoot, current))));
+    if (current === absRoot) return rules;
+    const next = join(current, relative(current, absRoot).split(/[\\/]/)[0] ?? "");
+    if (!next || next === current || !absRoot.startsWith(`${next}${sep}`) && next !== absRoot) return rules;
+    current = next;
+  }
+}
+
+async function loadGitignoreRules(dir: string, baseRel: string): Promise<GitignoreRule[]> {
+  let text: string;
+  try {
+    text = await readFile(join(dir, ".gitignore"), "utf8");
+  } catch {
+    return [];
+  }
+  const normalizedBase = toSlash(baseRel).replace(/^\/+|\/+$/g, "");
+  const rules: GitignoreRule[] = [];
+  for (const rawLine of text.split(/\r\n|\r|\n/)) {
+    let line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    let negated = false;
+    if (line.startsWith("!")) {
+      negated = true;
+      line = line.slice(1).trim();
+    }
+    if (!line) continue;
+    line = line.replace(/^\/+/, "");
+    const directoryOnly = line.endsWith("/");
+    line = line.replace(/\/+$/g, "");
+    if (!line) continue;
+    rules.push({
+      pattern: line,
+      negated,
+      directoryOnly,
+      hasSlash: line.includes("/"),
+      baseRel: normalizedBase,
+    });
+  }
+  return rules;
+}
+
+function gitignoreDecision(rules: GitignoreRule[], relPath: string, isDir: boolean): boolean {
+  let ignored = false;
+  const normalized = toSlash(relPath).replace(/^\/+/, "");
+  for (const rule of rules) {
+    if (gitignoreRuleMatches(rule, normalized, isDir)) ignored = !rule.negated;
+  }
+  return ignored;
+}
+
+function gitignoreRuleMatches(rule: GitignoreRule, relPath: string, isDir: boolean): boolean {
+  if (rule.directoryOnly && !isDir) return false;
+  const path = rule.baseRel && relPath.startsWith(`${rule.baseRel}/`)
+    ? relPath.slice(rule.baseRel.length + 1)
+    : rule.baseRel
+      ? ""
+      : relPath;
+  if (!path) return false;
+  if (!rule.hasSlash) {
+    return path.split("/").some((part) => globSegmentMatches(rule.pattern, part));
+  }
+  if (rule.pattern.endsWith("/*")) {
+    const prefix = rule.pattern.slice(0, -1);
+    if (!path.startsWith(prefix)) return false;
+    return !path.slice(prefix.length).includes("/");
+  }
+  return globPathMatches(rule.pattern, path);
+}
+
+function globSegmentMatches(pattern: string, value: string): boolean {
+  return globPathMatches(pattern, value) || value === pattern;
+}
+
+function globPathMatches(pattern: string, value: string): boolean {
+  if (!pattern.includes("*")) return value === pattern;
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, "\0")
+    .replace(/\*/g, "[^/]*")
+    .replace(/\0/g, ".*");
+  return new RegExp(`^${escaped}$`).test(value);
 }
 
 function isLikelyBinaryBuffer(data: Buffer): boolean {
@@ -874,20 +1122,27 @@ async function searchLiteralFallback(root: string, query: string, caps: SearchCa
   const maxDepth = caps.maxDepth ?? DEFAULT_MAX_DEPTH;
   const maxFileBytes = caps.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
   const previewBytes = caps.previewBytes ?? DEFAULT_PREVIEW_BYTES;
-  const includeHidden = Boolean(caps.includeHidden);
   const detail = caps.detail ?? "snippets";
   const queryBytes = Buffer.byteLength(query);
   const matches: SearchMatch[] = [];
+  const traversal = await collectTraversalFiles(absRoot, {
+    maxFiles,
+    maxDepth,
+    maxFileBytes,
+    caps,
+    sourceOnly: false,
+    respectGitignore: caps.respectGitignore !== false,
+  });
   const stats: SearchResult["stats"] = {
     searchedFiles: 0,
-    skippedFiles: 0,
+    skippedFiles: traversal.skippedFiles,
     matchedFiles: 0,
     matches: 0,
-    truncated: 0,
-    capped: false,
-    capReason: null as SearchCapReason | null,
+    truncated: traversal.truncated ? 1 : 0,
+    capped: traversal.truncated,
+    capReason: traversal.capReason,
     bytesScanned: 0,
-    skippedByReason: emptySearchSkippedByReason(),
+    skippedByReason: traversal.skippedByReason,
   };
   const skip = (reason: SearchSkipReason) => {
     stats.skippedFiles += 1;
@@ -899,118 +1154,71 @@ async function searchLiteralFallback(root: string, query: string, caps: SearchCa
     stats.capReason ??= reason;
   };
 
-  async function walk(dir: string, depth: number): Promise<void> {
-    if (depth > maxDepth || stats.searchedFiles >= maxFiles || matches.length >= maxMatches) {
-      if (depth > maxDepth) {
-        cap("maxDepth");
-        skip("depth");
-      } else if (stats.searchedFiles >= maxFiles) {
-        cap("maxFiles");
-      } else {
-        cap("maxMatches");
-      }
-      return;
+  for (const file of traversal.files) {
+    if (stats.searchedFiles >= maxFiles || matches.length >= maxMatches) {
+      cap(stats.searchedFiles >= maxFiles ? "maxFiles" : "maxMatches");
+      break;
     }
-    let entries;
     try {
-      entries = await readdir(dir, { withFileTypes: true });
+      const data = await readFile(file.absPath);
+      if (isLikelyBinaryBuffer(data)) {
+        skip("binary");
+        continue;
+      }
+      if (!isValidUtf8(data)) {
+        skip("invalidUtf8");
+        continue;
+      }
+      const text = data.toString("utf8");
+      stats.searchedFiles += 1;
+      if (stats.searchedFiles >= maxFiles) cap("maxFiles");
+      stats.bytesScanned += data.byteLength;
+      let foundInFile = false;
+      let offset = 0;
+      const cursor: LineCursor = {offset: 0, byteOffset: 0, line: 1, lineStartByte: 0};
+      while (offset < text.length) {
+        const index = text.indexOf(query, offset);
+        if (index === -1) break;
+        const end = index + query.length;
+        let line = 0;
+        let column = 0;
+        let byteStart = 0;
+        let byteEnd = 0;
+        let preview = "";
+        if (detail !== "paths") {
+          advanceLineCursor(text, cursor, index);
+          byteStart = cursor.byteOffset;
+          byteEnd = byteStart + queryBytes;
+          line = cursor.line;
+          column = columnForCursor(cursor);
+          if (detail === "snippets" || detail === "full") {
+            const startPreview = Math.max(0, index - Math.floor(previewBytes / 2));
+            const endPreview = Math.min(text.length, end + Math.floor(previewBytes / 2));
+            preview = text.slice(startPreview, endPreview);
+          }
+        }
+        matches.push({
+          path: file.path,
+          line,
+          column,
+          byteStart,
+          byteEnd,
+          preview,
+        });
+        stats.matches = matches.length;
+        foundInFile = true;
+        if (matches.length >= maxMatches) {
+          cap("maxMatches");
+          break;
+        }
+        if (detail === "paths") break;
+        offset = end;
+      }
+      if (foundInFile) stats.matchedFiles += 1;
     } catch {
       skip("ioError");
-      return;
-    }
-    for (const entry of entries) {
-      const name = entry.name;
-      const abs = join(dir, name);
-      const rel = relative(absRoot, abs) || name;
-      if (!includeHidden && rel.split(/[\\/]/).some((part) => part.startsWith("."))) {
-        skip("hidden");
-        continue;
-      }
-      if (entry.isDirectory()) {
-        const excludedReason = searchExcludeReason(name, caps);
-        if (excludedReason) {
-          skip(excludedReason);
-          continue;
-        }
-        await walk(abs, depth + 1);
-        continue;
-      }
-      if (!entry.isFile()) {
-        skip("nonFile");
-        continue;
-      }
-      if (stats.searchedFiles >= maxFiles || matches.length >= maxMatches) {
-        stats.truncated = 1;
-        return;
-      }
-      try {
-        const fileStat = await stat(abs);
-        if (fileStat.size > maxFileBytes) {
-          skip("tooLarge");
-          continue;
-        }
-        const data = await readFile(abs);
-        if (isLikelyBinaryBuffer(data)) {
-          skip("binary");
-          continue;
-        }
-        if (!isValidUtf8(data)) {
-          skip("invalidUtf8");
-          continue;
-        }
-        const text = data.toString("utf8");
-        stats.searchedFiles += 1;
-        if (stats.searchedFiles >= maxFiles) cap("maxFiles");
-        stats.bytesScanned += data.byteLength;
-        let foundInFile = false;
-        let offset = 0;
-        const cursor: LineCursor = {offset: 0, byteOffset: 0, line: 1, lineStartByte: 0};
-        while (offset < text.length) {
-          const index = text.indexOf(query, offset);
-          if (index === -1) break;
-          const end = index + query.length;
-          let line = 0;
-          let column = 0;
-          let byteStart = 0;
-          let byteEnd = 0;
-          let preview = "";
-          if (detail !== "paths") {
-            advanceLineCursor(text, cursor, index);
-            byteStart = cursor.byteOffset;
-            byteEnd = byteStart + queryBytes;
-            line = cursor.line;
-            column = columnForCursor(cursor);
-            if (detail === "snippets" || detail === "full") {
-              const startPreview = Math.max(0, index - Math.floor(previewBytes / 2));
-              const endPreview = Math.min(text.length, end + Math.floor(previewBytes / 2));
-              preview = text.slice(startPreview, endPreview);
-            }
-          }
-          matches.push({
-            path: rel,
-            line,
-            column,
-            byteStart,
-            byteEnd,
-            preview,
-          });
-          stats.matches = matches.length;
-          foundInFile = true;
-          if (matches.length >= maxMatches) {
-            cap("maxMatches");
-            break;
-          }
-          if (detail === "paths") break;
-          offset = end;
-        }
-        if (foundInFile) stats.matchedFiles += 1;
-      } catch {
-        skip("ioError");
-      }
     }
   }
-
-  await walk(absRoot, 0);
   return { matches, stats, source: "ts" };
 }
 
@@ -1018,7 +1226,7 @@ export function fsEngineAvailable(): boolean {
   return nativeSymbols() !== null;
 }
 
-export async function inspectLocalWorkspace(root = process.env.SIFT_USER_CWD || "."): Promise<InspectLocalWorkspaceResult> {
+export async function inspectLocalWorkspace(root = getWorkspaceRoot() || getSessionCwd()): Promise<InspectLocalWorkspaceResult> {
   const absRoot = resolvePath(root || ".");
   const files = await collectWorkspaceFiles(absRoot, { maxFiles: 1500, maxDepth: 8 });
   const languages = new Map<string, { files: number; bytes: number }>();
@@ -1247,9 +1455,10 @@ export async function codeSearch(input: {
   maxCacheAgeMs?: number;
   useContentCache?: boolean;
   maxContentCacheBytes?: number;
+  respectGitignore?: boolean;
 }): Promise<CodeSearchResult> {
   const totalStart = performance.now();
-  const root = resolvePath(input.root || process.env.SIFT_USER_CWD || ".");
+  const root = resolvePath(input.root || getWorkspaceRoot() || getSessionCwd());
   const maxSpans = input.maxSpans ?? 12;
   const contextLines = input.contextLines ?? 2;
   const queries = compileQueries(input.intent, input.queries).slice(0, 8);
@@ -1258,6 +1467,7 @@ export async function codeSearch(input: {
     maxDepth: 10,
     forceRefresh: input.forceRefresh,
     maxCacheAgeMs: input.maxCacheAgeMs,
+    respectGitignore: input.respectGitignore,
   });
   const phaseTimings: CodeSearchPhaseTimings = {
     totalWallMs: 0,
@@ -1406,12 +1616,17 @@ export async function findLocalFiles(input: {
   query: string;
   limit?: number;
   maxFiles?: number;
+  respectGitignore?: boolean;
 }): Promise<FileSearchResult> {
-  const root = resolvePath(input.root || process.env.SIFT_USER_CWD || ".");
+  const root = resolvePath(input.root || getSessionCwd());
   const query = String(input.query || "").trim();
   if (!query) return { matches: [], stats: { scannedFiles: 0, skippedFiles: 0, truncated: false }, source: "ts" };
 
-  const files = await collectWorkspaceFiles(root, { maxFiles: input.maxFiles ?? 5000, maxDepth: 10 });
+  const files = await collectWorkspaceFiles(root, {
+    maxFiles: input.maxFiles ?? 5000,
+    maxDepth: 10,
+    respectGitignore: input.respectGitignore,
+  });
   const matches = files.files
     .map((file) => {
       const ranked = fuzzyPathScore(file.path, query);
@@ -1443,7 +1658,7 @@ export async function findLocalFiles(input: {
 
 export async function batchReadFiles(
   files: Array<{ path: string; startLine?: number; endLine?: number; maxBytes?: number }>,
-  root = process.env.SIFT_USER_CWD || ".",
+  root = getSessionCwd(),
 ): Promise<BatchReadFilesResult> {
   const absRoot = resolvePath(root || ".");
   const output: BatchReadFilesResult["files"] = [];
@@ -1479,12 +1694,12 @@ export async function batchReadFiles(
   return { files: output, truncated };
 }
 
-function workspaceFileCacheKey(absRoot: string, opts: { maxFiles: number; maxDepth: number }): string {
-  return `${absRoot}|maxFiles=${opts.maxFiles}|maxDepth=${opts.maxDepth}|maxFileBytes=${DEFAULT_MAX_FILE_BYTES}|sourceOnly=1|hidden=0|vendor=0|build=0`;
+function workspaceFileCacheKey(absRoot: string, opts: { maxFiles: number; maxDepth: number; respectGitignore?: boolean }): string {
+  return `${absRoot}|maxFiles=${opts.maxFiles}|maxDepth=${opts.maxDepth}|maxFileBytes=${DEFAULT_MAX_FILE_BYTES}|sourceOnly=1|hidden=0|vendor=0|build=0|gitignore=${opts.respectGitignore !== false}`;
 }
 
 function workspaceFileSetId(cacheKey: string, files: WorkspaceFile[]): string {
-  return contentHash(`${cacheKey}|${files.map((file) => `${file.path}:${file.bytes}`).join("|")}`).toString(16);
+  return contentHash(`${cacheKey}|${files.map((file) => `${file.path}:${file.bytes}:${file.mtimeMs}`).join("|")}`).toString(16);
 }
 
 function cloneWorkspaceFileCollection(
@@ -1504,12 +1719,10 @@ function cloneWorkspaceFileCollection(
 
 async function collectWorkspaceFiles(
   root: string,
-  opts: { maxFiles: number; maxDepth: number; forceRefresh?: boolean; maxCacheAgeMs?: number },
+  opts: { maxFiles: number; maxDepth: number; forceRefresh?: boolean; maxCacheAgeMs?: number; respectGitignore?: boolean },
 ): Promise<WorkspaceFileCollection> {
   const collectStart = performance.now();
   const files: WorkspaceFile[] = [];
-  let skippedFiles = 0;
-  let truncated = false;
   let fileSetStatWallMs = 0;
   let fileSetReadWallMs = 0;
   const absRoot = resolvePath(root || ".");
@@ -1527,70 +1740,47 @@ async function collectWorkspaceFiles(
     });
   }
 
-  async function walk(dir: string, depth: number): Promise<void> {
-    if (depth > opts.maxDepth || files.length >= opts.maxFiles) {
-      truncated = true;
-      return;
-    }
-    let entries;
+  const traversal = await collectTraversalFiles(absRoot, {
+    maxFiles: opts.maxFiles,
+    maxDepth: opts.maxDepth,
+    maxFileBytes: DEFAULT_MAX_FILE_BYTES,
+    caps: {
+      includeHidden: false,
+      includeVendor: false,
+      includeBuildOutputs: false,
+      respectGitignore: opts.respectGitignore,
+    },
+    sourceOnly: true,
+    respectGitignore: opts.respectGitignore !== false,
+  });
+  fileSetStatWallMs += traversal.fileSetStatWallMs;
+  let skippedFiles = traversal.skippedFiles;
+  for (const file of traversal.files) {
     try {
-      const statStart = performance.now();
-      entries = await readdir(dir, { withFileTypes: true });
-      fileSetStatWallMs += performance.now() - statStart;
+      const readStart = performance.now();
+      const data = await readFile(file.absPath);
+      fileSetReadWallMs += performance.now() - readStart;
+      if (isLikelyBinaryBuffer(data) || !isValidUtf8(data)) {
+        skippedFiles += 1;
+        continue;
+      }
+      files.push({
+        path: file.path,
+        absPath: file.absPath,
+        bytes: data.byteLength,
+        mtimeMs: file.mtimeMs,
+        depth: file.depth,
+        language: languageForPath(file.path),
+        keyReason: keyReasonForPath(file.path),
+      });
     } catch {
       skippedFiles += 1;
-      return;
-    }
-    for (const entry of entries) {
-      const abs = join(dir, entry.name);
-      const rel = relative(absRoot, abs) || entry.name;
-      if (entry.name.startsWith(".") || rel.split(/[\\/]/).some((part) => NOISY_DIRS.has(part))) {
-        skippedFiles += 1;
-        continue;
-      }
-      if (entry.isDirectory()) {
-        await walk(abs, depth + 1);
-        continue;
-      }
-      if (!entry.isFile()) {
-        skippedFiles += 1;
-        continue;
-      }
-      if (!isLikelySource(rel)) {
-        skippedFiles += 1;
-        continue;
-      }
-      try {
-        const readStart = performance.now();
-        const data = await readFile(abs);
-        fileSetReadWallMs += performance.now() - readStart;
-        if (data.byteLength > DEFAULT_MAX_FILE_BYTES || data.subarray(0, Math.min(data.byteLength, 8192)).includes(0)) {
-          skippedFiles += 1;
-          continue;
-        }
-        files.push({
-          path: rel,
-          absPath: abs,
-          bytes: data.byteLength,
-          depth,
-          language: languageForPath(rel),
-          keyReason: keyReasonForPath(rel),
-        });
-      } catch {
-        skippedFiles += 1;
-      }
-      if (files.length >= opts.maxFiles) {
-        truncated = true;
-        return;
-      }
     }
   }
-
-  await walk(absRoot, 0);
   const result: WorkspaceFileCollection = {
     files,
     skippedFiles,
-    truncated,
+    truncated: traversal.truncated || files.length >= opts.maxFiles,
     cacheHit: false,
     fileSetId: workspaceFileSetId(cacheKey, files),
     phaseTimings: {

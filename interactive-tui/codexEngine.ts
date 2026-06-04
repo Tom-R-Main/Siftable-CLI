@@ -27,6 +27,7 @@ import { spawn, execSync, type ChildProcessByStdio } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
 import type { BrainEvent, BrainAskResult, ChatInput } from './brain';
 import { requestApproval, isBypassing, type ApprovalDecision } from './confirmGate';
+import { getSessionCwd, getWorkspaceRoot } from './navigation';
 
 /** app-server is spawned with piped stdin/stdout and a discarded (null) stderr. */
 type CodexProc = ChildProcessByStdio<Writable, Readable, null>;
@@ -166,7 +167,7 @@ class CodexClient {
       try {
         proc = spawn(codexBin(), ['app-server'], {
           stdio: ['pipe', 'pipe', 'ignore'],
-          cwd: process.env.SIFT_USER_CWD || process.cwd(),
+          cwd: getSessionCwd(),
           env: process.env,
         });
       } catch (err) {
@@ -319,13 +320,14 @@ class CodexClient {
 let client: CodexClient | null = null;
 let installState: CodexInstallState = 'unknown';
 let threadId: string | null = null;
+let threadContextKey: string | null = null;
 let accountCache: { account: CodexAccount | null; ts: number } | null = null;
 const ACCOUNT_TTL_MS = 15_000;
 
 /** Resolve (or lazily spawn) the Codex client; null if the CLI is unavailable. */
 /** Repo/workspace root codex may write to, and run commands from. */
 function workspaceRoot(): string {
-  return process.env.SIFT_WORKSPACE_ROOT || process.env.SIFT_USER_CWD || process.cwd();
+  return getWorkspaceRoot() || getSessionCwd();
 }
 
 /** Approval posture for the next turn — "never" once the user has chosen bypass. */
@@ -584,15 +586,18 @@ function toUserInput(input: ChatInput): Array<Record<string, JsonValue>> {
 }
 
 async function ensureThread(c: CodexClient, model?: string): Promise<string> {
-  if (threadId) return threadId;
+  const cwd = getSessionCwd();
+  const contextKey = `${cwd}|${workspaceRoot()}`;
+  if (threadId && threadContextKey === contextKey) return threadId;
   const res = await c.request('thread/start', {
-    cwd: process.env.SIFT_USER_CWD || process.cwd(),
+    cwd,
     approvalPolicy: approvalPolicyNow(),
     sandbox: 'workspace-write',
     ...(model ? { model } : {}),
   });
   const thread = res.thread as Record<string, JsonValue> | undefined;
   threadId = thread && typeof thread.id === 'string' ? thread.id : null;
+  threadContextKey = threadId ? contextKey : null;
   if (!threadId) throw new Error('codex thread/start returned no thread id');
   return threadId;
 }

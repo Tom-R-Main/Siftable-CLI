@@ -18,7 +18,8 @@ function envValue(primary: string, legacy: string): string | undefined {
  *
  * The brain's OpenFunction `execufunction` provider reads SIFT_PAT / SIFT_API_URL
  * / SIFT_WORKSPACE_ID; SIFT_LOCAL_BRAIN tells index.tsx to use the in-process
- * LocalControlClient; EXECUTERM_OPENFUNCTION_PATH points at the framework entry.
+ * LocalControlClient. EXECUTERM_OPENFUNCTION_PATH is an optional dev override;
+ * published installs use the vendored runtime in interactive-tui/openfunction.
  */
 export function buildChildEnv(opts: {
   token: string;
@@ -28,6 +29,8 @@ export function buildChildEnv(opts: {
   userCwd?: string;
   /** Writable root for A1 write/edit tools. Defaults to the repo root above userCwd. */
   workspaceRoot?: string;
+  /** Absolute path to the bundled interactive-tui directory. */
+  tuiDir?: string;
   model?: string;
   provider?: string;
   baseEnv?: NodeJS.ProcessEnv;
@@ -40,6 +43,7 @@ export function buildChildEnv(opts: {
   env.SIFT_LOCAL_BRAIN = '1';
   env.SIFT_PAT = opts.token;
   env.SIFT_API_URL = opts.apiUrl;
+  if (opts.tuiDir) env.SIFT_INTERACTIVE_TUI_DIR = opts.tuiDir;
   if (opts.workspaceId) env.SIFT_WORKSPACE_ID = opts.workspaceId;
   if (opts.userCwd) env.SIFT_USER_CWD = opts.userCwd;
 
@@ -50,28 +54,16 @@ export function buildChildEnv(opts: {
   const workspaceRoot = opts.workspaceRoot ?? (opts.userCwd ? resolveWorkspaceRoot(opts.userCwd) : undefined);
   if (workspaceRoot) env.SIFT_WORKSPACE_ROOT = workspaceRoot;
 
-  env.EXECUTERM_OPENFUNCTION_PATH =
-    opts.openfunctionPath ||
-    env.EXECUTERM_OPENFUNCTION_PATH ||
-    defaultOpenfunctionPath(env.HOME);
+  if (opts.openfunctionPath) {
+    env.EXECUTERM_OPENFUNCTION_PATH = opts.openfunctionPath;
+  } else {
+    delete env.EXECUTERM_OPENFUNCTION_PATH;
+  }
 
   if (opts.model) env.EXECUTERM_MODEL = opts.model;
   if (opts.provider) env.EXECUTERM_MODEL_PROVIDER = opts.provider;
 
   return env;
-}
-
-/**
- * Default OpenFunction framework entry. The repo ships TypeScript source
- * (`index.ts`) and has no build step, so the entry is `.ts` — Bun imports it
- * directly. Prefer a built `.js` when one exists (future-proofs a compiled
- * checkout), else fall back to the `.ts` source. A bare `index.js` literal
- * would silently fail: Bun does NOT resolve a `.js` path to a `.ts` file.
- */
-export function defaultOpenfunctionPath(home: string | undefined): string {
-  const base = `${home}/projects/OpenFunction/src/framework`;
-  const built = join(base, 'index.js');
-  return existsSync(built) ? built : join(base, 'index.ts');
 }
 
 /**
@@ -152,6 +144,7 @@ export default class Interactive extends BaseCommand {
       apiUrl: flags['api-url'] || envValue('SIFT_API_URL', 'EXF_API_URL') || DEFAULT_API_URL,
       workspaceId: flags.workspace || envValue('SIFT_WORKSPACE_ID', 'EXF_WORKSPACE_ID'),
       userCwd: process.cwd(),
+      tuiDir,
       baseEnv: process.env,
     });
 

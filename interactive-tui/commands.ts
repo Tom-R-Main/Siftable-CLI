@@ -2,6 +2,7 @@ import {randomUUID} from "node:crypto";
 import {SiftClient} from "@siftable/mcp-server/dist/exfClient.js";
 import type {ControlTransport, RunningAgent} from "./controlClient";
 import {collectDailyReviewContext, collectGitRecapSummary, collectLocalGitSummary, type DailyReviewContext} from "../src/lib/daily-review-context";
+import {requestApproval} from "./confirmGate";
 
 export type CommandMessage = { role: "you" | "assistant" | "system" | "shell" | "tool"; text: string };
 
@@ -344,7 +345,155 @@ function effortSuffix(effort?: string): string {
 
 function missingKeyMessage(choice: InteractiveModelChoice): string | null {
   if (!choice.requiredEnv || process.env[choice.requiredEnv]) return null;
-  return `${choice.label} needs ${choice.requiredEnv}. Run: ${choice.keyHint ?? `/key ${choice.provider} <key>`}`;
+  return `${choice.label} needs ${choice.requiredEnv}. Run: ${choice.keyHint ?? `/key ${choice.provider} <key>`} or /key vault ${choice.provider}`;
+}
+
+function providerKeyEnv(provider: string): string {
+  return `${provider.replace(/[^a-z0-9]/gi, "_").toUpperCase()}_API_KEY`;
+}
+
+function choiceKeyEnv(choice: InteractiveModelChoice): string | null {
+  if (choice.provider === "codex") return null;
+  return choice.requiredEnv ?? providerKeyEnv(choice.provider);
+}
+
+function vaultEntryLabel(entry: Record<string, unknown>): string {
+  return String(entry.name || entry.slug || entry.id || "vault entry");
+}
+
+function vaultEntryId(entry: Record<string, unknown>): string | null {
+  const id = entry.id;
+  return typeof id === "string" && id ? id : null;
+}
+
+function vaultEntrySearchText(entry: Record<string, unknown>): string {
+  const tags = Array.isArray(entry.tags) ? entry.tags.map(String).join(" ") : "";
+  return [
+    entry.id,
+    entry.name,
+    entry.slug,
+    entry.entryType,
+    entry.category,
+    entry.description,
+    tags,
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function scoreVaultKeyEntry(entry: Record<string, unknown>, provider: string, envVar: string): number {
+  const text = vaultEntrySearchText(entry);
+  let score = 0;
+  if (text.includes(envVar.toLowerCase())) score += 10;
+  if (text.includes(provider.toLowerCase())) score += 6;
+  if (text.includes("api key") || text.includes("apikey")) score += 4;
+  if (text.includes("credential") || text.includes("env_var")) score += 2;
+  if (text.includes("ssh") || text.includes("certificate") || text.includes("password")) score -= 5;
+  return score;
+}
+
+async function listVaultKeyCandidates(
+  apiClient: SiftClient,
+  provider: string,
+  envVar: string,
+): Promise<Record<string, unknown>[]> {
+  const seen = new Set<string>();
+  const candidates: Record<string, unknown>[] = [];
+  const searches = [envVar, `${provider} api key`, provider];
+
+  for (const search of searches) {
+    const response = await apiClient.listVaultEntries({search, limit: 10});
+    const entries = listFrom(response as ApiResponse, "entries");
+    for (const entry of entries) {
+      const key = String(entry.id || entry.slug || entry.name || JSON.stringify(entry));
+      if (seen.has(key)) continue;
+      seen.add(key);
+      candidates.push(entry);
+    }
+  }
+
+  return candidates
+    .map((entry) => ({entry, score: scoreVaultKeyEntry(entry, provider, envVar)}))
+    .filter((item) => item.score > 0 && vaultEntryId(item.entry))
+    .sort((a, b) => b.score - a.score)
+    .map((item) => item.entry);
+}
+
+function payloadRecord(data: Record<string, unknown>): Record<string, unknown> {
+  const direct = data.payload;
+  if (direct && typeof direct === "object" && !Array.isArray(direct)) return direct as Record<string, unknown>;
+  const entry = data.entry;
+  if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+    const nested = (entry as Record<string, unknown>).payload;
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) return nested as Record<string, unknown>;
+  }
+  return data;
+}
+
+function secretFromPayload(payload: Record<string, unknown>, provider: string, envVar: string): string | null {
+  const candidates = [
+    envVar,
+    envVar.toLowerCase(),
+    envVar.replace(/_API_KEY$/, "_KEY"),
+    `${provider.toUpperCase()}_KEY`,
+    `${provider}ApiKey`,
+    `${provider}_api_key`,
+    "apiKey",
+    "api_key",
+    "key",
+    "token",
+    "value",
+  ];
+  for (const key of candidates) {
+    const value = payload[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  for (const value of Object.values(payload)) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+async function hydrateProviderKeyFromVault(
+  ctx: InteractiveCommandContext,
+  provider: string,
+  envVar = providerKeyEnv(provider),
+): Promise<{ok: boolean; message: string}> {
+  if (process.env[envVar]) return {ok: true, message: `${envVar} already set.`};
+  if (typeof ctx.apiClient.listVaultEntries !== "function" || typeof ctx.apiClient.readVaultSecret !== "function") {
+    return {ok: false, message: "Sift Vault is unavailable in this session."};
+  }
+
+  let entry: Record<string, unknown> | undefined;
+  try {
+    entry = (await listVaultKeyCandidates(ctx.apiClient, provider, envVar))[0];
+  } catch (err) {
+    return {ok: false, message: `Could not search Sift Vault metadata: ${err instanceof Error ? err.message : String(err)}`};
+  }
+
+  if (!entry) return {ok: false, message: `No Sift Vault entry found for ${envVar}.`};
+
+  const id = vaultEntryId(entry);
+  if (!id) return {ok: false, message: `Matched vault entry for ${envVar} has no id.`};
+  const label = vaultEntryLabel(entry);
+  const approval = await requestApproval({
+    kind: "command",
+    path: `vault read ${label}`,
+    detail: `Use as ${envVar} for this sift interactive session. The secret will not be printed or written to disk.`,
+    allowAlways: false,
+    allowBypass: false,
+  });
+  if (approval === "deny") return {ok: false, message: `Vault key use denied for ${envVar}.`};
+
+  try {
+    const response = await ctx.apiClient.readVaultSecret(id);
+    const payload = payloadRecord(getData(response as ApiResponse));
+    const secret = secretFromPayload(payload, provider, envVar);
+    if (!secret) return {ok: false, message: `Vault entry "${label}" did not contain a usable ${envVar} value.`};
+    process.env[envVar] = secret;
+    await ctx.client.config({provider, apiKey: secret});
+    return {ok: true, message: `Using Sift Vault entry "${label}" for ${envVar} this session.`};
+  } catch (err) {
+    return {ok: false, message: `Could not read Sift Vault entry "${label}": ${err instanceof Error ? err.message : String(err)}`};
+  }
 }
 
 export function applyExplorerSettings(settings: ExplorerSettings): {ok: boolean; message: string} {
@@ -436,6 +585,17 @@ export async function applyModelChoice(
 
   // First-party providers need their own key in-env. Gate selection with a
   // clear hint instead of letting the first turn fail with a raw adapter error.
+  const envVar = choiceKeyEnv(choice);
+  if (envVar && !process.env[envVar]) {
+    const hydrated = await hydrateProviderKeyFromVault(ctx, choice.provider, envVar);
+    if (hydrated.ok) {
+      ctx.push({role: "system", text: hydrated.message});
+    } else if (choice.requiredEnv) {
+      ctx.push({role: "system", text: `${hydrated.message}\n${missingKeyMessage(choice)}`});
+      return;
+    }
+  }
+
   const keyMessage = missingKeyMessage(choice);
   if (keyMessage) {
     ctx.push({role: "system", text: keyMessage});
@@ -622,6 +782,7 @@ export const interactiveCommands: InteractiveCommand[] = [
         text:
           `model:   ${ctx.model() || "(unknown)"}\n` +
           `workdir: ${ctx.cwd()}\n` +
+          `root:    ${ctx.workspaceRoot() || "(none)"}\n` +
           `read:    repo + machine-wide, read-only\n` +
           `write:   ${writeScope}\n` +
           `agents:  ${agents.length ? agents.map((x) => `${x.assignedAlias ?? x.agentType}·${x.state}`).join(", ") : "none"}\n` +
@@ -637,12 +798,12 @@ export const interactiveCommands: InteractiveCommand[] = [
     run: (ctx, args) => {
       const target = args.join(" ").trim();
       if (!target) {
-        ctx.push({role: "system", text: `workdir: ${ctx.cwd()}`});
+        ctx.push({role: "system", text: `workdir: ${ctx.cwd()}\nroot:    ${ctx.workspaceRoot() || "(none)"}`});
         return;
       }
       try {
         ctx.setCwd(target);
-        ctx.push({role: "system", text: `workdir → ${ctx.cwd()}`});
+        ctx.push({role: "system", text: `workdir → ${ctx.cwd()}\nroot → ${ctx.workspaceRoot() || "(none)"}`});
       } catch (err) {
         ctx.push({role: "system", text: `/cwd: ${err instanceof Error ? err.message : String(err)}`});
       }
@@ -723,10 +884,20 @@ export const interactiveCommands: InteractiveCommand[] = [
   {
     name: "key",
     description: "add a model provider key",
-    usage: "<provider> <key>",
+    usage: "<provider> <key> | vault <provider>",
     run: async (ctx, args) => {
+      if (args[0] === "vault") {
+        const provider = args[1];
+        if (!provider) {
+          ctx.push({role: "system", text: "usage: /key vault <provider>  (e.g. /key vault openrouter)"});
+          return;
+        }
+        const result = await hydrateProviderKeyFromVault(ctx, provider, providerKeyEnv(provider));
+        ctx.push({role: "system", text: result.message});
+        return;
+      }
       if (args.length < 2) {
-        ctx.push({role: "system", text: "usage: /key <provider> <key>  (e.g. /key openrouter sk-...)"});
+        ctx.push({role: "system", text: "usage: /key <provider> <key>  (e.g. /key openrouter sk-...) or /key vault <provider>"});
         return;
       }
       try {

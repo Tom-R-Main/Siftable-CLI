@@ -20,7 +20,8 @@
  *   Enter while busy → queue the message; it runs when the turn finishes
  *
  * Launched by the oclif `sift interactive` command, which resolves the token
- * and sets SIFT_LOCAL_BRAIN=1 + SIFT_PAT/SIFT_API_URL + EXECUTERM_OPENFUNCTION_PATH.
+ * and sets SIFT_LOCAL_BRAIN=1 + SIFT_PAT/SIFT_API_URL. The OpenFunction runtime
+ * used by the local brain is vendored under interactive-tui/openfunction.
  */
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { SyntaxStyle, type KeyEvent, type PasteEvent, type TextareaRenderable } from "@opentui/core";
@@ -67,8 +68,9 @@ import {
   gutterIndent,
 } from "./toolView";
 import { serializeConversation } from "./transcript";
+import { getSessionCwd, getWorkspaceRoot, setSessionCwd } from "./navigation";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, extname, isAbsolute, resolve as resolvePath } from "node:path";
+import { basename, extname } from "node:path";
 
 const theme = {
   bg: "#000000",
@@ -507,13 +509,23 @@ function App() {
   async function runShell(cmd: string) {
     if (!cmd) return;
     push({ role: "shell", text: `$ ${cmd}` });
+    const cdMatch = cmd.trim().match(/^cd(?:\s+(.+))?$/);
+    if (cdMatch) {
+      try {
+        const result = setSessionCwd((cdMatch[1] || process.env.HOME || ".").trim());
+        push({ role: "shell", text: `workdir → ${result.cwd}\nworkspace → ${result.workspaceRoot}` });
+      } catch (err) {
+        push({ role: "system", text: `cd error: ${err instanceof Error ? err.message : String(err)}` });
+      }
+      return;
+    }
     if (typeof Bun === "undefined") {
       push({ role: "system", text: "shell unavailable (no Bun runtime)" });
       return;
     }
     try {
       const proc = Bun.spawnSync(["bash", "-lc", cmd], {
-        cwd: process.env.SIFT_USER_CWD || process.cwd(),
+        cwd: getSessionCwd(),
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -630,18 +642,11 @@ function App() {
       setModel,
       agents,
       queuedCount: () => queued().length,
-      cwd: () => process.env.SIFT_USER_CWD || (typeof process !== "undefined" ? process.cwd() : "?"),
+      cwd: () => getSessionCwd(),
       setCwd: (p: string) => {
-        const home = process.env.HOME || "";
-        const cur = process.env.SIFT_USER_CWD || process.cwd();
-        const expanded = p.startsWith("~") ? p.replace(/^~/, home) : p;
-        const target = isAbsolute(expanded) ? expanded : resolvePath(cur, expanded);
-        if (!existsSync(target) || !statSync(target).isDirectory()) {
-          throw new Error(`not a directory: ${target}`);
-        }
-        process.env.SIFT_USER_CWD = target;
+        setSessionCwd(p);
       },
-      workspaceRoot: () => process.env.SIFT_WORKSPACE_ROOT || "",
+      workspaceRoot: () => getWorkspaceRoot(),
       push,
       setMessages: (next: CommandMessage[]) => setMessages(next),
       quit,
@@ -738,7 +743,7 @@ function App() {
   useKeyboard(
     (key: KeyEvent) => {
       // Approval overlay owns the keyboard while open: y/Enter allow once,
-      // a always-allow this action, b bypass all (rest of session), n/Esc deny.
+      // a always-allow this action, b bypass all (when offered), n/Esc deny.
       // Swallow every key so nothing leaks to the composer and no other action
       // (including abort) fires until the user answers.
       const cf = confirm();
@@ -751,7 +756,7 @@ function App() {
         let decision: ApprovalDecision | null = null;
         if (k("y") || isEnter) decision = "allow";
         else if (k("a") && cf.allowAlways !== false) decision = "always";
-        else if (k("b")) decision = "bypass";
+        else if (k("b") && cf.allowBypass !== false) decision = "bypass";
         else if (k("n") || key.name === "escape") decision = "deny";
         if (decision) {
           resolveApproval(cf.id, decision);
@@ -1136,7 +1141,7 @@ function App() {
               <text fg={theme.muted} selectable={false}>{c().detail}</text>
             </Show>
             <text fg={theme.muted} selectable={false}>
-              {`y allow once · ${c().allowAlways === false ? "" : "a always allow this · "}b bypass all · n/Esc deny`}
+              {`y allow once · ${c().allowAlways === false ? "" : "a always allow this · "}${c().allowBypass === false ? "" : "b bypass all · "}n/Esc deny`}
             </text>
           </box>
         )}

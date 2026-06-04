@@ -103,6 +103,34 @@ describe('sift interactive — fs engine fallback policy', () => {
     expect(result.matches.map((match) => match.path).sort()).toEqual(expectedPaths);
   });
 
+  it('honors gitignore only when a git context exists and exposes an override', async () => {
+    const parent = join(root, 'parent');
+    const plainRepo = join(parent, 'plain-repo');
+    await mkdir(join(plainRepo, 'src'), {recursive: true});
+    await writeFile(join(parent, '.gitignore'), '*\n', 'utf8');
+    await writeFile(join(plainRepo, 'src', 'visible.txt'), 'parent ignored should not matter\n', 'utf8');
+
+    const plain = await searchLiteral(plainRepo, 'parent ignored', {maxMatches: 10});
+    expect(plain.matches.map((match) => match.path)).toEqual(['src/visible.txt']);
+
+    await mkdir(join(root, '.git'), {recursive: true});
+    await mkdir(join(root, '.vscode'), {recursive: true});
+    await writeFile(join(root, '.gitignore'), 'ignored.txt\n.vscode/*\n!.vscode/settings.json\n', 'utf8');
+    await writeFile(join(root, 'ignored.txt'), 'git ignored needle\n', 'utf8');
+    await writeFile(join(root, '.vscode', 'settings.json'), 'whitelisted hidden needle\n', 'utf8');
+    await writeFile(join(root, '.vscode', 'extensions.json'), 'ignored hidden needle\n', 'utf8');
+
+    const respected = await searchLiteral(root, 'git ignored', {maxMatches: 10});
+    expect(respected.matches).toHaveLength(0);
+    expect(respected.stats.skippedByReason.gitignore).toBeGreaterThan(0);
+
+    const overridden = await searchLiteral(root, 'git ignored', {maxMatches: 10, respectGitignore: false});
+    expect(overridden.matches.map((match) => match.path)).toEqual(['ignored.txt']);
+
+    const hiddenAllowed = await searchLiteral(root, 'hidden needle', {maxMatches: 10, includeHidden: true});
+    expect(hiddenAllowed.matches.map((match) => match.path)).toEqual(['.vscode/settings.json']);
+  });
+
   it('reports binary, invalid UTF-8, and too-large skips separately', async () => {
     const result = await searchLiteral(root, 'needle', {maxMatches: 20, maxFileBytes: 64});
 
@@ -191,6 +219,24 @@ describe('sift interactive — fs engine fallback policy', () => {
 
     expect(result.matches[0].path).toBe('src/brain.ts');
     expect(result.matches[0].indices.length).toBeGreaterThan(0);
+  });
+
+  it('uses the same gitignore-aware traversal for path and code search', async () => {
+    await mkdir(join(root, '.git'), {recursive: true});
+    await writeFile(join(root, '.gitignore'), 'src/ignored.ts\n', 'utf8');
+    await writeFile(join(root, 'src', 'ignored.ts'), 'export const ignoredSymbol = "ignored literal";\n', 'utf8');
+
+    const paths = await findLocalFiles({root, query: 'ignored', limit: 10});
+    expect(paths.matches.map((match) => match.path)).not.toContain('src/ignored.ts');
+
+    const pathOverride = await findLocalFiles({root, query: 'ignored', limit: 10, respectGitignore: false});
+    expect(pathOverride.matches.map((match) => match.path)).toContain('src/ignored.ts');
+
+    const code = await codeSearch({root, intent: 'find ignored literal', queries: ['ignored literal'], forceRefresh: true});
+    expect(code.spans.map((span) => span.path)).not.toContain('src/ignored.ts');
+
+    const codeOverride = await codeSearch({root, intent: 'find ignored literal', queries: ['ignored literal'], respectGitignore: false, forceRefresh: true});
+    expect(codeOverride.spans.map((span) => span.path)).toContain('src/ignored.ts');
   });
 
   it('reuses and invalidates the session workspace file cache', async () => {

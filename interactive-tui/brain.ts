@@ -12,7 +12,7 @@
  * Runs INSIDE the spawned Bun TUI process (not the Node oclif command). The
  * launcher (src/commands/interactive.ts) sets the env contract:
  *   SIFT_PAT / SIFT_API_URL / SIFT_WORKSPACE_ID  Siftable context provider creds
- *   EXECUTERM_OPENFUNCTION_PATH                   path to OpenFunction framework index
+ *   EXECUTERM_OPENFUNCTION_PATH                   optional dev override for OpenFunction framework index
  *   SIFT_LOCAL_BRAIN=1                            tells index.tsx to use LocalControlClient
  * The launcher DELETES EXECUTERM_AUTO_APPROVE — A0 has no write tools, so there
  * is nothing to auto-approve; the scrub keeps the invariant honest if a stray
@@ -21,6 +21,7 @@
 import {
   batchReadFiles,
   codeSearch,
+  clearWorkspaceFileCache,
   editText,
   findLocalFiles,
   inspectLocalWorkspace,
@@ -29,6 +30,7 @@ import {
   writeText,
 } from './fsEngine';
 import { requestConfirm } from './confirmGate';
+import { join } from 'node:path';
 import {
   attachRepoExplorerScout,
   attachRepoExplorerFanout,
@@ -54,7 +56,13 @@ import {
   type RepoExplorerScoutState,
   type RepoExplorerEffectiveness,
 } from './explorer';
-import { isAbsolute, resolve as resolvePath } from 'node:path';
+import {
+  discoverLocalWorkspaces,
+  getSessionCwd,
+  getWorkspaceRoot,
+  resolveSessionPath,
+  setSessionCwd,
+} from './navigation';
 
 /** Relay-compatible event shape the TUI already understands (token, tool_call, tool_result, done, error). */
 export interface BrainEvent {
@@ -81,20 +89,20 @@ const LEAN_PROMPT =
   'You are the Siftable terminal copilot — an executive-function assistant in the user\'s terminal. ' +
   'Be terse and concrete; prefer a direct answer over a preamble. ' +
   'Use your tools to answer about the user\'s tasks, work items, calendar, projects, people, and local code. ' +
+  'Keep implementationDir, sessionCwd, and workspaceRoot distinct: terminal commands and relative user paths use sessionCwd; broad repo orientation uses workspaceRoot. ' +
+  'You can change the copilot session workdir with change_directory and run terminal commands with run_terminal_command after user approval. ' +
+  'Do not claim you cannot change directories; clarify that it changes the sift interactive session workdir, not the parent shell. ' +
   'For the local codebase, reach for the search tools (inspect_local_workspace, find_local_files, ' +
   'search_local_files, code_search, batch_read_files) before crawling file-by-file. ' +
+  'Use find_local_workspaces before traversing sibling projects or broad directories outside the current workspace. ' +
   'For broad content searches, start with file/path discovery or low-detail locations and a modest maxFiles cap; escalate scope and snippets/full only after narrowing candidates. ' +
   'Use code_search forceRefresh after external commands likely changed the workspace. ' +
   'If a search result is truncated/capped, describe it as partial and narrow or explicitly broaden before treating absence as definitive.';
 
 function entryPath(): string {
-  // The launcher (interactive.ts) normally sets EXECUTERM_OPENFUNCTION_PATH to a
-  // resolved entry. This bare fallback only fires if the brain is run without
-  // it; the repo ships `.ts` (no build), and Bun won't resolve `.js`→`.ts`, so
-  // default to the source file that actually exists.
   return (
     process.env.EXECUTERM_OPENFUNCTION_PATH ||
-    `${process.env.HOME}/projects/OpenFunction/src/framework/index.ts`
+    join(process.env.SIFT_INTERACTIVE_TUI_DIR || process.cwd(), 'openfunction', 'framework', 'index.ts')
   );
 }
 
@@ -245,6 +253,51 @@ export function setBrainModel(input: {
 }
 
 const MAX_READ_BYTES = 64 * 1024;
+const COMMAND_MAX_OUTPUT_BYTES = 12 * 1024;
+const COMMAND_DEFAULT_TIMEOUT_MS = 30_000;
+const COMMAND_MAX_TIMEOUT_MS = 60_000;
+
+async function runShellCommand(
+  command: string,
+  cwd: string,
+  timeoutMs = COMMAND_DEFAULT_TIMEOUT_MS,
+): Promise<{command: string; cwd: string; exitCode: number | null; stdout: string; stderr: string; output: string; timedOut: boolean}> {
+  const { spawn } = await import('node:child_process');
+  const timeout = Math.max(1, Math.min(timeoutMs, COMMAND_MAX_TIMEOUT_MS));
+
+  return await new Promise((resolve) => {
+    const proc = spawn(process.env.SHELL || 'zsh', ['-lc', command], {
+      cwd,
+      env: process.env,
+    });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    const clip = (value: string) => value.length > COMMAND_MAX_OUTPUT_BYTES
+      ? value.slice(0, COMMAND_MAX_OUTPUT_BYTES) + '\n… output truncated'
+      : value;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill('SIGTERM');
+    }, timeout);
+
+    proc.stdout.on('data', (chunk) => {
+      stdout = clip(stdout + String(chunk));
+    });
+    proc.stderr.on('data', (chunk) => {
+      stderr = clip(stderr + String(chunk));
+    });
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      const output = [stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join('\n');
+      resolve({command, cwd, exitCode: code, stdout, stderr, output, timedOut});
+    });
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      resolve({command, cwd, exitCode: 1, stdout, stderr: err.message, output: err.message, timedOut});
+    });
+  });
+}
 
 /**
  * Local-filesystem tools.
@@ -256,16 +309,109 @@ const MAX_READ_BYTES = 64 * 1024;
  * and the Zig layer independently jails writes to the workspace root.
  */
 function buildLocalTools(of: OfModule): unknown[] {
-  const home = process.env.HOME || '';
-  const userCwd = process.env.SIFT_USER_CWD || process.cwd();
   // Writable root for A1. Empty → write/edit tools are not registered at all.
-  const workspaceRoot = process.env.SIFT_WORKSPACE_ROOT || '';
-  const resolveLocalPath = (p: string) => {
-    const input = p || '.';
-    if (input.startsWith('~')) return input.replace(/^~/, home);
-    if (isAbsolute(input)) return input;
-    return resolvePath(userCwd, input);
+  const writableRootAvailable = Boolean(process.env.SIFT_WORKSPACE_ROOT);
+  const currentUserCwd = () => getSessionCwd();
+  const currentWorkspaceRoot = () => getWorkspaceRoot();
+  const defaultWorkspaceRoot = () => currentWorkspaceRoot() || currentUserCwd();
+  const resolveLocalPath = (p: string) => resolveSessionPath(p || '.');
+  const resolveWorkspacePath = (p: string) => resolveSessionPath(p || defaultWorkspaceRoot(), defaultWorkspaceRoot());
+  const clearNavigationCaches = (previousRoot: string, nextRoot: string) => {
+    clearRepoExplorerCache(previousRoot);
+    clearRepoExplorerCache(nextRoot);
+    clearWorkspaceFileCache(previousRoot);
+    clearWorkspaceFileCache(nextRoot);
   };
+  const changeSessionDirectory = async (pathInput: string) => {
+    const result = setSessionCwd(pathInput || '.');
+    if (result.workspaceRootChanged) clearNavigationCaches(result.previousWorkspaceRoot, result.workspaceRoot);
+    return result;
+  };
+
+  const changeDirectory = of.defineTool({
+    name: 'change_directory',
+    description:
+      "Change the persistent working directory for this sift interactive session. Equivalent to `/cwd <path>` or terminal `cd <path>` inside the copilot. It does not change the parent shell outside the TUI.",
+    inputSchema: {
+      type: 'object',
+      properties: { path: { type: 'string', description: 'Absolute, ~-relative, or current-workspace-relative directory path' } },
+      required: ['path'],
+    },
+    handler: async (params) => {
+      try {
+        const result = await changeSessionDirectory(String(params.path || '.'));
+        return of.ok(result, `workdir → ${result.cwd}`);
+      } catch (e) {
+        return of.err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  });
+
+  const runTerminalCommand = of.defineTool({
+    name: 'run_terminal_command',
+    description:
+      "Run a shell command in the current sift interactive workdir after explicit user approval. For persistent directory changes, use change_directory or a plain `cd <path>` command; compound shell `cd` only affects that subprocess.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'Shell command to run' },
+        cwd: { type: 'string', description: 'Optional working directory. Defaults to the interactive cwd.' },
+        timeoutMs: { type: 'integer', description: 'Timeout in milliseconds, capped at 60000. Default 30000.' },
+      },
+      required: ['command'],
+    },
+    handler: async (params) => {
+      try {
+        const command = String(params.command || '').trim();
+        if (!command) return of.err('command is required');
+        const cdMatch = command.match(/^cd(?:\s+(.+))?$/);
+        if (cdMatch) {
+          const result = await changeSessionDirectory((cdMatch[1] || process.env.HOME || '.').trim());
+          return of.ok(result, `workdir → ${result.cwd}`);
+        }
+        const cwd = resolveLocalPath(String(params.cwd || currentUserCwd()));
+        const approved = await requestConfirm({ kind: 'command', path: command, detail: `cwd=${cwd}` });
+        if (!approved) return of.err('command declined by user');
+        const result = await runShellCommand(command, cwd, typeof params.timeoutMs === 'number' ? params.timeoutMs : undefined);
+        clearRepoExplorerCache(currentWorkspaceRoot());
+        clearWorkspaceFileCache(currentWorkspaceRoot());
+        if (result.timedOut) return of.err(`command timed out after ${Math.min(typeof params.timeoutMs === 'number' ? params.timeoutMs : COMMAND_DEFAULT_TIMEOUT_MS, COMMAND_MAX_TIMEOUT_MS)}ms`);
+        return result.exitCode === 0
+          ? of.ok(result, result.output || `exit ${result.exitCode}`)
+          : of.err(`exit ${result.exitCode}\n${result.output || result.stderr || result.stdout}`.trim());
+      } catch (e) {
+        return of.err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  });
+
+  const findLocalWorkspacesTool = of.defineTool({
+    name: 'find_local_workspaces',
+    description:
+      'Find nearby local project/workspace roots with a bounded shallow scan. Use before moving to sibling repos or broad directories outside the current workspace.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Optional project name/path hint, e.g. "missionary" or "codex-cli".' },
+        roots: { type: 'array', items: { type: 'string' }, description: 'Optional starting directories. Defaults to ~/projects plus current workspace/session parents.' },
+        maxDepth: { type: 'integer', description: 'Max shallow scan depth, capped at 4. Default 2.' },
+        limit: { type: 'integer', description: 'Max candidates to return. Default 25.' },
+      },
+    },
+    handler: async (params) => {
+      try {
+        const roots = Array.isArray(params.roots) ? params.roots.map(String) : undefined;
+        return of.ok(await discoverLocalWorkspaces({
+          query: params.query ? String(params.query) : undefined,
+          roots,
+          maxDepth: typeof params.maxDepth === 'number' ? params.maxDepth : undefined,
+          limit: typeof params.limit === 'number' ? params.limit : undefined,
+        }));
+      } catch (e) {
+        return of.err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  });
 
   const readFile = of.defineTool({
     name: 'read_file',
@@ -319,7 +465,7 @@ function buildLocalTools(of: OfModule): unknown[] {
       properties: {
         root: {
           type: 'string',
-          description: 'Directory to search. Defaults to the directory where `sift interactive` was launched.',
+          description: 'Directory to search. Defaults to the current interactive workdir.',
         },
         query: { type: 'string', description: 'Literal text to search for (not regex)' },
         maxFiles: { type: 'integer', description: 'Max files to scan. Use a lower cap for broad discovery; raise only when explicitly broadening scope.' },
@@ -327,13 +473,14 @@ function buildLocalTools(of: OfModule): unknown[] {
         includeHidden: { type: 'boolean', description: 'Include hidden files/directories (default false)' },
         includeVendor: { type: 'boolean', description: 'Include dependency/vendor directories such as node_modules and vendor (default false)' },
         includeBuildOutputs: { type: 'boolean', description: 'Include build/generated-output directories such as dist, target, .turbo, and zig-cache (default false)' },
+        respectGitignore: { type: 'boolean', description: 'Honor .gitignore when the search root is inside a git repo (default true, Codex-style require-git behavior).' },
         detail: { type: 'string', enum: ['paths', 'locations', 'snippets', 'full'], description: 'Result detail level. Use paths for broad discovery, locations for line/column only, and snippets/full only after narrowing candidate files. If capped/truncated is true, the result is partial.' },
       },
       required: ['query'],
     },
     handler: async (params) => {
       try {
-        const root = resolveLocalPath(String(params.root || process.env.SIFT_USER_CWD || '.'));
+        const root = params.root ? resolveLocalPath(String(params.root)) : currentUserCwd();
         const query = String(params.query || '');
         if (!query) return of.err('query is required');
         const result = await searchLiteral(root, query, {
@@ -342,6 +489,7 @@ function buildLocalTools(of: OfModule): unknown[] {
           includeHidden: params.includeHidden === true,
           includeVendor: params.includeVendor === true,
           includeBuildOutputs: params.includeBuildOutputs === true,
+          respectGitignore: typeof params.respectGitignore === 'boolean' ? params.respectGitignore : undefined,
           detail: ['paths', 'locations', 'snippets', 'full'].includes(String(params.detail)) ? String(params.detail) as 'paths' | 'locations' | 'snippets' | 'full' : undefined,
         });
         return of.ok(result, `Found ${result.matches.length} match(es)`);
@@ -360,13 +508,13 @@ function buildLocalTools(of: OfModule): unknown[] {
       properties: {
         root: {
           type: 'string',
-          description: 'Directory to inspect. Defaults to the directory where `sift interactive` was launched.',
+          description: 'Directory to inspect. Defaults to the current workspace root.',
         },
       },
     },
     handler: async (params) => {
       try {
-        const root = resolveLocalPath(String(params.root || process.env.SIFT_USER_CWD || '.'));
+        const root = params.root ? resolveLocalPath(String(params.root)) : defaultWorkspaceRoot();
         return of.ok(await inspectLocalWorkspace(root));
       } catch (e) {
         return of.err(e instanceof Error ? e.message : String(e));
@@ -383,22 +531,24 @@ function buildLocalTools(of: OfModule): unknown[] {
       properties: {
         root: {
           type: 'string',
-          description: 'Directory to search. Defaults to the directory where `sift interactive` was launched.',
+          description: 'Directory to search. Defaults to the current interactive workdir.',
         },
         query: { type: 'string', description: 'File/path/name query, e.g. "brain", "fs engine", "package json"' },
         limit: { type: 'integer', description: 'Max path matches to return (default 64)' },
+        respectGitignore: { type: 'boolean', description: 'Honor .gitignore when the search root is inside a git repo (default true).' },
       },
       required: ['query'],
     },
     handler: async (params) => {
       try {
-        const root = resolveLocalPath(String(params.root || process.env.SIFT_USER_CWD || '.'));
+        const root = params.root ? resolveLocalPath(String(params.root)) : currentUserCwd();
         const query = String(params.query || '');
         if (!query) return of.err('query is required');
         const result = await findLocalFiles({
           root,
           query,
           limit: typeof params.limit === 'number' ? params.limit : 64,
+          respectGitignore: typeof params.respectGitignore === 'boolean' ? params.respectGitignore : undefined,
         });
         return of.ok(result, `Found ${result.matches.length} path match(es)`);
       } catch (e) {
@@ -416,7 +566,7 @@ function buildLocalTools(of: OfModule): unknown[] {
       properties: {
         root: {
           type: 'string',
-          description: 'Directory to search. Defaults to the directory where `sift interactive` was launched.',
+          description: 'Directory to search. Defaults to the current workspace root.',
         },
         intent: { type: 'string', description: 'The user question or investigation goal' },
         queries: { type: 'array', items: { type: 'string' }, description: 'Optional exact literals to search for' },
@@ -425,12 +575,13 @@ function buildLocalTools(of: OfModule): unknown[] {
         forceRefresh: { type: 'boolean', description: 'Bypass the session file-set cache when the workspace may have changed outside the fs tools.' },
         maxCacheAgeMs: { type: 'integer', description: 'Override the session file-set cache max age in milliseconds.' },
         useContentCache: { type: 'boolean', description: 'Experimental: reuse recently read file contents for repeated broad searches. Disabled by default.' },
+        respectGitignore: { type: 'boolean', description: 'Honor .gitignore when the search root is inside a git repo (default true).' },
       },
       required: ['intent'],
     },
     handler: async (params) => {
       try {
-        const root = resolveLocalPath(String(params.root || process.env.SIFT_USER_CWD || '.'));
+        const root = params.root ? resolveLocalPath(String(params.root)) : defaultWorkspaceRoot();
         const intent = String(params.intent || '');
         if (!intent) return of.err('intent is required');
         const queries = Array.isArray(params.queries) ? params.queries.map(String) : undefined;
@@ -443,6 +594,7 @@ function buildLocalTools(of: OfModule): unknown[] {
           forceRefresh: params.forceRefresh === true,
           maxCacheAgeMs: typeof params.maxCacheAgeMs === 'number' ? params.maxCacheAgeMs : undefined,
           useContentCache: params.useContentCache === true,
+          respectGitignore: typeof params.respectGitignore === 'boolean' ? params.respectGitignore : undefined,
         }));
       } catch (e) {
         return of.err(e instanceof Error ? e.message : String(e));
@@ -459,7 +611,7 @@ function buildLocalTools(of: OfModule): unknown[] {
       properties: {
         root: {
           type: 'string',
-          description: 'Workspace root. Defaults to the directory where `sift interactive` was launched.',
+          description: 'Workspace root. Defaults to the current workspace root.',
         },
         files: {
           type: 'array',
@@ -480,7 +632,7 @@ function buildLocalTools(of: OfModule): unknown[] {
     },
     handler: async (params) => {
       try {
-        const root = resolveLocalPath(String(params.root || process.env.SIFT_USER_CWD || '.'));
+        const root = params.root ? resolveWorkspacePath(String(params.root)) : defaultWorkspaceRoot();
         if (!Array.isArray(params.files)) return of.err('files array is required');
         const files = params.files
           .map((item) => {
@@ -520,11 +672,12 @@ function buildLocalTools(of: OfModule): unknown[] {
         const approved = await requestConfirm({ kind: 'write', path, detail: `${content.length} bytes` });
         if (!approved) return of.err('write declined by user');
         const result = await writeText(path, content, {
-          root: workspaceRoot,
+          root: currentWorkspaceRoot(),
           makePath: true,
           createOnly: params.createOnly === true,
         });
-        clearRepoExplorerCache(workspaceRoot);
+        clearRepoExplorerCache(currentWorkspaceRoot());
+        clearWorkspaceFileCache(currentWorkspaceRoot());
         return of.ok(result, `Wrote ${result.bytesWritten} bytes${result.created ? ' (created)' : ''}`);
       } catch (e) {
         return of.err(e instanceof Error ? e.message : String(e));
@@ -553,8 +706,9 @@ function buildLocalTools(of: OfModule): unknown[] {
         if (!oldStr) return of.err("edit_file: 'old' must not be empty");
         const approved = await requestConfirm({ kind: 'edit', path, detail: `replace ${oldStr.length}→${newStr.length} chars` });
         if (!approved) return of.err('edit declined by user');
-        const result = await editText(path, oldStr, newStr, { root: workspaceRoot });
-        clearRepoExplorerCache(workspaceRoot);
+        const result = await editText(path, oldStr, newStr, { root: currentWorkspaceRoot() });
+        clearRepoExplorerCache(currentWorkspaceRoot());
+        clearWorkspaceFileCache(currentWorkspaceRoot());
         return of.ok(result, `Edited (${result.replacements} replacement${result.replacements === 1 ? '' : 's'})`);
       } catch (e) {
         return of.err(e instanceof Error ? e.message : String(e));
@@ -563,6 +717,9 @@ function buildLocalTools(of: OfModule): unknown[] {
   });
 
   const tools: unknown[] = [
+    changeDirectory,
+    runTerminalCommand,
+    findLocalWorkspacesTool,
     inspectWorkspace,
     findLocalFilesTool,
     searchLocalFiles,
@@ -573,13 +730,13 @@ function buildLocalTools(of: OfModule): unknown[] {
   ];
   // A1 write surface: only when a workspace root is set. Each call is still
   // confirm-gated and Zig-jailed; registration just exposes the tools.
-  if (workspaceRoot) tools.push(writeFile, editFile);
+  if (writableRootAvailable) tools.push(writeFile, editFile);
   return tools;
 }
 
 /**
- * Load OpenFunction's .env (model provider keys) into process.env so the brain
- * has OPENROUTER_API_KEY etc. even when launched from a clean env. Never
+ * Load an optional OpenFunction .env (model provider keys) into process.env so
+ * local dev can keep OPENROUTER_API_KEY etc. near an override checkout. Never
  * overrides an already-set var. Runs once. The Siftable token (SIFT_PAT) is
  * supplied by the launcher, so there is no auth.json fallback here.
  */
@@ -589,7 +746,10 @@ async function loadOpenFunctionEnv(): Promise<void> {
   envLoaded = true;
   try {
     const fs = await import('node:fs/promises');
-    const envPath = entryPath().replace(/\/src\/framework\/index\.(ts|js)$/, '/.env');
+    const override = process.env.EXECUTERM_OPENFUNCTION_PATH;
+    const envPath = override
+      ? override.replace(/\/src\/framework\/index\.(ts|js)$/, '/.env')
+      : join(process.env.SIFT_INTERACTIVE_TUI_DIR || process.cwd(), '.env');
     const text = await fs.readFile(envPath, 'utf8');
     for (const line of text.split('\n')) {
       const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
@@ -605,8 +765,8 @@ async function loadOpenFunctionEnv(): Promise<void> {
 
 async function loadOpenFunctionModule(): Promise<OfModule> {
   await loadOpenFunctionEnv();
-  // A bun-compiled binary injects OpenFunction statically (dynamic import of
-  // its TS can't be bundled); dev resolves it lazily from EXECUTERM_OPENFUNCTION_PATH.
+  // Tests and future compiled binaries may inject a runtime directly; normal
+  // CLI installs load the vendored OpenFunction slice from interactive-tui.
   const injected = (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ as
     | OfModule
     | undefined;
@@ -622,7 +782,7 @@ async function getAgent() {
         provider: currentProvider,
         model: currentModel,
         ...(currentEffort ? { reasoningEffort: currentEffort } : {}),
-        providers: ['execufunction'],
+        providers: ['siftable'],
         tools: buildLocalTools(of),
         memory: false,
         prompt: LEAN_PROMPT,
@@ -654,16 +814,12 @@ function buildRepoExplorerScoutTools(
     maxElapsedMs: DEFAULT_SCOUT_BUDGET.maxElapsedMs,
   },
 ): unknown[] {
-  const home = process.env.HOME || '';
-  const userCwd = process.env.SIFT_USER_CWD || process.cwd();
+  const userCwd = () => getSessionCwd();
+  const workspaceRoot = () => getWorkspaceRoot() || userCwd();
   const startedAt = Date.now();
   const usage = { toolCalls: 0, searches: 0, filesRead: 0 };
-  const resolveLocalPath = (p: string) => {
-    const input = p || '.';
-    if (input.startsWith('~')) return input.replace(/^~/, home);
-    if (isAbsolute(input)) return input;
-    return resolvePath(userCwd, input);
-  };
+  const resolveLocalPath = (p: string) => resolveSessionPath(p || '.', userCwd());
+  const resolveWorkspacePath = (p: string) => resolveSessionPath(p || workspaceRoot(), workspaceRoot());
   const checkBudget = (kind: 'tool' | 'search' | 'read', readCount = 0) => {
     if (Date.now() - startedAt > budget.maxElapsedMs) {
       throw new Error('repo explorer scout budget exceeded: elapsed time');
@@ -692,13 +848,13 @@ function buildRepoExplorerScoutTools(
     inputSchema: {
       type: 'object',
       properties: {
-        root: { type: 'string', description: 'Directory to inspect. Defaults to the interactive cwd.' },
+        root: { type: 'string', description: 'Directory to inspect. Defaults to the workspace root.' },
       },
     },
     handler: async (params) => {
       try {
         checkBudget('tool');
-        return of.ok(await inspectLocalWorkspace(resolveLocalPath(String(params.root || userCwd))));
+        return of.ok(await inspectLocalWorkspace(params.root ? resolveLocalPath(String(params.root)) : workspaceRoot()));
       } catch (e) {
         return of.err(e instanceof Error ? e.message : String(e));
       }
@@ -711,7 +867,7 @@ function buildRepoExplorerScoutTools(
     inputSchema: {
       type: 'object',
       properties: {
-        root: { type: 'string', description: 'Directory to search. Defaults to the interactive cwd.' },
+        root: { type: 'string', description: 'Directory to search. Defaults to the workspace root.' },
         query: { type: 'string', description: 'Literal text to search for.' },
         maxFiles: { type: 'integer', description: 'Max files to scan, capped by the scout.' },
         maxMatches: { type: 'integer', description: 'Max matches to return, capped by the scout.' },
@@ -727,7 +883,7 @@ function buildRepoExplorerScoutTools(
         const detail = ['paths', 'locations', 'snippets'].includes(String(params.detail))
           ? String(params.detail) as 'paths' | 'locations' | 'snippets'
           : 'locations';
-        const result = await searchLiteral(resolveLocalPath(String(params.root || userCwd)), query, {
+        const result = await searchLiteral(params.root ? resolveLocalPath(String(params.root)) : workspaceRoot(), query, {
           detail,
           maxFiles: Math.min(typeof params.maxFiles === 'number' ? params.maxFiles : 1000, 1000),
           maxMatches: Math.min(typeof params.maxMatches === 'number' ? params.maxMatches : 30, 30),
@@ -745,7 +901,7 @@ function buildRepoExplorerScoutTools(
     inputSchema: {
       type: 'object',
       properties: {
-        root: { type: 'string', description: 'Workspace root. Defaults to the interactive cwd.' },
+        root: { type: 'string', description: 'Workspace root. Defaults to the current workspace root.' },
         path: { type: 'string', description: 'Workspace-relative file path.' },
         startLine: { type: 'integer' },
         endLine: { type: 'integer' },
@@ -755,7 +911,7 @@ function buildRepoExplorerScoutTools(
     handler: async (params) => {
       try {
         checkBudget('read', 1);
-        const root = resolveLocalPath(String(params.root || userCwd));
+        const root = params.root ? resolveWorkspacePath(String(params.root)) : workspaceRoot();
         return of.ok(await batchReadFiles([{
           path: String(params.path || ''),
           startLine: typeof params.startLine === 'number' ? params.startLine : undefined,
@@ -774,7 +930,7 @@ function buildRepoExplorerScoutTools(
     inputSchema: {
       type: 'object',
       properties: {
-        root: { type: 'string', description: 'Workspace root. Defaults to the interactive cwd.' },
+        root: { type: 'string', description: 'Workspace root. Defaults to the current workspace root.' },
         files: {
           type: 'array',
           items: {
@@ -794,7 +950,7 @@ function buildRepoExplorerScoutTools(
       try {
         const rawFiles = Array.isArray(params.files) ? params.files.slice(0, 6) : [];
         checkBudget('read', rawFiles.length || 1);
-        const root = resolveLocalPath(String(params.root || userCwd));
+        const root = params.root ? resolveWorkspacePath(String(params.root)) : workspaceRoot();
         const files = rawFiles.map((item) => {
           const record = item && typeof item === 'object' ? item as Record<string, unknown> : {};
           return {
@@ -831,7 +987,7 @@ async function runRepoExplorerScout(
       name: 'siftable-repo-explorer-scout',
       provider,
       model,
-      providers: ['execufunction'],
+      providers: ['siftable'],
       tools: buildRepoExplorerScoutTools(of),
       memory: false,
       prompt: SCOUT_PROMPT,
@@ -920,7 +1076,7 @@ async function runRepoExplorerFanoutBranch(
       name: `siftable-repo-explorer-fanout-${branch.id}`,
       provider,
       model,
-      providers: ['execufunction'],
+      providers: ['siftable'],
       tools: buildRepoExplorerScoutTools(of, {
         maxToolCalls: Math.min(branch.role.budget.maxToolCalls, fanoutBudget.maxScoutToolCalls),
         maxSearches: Math.min(branch.role.budget.maxSearches, fanoutBudget.maxSearchesPerScout),
@@ -1132,7 +1288,7 @@ export async function openfunctionAsk(
   if (!signal?.aborted && classifyExplorerPrompt(chatInputText(input)) !== 'skipped') {
     onEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer', detail: 'read-only preflight' } });
     try {
-      const report = await buildExplorerReport(input, { root: process.env.SIFT_USER_CWD || process.cwd() });
+      const report = await buildExplorerReport(input, { root: getWorkspaceRoot() || getSessionCwd() });
       if (report.mode !== 'skipped' && explorerFanoutEnabled()) {
         onEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer_fanout', detail: 'read-only parallel scouts' } });
         const fanoutState = await runRepoExplorerFanout(input, report);

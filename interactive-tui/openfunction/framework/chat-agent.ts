@@ -1,0 +1,741 @@
+/**
+ * ChatAgent — Composable AI Chat Agent
+ *
+ * Composes tools, memory, context providers, and AI adapters into
+ * a single configurable, embeddable agent.
+ *
+ * @example
+ * ```ts
+ * import { createChatAgent } from "./framework/index.js";
+ *
+ * // Programmatic
+ * const agent = await createChatAgent({ provider: "gemini" });
+ * const result = await agent.chat("Create a task to review the PR");
+ *
+ * // Interactive CLI
+ * await agent.interactive();
+ *
+ * // HTTP server
+ * await agent.serve({ port: 3000 });
+ * ```
+ */
+
+import * as readline from "node:readline";
+import { randomUUID } from "node:crypto";
+import type { ChatContent, ChatMessage } from "./adapters/types.js";
+import { chatContentToText } from "./adapters/content.js";
+import type { AIAdapter } from "./adapters/types.js";
+import type { ToolRegistry } from "./registry.js";
+import type { ConnectedProvider } from "./context.js";
+import { connectProvider, contextPrompt } from "./context.js";
+import {
+  createConversationMemory,
+  createFactMemory,
+  createMemoryTools,
+} from "./memory.js";
+import type { ConversationMemory, FactMemory } from "./memory.js";
+import { registry as globalRegistry } from "./registry.js";
+import {
+  resolveAdapter,
+  resolveContextProviders,
+  resolveSystemPrompt,
+  buildAgentRegistry,
+} from "./chat-agent-resolve.js";
+import type {
+  ChatAgentConfig,
+  ChatAgent,
+  ChatResult,
+  ChatStreamChunk,
+  ChatAgentChatOptions,
+  ServeOptions,
+  MemoryConfig,
+} from "./chat-agent-types.js";
+
+// ─── Factory ───────────────────────────────────────────────────────────────
+
+/**
+ * Create a composable chat agent.
+ *
+ * Wires together tools, memory, context providers, and an AI adapter
+ * into a single agent that can be used programmatically, as a CLI,
+ * or as an HTTP server.
+ *
+ * ```ts
+ * const agent = await createChatAgent({
+ *   provider: "gemini",
+ *   memory: true,
+ *   providers: ["execufunction"],
+ * });
+ * ```
+ */
+export async function createChatAgent(
+  config: ChatAgentConfig = {},
+): Promise<ChatAgent> {
+  // 1. Build the agent's tool registry (clone/filter from source)
+  const agentRegistry = buildAgentRegistry(config, globalRegistry);
+
+  // 2. Set up memory (default: ON)
+  let conversationMemory: ConversationMemory | undefined;
+  let factMemory: FactMemory | undefined;
+  let threadId: string | undefined;
+  const memoryEnabled = resolveMemoryEnabled(config.memory);
+
+  if (memoryEnabled) {
+    const memConfig = typeof config.memory === "object" ? config.memory : {};
+    conversationMemory = createConversationMemory(memConfig.conversationStore);
+    factMemory = createFactMemory(memConfig.factStore);
+    threadId = memConfig.threadId ?? randomUUID();
+
+    // Register memory tools — but never shadow a user tool of the
+    // same name. If the user defined their own store_fact, we keep theirs.
+    agentRegistry.registerAll(
+      createMemoryTools(conversationMemory, factMemory),
+      { overwrite: false },
+    );
+  }
+
+  // 3. Connect context providers
+  const connectedProviders: ConnectedProvider[] = [];
+  // Track which tool names each provider added so destroy() can clean
+  // them out of the registry. Without this, long-lived processes that
+  // create and destroy agents accumulate ghost tools.
+  const providerToolNames: string[] = [];
+  let contextBlock: string | undefined;
+
+  if (config.providers && config.providers.length > 0) {
+    const resolved = await resolveContextProviders(config.providers);
+    for (const provider of resolved) {
+      try {
+        const before = new Set(agentRegistry.listNames());
+        const connected = await connectProvider(provider, agentRegistry);
+        connectedProviders.push(connected);
+        for (const name of agentRegistry.listNames()) {
+          if (!before.has(name)) providerToolNames.push(name);
+        }
+      } catch (error) {
+        const name = provider.metadata.name;
+        const msg = error instanceof Error ? error.message : "unknown error";
+        console.warn(`⚠️  ${name}: failed to connect — ${msg}`);
+      }
+    }
+
+    // Build context block for system prompt
+    if (connectedProviders.length > 0) {
+      contextBlock = await contextPrompt(connectedProviders);
+      if (contextBlock === "") contextBlock = undefined;
+    }
+  }
+
+  // 4. Build system prompt
+  const systemPrompt = config.raw
+    ? resolveSystemPrompt(
+        { prompt: "You are a helpful assistant." },
+        agentRegistry,
+      )
+    : resolveSystemPrompt(config, agentRegistry, {
+        contextBlock,
+        memoryEnabled,
+      });
+
+  // 5. Create the adapter (or use the one provided in config)
+  const adapter = config.adapter ?? resolveAdapter(config, systemPrompt);
+
+  // 6. Return the agent
+  return new ChatAgentImpl({
+    name: config.name ?? "agent",
+    adapter,
+    registry: agentRegistry,
+    systemPrompt,
+    conversationMemory,
+    factMemory,
+    connectedProviders,
+    providerToolNames,
+    threadId: threadId ?? randomUUID(),
+    maxToolRounds: config.maxToolRounds ?? 10,
+  });
+}
+
+// ─── Implementation ────────────────────────────────────────────────────────
+
+interface ChatAgentInternals {
+  name: string;
+  adapter: AIAdapter;
+  registry: ToolRegistry;
+  systemPrompt: string;
+  conversationMemory?: ConversationMemory;
+  factMemory?: FactMemory;
+  connectedProviders: ConnectedProvider[];
+  providerToolNames: string[];
+  threadId: string;
+  maxToolRounds: number;
+}
+
+class ChatAgentImpl implements ChatAgent {
+  readonly name: string;
+  readonly provider: string;
+  readonly model: string;
+
+  private adapter: AIAdapter;
+  private registry: ToolRegistry;
+  private systemPrompt: string;
+  private conversationMemory?: ConversationMemory;
+  private factMemory?: FactMemory;
+  private connectedProviders: ConnectedProvider[];
+  private providerToolNames: string[];
+  private threadId: string;
+  private maxToolRounds: number;
+  private history: ChatMessage[] = [];
+
+  constructor(internals: ChatAgentInternals) {
+    this.name = internals.name;
+    this.adapter = internals.adapter;
+    this.registry = internals.registry;
+    this.systemPrompt = internals.systemPrompt;
+    this.conversationMemory = internals.conversationMemory;
+    this.factMemory = internals.factMemory;
+    this.connectedProviders = internals.connectedProviders;
+    this.providerToolNames = internals.providerToolNames;
+    this.threadId = internals.threadId;
+    this.maxToolRounds = internals.maxToolRounds;
+    this.provider = internals.adapter.name;
+    this.model = internals.adapter.model;
+  }
+
+  // ── chat() with overloads ──────────────────────────────────────────────
+
+  chat(message: ChatContent, options?: ChatAgentChatOptions & { stream?: false }): Promise<ChatResult>;
+  chat(message: ChatContent, options: ChatAgentChatOptions & { stream: true }): AsyncIterable<ChatStreamChunk>;
+  chat(message: ChatContent, options?: ChatAgentChatOptions): Promise<ChatResult> | AsyncIterable<ChatStreamChunk> {
+    if (options?.stream) {
+      return this.chatStream(message, options);
+    }
+    return this.chatAsync(message, options);
+  }
+
+  private async chatAsync(
+    message: ChatContent,
+    options?: ChatAgentChatOptions,
+  ): Promise<ChatResult> {
+    this.switchThreadIfNeeded(options?.threadId);
+    const currentThreadId = this.threadId;
+    const promptOverride = options?.systemPrompt;
+
+    // Snapshot history length so we can roll back if the turn fails.
+    // Without this, a transient adapter error leaves an orphan user
+    // message in history; the next call appends another user message,
+    // and providers reject consecutive same-role turns with a 400.
+    const historyLengthBefore = this.history.length;
+
+    // Add user message to history
+    this.history.push({ role: "user", content: message });
+
+    // Persist to conversation memory
+    if (this.conversationMemory) {
+      this.conversationMemory.addMessage(currentThreadId, {
+        role: "user",
+          content: chatContentToText(message),
+      });
+    }
+
+    // Run the tool-calling loop
+    const toolCalls: ChatResult["toolCalls"] = [];
+    let rounds = 0;
+    let maxRounds = this.maxToolRounds;
+    let finalText = "";
+    // Track whether the model produced a real assistant turn. Used so
+    // we don't persist synthetic placeholders ("exceeded max rounds",
+    // "empty response") to long-term conversation memory.
+    let assistantTurnComplete = false;
+
+    try {
+      while (maxRounds-- > 0) {
+        rounds++;
+        const response = await this.adapter.chat(this.history, this.registry, {
+          systemPrompt: promptOverride ?? this.systemPrompt,
+        });
+
+        // Preamble text alongside a tool call (Gemini, Anthropic both
+        // commonly emit this). Don't push to history — providers reject
+        // assistant text + the next tool result message without a
+        // matching tool_use_id reference. Caller can opt-in by reading
+        // toolCalls[*].preamble — currently we just drop it on the
+        // async path since the visible final text is what matters here.
+        // The streaming path yields it for the user.
+
+        const calls =
+          response.toolCalls && response.toolCalls.length
+            ? response.toolCalls
+            : response.toolCall
+              ? [response.toolCall]
+              : [];
+
+        // Parallel tool calls — one assistant turn fanned out to many tools.
+        // Execute concurrently (registry tools are independent), then append
+        // one tool result per call id. Provider reasoning blocks lead the
+        // assistant turn (Anthropic requires it).
+        if (calls.length > 1) {
+          this.history.push({
+            role: "assistant",
+            content: "",
+            toolCalls: calls,
+            ...(response.thinking && { thinkingBlocks: response.thinking }),
+          });
+
+          const results = await Promise.all(
+            calls.map((c) => this.registry.execute(c.name, c.args)),
+          );
+          for (let i = 0; i < calls.length; i++) {
+            const c = calls[i];
+            const result = results[i];
+            this.history.push({
+              role: "tool",
+              content: JSON.stringify(result),
+              toolCallId: c.id,
+              toolName: c.name,
+            });
+            toolCalls.push({
+              name: c.name,
+              args: c.args,
+              result: { success: result.success, data: result.data, error: result.error },
+            });
+          }
+          continue;
+        }
+
+        // Single tool call
+        if (calls.length === 1) {
+          const { id, name, args } = calls[0];
+
+          // Track assistant's tool call in history. Preserve any provider
+          // reasoning blocks (Anthropic thinking) so the adapter can replay
+          // them on the next request — required, or the follow-up turn 400s.
+          this.history.push({
+            role: "assistant",
+            content: JSON.stringify(args),
+            toolCallId: id,
+            toolName: name,
+            ...(response.thinking && { thinkingBlocks: response.thinking }),
+          });
+
+          // Execute the tool
+          const result = await this.registry.execute(name, args);
+          const resultStr = JSON.stringify(result);
+
+          // Track tool result in history
+          this.history.push({
+            role: "tool",
+            content: resultStr,
+            toolCallId: id,
+            toolName: name,
+          });
+
+          toolCalls.push({
+            name,
+            args,
+            result: {
+              success: result.success,
+              data: result.data,
+              error: result.error,
+            },
+          });
+
+          continue;
+        }
+
+        // Text-only response — done
+        if (response.text) {
+          finalText = response.text;
+          this.history.push({ role: "assistant", content: response.text });
+          assistantTurnComplete = true;
+        }
+
+        break;
+      }
+    } catch (error) {
+      this.history.length = historyLengthBefore;
+      throw error;
+    }
+
+    if (!finalText) {
+      finalText =
+        maxRounds < 0
+          ? "(exceeded max tool calling rounds)"
+          : "(empty response from model)";
+    }
+
+    // Persist only real assistant turns to long-term memory. Synthetic
+    // placeholders would otherwise pollute future calls — the model
+    // would see its own "exceeded max rounds" string in history and
+    // potentially mimic it.
+    if (this.conversationMemory && assistantTurnComplete) {
+      this.conversationMemory.addMessage(currentThreadId, {
+        role: "assistant",
+        content: finalText,
+      });
+    }
+
+    return {
+      text: finalText,
+      toolCalls,
+      rounds,
+      metadata: {
+        provider: this.provider,
+        model: this.model,
+        threadId: currentThreadId,
+      },
+    };
+  }
+
+  // ── Simulated streaming ────────────────────────────────────────────────
+
+  private async *chatStream(
+    message: ChatContent,
+    options?: ChatAgentChatOptions,
+  ): AsyncIterable<ChatStreamChunk> {
+    this.switchThreadIfNeeded(options?.threadId);
+    const currentThreadId = this.threadId;
+    const promptOverride = options?.systemPrompt;
+
+    // See chatAsync for why we snapshot before the user push.
+    const historyLengthBefore = this.history.length;
+
+    this.history.push({ role: "user", content: message });
+
+    if (this.conversationMemory) {
+      this.conversationMemory.addMessage(currentThreadId, {
+        role: "user",
+          content: chatContentToText(message),
+      });
+    }
+
+    const toolCalls: ChatResult["toolCalls"] = [];
+    let rounds = 0;
+    let maxRounds = this.maxToolRounds;
+    let finalText = "";
+    let assistantTurnComplete = false;
+
+    try {
+      while (maxRounds-- > 0) {
+        rounds++;
+        const response = await this.adapter.chat(this.history, this.registry, {
+          systemPrompt: promptOverride ?? this.systemPrompt,
+        });
+
+        // Preamble text alongside a tool call — yield it visibly but
+        // do NOT push to history (see chatAsync comment).
+        if (response.text && (response.toolCall || response.toolCalls?.length)) {
+          yield { type: "text", text: response.text };
+        }
+
+        const calls =
+          response.toolCalls && response.toolCalls.length
+            ? response.toolCalls
+            : response.toolCall
+              ? [response.toolCall]
+              : [];
+
+        // Parallel tool calls — fan out, execute concurrently, stream one
+        // tool_call/tool_result pair per call (the TUI renders each as a line).
+        if (calls.length > 1) {
+          for (const c of calls) yield { type: "tool_call", toolCall: { name: c.name, args: c.args } };
+
+          this.history.push({
+            role: "assistant",
+            content: "",
+            toolCalls: calls,
+            ...(response.thinking && { thinkingBlocks: response.thinking }),
+          });
+
+          const results = await Promise.all(
+            calls.map((c) => this.registry.execute(c.name, c.args)),
+          );
+          for (let i = 0; i < calls.length; i++) {
+            const c = calls[i];
+            const result = results[i];
+            this.history.push({
+              role: "tool",
+              content: JSON.stringify(result),
+              toolCallId: c.id,
+              toolName: c.name,
+            });
+            toolCalls.push({
+              name: c.name,
+              args: c.args,
+              result: { success: result.success, data: result.data, error: result.error },
+            });
+            yield { type: "tool_result", toolResult: { name: c.name, success: result.success } };
+          }
+          continue;
+        }
+
+        if (calls.length === 1) {
+          const { id, name, args } = calls[0];
+
+          yield { type: "tool_call", toolCall: { name, args } };
+
+          this.history.push({
+            role: "assistant",
+            content: JSON.stringify(args),
+            toolCallId: id,
+            toolName: name,
+            ...(response.thinking && { thinkingBlocks: response.thinking }),
+          });
+
+          const result = await this.registry.execute(name, args);
+          const resultStr = JSON.stringify(result);
+
+          this.history.push({
+            role: "tool",
+            content: resultStr,
+            toolCallId: id,
+            toolName: name,
+          });
+
+          const toolCallEntry = {
+            name,
+            args,
+            result: {
+              success: result.success,
+              data: result.data,
+              error: result.error,
+            },
+          };
+          toolCalls.push(toolCallEntry);
+
+          yield {
+            type: "tool_result",
+            toolResult: {
+              name,
+              success: result.success,
+              data: result.data,
+              error: result.error,
+            },
+          };
+
+          continue;
+        }
+
+        if (response.text) {
+          finalText = response.text;
+          this.history.push({ role: "assistant", content: response.text });
+          assistantTurnComplete = true;
+          yield { type: "text", text: response.text };
+        }
+
+        break;
+      }
+    } catch (error) {
+      this.history.length = historyLengthBefore;
+      throw error;
+    }
+
+    if (!finalText) {
+      finalText =
+        maxRounds < 0
+          ? "(exceeded max tool calling rounds)"
+          : "(empty response from model)";
+      yield { type: "text", text: finalText };
+    }
+
+    // Synthetic placeholders are not persisted (see chatAsync).
+    if (this.conversationMemory && assistantTurnComplete) {
+      this.conversationMemory.addMessage(currentThreadId, {
+        role: "assistant",
+        content: finalText,
+      });
+    }
+
+    yield {
+      type: "done",
+      result: {
+        text: finalText,
+        toolCalls,
+        rounds,
+        metadata: {
+          provider: this.provider,
+          model: this.model,
+          threadId: currentThreadId,
+        },
+      },
+    };
+  }
+
+  // ── Interactive CLI ────────────────────────────────────────────────────
+
+  async interactive(): Promise<void> {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    const toolCount = this.registry.listNames().length;
+
+    console.log(`\n╔══════════════════════════════════════════════════╗`);
+    console.log(`║         openFunctions — AI Chat                  ║`);
+    console.log(`╚══════════════════════════════════════════════════╝\n`);
+    console.log(`  Agent:    ${this.name}`);
+    console.log(`  Provider: ${this.provider}`);
+    console.log(`  Model:    ${this.model}`);
+    console.log(`  Tools:    ${toolCount} registered`);
+    console.log(`  Memory:   ${this.conversationMemory ? "on" : "off"}`);
+    console.log(`  Thread:   ${this.threadId}\n`);
+    console.log(`Type a message to chat. The AI can call your tools.`);
+    console.log(`Commands: "reset", "history", "facts", "quit"\n`);
+
+    const ask = () => {
+      rl.question("You: ", async (input) => {
+        const trimmed = input.trim();
+        if (!trimmed || trimmed === "quit" || trimmed === "exit") {
+          console.log("\nGoodbye!\n");
+          rl.close();
+          process.exit(0);
+        }
+
+        if (trimmed === "reset") {
+          this.reset();
+          console.log("\n  (conversation reset)\n");
+          ask();
+          return;
+        }
+
+        if (trimmed === "history") {
+          const turns = this.history.filter((m) => m.role === "user").length;
+          console.log(`\n  ${turns} turn(s) in current session\n`);
+          ask();
+          return;
+        }
+
+        if (trimmed === "facts") {
+          if (!this.factMemory) {
+            console.log("\n  Memory is disabled\n");
+          } else {
+            const facts = this.factMemory.getAllFacts();
+            if (facts.length === 0) {
+              console.log("\n  No stored facts\n");
+            } else {
+              console.log(`\n  ${facts.length} stored fact(s):`);
+              for (const f of facts) {
+                console.log(`  - ${f.content}`);
+              }
+              console.log();
+            }
+          }
+          ask();
+          return;
+        }
+
+        try {
+          // Use streaming for interactive mode — show tool calls as they happen
+          for await (const chunk of this.chatStream(trimmed)) {
+            switch (chunk.type) {
+              case "tool_call":
+                console.log(
+                  `\n  [Tool Call] ${chunk.toolCall!.name}(${JSON.stringify(chunk.toolCall!.args)})`,
+                );
+                break;
+              case "tool_result":
+                console.log(
+                  `  [Result]   ${JSON.stringify(chunk.toolResult!.data ?? chunk.toolResult!.error)}`,
+                );
+                break;
+              case "text":
+                console.log(`\n${this.provider}: ${chunk.text}\n`);
+                break;
+            }
+          }
+        } catch (err) {
+          console.error(
+            `\n  Error: ${err instanceof Error ? err.message : err}\n`,
+          );
+        }
+
+        ask();
+      });
+    };
+
+    ask();
+  }
+
+  // ── HTTP serve ─────────────────────────────────────────────────────────
+
+  async serve(options?: ServeOptions): Promise<void> {
+    const { serveChatAgent } = await import("./chat-agent-http.js");
+    return serveChatAgent(this, options);
+  }
+
+  // ── State management ───────────────────────────────────────────────────
+
+  /**
+   * If a different threadId is requested AND conversation memory is on,
+   * rehydrate this.history from the persisted thread and switch the
+   * agent to that thread. Without this, options.threadId on chat() and
+   * the HTTP /chat endpoint silently did nothing — the agent kept its
+   * own per-instance history regardless.
+   *
+   * NOTE: ChatAgent is single-tenant. Two concurrent chat() calls with
+   * different threadIds will race on this.history. For true multi-tenant
+   * serving, create one ChatAgent per session.
+   */
+  private switchThreadIfNeeded(requestedThreadId: string | undefined): void {
+    if (!requestedThreadId || requestedThreadId === this.threadId) return;
+    if (!this.conversationMemory) {
+      // No memory means nothing to rehydrate; just track the new id.
+      this.threadId = requestedThreadId;
+      return;
+    }
+    const thread = this.conversationMemory.getThread(requestedThreadId);
+    this.history = [...thread.messages];
+    this.threadId = requestedThreadId;
+  }
+
+  getHistory(): ChatMessage[] {
+    return [...this.history];
+  }
+
+  reset(): void {
+    this.history = [];
+    this.threadId = randomUUID();
+  }
+
+  listThreads(): string[] {
+    return this.conversationMemory?.listThreads() ?? [];
+  }
+
+  deleteThread(threadId: string): boolean {
+    if (!this.conversationMemory) return false;
+    const removed = this.conversationMemory.deleteThread(threadId);
+    // If we just deleted the active thread, start a fresh in-memory state.
+    if (removed && threadId === this.threadId) {
+      this.history = [];
+      this.threadId = randomUUID();
+    }
+    return removed;
+  }
+
+  async destroy(): Promise<void> {
+    for (const provider of this.connectedProviders) {
+      try {
+        await provider.disconnect?.();
+      } catch {
+        // Best-effort cleanup
+      }
+    }
+    // Remove tools added by this agent's providers from the registry.
+    // Without this, long-lived processes that create and destroy
+    // agents accumulate ghost tools in shared registries.
+    for (const name of this.providerToolNames) {
+      this.registry.unregister(name);
+    }
+    this.providerToolNames = [];
+    this.connectedProviders = [];
+  }
+}
+
+// ─── Helpers ───────────────────────────────────────────────────────────────
+
+function resolveMemoryEnabled(memory: ChatAgentConfig["memory"]): boolean {
+  if (memory === false) return false;
+  if (memory === undefined || memory === true) return true;
+  // MemoryConfig — enabled if at least one subsystem is on
+  return memory.conversation !== false || memory.facts !== false;
+}

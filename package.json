@@ -116,8 +116,12 @@
   "dependencies": {
     "@oclif/core": "^4",
     "@oclif/plugin-help": "^6",
+    "@opentui/core": "^0.3.1",
+    "@opentui/keymap": "^0.3.1",
+    "@opentui/solid": "^0.3.1",
     "@siftable/mcp-server": "^1.2.14",
-    "sharp": "^0.34.4"
+    "sharp": "^0.34.4",
+    "solid-js": "^1.9.10"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",
@@ -145,7 +149,15 @@
   "files": [
     "dist",
     "bin",
-    "oclif.manifest.json"
+    "oclif.manifest.json",
+    "interactive-tui/*.ts",
+    "interactive-tui/*.tsx",
+    "interactive-tui/*.toml",
+    "interactive-tui/build.zig",
+    "interactive-tui/native/*.ts",
+    "interactive-tui/native/*.zig",
+    "interactive-tui/scripts/build-native.sh",
+    "interactive-tui/openfunction/**/*"
   ],
   "publishConfig": {
     "access": "public"

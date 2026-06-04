@@ -44,6 +44,7 @@ const DEFAULT_PREVIEW_BYTES: u32 = 240;
 const SEARCH_FLAG_INCLUDE_HIDDEN: u32 = 0x1;
 const SEARCH_FLAG_INCLUDE_VENDOR: u32 = 0x8;
 const SEARCH_FLAG_INCLUDE_BUILD_OUTPUTS: u32 = 0x10;
+const SEARCH_FLAG_IGNORE_GITIGNORE: u32 = 0x20;
 const SEARCH_DETAIL_SHIFT: u5 = 24;
 const SEARCH_DETAIL_MASK: u32 = 0x3 << SEARCH_DETAIL_SHIFT;
 const SEARCH_DETAIL_PATHS: u32 = 0x1 << SEARCH_DETAIL_SHIFT;
@@ -94,6 +95,7 @@ const SearchSkippedByReason = struct {
     too_large: u32 = 0,
     invalid_utf8: u32 = 0,
     io_error: u32 = 0,
+    gitignore: u32 = 0,
     depth: u32 = 0,
     non_file: u32 = 0,
     other: u32 = 0,
@@ -113,6 +115,7 @@ const SearchSkipReason = enum {
     too_large,
     invalid_utf8,
     io_error,
+    gitignore,
     depth,
     non_file,
     other,
@@ -335,6 +338,80 @@ fn searchDetail(flags: u32) SearchDetail {
     };
 }
 
+fn respectGitignore(flags: u32) bool {
+    return (flags & SEARCH_FLAG_IGNORE_GITIGNORE) == 0;
+}
+
+fn rootHasGitDir(root_dir: Dir) bool {
+    var git_dir = root_dir.openDir(io(), ".git", .{}) catch return false;
+    git_dir.close(io());
+    return true;
+}
+
+fn trimGitignoreLine(line: []const u8) []const u8 {
+    return std.mem.trim(u8, line, " \t\r");
+}
+
+fn basename(path: []const u8) []const u8 {
+    var i = path.len;
+    while (i > 0) : (i -= 1) {
+        if (path[i - 1] == '/' or path[i - 1] == '\\') return path[i..];
+    }
+    return path;
+}
+
+fn segmentMatches(pattern: []const u8, value: []const u8) bool {
+    if (std.mem.eql(u8, pattern, "*")) return true;
+    const star = std.mem.indexOfScalar(u8, pattern, '*') orelse return std.mem.eql(u8, pattern, value);
+    const prefix = pattern[0..star];
+    const suffix = pattern[star + 1 ..];
+    return value.len >= prefix.len + suffix.len and
+        std.mem.startsWith(u8, value, prefix) and
+        std.mem.endsWith(u8, value, suffix);
+}
+
+fn pathRuleMatches(pattern: []const u8, path: []const u8, is_dir: bool, directory_only: bool) bool {
+    if (directory_only and !is_dir) return false;
+    if (std.mem.endsWith(u8, pattern, "/*")) {
+        const prefix = pattern[0 .. pattern.len - 1];
+        if (!std.mem.startsWith(u8, path, prefix)) return false;
+        return std.mem.indexOfScalar(u8, path[prefix.len..], '/') == null;
+    }
+    if (std.mem.indexOfScalar(u8, pattern, '/') != null) {
+        return segmentMatches(pattern, path);
+    }
+    var start: usize = 0;
+    while (start <= path.len) {
+        var end = start;
+        while (end < path.len and path[end] != '/' and path[end] != '\\') : (end += 1) {}
+        if (segmentMatches(pattern, path[start..end])) return true;
+        if (end >= path.len) break;
+        start = end + 1;
+    }
+    return false;
+}
+
+fn gitignoreDecision(rules: []const u8, path: []const u8, is_dir: bool) bool {
+    var ignored = false;
+    var lines = std.mem.splitScalar(u8, rules, '\n');
+    while (lines.next()) |raw| {
+        var line = trimGitignoreLine(raw);
+        if (line.len == 0 or line[0] == '#') continue;
+        var negated = false;
+        if (line[0] == '!') {
+            negated = true;
+            line = trimGitignoreLine(line[1..]);
+            if (line.len == 0) continue;
+        }
+        while (line.len > 0 and line[0] == '/') line = line[1..];
+        const directory_only = line.len > 0 and line[line.len - 1] == '/';
+        while (line.len > 0 and line[line.len - 1] == '/') line = line[0 .. line.len - 1];
+        if (line.len == 0) continue;
+        if (pathRuleMatches(line, path, is_dir, directory_only)) ignored = !negated;
+    }
+    return ignored;
+}
+
 fn hiddenPath(path: []const u8) bool {
     var start: usize = 0;
     while (start < path.len) {
@@ -450,6 +527,7 @@ fn recordSearchSkip(stats: *SearchStats, diagnostics: *SearchDiagnostics, reason
         .too_large => diagnostics.skipped_by_reason.too_large += 1,
         .invalid_utf8 => diagnostics.skipped_by_reason.invalid_utf8 += 1,
         .io_error => diagnostics.skipped_by_reason.io_error += 1,
+        .gitignore => diagnostics.skipped_by_reason.gitignore += 1,
         .depth => diagnostics.skipped_by_reason.depth += 1,
         .non_file => diagnostics.skipped_by_reason.non_file += 1,
         .other => diagnostics.skipped_by_reason.other += 1,
@@ -473,7 +551,7 @@ fn capReasonString(reason: ?SearchCapReason) []const u8 {
 fn writeSearchStats(w: *Writer, stats: *const SearchStats, diagnostics: *const SearchDiagnostics) void {
     const skipped = diagnostics.skipped_by_reason;
     w.appendFmt(
-        "],\"stats\":{{\"searchedFiles\":{},\"skippedFiles\":{},\"matchedFiles\":{},\"matches\":{},\"truncated\":{},\"capped\":{},\"capReason\":{s},\"bytesScanned\":{},\"skippedByReason\":{{\"hidden\":{},\"vendor\":{},\"buildOutput\":{},\"binary\":{},\"tooLarge\":{},\"invalidUtf8\":{},\"ioError\":{},\"depth\":{},\"nonFile\":{},\"other\":{}}}}}}}",
+        "],\"stats\":{{\"searchedFiles\":{},\"skippedFiles\":{},\"matchedFiles\":{},\"matches\":{},\"truncated\":{},\"capped\":{},\"capReason\":{s},\"bytesScanned\":{},\"skippedByReason\":{{\"hidden\":{},\"vendor\":{},\"buildOutput\":{},\"binary\":{},\"tooLarge\":{},\"invalidUtf8\":{},\"ioError\":{},\"gitignore\":{},\"depth\":{},\"nonFile\":{},\"other\":{}}}}}}}",
         .{
             stats.searched_files,
             stats.skipped_files,
@@ -490,6 +568,7 @@ fn writeSearchStats(w: *Writer, stats: *const SearchStats, diagnostics: *const S
             skipped.too_large,
             skipped.invalid_utf8,
             skipped.io_error,
+            skipped.gitignore,
             skipped.depth,
             skipped.non_file,
             skipped.other,
@@ -541,6 +620,7 @@ pub export fn sift_fs_search_literal(
     const preview_bytes = if (caps.preview_bytes == 0) DEFAULT_PREVIEW_BYTES else caps.preview_bytes;
     const include_hidden = (caps.flags & SEARCH_FLAG_INCLUDE_HIDDEN) != 0;
     const detail = searchDetail(caps.flags);
+    const use_gitignore = respectGitignore(caps.flags);
 
     var stats: SearchStats = .{
         .searched_files = 0,
@@ -557,6 +637,12 @@ pub export fn sift_fs_search_literal(
     else
         Dir.cwd().openDir(io(), root, .{ .iterate = true, .follow_symlinks = false }) catch |err| return statusFromDirError(err);
     defer root_dir.close(io());
+
+    const gitignore_rules: ?[]u8 = if (use_gitignore and rootHasGitDir(root_dir))
+        root_dir.readFileAlloc(io(), ".gitignore", allocator, .limited(64 * 1024)) catch null
+    else
+        null;
+    defer if (gitignore_rules) |rules| allocator.free(rules);
 
     var walker = root_dir.walk(allocator) catch return STATUS_IO_ERROR;
     defer walker.deinit();
@@ -588,6 +674,14 @@ pub export fn sift_fs_search_literal(
             if (searchExcludeReason(entry.basename, caps.flags)) |reason| {
                 walker.leave(io());
                 recordSearchSkip(&stats, &diagnostics, reason);
+                continue;
+            }
+            if (gitignore_rules) |rules| {
+                if (gitignoreDecision(rules, entry.path, true)) {
+                    walker.leave(io());
+                    recordSearchSkip(&stats, &diagnostics, .gitignore);
+                    continue;
+                }
             }
             continue;
         }
@@ -600,6 +694,12 @@ pub export fn sift_fs_search_literal(
         if (!include_hidden and hiddenPath(entry.path)) {
             recordSearchSkip(&stats, &diagnostics, .hidden);
             continue;
+        }
+        if (gitignore_rules) |rules| {
+            if (gitignoreDecision(rules, entry.path, false)) {
+                recordSearchSkip(&stats, &diagnostics, .gitignore);
+                continue;
+            }
         }
 
         if (stats.searched_files >= max_files or stats.matches >= max_matches) {
@@ -1026,6 +1126,82 @@ test "search policy flag combinations select expected files" {
         try std.testing.expectEqual(case.expected, stats.matches);
         try std.testing.expectEqual(case.expected, stats.matched_files);
     }
+}
+
+test "search gitignore policy requires git context and can be disabled" {
+    const dir = ".zig-cache/sift-fs-gitignore";
+    Dir.cwd().deleteTree(io(), dir) catch {};
+    defer Dir.cwd().deleteTree(io(), dir) catch {};
+
+    const root: []const u8 = "";
+    var out: [1024 * 1024]u8 = undefined;
+    var written: u32 = 0;
+    var needed: u32 = 0;
+
+    const parent_ignore: []const u8 = ".zig-cache/sift-fs-gitignore/home/.gitignore";
+    const parent_ignore_data: []const u8 = "*\n";
+    var status = sift_fs_write_text(root.ptr, @intCast(root.len), parent_ignore.ptr, @intCast(parent_ignore.len), parent_ignore_data.ptr, @intCast(parent_ignore_data.len), WRITE_FLAG_MAKE_PATH, &out, out.len, &written, &needed);
+    try std.testing.expectEqual(STATUS_OK, status);
+    const plain_file: []const u8 = ".zig-cache/sift-fs-gitignore/home/repo/src/visible.txt";
+    const plain_data: []const u8 = "plain context needle\n";
+    status = sift_fs_write_text(root.ptr, @intCast(root.len), plain_file.ptr, @intCast(plain_file.len), plain_data.ptr, @intCast(plain_data.len), WRITE_FLAG_MAKE_PATH, &out, out.len, &written, &needed);
+    try std.testing.expectEqual(STATUS_OK, status);
+
+    var stats: SearchStats = .{ .searched_files = 0, .skipped_files = 0, .matched_files = 0, .matches = 0, .truncated = 0 };
+    const caps: SearchCaps = .{ .max_files = 100, .max_matches = 100, .max_depth = 8, .max_file_bytes = 1024, .preview_bytes = 80, .flags = 0 };
+    const plain_root: []const u8 = ".zig-cache/sift-fs-gitignore/home/repo";
+    const plain_query: []const u8 = "plain context";
+    status = sift_fs_search_literal(plain_root.ptr, @intCast(plain_root.len), plain_query.ptr, @intCast(plain_query.len), &caps, &out, out.len, &written, &needed, &stats);
+    try std.testing.expectEqual(STATUS_OK, status);
+    try std.testing.expectEqual(@as(u32, 1), stats.matches);
+
+    const git_config: []const u8 = ".zig-cache/sift-fs-gitignore/repo/.git/config";
+    const git_config_data: []const u8 = "[core]\n";
+    status = sift_fs_write_text(root.ptr, @intCast(root.len), git_config.ptr, @intCast(git_config.len), git_config_data.ptr, @intCast(git_config_data.len), WRITE_FLAG_MAKE_PATH, &out, out.len, &written, &needed);
+    try std.testing.expectEqual(STATUS_OK, status);
+    const ignore_path: []const u8 = ".zig-cache/sift-fs-gitignore/repo/.gitignore";
+    const ignore_data: []const u8 = "ignored.txt\n.vscode/*\n!.vscode/settings.json\n";
+    status = sift_fs_write_text(root.ptr, @intCast(root.len), ignore_path.ptr, @intCast(ignore_path.len), ignore_data.ptr, @intCast(ignore_data.len), WRITE_FLAG_MAKE_PATH, &out, out.len, &written, &needed);
+    try std.testing.expectEqual(STATUS_OK, status);
+    const ignored_path: []const u8 = ".zig-cache/sift-fs-gitignore/repo/ignored.txt";
+    const ignored_data: []const u8 = "git ignored needle\n";
+    status = sift_fs_write_text(root.ptr, @intCast(root.len), ignored_path.ptr, @intCast(ignored_path.len), ignored_data.ptr, @intCast(ignored_data.len), WRITE_FLAG_MAKE_PATH, &out, out.len, &written, &needed);
+    try std.testing.expectEqual(STATUS_OK, status);
+    const settings_path: []const u8 = ".zig-cache/sift-fs-gitignore/repo/.vscode/settings.json";
+    const settings_data: []const u8 = "whitelisted hidden needle\n";
+    status = sift_fs_write_text(root.ptr, @intCast(root.len), settings_path.ptr, @intCast(settings_path.len), settings_data.ptr, @intCast(settings_data.len), WRITE_FLAG_MAKE_PATH, &out, out.len, &written, &needed);
+    try std.testing.expectEqual(STATUS_OK, status);
+    const extensions_path: []const u8 = ".zig-cache/sift-fs-gitignore/repo/.vscode/extensions.json";
+    const extensions_data: []const u8 = "ignored hidden needle\n";
+    status = sift_fs_write_text(root.ptr, @intCast(root.len), extensions_path.ptr, @intCast(extensions_path.len), extensions_data.ptr, @intCast(extensions_data.len), WRITE_FLAG_MAKE_PATH, &out, out.len, &written, &needed);
+    try std.testing.expectEqual(STATUS_OK, status);
+
+    const git_root: []const u8 = ".zig-cache/sift-fs-gitignore/repo";
+    const git_query: []const u8 = "git ignored";
+    stats = .{ .searched_files = 0, .skipped_files = 0, .matched_files = 0, .matches = 0, .truncated = 0 };
+    status = sift_fs_search_literal(git_root.ptr, @intCast(git_root.len), git_query.ptr, @intCast(git_query.len), &caps, &out, out.len, &written, &needed, &stats);
+    try std.testing.expectEqual(STATUS_OK, status);
+    try std.testing.expectEqual(@as(u32, 0), stats.matches);
+    var json = out[0..written];
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"gitignore\":") != null);
+
+    var override_caps = caps;
+    override_caps.flags = SEARCH_FLAG_IGNORE_GITIGNORE;
+    stats = .{ .searched_files = 0, .skipped_files = 0, .matched_files = 0, .matches = 0, .truncated = 0 };
+    status = sift_fs_search_literal(git_root.ptr, @intCast(git_root.len), git_query.ptr, @intCast(git_query.len), &override_caps, &out, out.len, &written, &needed, &stats);
+    try std.testing.expectEqual(STATUS_OK, status);
+    try std.testing.expectEqual(@as(u32, 1), stats.matches);
+
+    var hidden_caps = caps;
+    hidden_caps.flags = SEARCH_FLAG_INCLUDE_HIDDEN;
+    const hidden_query: []const u8 = "hidden needle";
+    stats = .{ .searched_files = 0, .skipped_files = 0, .matched_files = 0, .matches = 0, .truncated = 0 };
+    status = sift_fs_search_literal(git_root.ptr, @intCast(git_root.len), hidden_query.ptr, @intCast(hidden_query.len), &hidden_caps, &out, out.len, &written, &needed, &stats);
+    try std.testing.expectEqual(STATUS_OK, status);
+    try std.testing.expectEqual(@as(u32, 1), stats.matches);
+    json = out[0..written];
+    try std.testing.expect(std.mem.indexOf(u8, json, ".vscode/settings.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, ".vscode/extensions.json") == null);
 }
 
 test "search diagnostics classify binary invalid UTF-8 and too-large files" {
