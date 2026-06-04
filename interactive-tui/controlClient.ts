@@ -29,7 +29,7 @@ export interface SseEvent {
   toolCall?: { name: string; args?: Record<string, unknown>; detail?: string };
   toolResult?: { name: string; success?: boolean; output?: string; explorerActivity?: unknown };
   message?: { content?: string };
-  result?: { content?: string } | unknown;
+  result?: { content?: string; text?: string } | unknown;
   error?: string;
   [key: string]: unknown;
 }
@@ -175,8 +175,9 @@ export function eventTextDelta(e: SseEvent): string {
 /** On `done`, recover the full reply if no deltas streamed (the "(no response)" fix). */
 export function doneFallbackText(e: SseEvent): string {
   if (typeof e.message?.content === "string") return e.message.content;
-  const r = e.result as { content?: string } | undefined;
+  const r = e.result as { content?: string; text?: string } | undefined;
   if (r && typeof r.content === "string") return r.content;
+  if (r && typeof r.text === "string") return r.text;
   if (typeof e.text === "string") return e.text;
   return "";
 }

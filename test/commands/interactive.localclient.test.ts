@@ -3,7 +3,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {LocalControlClient} from '../../interactive-tui/localControlClient';
 import {setBrainModel, type BrainEvent, type BrainAskResult} from '../../interactive-tui/brain';
-import type {SseEvent} from '../../interactive-tui/controlClient';
+import {doneFallbackText, type SseEvent} from '../../interactive-tui/controlClient';
 import {rejectAllConfirms, resetBypass, resolveApproval, setConfirmListener} from '../../interactive-tui/confirmGate';
 
 /** Build a fake openfunctionAsk that replays a scripted event stream. */
@@ -61,6 +61,10 @@ describe('LocalControlClient (in-process transport)', () => {
       expect(received).toHaveLength(1);
       expect(received[0].type).toBe('error');
       expect(received[0].error).toContain('brain unavailable');
+    });
+
+    it('recovers final text from done.result.text when no deltas streamed', () => {
+      expect(doneFallbackText({type: 'done', result: {text: 'final answer'}})).toBe('final answer');
     });
 
     it('rejects with AbortError when the signal is already aborted', async () => {

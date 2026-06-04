@@ -111,7 +111,7 @@ interface OfChunk {
   text?: string;
   toolCall?: { name: string; args?: Record<string, unknown> };
   toolResult?: { name: string; success?: boolean };
-  result?: { content?: string };
+  result?: { content?: string; text?: string };
 }
 
 interface OfModule {
@@ -1237,8 +1237,8 @@ async function collectScoutText(
       if (observedToolCalls > budget.maxToolCalls) {
         throw new Error('repo explorer scout budget exceeded: tool calls');
       }
-    } else if (chunk.type === 'done' && chunk.result?.content) {
-      doneContent = chunk.result.content;
+    } else if (chunk.type === 'done' && (chunk.result?.content || chunk.result?.text)) {
+      doneContent = chunk.result.content || chunk.result.text || '';
     }
   }
   const text = (assembled.trim() || doneContent.trim());
@@ -1393,9 +1393,10 @@ export async function openfunctionAsk(
           toolResult: { name: chunk.toolResult?.name ?? 'tool', success: chunk.toolResult?.success ?? true },
         });
       } else if (chunk.type === 'done') {
+        const finalContent = chunk.result?.content || chunk.result?.text;
         emitPostExplorer({
           type: 'done',
-          ...(chunk.result?.content ? { message: { content: chunk.result.content } } : {}),
+          ...(finalContent ? { message: { content: finalContent }, result: { text: finalContent } } : {}),
         });
       }
     }

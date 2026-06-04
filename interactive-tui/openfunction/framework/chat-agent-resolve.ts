@@ -84,13 +84,13 @@ const KNOWN_PROVIDERS: Record<string, () => Promise<ContextProvider>> = {
   // compat alias so existing configs keep working.
   siftable: async () => {
     const { createSiftableProvider } = await import(
-      "../providers/siftable/index.js"
+      "../providers/execufunction/index.js"
     );
     return createSiftableProvider();
   },
   execufunction: async () => {
     const { createSiftableProvider } = await import(
-      "../providers/siftable/index.js"
+      "../providers/execufunction/index.js"
     );
     return createSiftableProvider();
   },

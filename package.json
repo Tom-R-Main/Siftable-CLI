@@ -1,6 +1,6 @@
 {
   "name": "@siftable/cli",
-  "version": "0.5.20",
+  "version": "0.5.21",
   "description": "Siftable CLI — human planning tasks, executable agent work queues, knowledge, and automation tools",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -119,13 +119,16 @@
     "@opentui/core": "^0.3.1",
     "@opentui/keymap": "^0.3.1",
     "@opentui/solid": "^0.3.1",
+    "@modelcontextprotocol/sdk": "^1.12.1",
     "@siftable/mcp-server": "^1.2.14",
+    "pg": "^8.20.0",
     "sharp": "^0.34.4",
     "solid-js": "^1.9.10"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",
     "@types/node": "^20.0.0",
+    "@types/pg": "^8.20.0",
     "jest": "^29.7.0",
     "nock": "^13.5.0",
     "oclif": "^4",

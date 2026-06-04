@@ -238,38 +238,76 @@ function createChatCompletionsAdapter(config: ChatCompletionsConfig): AIAdapter 
         body.tool_choice = { type: "function", function: { name: options.toolChoice.name } };
       }
 
-      const response = await fetch(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(body),
-      });
+      const first = await callChatCompletions({ name, baseUrl, apiKey, body });
+      const parsed = parseChatCompletionChoice(name, first);
+      if (parsed) return parsed;
 
-      if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`${name} API error (${response.status}): ${error}`);
-      }
+      // Some OpenAI-compatible gateways/models can return an empty assistant
+      // message when tools/reasoning are present but no tool call is selected.
+      // Recover once with a plain text request so the TUI doesn't show a silent
+      // "(no response)" for basic prompts like "hello".
+      const retryBody = { ...body };
+      delete retryBody.tools;
+      delete retryBody.tool_choice;
+      delete retryBody.parallel_tool_calls;
+      delete retryBody.reasoning;
+      const retry = await callChatCompletions({ name, baseUrl, apiKey, body: retryBody });
+      const retryParsed = parseChatCompletionChoice(name, retry);
+      if (retryParsed) return retryParsed;
 
-      const data = await response.json();
-      const choice = data.choices?.[0];
-      if (!choice) throw new Error(`No response from ${name}`);
-
-      const rawToolCalls: any[] = choice.message?.tool_calls ?? [];
-      const parsedCalls = rawToolCalls.map((tc) => ({
-        id: tc.id,
-        name: tc.function.name,
-        args: JSON.parse(tc.function.arguments || "{}"),
-      }));
-      // A lone call stays on `toolCall` (single-call path unchanged); only a
-      // genuine fan-out uses `toolCalls`.
-      if (parsedCalls.length === 1) return { toolCall: parsedCalls[0] };
-      if (parsedCalls.length > 1) return { toolCalls: parsedCalls };
-
-      return { text: choice.message?.content ?? "(no response)" };
+      return { text: emptyChatCompletionDiagnostic(name, first) };
     },
   };
+}
+
+async function callChatCompletions(input: {
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  body: Record<string, unknown>;
+}): Promise<any> {
+  const response = await fetch(`${input.baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${input.apiKey}`,
+    },
+    body: JSON.stringify(input.body),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`${input.name} API error (${response.status}): ${error}`);
+  }
+
+  return response.json();
+}
+
+function parseChatCompletionChoice(name: string, data: any): AdapterResponse | null {
+  const choice = data.choices?.[0];
+  if (!choice) throw new Error(`No response from ${name}`);
+
+  const rawToolCalls: any[] = choice.message?.tool_calls ?? [];
+  const parsedCalls = rawToolCalls.map((tc) => ({
+    id: tc.id,
+    name: tc.function.name,
+    args: JSON.parse(tc.function.arguments || "{}"),
+  }));
+  // A lone call stays on `toolCall` (single-call path unchanged); only a
+  // genuine fan-out uses `toolCalls`.
+  if (parsedCalls.length === 1) return { toolCall: parsedCalls[0] };
+  if (parsedCalls.length > 1) return { toolCalls: parsedCalls };
+
+  const content = choice.message?.content;
+  if (typeof content === "string" && content.trim()) return { text: content };
+  return null;
+}
+
+function emptyChatCompletionDiagnostic(name: string, data: any): string {
+  const choice = data.choices?.[0] ?? {};
+  const finish = choice.finish_reason ?? choice.native_finish_reason ?? "unknown";
+  const role = choice.message?.role ?? "unknown";
+  return `${name} returned an empty assistant message (finish_reason: ${finish}, role: ${role}). Try /model codex or /key vault openrouter, or choose a different OpenRouter model.`;
 }
 
 function responsesInputContent(content: ChatMessage["content"]): unknown {
