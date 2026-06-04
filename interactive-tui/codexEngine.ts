@@ -32,6 +32,21 @@ import { getSessionCwd, getWorkspaceRoot } from './navigation';
 /** app-server is spawned with piped stdin/stdout and a discarded (null) stderr. */
 type CodexProc = ChildProcessByStdio<Writable, Readable, null>;
 
+/**
+ * The seam for launching the app-server. Defaults to spawning the real `codex`
+ * binary; tests inject a fake process to exercise the JSON-RPC framing,
+ * request correlation, and teardown without a real subprocess.
+ */
+export type CodexSpawnFn = () => CodexProc;
+
+function defaultCodexSpawn(): CodexProc {
+  return spawn(codexBin(), ['app-server'], {
+    stdio: ['pipe', 'pipe', 'ignore'],
+    cwd: getSessionCwd(),
+    env: process.env,
+  });
+}
+
 /** Default Codex model surfaced when the user switches the engine on. */
 export const CODEX_DEFAULT_MODEL = 'gpt-5.5';
 export const CODEX_PROVIDER = 'codex';
@@ -141,7 +156,7 @@ type Approver = (req: CodexApprovalRequest) => Promise<ApprovalDecision>;
  * stdio. Notifications fan out to listeners; server→client approval requests are
  * routed through `approver` (default: deny — codex never acts unattended).
  */
-class CodexClient {
+export class CodexClient {
   private proc: CodexProc | null = null;
   private buffer = '';
   private nextId = 1;
@@ -149,6 +164,11 @@ class CodexClient {
   private readonly listeners = new Set<NotificationListener>();
   private ready: Promise<void> | null = null;
   private approver: Approver = async () => 'deny';
+  private readonly spawnProc: CodexSpawnFn;
+
+  constructor(spawnProc: CodexSpawnFn = defaultCodexSpawn) {
+    this.spawnProc = spawnProc;
+  }
 
   /** Install the approval handler (wired to the confirm gate by getClient). */
   setApprover(fn: Approver): void {
@@ -165,11 +185,7 @@ class CodexClient {
     return new Promise<void>((resolve, reject) => {
       let proc: CodexProc;
       try {
-        proc = spawn(codexBin(), ['app-server'], {
-          stdio: ['pipe', 'pipe', 'ignore'],
-          cwd: getSessionCwd(),
-          env: process.env,
-        });
+        proc = this.spawnProc();
       } catch (err) {
         reject(err instanceof Error ? err : new Error(String(err)));
         return;
