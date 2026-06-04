@@ -1,7 +1,7 @@
 import {randomUUID} from "node:crypto";
 import {SiftClient} from "@siftable/mcp-server/dist/exfClient.js";
 import type {ControlTransport, RunningAgent} from "./controlClient";
-import {collectDailyReviewContext, collectGitRecapSummary, collectLocalGitSummary, type DailyReviewContext} from "../src/lib/daily-review-context";
+import {collectDailyReviewContext, collectGitRecapSummary, collectLocalGitSummary, type DailyReviewContext} from "../dist/lib/daily-review-context.js";
 import {requestApproval} from "./confirmGate";
 
 export type CommandMessage = { role: "you" | "assistant" | "system" | "shell" | "tool"; text: string };
