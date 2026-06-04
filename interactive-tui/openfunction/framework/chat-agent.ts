@@ -25,7 +25,7 @@ import { randomUUID } from "node:crypto";
 import type { ChatContent, ChatMessage } from "./adapters/types.js";
 import { chatContentToText } from "./adapters/content.js";
 import type { AIAdapter } from "./adapters/types.js";
-import type { ToolRegistry } from "./registry.js";
+import { ToolRegistry } from "./registry.js";
 import type { ConnectedProvider } from "./context.js";
 import { connectProvider, contextPrompt } from "./context.js";
 import {
@@ -212,6 +212,19 @@ class ChatAgentImpl implements ChatAgent {
     return this.chatAsync(message, options);
   }
 
+  private exhaustedToolRoundSystemPrompt(promptOverride?: string): string {
+    return `${promptOverride ?? this.systemPrompt}
+
+The assistant has reached the tool-calling round limit for this turn. Do not call more tools. Give the user a concise final answer using only the tool results already present in the conversation. If the evidence is partial, clearly say what was checked, what you found, and what remains uncertain.`;
+  }
+
+  private async finalizeAfterToolRoundLimit(promptOverride?: string): Promise<string> {
+    const response = await this.adapter.chat(this.history, new ToolRegistry(), {
+      systemPrompt: this.exhaustedToolRoundSystemPrompt(promptOverride),
+    });
+    return response.text?.trim() || "";
+  }
+
   private async chatAsync(
     message: ChatContent,
     options?: ChatAgentChatOptions,
@@ -357,10 +370,19 @@ class ChatAgentImpl implements ChatAgent {
     }
 
     if (!finalText) {
-      finalText =
-        maxRounds < 0
-          ? "(exceeded max tool calling rounds)"
-          : "(empty response from model)";
+      if (maxRounds < 0) {
+        finalText = await this.finalizeAfterToolRoundLimit(promptOverride);
+        if (finalText) {
+          this.history.push({ role: "assistant", content: finalText });
+          assistantTurnComplete = true;
+        }
+      }
+      if (!finalText) {
+        finalText =
+          maxRounds < 0
+            ? "(tool round limit reached before the model produced a final answer)"
+            : "(empty response from model)";
+      }
     }
 
     // Persist only real assistant turns to long-term memory. Synthetic
@@ -530,10 +552,19 @@ class ChatAgentImpl implements ChatAgent {
     }
 
     if (!finalText) {
-      finalText =
-        maxRounds < 0
-          ? "(exceeded max tool calling rounds)"
-          : "(empty response from model)";
+      if (maxRounds < 0) {
+        finalText = await this.finalizeAfterToolRoundLimit(promptOverride);
+        if (finalText) {
+          this.history.push({ role: "assistant", content: finalText });
+          assistantTurnComplete = true;
+        }
+      }
+      if (!finalText) {
+        finalText =
+          maxRounds < 0
+            ? "(tool round limit reached before the model produced a final answer)"
+            : "(empty response from model)";
+      }
       yield { type: "text", text: finalText };
     }
 

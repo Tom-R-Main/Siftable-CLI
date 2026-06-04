@@ -797,6 +797,7 @@ async function getAgent() {
         providers: ['siftable'],
         tools: buildLocalTools(of),
         memory: false,
+        maxToolRounds: 24,
         prompt: LEAN_PROMPT,
       });
     })();
