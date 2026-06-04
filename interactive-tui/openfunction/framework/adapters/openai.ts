@@ -147,6 +147,7 @@ interface ChatCompletionsConfig {
   baseUrl: string;
   systemPrompt?: string;
   reasoningEffort?: ReasoningEffort;
+  fetchImpl?: typeof fetch;
 }
 
 /**
@@ -155,6 +156,7 @@ interface ChatCompletionsConfig {
  */
 function createChatCompletionsAdapter(config: ChatCompletionsConfig): AIAdapter {
   const { name, model, apiKey, baseUrl, reasoningEffort } = config;
+  const doFetch = config.fetchImpl ?? fetch;
   const sysPrompt = config.systemPrompt ?? "You are a helpful assistant with access to tools. Use tools when they're relevant.";
 
   return {
@@ -238,7 +240,7 @@ function createChatCompletionsAdapter(config: ChatCompletionsConfig): AIAdapter 
         body.tool_choice = { type: "function", function: { name: options.toolChoice.name } };
       }
 
-      const first = await callChatCompletions({ name, baseUrl, apiKey, body });
+      const first = await callChatCompletions({ name, baseUrl, apiKey, body, fetchImpl: doFetch });
       const parsed = parseChatCompletionChoice(name, first);
       if (parsed) return parsed;
 
@@ -251,7 +253,7 @@ function createChatCompletionsAdapter(config: ChatCompletionsConfig): AIAdapter 
       delete retryBody.tool_choice;
       delete retryBody.parallel_tool_calls;
       delete retryBody.reasoning;
-      const retry = await callChatCompletions({ name, baseUrl, apiKey, body: retryBody });
+      const retry = await callChatCompletions({ name, baseUrl, apiKey, body: retryBody, fetchImpl: doFetch });
       const retryParsed = parseChatCompletionChoice(name, retry);
       if (retryParsed) return retryParsed;
 
@@ -265,8 +267,9 @@ async function callChatCompletions(input: {
   baseUrl: string;
   apiKey: string;
   body: Record<string, unknown>;
+  fetchImpl?: typeof fetch;
 }): Promise<any> {
-  const response = await fetch(`${input.baseUrl}/chat/completions`, {
+  const response = await (input.fetchImpl ?? fetch)(`${input.baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -355,5 +358,6 @@ export function createOpenRouterAdapter(config?: Partial<AdapterConfig>): AIAdap
     baseUrl: "https://openrouter.ai/api/v1",
     systemPrompt: config?.systemPrompt,
     reasoningEffort: config?.reasoningEffort,
+    fetchImpl: config?.fetchImpl,
   });
 }

@@ -41,6 +41,7 @@ export function createAnthropicAdapter(config?: Partial<AdapterConfig>): AIAdapt
   }
 
   const model = config?.model ?? "claude-sonnet-4-6";
+  const doFetch = config?.fetchImpl ?? fetch;
   const systemPrompt = config?.systemPrompt ?? "You are a helpful assistant with access to tools. Use tools when they're relevant.";
   const thinkingBudget = config?.reasoningEffort ? THINKING_BUDGET[config.reasoningEffort] : 0;
   const thinkingEnabled = thinkingBudget > 0;
@@ -158,7 +159,7 @@ export function createAnthropicAdapter(config?: Partial<AdapterConfig>): AIAdapt
         body.tool_choice = toolChoice;
       }
 
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await doFetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

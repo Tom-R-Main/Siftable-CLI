@@ -108,6 +108,13 @@ export interface AdapterConfig {
    * don't expose reasoning.
    */
   reasoningEffort?: ReasoningEffort;
+
+  /**
+   * HTTP transport seam. Defaults to the global `fetch`. Tests inject a
+   * cassette-backed fetch to replay recorded provider responses deterministically
+   * (see test/helpers/http-cassette.ts) instead of hitting the live API.
+   */
+  fetchImpl?: typeof fetch;
 }
 
 /** Options for controlling AI behavior on a per-call basis */
