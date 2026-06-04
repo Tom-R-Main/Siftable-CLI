@@ -602,6 +602,7 @@ function App() {
             }
             setStatus("working… (Esc to stop)");
           } else if (e.type === "error") {
+            got = true;
             setMessages(ensureAssistant(), "text", (t) => `${t}\n\n[error: ${e.error ?? "unknown"}]`);
           } else if (e.type === "done") {
             done = e;

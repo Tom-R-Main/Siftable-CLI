@@ -86,7 +86,7 @@ export type ChatInputPart =
 export type ChatInput = string | ChatInputPart[];
 
 const LEAN_PROMPT =
-  'You are the Siftable terminal copilot — an executive-function assistant in the user\'s terminal. ' +
+  'You are the Siftable assistant in the user\'s terminal. Identify yourself as the Siftable assistant, not a generic terminal copilot. ' +
   'Be terse and concrete; prefer a direct answer over a preamble. ' +
   'Use your tools to answer about the user\'s tasks, work items, calendar, projects, people, and local code. ' +
   'Keep implementationDir, sessionCwd, and workspaceRoot distinct: terminal commands and relative user paths use sessionCwd; broad repo orientation uses workspaceRoot. ' +
@@ -747,16 +747,28 @@ async function loadOpenFunctionEnv(): Promise<void> {
   try {
     const fs = await import('node:fs/promises');
     const override = process.env.EXECUTERM_OPENFUNCTION_PATH;
-    const envPath = override
-      ? override.replace(/\/src\/framework\/index\.(ts|js)$/, '/.env')
-      : join(process.env.SIFT_INTERACTIVE_TUI_DIR || process.cwd(), '.env');
-    const text = await fs.readFile(envPath, 'utf8');
-    for (const line of text.split('\n')) {
-      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-      if (!m) continue;
-      const key = m[1];
-      const val = m[2].trim().replace(/^["']|["']$/g, '');
-      if (key && val && process.env[key] === undefined) process.env[key] = val;
+    const envPaths = [
+      ...(override ? [override.replace(/\/src\/framework\/index\.(ts|js)$/, '/.env')] : []),
+      join(process.env.SIFT_INTERACTIVE_TUI_DIR || process.cwd(), '.env'),
+      join(process.env.HOME || '', 'projects', 'OpenFunction', '.env'),
+    ];
+    const seen = new Set<string>();
+    for (const envPath of envPaths) {
+      if (!envPath || seen.has(envPath)) continue;
+      seen.add(envPath);
+      let text = '';
+      try {
+        text = await fs.readFile(envPath, 'utf8');
+      } catch {
+        continue;
+      }
+      for (const line of text.split('\n')) {
+        const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+        if (!m) continue;
+        const key = m[1];
+        const val = m[2].trim().replace(/^["']|["']$/g, '');
+        if (key && val && process.env[key] === undefined) process.env[key] = val;
+      }
     }
   } catch {
     /* no .env — rely on inherited env */
