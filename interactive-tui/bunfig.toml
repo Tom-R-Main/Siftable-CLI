@@ -2,3 +2,8 @@
 # JSX transform (not bun's automatic runtime). Without this, bun resolves
 # jsx-runtime.d.ts and errors with "Export named 'jsxDEV' not found".
 preload = ["@opentui/solid/preload"]
+
+# `bun test` does not inherit the top-level preload, so register it again here
+# or .tsx render-snapshot tests fail with the same jsxDEV error.
+[test]
+preload = ["@opentui/solid/preload"]

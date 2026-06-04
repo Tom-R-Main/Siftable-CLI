@@ -4,6 +4,7 @@
   "type": "module",
   "description": "Bun/opentui TUI spawned by `sift interactive` (runs the OpenFunction brain in-process)",
   "scripts": {
+    "test": "bun test",
     "native:build": "./scripts/build-native.sh",
     "native:test": "zig build test",
     "native:bench": "zig build bench -Dbench-optimize=ReleaseFast",

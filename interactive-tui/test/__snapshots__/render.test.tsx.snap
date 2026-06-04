@@ -1,0 +1,57 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`ApprovalOverlay frame renders a command approval with all decisions offered 1`] = `
+"┌──────────────────────────────────────────────────────────┐
+│ Approve command?                                         │
+│ rm -rf build/                                            │
+│ cwd: /repo                                               │
+│ y allow once · a always allow this · b bypass all · n/   │
+│ Esc deny                                                 │
+└──────────────────────────────────────────────────────────┘
+                                                            
+                                                            
+                                                            
+"
+`;
+
+exports[`ApprovalOverlay frame renders a write approval 1`] = `
+"┌──────────────────────────────────────────────────────────┐
+│ Approve write?                                           │
+│ src/app.ts                                               │
+│ +128 bytes                                               │
+│ y allow once · a always allow this · b bypass all · n/   │
+│ Esc deny                                                 │
+└──────────────────────────────────────────────────────────┘
+                                                            
+                                                            
+                                                            
+"
+`;
+
+exports[`ApprovalOverlay frame omits the detail line when there is no detail 1`] = `
+"┌──────────────────────────────────────────────────────────┐
+│ Approve edit?                                            │
+│ src/app.ts                                               │
+│ y allow once · a always allow this · b bypass all · n/   │
+│ Esc deny                                                 │
+└──────────────────────────────────────────────────────────┘
+                                                            
+                                                            
+                                                            
+                                                            
+"
+`;
+
+exports[`ApprovalOverlay frame drops the 'always' and 'bypass' affordances when disabled 1`] = `
+"┌──────────────────────────────────────────────────────────┐
+│ Approve command?                                         │
+│ curl https://example.test                                │
+│ network egress                                           │
+│ y allow once · n/Esc deny                                │
+└──────────────────────────────────────────────────────────┘
+                                                            
+                                                            
+                                                            
+                                                            
+"
+`;

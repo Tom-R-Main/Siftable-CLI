@@ -71,20 +71,8 @@ import { serializeConversation } from "./transcript";
 import { getSessionCwd, getWorkspaceRoot, setSessionCwd } from "./navigation";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, extname } from "node:path";
-
-const theme = {
-  bg: "#000000",
-  bgMuted: "#070707",
-  border: "#2F2F2F",
-  text: "#F5F5F5",
-  muted: "#9CA3AF",
-  accent: "#1D9BF0",
-  accentStrong: "#5CB9FF",
-  user: "#8DDDB6",
-  shell: "#C7A0FF",
-  tool: "#7FA8C9",
-  transcriptSelection: "#13283A",
-};
+import { theme } from "./theme";
+import { ApprovalOverlay } from "./views";
 
 // Minimal SyntaxStyle (code-block coloring); markdown structure parses regardless.
 const syntaxStyle = SyntaxStyle.fromTheme([]);
@@ -1124,28 +1112,7 @@ function App() {
       </scrollbox>
 
       <Show when={confirm()}>
-        {(c) => (
-          <box
-            flexDirection="column"
-            flexShrink={0}
-            borderStyle="single"
-            borderColor={theme.accentStrong}
-            backgroundColor={theme.bgMuted}
-            paddingLeft={1}
-            paddingRight={1}
-          >
-            <text fg={theme.accentStrong} selectable={false}>
-              {c().kind === "command" ? "Approve command?" : c().kind === "write" ? "Approve write?" : "Approve edit?"}
-            </text>
-            <text fg={theme.text} selectable={false}>{c().path}</text>
-            <Show when={c().detail}>
-              <text fg={theme.muted} selectable={false}>{c().detail}</text>
-            </Show>
-            <text fg={theme.muted} selectable={false}>
-              {`y allow once · ${c().allowAlways === false ? "" : "a always allow this · "}${c().allowBypass === false ? "" : "b bypass all · "}n/Esc deny`}
-            </text>
-          </box>
-        )}
+        {(c) => <ApprovalOverlay request={c()} theme={theme} />}
       </Show>
 
       <Show when={picker()}>

@@ -10,5 +10,6 @@
     "allowImportingTsExtensions": true,
     "noEmit": true,
     "types": ["node"]
-  }
+  },
+  "exclude": ["test"]
 }
