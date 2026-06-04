@@ -1,4 +1,6 @@
 import {existsSync} from 'node:fs';
+import {mkdtemp, mkdir, rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {buildChildEnv, findBun, resolveTuiDir, resolveWorkspaceRoot} from '../../src/commands/interactive.js';
 
@@ -74,9 +76,16 @@ describe('sift interactive — launcher env', () => {
   });
 
   describe('resolveWorkspaceRoot', () => {
-    it('walks up to the repo root containing .git', () => {
-      const root = resolveWorkspaceRoot(__dirname);
-      expect(existsSync(join(root, '.git'))).toBe(true);
+    it('walks up to the repo root containing .git', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'sift-interactive-root-'));
+      try {
+        await mkdir(join(root, '.git'), {recursive: true});
+        await mkdir(join(root, 'nested', 'child'), {recursive: true});
+        expect(resolveWorkspaceRoot(join(root, 'nested', 'child'))).toBe(root);
+        expect(existsSync(join(root, '.git'))).toBe(true);
+      } finally {
+        await rm(root, {recursive: true, force: true});
+      }
     });
 
     it('falls back to the start dir when no .git ancestor exists', () => {
