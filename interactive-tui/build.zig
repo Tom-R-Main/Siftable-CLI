@@ -6,6 +6,7 @@ const NativeSource = struct {
 };
 
 const native_sources = [_]NativeSource{
+    .{ .name = "collab_engine", .path = "native/collab_engine.zig" },
     .{ .name = "composer_policy", .path = "native/composer_policy.zig" },
     .{ .name = "fs_engine", .path = "native/fs_engine.zig" },
     .{ .name = "image_engine", .path = "native/image_engine.zig" },

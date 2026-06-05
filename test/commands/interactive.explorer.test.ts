@@ -16,12 +16,14 @@ import {
   prepareExplorerInput,
 } from '../../interactive-tui/explorer';
 import {openfunctionAsk, setBrainModel, type BrainEvent} from '../../interactive-tui/brain';
+import {resetCollabEngineForTests, snapshotCollabSession} from '../../interactive-tui/collabEngine';
 
 describe('interactive repo explorer preflight', () => {
   let root: string;
 
   beforeEach(async () => {
     clearRepoExplorerCache();
+    resetCollabEngineForTests();
     root = await mkdtemp(join(tmpdir(), 'sift-explorer-'));
     await mkdir(join(root, 'src'), {recursive: true});
     await mkdir(join(root, 'native'), {recursive: true});
@@ -63,6 +65,7 @@ describe('interactive repo explorer preflight', () => {
 
   afterEach(async () => {
     clearRepoExplorerCache();
+    resetCollabEngineForTests();
     await rm(root, {recursive: true, force: true});
   });
 
@@ -762,16 +765,33 @@ describe('interactive repo explorer preflight', () => {
       expect(events.some((event) => event.toolCall?.name === 'repo_explorer_fanout')).toBe(true);
       expect(events.some((event) => event.toolCall?.name === 'repo_explorer_scout')).toBe(false);
       expect(events.find((event) => event.toolResult?.name === 'repo_explorer_fanout')?.toolResult?.output).toContain('1 failed branch');
-      expect(events.find((event) => event.toolResult?.name === 'repo_explorer_fanout')?.toolResult?.explorerActivity).toMatchObject({
+      const fanoutActivity = events.find((event) => event.toolResult?.name === 'repo_explorer_fanout')?.toolResult?.explorerActivity as
+        | { collabSessionId?: number }
+        | undefined;
+      expect(fanoutActivity).toMatchObject({
         mode: 'fanout',
+        collabSessionId: expect.any(Number),
         assignedRoles: expect.arrayContaining(['source_runtime', 'tests', 'docs_context']),
         suggestedFileCount: expect.any(Number),
         branches: expect.arrayContaining([
           expect.objectContaining({status: 'failed', warningCount: expect.any(Number)}),
         ]),
       });
+      const collabSnapshot = snapshotCollabSession(fanoutActivity?.collabSessionId ?? 0);
+      expect(collabSnapshot).toMatchObject({
+        root,
+        cwd: root,
+        branches: expect.arrayContaining([
+          expect.objectContaining({role: 'source_runtime', status: 'completed', eventCount: expect.any(Number)}),
+          expect.objectContaining({role: 'tests', status: 'completed', eventCount: expect.any(Number)}),
+          expect.objectContaining({role: 'docs_context', status: 'failed', eventCount: expect.any(Number)}),
+        ]),
+      });
+      expect(collabSnapshot.branches).toHaveLength(4);
+      expect(collabSnapshot.branches.every((branch) => branch.events.some((event) => event.type === 'branch_started'))).toBe(true);
       expect(events.find((event) => event.toolResult?.name === 'repo_explorer')?.toolResult?.explorerActivity).toMatchObject({
         mode: 'fanout',
+        collabSessionId: fanoutActivity?.collabSessionId,
         rawReport: expect.stringContaining('<repo_explorer_report>'),
       });
       expect(String(capturedMainInput)).toContain('parallel_scouts:');

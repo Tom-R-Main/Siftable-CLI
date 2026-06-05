@@ -1,8 +1,19 @@
 import {randomUUID} from "node:crypto";
 import {SiftClient} from "@siftable/mcp-server/dist/exfClient.js";
-import type {ControlTransport, RunningAgent} from "./controlClient";
+import {doneFallbackText, eventTextDelta, type ControlTransport, type RunningAgent} from "./controlClient";
 import {collectDailyReviewContext, collectGitRecapSummary, collectLocalGitSummary, type DailyReviewContext} from "../dist/lib/daily-review-context.js";
 import {requestApproval} from "./confirmGate";
+import {listCollabSessions, type CollabBranchSnapshot, type CollabSessionSnapshot} from "./collabEngine";
+import {runSiftCrew} from "./crewAdapter";
+import {
+  createCrewFromTemplate,
+  crewStoragePath,
+  getCrewDefinition,
+  listCrewDefinitions,
+  renderCrewTaskTemplate,
+  type CrewScope,
+  type SiftCrewDefinition,
+} from "./crewRegistry";
 
 export type CommandMessage = { role: "you" | "assistant" | "system" | "shell" | "tool"; text: string };
 
@@ -33,6 +44,7 @@ export interface InteractiveCommand {
   aliases?: string[];
   description: string;
   usage?: string;
+  hidden?: boolean;
   run: (ctx: InteractiveCommandContext, args: string[]) => Promise<void> | void;
 }
 
@@ -312,6 +324,44 @@ function listFrom(response: ApiResponse, key: string): Record<string, unknown>[]
 
 function textArg(args: string[]): string {
   return args.join(" ").trim();
+}
+
+function parseCommandArgs(input: string): string[] {
+  const out: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  for (const ch of input) {
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = null;
+      else current += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (current) {
+        out.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (escaped) current += "\\";
+  if (current) out.push(current);
+  return out;
 }
 
 function modelChoiceText(choice: InteractiveModelChoice): string {
@@ -754,12 +804,243 @@ function recap(ctx: InteractiveCommandContext, windowArg: string): string {
   ].filter(Boolean).join("\n");
 }
 
+function formatCollabBranch(branch: CollabBranchSnapshot): string {
+  const worker = branch.worker ? ` · ${branch.worker}` : "";
+  const error = branch.error ? ` · error: ${branch.error}` : "";
+  return `  - #${branch.branchId} ${branch.role} · ${branch.status}${worker} · events ${branch.eventCount}${error}`;
+}
+
+function formatCollabSession(session: CollabSessionSnapshot): string {
+  const counts = session.branches.reduce<Record<string, number>>((acc, branch) => {
+    acc[branch.status] = (acc[branch.status] ?? 0) + 1;
+    return acc;
+  }, {});
+  const status = Object.entries(counts).map(([key, value]) => `${key}:${value}`).join(" ");
+  return [
+    `session #${session.sessionId}${session.cancelled ? " · cancelled" : ""}`,
+    `  root ${session.root}`,
+    `  cwd  ${session.cwd}`,
+    `  branches ${session.branches.length}/${session.maxBranches}${status ? ` · ${status}` : ""}`,
+    ...session.branches.map(formatCollabBranch),
+  ].join("\n");
+}
+
+function formatCollabSessions(sessions: CollabSessionSnapshot[]): string {
+  if (!sessions.length) return "Collab sessions\nNo in-process collab sessions yet.";
+  return ["Collab sessions", ...sessions.map(formatCollabSession)].join("\n\n");
+}
+
+async function runCrewSmoke(ctx: InteractiveCommandContext): Promise<string> {
+  const root = ctx.workspaceRoot() || ctx.cwd();
+  const result = await runSiftCrew({
+    root,
+    cwd: ctx.cwd(),
+    name: "ui_smoke",
+    process: "sequential",
+    agents: [
+      {id: "mapper", role: "Mapper", goal: "Produce a tiny deterministic map", prompt: "Map the current session."},
+      {id: "checker", role: "Checker", prompt: "Check the map and summarize it."},
+    ],
+    tasks: [
+      {id: "map", agent: "mapper", input: `Map cwd ${ctx.cwd()}`},
+      {id: "check", agent: "checker", input: "Check the previous map output."},
+    ],
+    runTask: async ({task, input, priorResults, appendEvent}) => {
+      appendEvent("crew_smoke_task", {taskId: task.id, priorResults: priorResults.length});
+      if (task.id === "map") return `cwd=${ctx.cwd()}`;
+      return `checked ${priorResults[0]?.output ?? input}`;
+    },
+    reduce: (results) => results.map((result) => `${result.taskId}:${result.status}`).join(", "),
+  });
+  return [
+    "Crew smoke",
+    `session: ${result.sessionId ?? "none"}`,
+    `tasks:   ${result.output ?? "none"}`,
+    ...result.taskResults.map((task) => `- ${task.taskId} [${task.agentId}] ${task.status}${task.error ? ` · ${task.error}` : ""}`),
+  ].join("\n");
+}
+
+function registryOptions(ctx: InteractiveCommandContext) {
+  return {cwd: ctx.cwd(), workspaceRoot: ctx.workspaceRoot() || undefined};
+}
+
+function parseCrewScope(raw: string | undefined): Exclude<CrewScope, "builtin"> {
+  if (!raw || raw === "project") return "project";
+  if (raw === "user" || raw === "personal") return "user";
+  throw new Error("crew scope must be project or user");
+}
+
+function formatCrewDefinition(crew: SiftCrewDefinition): string {
+  const location = crew.path ? `\npath:    ${crew.path}` : "";
+  return [
+    `${crew.name} (${crew.id})`,
+    `scope:   ${crew.scope}`,
+    `process: ${crew.process}`,
+    `agents:  ${crew.agents.map((agent) => `${agent.id}:${agent.role}`).join(", ")}`,
+    `tasks:   ${crew.tasks.map((task) => `${task.id}->${task.agent}${task.dependsOn?.length ? `[after ${task.dependsOn.join(",")}]` : ""}`).join(", ")}`,
+    `about:   ${crew.description}${location}`,
+  ].join("\n");
+}
+
+function formatCrewList(crews: SiftCrewDefinition[]): string {
+  if (!crews.length) return "Crews\nNo crews found.";
+  return [
+    "Crews",
+    ...crews.map((crew) => `- ${crew.id} · ${crew.scope} · ${crew.name} · ${crew.tasks.length} tasks · ${crew.process}`),
+    "",
+    "Create: /crew new <id> --scope project --template repo-investigation --name \"Name\"",
+    "Run:    /crew run <id> <request>",
+  ].join("\n");
+}
+
+async function runCrewDefinition(ctx: InteractiveCommandContext, crew: SiftCrewDefinition, request: string): Promise<string> {
+  const root = ctx.workspaceRoot() || ctx.cwd();
+  const tasks = crew.tasks.map((task) => ({
+    ...task,
+    input: renderCrewTaskTemplate(task.input, {input: request, cwd: ctx.cwd(), root}),
+    dependsOn: task.dependsOn ? [...task.dependsOn] : undefined,
+  }));
+  const result = await runSiftCrew<string>({
+    root,
+    cwd: ctx.cwd(),
+    name: crew.id,
+    process: crew.process,
+    agents: crew.agents,
+    tasks,
+    runTask: async ({agent, task, input, priorResults, appendEvent, heartbeat}) => {
+      appendEvent("crew_agent_configured", {
+        agentId: agent.id,
+        role: agent.role,
+        maxToolCalls: agent.maxToolCalls,
+        maxElapsedMs: agent.maxElapsedMs,
+      });
+      const prompt = [
+        `You are running as the Siftable crew agent "${agent.role}" (${agent.id}).`,
+        agent.goal ? `Goal: ${agent.goal}` : "",
+        "Follow this crew prompt:",
+        agent.prompt,
+        "",
+        "Current Siftable session:",
+        `- cwd: ${ctx.cwd()}`,
+        `- root: ${root}`,
+        `- model: ${ctx.model() || "(unknown)"}`,
+        "",
+        "Do not invoke /crew commands. Keep the answer scoped to this assigned crew task.",
+        priorResults.length
+          ? `\nPrior crew results:\n${priorResults.map((prior) => `- ${prior.taskId} (${prior.status}): ${prior.status === "failed" ? prior.error ?? "" : String(prior.output ?? "")}`).join("\n")}`
+          : "",
+        "",
+        input,
+      ].filter(Boolean).join("\n");
+      let text = "";
+      let fallback = "";
+      let error: string | null = null;
+      await ctx.client.send(prompt, (event) => {
+        const delta = eventTextDelta(event);
+        if (delta) text += delta;
+        const recovered = doneFallbackText(event);
+        if (recovered) fallback = recovered;
+        if (event.type === "tool_call" && event.toolCall) {
+          appendEvent("crew_model_tool_call", {taskId: task.id, tool: event.toolCall.name});
+        } else if (event.type === "tool_result" && event.toolResult) {
+          appendEvent("crew_model_tool_result", {taskId: task.id, tool: event.toolResult.name, success: event.toolResult.success !== false});
+        } else if (event.type === "error") {
+          error = event.error ?? "model error";
+        }
+      });
+      if (error) throw new Error(error);
+      heartbeat();
+      const output = (text || fallback || "(no response)").trim();
+      appendEvent("crew_model_response", {taskId: task.id, chars: output.length});
+      return output;
+    },
+    reduce: (results) => {
+      const final = [...results].reverse().find((task) => task.status === "completed" && task.output);
+      return final?.output ?? results.map((task) => `${task.taskId}:${task.status}`).join(", ");
+    },
+  });
+  return [
+    `Crew ${crew.id}`,
+    `session: ${result.sessionId ?? "none"}`,
+    `tasks:   ${result.taskResults.map((task) => `${task.taskId}:${task.status}`).join(", ")}`,
+    "",
+    String(result.output ?? "").trim(),
+  ].join("\n").trim();
+}
+
+async function runCrewCommand(ctx: InteractiveCommandContext, args: string[]): Promise<void> {
+  const sub = (args[0] || "list").toLowerCase();
+  const options = registryOptions(ctx);
+  try {
+    if (sub === "list" || sub === "ls") {
+      ctx.push({role: "system", text: formatCrewList(listCrewDefinitions(options))});
+      return;
+    }
+    if (sub === "show" || sub === "inspect") {
+      const id = args[1];
+      if (!id) {
+        ctx.push({role: "system", text: "usage: /crew show <id>"});
+        return;
+      }
+      const crew = getCrewDefinition(id, options);
+      ctx.push({role: "system", text: crew ? formatCrewDefinition(crew) : `crew not found: ${id}`});
+      return;
+    }
+    if (sub === "new" || sub === "create") {
+      const id = args[1];
+      if (!id) {
+        ctx.push({
+          role: "system",
+          text: [
+            "Create crew",
+            "usage: /crew new <id> --scope project|user --template repo-investigation --name \"Name\"",
+            `project path: ${crewStoragePath("project", options)}`,
+            `user path:    ${crewStoragePath("user", options)}`,
+          ].join("\n"),
+        });
+        return;
+      }
+      const crew = createCrewFromTemplate({
+        ...options,
+        id,
+        templateId: flagValue(args, "--template") ?? "repo-investigation",
+        scope: parseCrewScope(flagValue(args, "--scope")),
+        name: flagValue(args, "--name"),
+        description: flagValue(args, "--description"),
+      });
+      ctx.push({role: "system", text: [`Created crew ${crew.id}`, formatCrewDefinition(crew)].join("\n\n")});
+      return;
+    }
+    if (sub === "run") {
+      const id = args[1];
+      const request = textArg(args.slice(2));
+      if (!id || !request) {
+        ctx.push({role: "system", text: "usage: /crew run <id> <request>"});
+        return;
+      }
+      const crew = getCrewDefinition(id, options);
+      if (!crew) {
+        ctx.push({role: "system", text: `crew not found: ${id}`});
+        return;
+      }
+      ctx.push({role: "system", text: `Running crew ${crew.id} (${crew.tasks.length} tasks, ${crew.process})...`});
+      ctx.push({role: "system", text: await runCrewDefinition(ctx, crew, request)});
+      return;
+    }
+    ctx.push({role: "system", text: "usage: /crew list | /crew show <id> | /crew new <id> | /crew run <id> <request>"});
+  } catch (err) {
+    ctx.push({role: "system", text: `/crew ${sub}: ${err instanceof Error ? err.message : String(err)}`});
+  }
+}
+
 export const interactiveCommands: InteractiveCommand[] = [
   {
     name: "help",
     description: "show commands",
     run: (ctx) => {
-      const lines = interactiveCommands.map((cmd) => `/${cmd.name}${cmd.usage ? ` ${cmd.usage}` : ""} · ${cmd.description}`);
+      const lines = interactiveCommands
+        .filter((cmd) => !cmd.hidden)
+        .map((cmd) => `/${cmd.name}${cmd.usage ? ` ${cmd.usage}` : ""} · ${cmd.description}`);
       ctx.push({
         role: "system",
         text: `Commands:\n${lines.join("\n")}\n\nAlso: !<cmd> runs a shell command · Enter while busy queues a message.`,
@@ -1094,14 +1375,46 @@ export const interactiveCommands: InteractiveCommand[] = [
   },
   {name: "ship", description: "summarize diff and suggested tests", run: (ctx) => ctx.push({role: "system", text: summarizeShip(ctx)})},
   {name: "recap", description: "cluster recent work into proof-backed themes", usage: "[90d]", run: (ctx, args) => ctx.push({role: "system", text: recap(ctx, args[0] ?? "90d")})},
+  {
+    name: "crew",
+    aliases: ["crews"],
+    description: "create, inspect, and run Siftable crews",
+    usage: "list|show|new|run",
+    run: runCrewCommand,
+  },
+  {
+    name: "collab",
+    aliases: ["sessions"],
+    description: "show collab branch sessions",
+    usage: "[limit]",
+    run: (ctx, args) => {
+      const limit = Math.max(1, Math.min(50, Number(args[0]) || 10));
+      ctx.push({role: "system", text: formatCollabSessions(listCollabSessions({limit}))});
+    },
+  },
+  {
+    name: "crew-smoke",
+    hidden: true,
+    description: "run deterministic crew adapter smoke",
+    usage: "[--force]",
+    run: async (ctx, args) => {
+      if (process.env.SIFT_CREW_DEBUG !== "1" && !args.includes("--force")) {
+        ctx.push({role: "system", text: "crew smoke is hidden. Set SIFT_CREW_DEBUG=1 or run /crew-smoke --force."});
+        return;
+      }
+      ctx.push({role: "system", text: await runCrewSmoke(ctx)});
+    },
+  },
 ];
 
 export function commandSuggestions(): Array<{name: string; desc: string}> {
-  return interactiveCommands.map((command) => ({name: command.name, desc: command.description}));
+  return interactiveCommands
+    .filter((command) => !command.hidden)
+    .map((command) => ({name: command.name, desc: command.description}));
 }
 
 export async function runInteractiveCommand(ctx: InteractiveCommandContext, input: string): Promise<void> {
-  const parts = input.slice(1).trim().split(/\s+/).filter(Boolean);
+  const parts = parseCommandArgs(input.slice(1).trim());
   const name = parts[0]?.toLowerCase();
   const command = interactiveCommands.find((candidate) => candidate.name === name || candidate.aliases?.includes(name));
   if (!command) {

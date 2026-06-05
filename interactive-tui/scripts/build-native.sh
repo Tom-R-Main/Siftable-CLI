@@ -11,3 +11,4 @@ zig build native -Doptimize=ReleaseSafe -p .
 echo "built native/libcomposer_policy.${suffix}"
 echo "built native/libfs_engine.${suffix}"
 echo "built native/libimage_engine.${suffix}"
+echo "built native/libcollab_engine.${suffix}"

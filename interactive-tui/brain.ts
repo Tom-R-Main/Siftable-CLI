@@ -63,6 +63,7 @@ import {
   resolveSessionPath,
   setSessionCwd,
 } from './navigation';
+import { runCollabBranches, type CollabBranchRunContext } from './collabRunner';
 
 /** Relay-compatible event shape the TUI already understands (token, tool_call, tool_result, done, error). */
 export interface BrainEvent {
@@ -1060,9 +1061,34 @@ async function runRepoExplorerFanout(
     assignedRoles: branches.map((branch) => branch.role.id),
     promptClass: assignment.promptClass,
   };
-  const results = await Promise.all(
-    branches.map((branch) => runRepoExplorerFanoutBranch(input, deterministicReport, branch, fanoutBudget)),
-  );
+  const fanoutRun = await runCollabBranches({
+    root: deterministicReport.root,
+    cwd: getSessionCwd(),
+    leaseMs: Math.max(30_000, fanoutBudget.maxElapsedMs + 2_000),
+    maxBranches: Math.max(1, branches.length),
+    workerPrefix: 'repo_explorer_fanout',
+    branches,
+    specForBranch: (branch) => ({
+      id: branch.id,
+      role: branch.role.id,
+      focus: branch.focus,
+      maxToolCalls: Math.min(branch.role.budget.maxToolCalls, fanoutBudget.maxScoutToolCalls),
+      maxElapsedMs: Math.min(branch.role.budget.maxElapsedMs, fanoutBudget.maxElapsedMs),
+    }),
+    runBranch: (context) => runRepoExplorerFanoutBranch(input, deterministicReport, fanoutBudget, context),
+    finalizeBranch: (result) => result.branch.status === 'failed'
+      ? { status: 'failed', error: result.branch.failureReason ?? 'branch failed' }
+      : {
+          status: 'completed',
+          output: {
+            status: result.branch.status,
+            elapsedMs: result.branch.elapsedMs,
+            suggestedFiles: result.branch.suggestedFiles,
+          },
+        },
+  });
+  if (fanoutRun.sessionId) state.collabSessionId = fanoutRun.sessionId;
+  const results = fanoutRun.results;
   const report = reduceRepoExplorerFanout(results, deterministicReport, assignment.promptClass);
   state.elapsedMs = Date.now() - startedAt;
   state.failedBranches = report.branches.filter((branch) => branch.status === 'failed').length;
@@ -1075,16 +1101,17 @@ async function runRepoExplorerFanout(
 async function runRepoExplorerFanoutBranch(
   input: ChatInput,
   deterministicReport: ExplorerReport,
-  branch: FanoutBranchSpec,
   fanoutBudget = repoExplorerFanoutBudget(),
+  context: CollabBranchRunContext<FanoutBranchSpec>,
 ): Promise<{ branch: RepoExplorerFanoutBranch; report?: ReturnType<typeof parseScoutReportForFanout> }> {
-  const startedAt = Date.now();
+  const { branch, startedAt } = context;
   try {
     const of = await loadOpenFunctionModule();
     const provider = process.env.SIFT_EXPLORER_SCOUT_PROVIDER ||
       (currentProvider === CODEX_PROVIDER ? 'openrouter' : currentProvider);
     const model = process.env.SIFT_EXPLORER_SCOUT_MODEL ||
       (currentProvider === CODEX_PROVIDER ? DEFAULT_OPENFUNCTION_MODEL : currentModel);
+    context.appendEvent('agent_configured', { provider, model });
     const scout = await of.createChatAgent({
       name: `siftable-repo-explorer-fanout-${branch.id}`,
       provider,
@@ -1110,6 +1137,10 @@ async function runRepoExplorerFanoutBranch(
       'Return JSON only.',
     ].join('\n');
     const timeoutMs = Math.min(branch.role.budget.maxElapsedMs, fanoutBudget.maxElapsedMs);
+    context.appendEvent('scout_started', {
+      timeoutMs,
+      maxToolCalls: Math.min(branch.role.budget.maxToolCalls, fanoutBudget.maxScoutToolCalls),
+    });
     const collected = await withTimeout(
       collectScoutText(scout.chat(scoutInput, { stream: true }), {
         maxReturnedChars: Math.min(branch.role.budget.maxReturnedChars, fanoutBudget.maxScoutSectionChars),
@@ -1117,12 +1148,25 @@ async function runRepoExplorerFanoutBranch(
       }),
       timeoutMs,
     );
+    context.heartbeat();
+    context.appendEvent('scout_collected', {
+      chars: collected.text.length,
+      truncated: collected.truncated,
+      toolCalls: collected.toolCalls,
+    });
     const parsed = parseScoutReportForFanout(collected.text);
     const suggestedFiles = [...new Set([
       ...parsed.report.recommendedReads.map((read) => read.path),
       ...parsed.report.missingLikelyFiles.map((file) => file.path),
     ])].slice(0, 12);
-    return {
+    context.appendEvent('scout_parsed', {
+      confidence: parsed.report.confidence,
+      invalidJson: parsed.invalidJson,
+      schemaErrors: parsed.schemaErrors.length,
+      clampedItems: parsed.clampedItems,
+      suggestedFiles,
+    });
+    const result: { branch: RepoExplorerFanoutBranch; report: ReturnType<typeof parseScoutReportForFanout> } = {
       branch: {
         id: branch.id,
         role: branch.role.id,
@@ -1133,8 +1177,12 @@ async function runRepoExplorerFanoutBranch(
       },
       report: parsed,
     };
+    return result;
   } catch (err) {
-    return {
+    context.appendEvent('branch_failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    const result: { branch: RepoExplorerFanoutBranch } = {
       branch: {
         id: branch.id,
         role: branch.role.id,
@@ -1145,6 +1193,7 @@ async function runRepoExplorerFanoutBranch(
         failureReason: err instanceof Error ? err.message : String(err),
       },
     };
+    return result;
   }
 }
 
@@ -1233,7 +1282,7 @@ async function collectScoutText(
     maxReturnedChars: DEFAULT_SCOUT_BUDGET.maxReturnedChars,
     maxToolCalls: DEFAULT_SCOUT_BUDGET.maxToolCalls,
   },
-): Promise<{ text: string; truncated: boolean }> {
+): Promise<{ text: string; truncated: boolean; toolCalls: number }> {
   let assembled = '';
   let doneContent = '';
   let observedToolCalls = 0;
@@ -1255,7 +1304,11 @@ async function collectScoutText(
     }
   }
   const text = (assembled.trim() || doneContent.trim());
-  return { text: text.slice(0, budget.maxReturnedChars), truncated: truncated || text.length > budget.maxReturnedChars };
+  return {
+    text: text.slice(0, budget.maxReturnedChars),
+    truncated: truncated || text.length > budget.maxReturnedChars,
+    toolCalls: observedToolCalls,
+  };
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

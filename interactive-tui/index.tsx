@@ -73,9 +73,43 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, extname } from "node:path";
 import { theme } from "./theme";
 import { ApprovalOverlay } from "./views";
+import {createCrewFromTemplate, listCrewDefinitions, type SiftCrewDefinition} from "./crewRegistry";
 
-// Minimal SyntaxStyle (code-block coloring); markdown structure parses regardless.
-const syntaxStyle = SyntaxStyle.fromTheme([]);
+// "Sieve" markdown + code-block theme. Tree-sitter capture scopes map to the
+// warm palette in theme.ts; unknown scopes fall back to `default` (warm white).
+// fromStyles accepts hex strings (ColorInput) directly — no RGBA wrapping needed.
+const syntaxStyle = SyntaxStyle.fromStyles({
+  default: { fg: theme.text },
+  // Markdown structure
+  "markup.heading": { fg: theme.signalText, bold: true },
+  "markup.strong": { fg: theme.text, bold: true },
+  "markup.italic": { fg: theme.user, italic: true },
+  "markup.strikethrough": { fg: theme.dim },
+  "markup.list": { fg: theme.signal },
+  "markup.quote": { fg: theme.muted, italic: true },
+  "markup.raw": { fg: theme.cool }, // inline `code`
+  "markup.raw.block": { fg: theme.text }, // fenced block body
+  "markup.link": { fg: theme.cool, underline: true },
+  "markup.link.label": { fg: theme.cool },
+  "markup.link.url": { fg: theme.cool, underline: true },
+  "string.special.url": { fg: theme.cool, underline: true },
+  // Code-block syntax (tree-sitter)
+  keyword: { fg: theme.warn },
+  string: { fg: theme.ok },
+  number: { fg: theme.signalText },
+  boolean: { fg: theme.signalText },
+  constant: { fg: theme.signalText },
+  comment: { fg: theme.dim, italic: true },
+  function: { fg: theme.cool },
+  type: { fg: theme.signalText },
+  variable: { fg: theme.text },
+  property: { fg: theme.text },
+  attribute: { fg: theme.signal },
+  tag: { fg: theme.warn },
+  label: { fg: theme.signal },
+  operator: { fg: theme.muted },
+  punctuation: { fg: theme.muted },
+});
 
 // ── Transport seam ─────────────────────────────────────────────────────────
 // The ONLY place that differs between in-process (A0) and daemon (future)
@@ -126,6 +160,14 @@ type ImageAttachment = {
 };
 type ComposerAttachment = PasteTextAttachment | ImageAttachment;
 type QueuedPrompt = { sendInput: ChatInput; displayText: string };
+type CrewCreateDraft = {
+  scope: "project" | "user";
+  templateId: string;
+  id: string;
+  name: string;
+  description: string;
+  fieldIdx: number;
+};
 
 const COMMANDS = commandSuggestions();
 const SLASH_COMMAND_COLUMN_WIDTH = Math.max(14, ...COMMANDS.map((command) => command.name.length + 5));
@@ -184,12 +226,9 @@ function imagePathFromPastedText(text: string): string | null {
 function App() {
   const renderer = useRenderer();
   const terminal = useTerminalDimensions();
-  const [messages, setMessages] = createStore<Msg[]>([
-    {
-      role: "system",
-      text: "sift interactive — ask about your work · type / for commands · ? or /hotkeys for keys · /quit to exit",
-    },
-  ]);
+  // Empty by design: the empty state renders a centered hero (see showHero)
+  // instead of the old single welcome line that left a large void below it.
+  const [messages, setMessages] = createStore<Msg[]>([]);
   const [input, setInput] = createSignal("");
   const [cursor, setCursor] = createSignal(0);
   const [status, setStatus] = createSignal("connecting…");
@@ -208,6 +247,9 @@ function App() {
   >(null);
   const [explorerPicker, setExplorerPicker] = createSignal<
     { stage: "menu" | "mode" | "model" | "budget"; rowIdx: number; modeIdx: number; modelIdx: number; budgetIdx: number } | null
+  >(null);
+  const [crewPicker, setCrewPicker] = createSignal<
+    { stage: "library" | "createScope" | "createForm"; rowIdx: number; createIdx: number; crews: SiftCrewDefinition[]; draft: CrewCreateDraft } | null
   >(null);
   const [transcriptSelected, setTranscriptSelected] = createSignal(false);
   // A1 write/edit approval: set by the confirm gate while a mutation waits.
@@ -649,6 +691,7 @@ function App() {
   function openModelPicker() {
     setText("");
     setExplorerPicker(null);
+    setCrewPicker(null);
     // Open on the currently active model when we can match it.
     const cur = model();
     const found = INTERACTIVE_MODEL_CHOICES.findIndex((c) => c.model === cur || c.id === cur);
@@ -689,7 +732,117 @@ function App() {
   function openExplorerPicker() {
     setText("");
     setPicker(null);
+    setCrewPicker(null);
     setExplorerPicker(explorerPickerStateFor());
+  }
+
+  function crewPickerState() {
+    const crews = listCrewDefinitions({cwd: getSessionCwd(), workspaceRoot: getWorkspaceRoot() || undefined});
+    return {
+      stage: "library" as const,
+      rowIdx: 0,
+      createIdx: 0,
+      crews,
+      draft: defaultCrewDraft("project", crews),
+    };
+  }
+
+  function openCrewPicker() {
+    setText("");
+    setPicker(null);
+    setExplorerPicker(null);
+    setCrewPicker(crewPickerState());
+  }
+
+  function uniqueProjectCrewId(base: string, crews: SiftCrewDefinition[]): string {
+    const used = new Set(crews.map((crew) => crew.id));
+    if (!used.has(base)) return base;
+    for (let i = 2; i < 100; i += 1) {
+      const candidate = `${base}-${i}`;
+      if (!used.has(candidate)) return candidate;
+    }
+    return `${base}-${Date.now().toString(36)}`;
+  }
+
+  function slugFromCrewName(name: string): string {
+    return name
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 64) || "my-crew";
+  }
+
+  function defaultCrewDraft(scope: "project" | "user", crews: SiftCrewDefinition[]): CrewCreateDraft {
+    const base = scope === "project" ? "my-crew" : "personal-crew";
+    return {
+      scope,
+      templateId: "repo-investigation",
+      id: uniqueProjectCrewId(base, crews),
+      name: scope === "project" ? "My Crew" : "Personal Crew",
+      description: "",
+      fieldIdx: 0,
+    };
+  }
+
+  function fillCrewRunCommand(crew: SiftCrewDefinition) {
+    setCrewPicker(null);
+    setText(`/crew run ${crew.id} `);
+    setStatus(`type the request for ${crew.name}, then Enter`);
+  }
+
+  function updateCrewDraft(patch: Partial<CrewCreateDraft>) {
+    const cp = crewPicker();
+    if (!cp) return;
+    setCrewPicker({ ...cp, draft: { ...cp.draft, ...patch } });
+  }
+
+  function editCrewDraftText(key: KeyEvent, field: "name" | "id" | "description") {
+    const cp = crewPicker();
+    if (!cp) return;
+    const current = cp.draft[field];
+    if (key.name === "backspace" || key.sequence === "\x7f") {
+      const next = current.slice(0, -1);
+      updateCrewDraft(field === "name" && cp.draft.id === slugFromCrewName(current)
+        ? {name: next, id: slugFromCrewName(next)}
+        : {[field]: next});
+      return;
+    }
+    const s = key.sequence;
+    if (!s || s.length !== 1 || s < " " || key.ctrl || key.meta) return;
+    const next = field === "id" ? `${current}${s}`.toLowerCase().replace(/[^a-z0-9-]/g, "-") : `${current}${s}`;
+    updateCrewDraft(field === "name" && cp.draft.id === slugFromCrewName(current)
+      ? {name: next, id: slugFromCrewName(next)}
+      : {[field]: next});
+  }
+
+  function saveCrewDraft() {
+    const cp = crewPicker();
+    if (!cp) return;
+    try {
+      const crew = createCrewFromTemplate({
+        cwd: getSessionCwd(),
+        workspaceRoot: getWorkspaceRoot() || undefined,
+        id: cp.draft.id,
+        scope: cp.draft.scope,
+        templateId: cp.draft.templateId,
+        name: cp.draft.name,
+        description: cp.draft.description,
+      });
+      const crews = listCrewDefinitions({cwd: getSessionCwd(), workspaceRoot: getWorkspaceRoot() || undefined});
+      const rowIdx = Math.max(1, crews.findIndex((item) => item.id === crew.id) + 1);
+      setCrewPicker({
+        stage: "library",
+        rowIdx,
+        createIdx: 0,
+        crews,
+        draft: defaultCrewDraft("project", crews),
+      });
+      push({role: "system", text: `Created crew ${crew.name} (${crew.id})`});
+      setStatus(`created crew ${crew.id}`);
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : String(err));
+    }
   }
 
   function settingsFromExplorerPicker(p: NonNullable<ReturnType<typeof explorerPicker>>): ExplorerSettings {
@@ -724,6 +877,10 @@ function App() {
     }
     if (bare === "explorer" || bare === "explore") {
       openExplorerPicker();
+      return;
+    }
+    if (bare === "crew" || bare === "crews") {
+      openCrewPicker();
       return;
     }
     await runInteractiveCommand(commandCtx(), cmd);
@@ -838,6 +995,53 @@ function App() {
           else if (isEnter) setExplorerPicker({ ...ep, stage: "menu" });
           return;
         }
+      }
+
+      const cp = crewPicker();
+      if (cp) {
+        key.preventDefault?.();
+        key.stopPropagation?.();
+        const isEnter =
+          key.name === "return" || key.name === "enter" || key.sequence === "\r" || key.sequence === "\n";
+        if (key.name === "escape") {
+          if (cp.stage === "createForm") setCrewPicker({ ...cp, stage: "createScope" });
+          else if (cp.stage === "createScope") setCrewPicker({ ...cp, stage: "library" });
+          else setCrewPicker(null);
+          return;
+        }
+        if (cp.stage === "library") {
+          const rowCount = cp.crews.length + 1;
+          if (key.name === "up") setCrewPicker({ ...cp, rowIdx: Math.max(0, cp.rowIdx - 1) });
+          else if (key.name === "down") setCrewPicker({ ...cp, rowIdx: Math.min(rowCount - 1, cp.rowIdx + 1) });
+          else if (isEnter) {
+            if (cp.rowIdx === 0) setCrewPicker({ ...cp, stage: "createScope", createIdx: 0 });
+            else {
+              const crew = cp.crews[cp.rowIdx - 1];
+              if (crew) fillCrewRunCommand(crew);
+            }
+          }
+          return;
+        }
+        if (cp.stage === "createScope") {
+          const createRows = 2;
+          if (key.name === "up") setCrewPicker({ ...cp, createIdx: Math.max(0, cp.createIdx - 1) });
+          else if (key.name === "down") setCrewPicker({ ...cp, createIdx: Math.min(createRows - 1, cp.createIdx + 1) });
+          else if (isEnter) {
+            const scope = cp.createIdx === 0 ? "project" : "user";
+            setCrewPicker({ ...cp, stage: "createForm", draft: defaultCrewDraft(scope, cp.crews) });
+          }
+          return;
+        }
+        const fieldCount = 4;
+        if (key.name === "up") updateCrewDraft({fieldIdx: Math.max(0, cp.draft.fieldIdx - 1)});
+        else if (key.name === "down") updateCrewDraft({fieldIdx: Math.min(fieldCount - 1, cp.draft.fieldIdx + 1)});
+        else if (isEnter) {
+          if (cp.draft.fieldIdx < fieldCount - 1) updateCrewDraft({fieldIdx: cp.draft.fieldIdx + 1});
+          else saveCrewDraft();
+        } else if (cp.draft.fieldIdx === 0) editCrewDraftText(key, "name");
+        else if (cp.draft.fieldIdx === 1) editCrewDraftText(key, "id");
+        else if (cp.draft.fieldIdx === 2) editCrewDraftText(key, "description");
+        return;
       }
 
       const isCmd = Boolean(key.meta || (key as KeyEvent & { super?: boolean }).super);
@@ -1044,6 +1248,12 @@ function App() {
 
   const composerMaxHeight = () => Math.min(MAX_COMPOSER_LINES, Math.max(4, Math.floor(terminal().height / 3)));
 
+  // Empty state → centered hero. The ascii wordmark only renders when the
+  // terminal is wide enough to hold it without clipping; otherwise we fall back
+  // to a plain styled wordmark (handles narrow panes / the Dock split-view).
+  const showHero = () => messages.length === 0;
+  const heroWide = () => terminal().width >= 72; // "block" wordmark is ~68 cols
+
   return (
     <box width="100%" height="100%" flexDirection="column" backgroundColor={theme.bg}>
       <box
@@ -1062,6 +1272,33 @@ function App() {
         <text fg={theme.muted} selectable={false}>{agentLabel()}</text>
       </box>
 
+      <Show when={showHero()}>
+        <box
+          flexGrow={1}
+          width="100%"
+          flexDirection="column"
+          justifyContent="center"
+          alignItems="center"
+          backgroundColor={theme.bg}
+        >
+          <Show
+            when={heroWide()}
+            fallback={<text fg={theme.signalText} selectable={false}>◇  siftable</text>}
+          >
+            <ascii_font text="siftable" font="block" color={theme.signal} />
+          </Show>
+          <box paddingTop={1}>
+            <text fg={theme.muted} selectable={false}>sift the signal from your work</text>
+          </box>
+          <box paddingTop={2} flexDirection="column" alignItems="flex-start">
+            <text fg={theme.dim} selectable={false}>{"›  what's in flight right now?"}</text>
+            <text fg={theme.dim} selectable={false}>{"›  summarize my week"}</text>
+            <text fg={theme.dim} selectable={false}>{"›  / commands    ! shell    ? keys"}</text>
+          </box>
+        </box>
+      </Show>
+
+      <Show when={!showHero()}>
       <scrollbox
         flexGrow={1}
         width="100%"
@@ -1110,6 +1347,7 @@ function App() {
           )}
         </For>
       </scrollbox>
+      </Show>
 
       <Show when={confirm()}>
         {(c) => <ApprovalOverlay request={c()} theme={theme} />}
@@ -1251,7 +1489,117 @@ function App() {
         }}
       </Show>
 
-      <Show when={!picker() && !explorerPicker() && slashMatches().length > 0}>
+      <Show when={crewPicker()}>
+        {(p) => {
+          const createRows = [
+            {scope: "project", title: "Project crew", meta: ".siftable/crews/", desc: "shared with this repo"},
+            {scope: "user", title: "Personal crew", meta: "~/.siftable/crews/", desc: "available across repos"},
+          ];
+          const formRows = () => [
+            {label: "Name", value: p().draft.name || "(type a name)", desc: "human-readable label"},
+            {label: "Identifier", value: p().draft.id || "(required)", desc: "lowercase id used by /crew run"},
+            {label: "Description", value: p().draft.description || "(use template default)", desc: "optional"},
+            {label: "Save crew", value: "", desc: `${p().draft.scope} · ${p().draft.templateId}`},
+          ];
+          const selectedCrew = () => p().rowIdx > 0 ? p().crews[p().rowIdx - 1] : null;
+          const title = () => p().stage === "createScope"
+            ? "Create crew    ↑/↓ choose scope · Enter continue · Esc back"
+            : p().stage === "createForm"
+              ? "Create crew    type to edit · ↑/↓ fields · Enter next/save · Esc back"
+            : "Crews    ↑/↓ navigate · Enter select · Esc close";
+          return (
+            <box
+              flexDirection="column"
+              flexShrink={0}
+              borderStyle="single"
+              borderColor={theme.accent}
+              backgroundColor={theme.bgMuted}
+              paddingLeft={1}
+              paddingRight={1}
+            >
+              <text fg={theme.accentStrong} selectable={false}>{title()}</text>
+              <Show when={p().stage === "library"}>
+                <text fg={theme.muted} selectable={false}>
+                  Select a crew. Enter fills the composer with a run command.
+                </text>
+                <box width="100%" height={1} backgroundColor={p().rowIdx === 0 ? theme.border : theme.bgMuted} flexDirection="row">
+                  <text fg={p().rowIdx === 0 ? theme.accentStrong : theme.muted} selectable={false}>
+                    {(p().rowIdx === 0 ? "› " : "  ") + "Create new crew"}
+                  </text>
+                </box>
+                <For each={p().crews}>
+                  {(crew, i) => {
+                    const selected = () => i() + 1 === p().rowIdx;
+                    return (
+                      <box width="100%" height={1} backgroundColor={selected() ? theme.border : theme.bgMuted} flexDirection="row">
+                        <text fg={selected() ? theme.accentStrong : theme.muted} selectable={false}>
+                          {(selected() ? "› " : "  ") + crew.name}
+                        </text>
+                      </box>
+                    );
+                  }}
+                </For>
+                <box flexDirection="column" paddingTop={1}>
+                  <Show
+                    when={selectedCrew()}
+                    fallback={
+                      <>
+                        <text fg={theme.muted} selectable={false}>Create a project or personal crew from a starter template.</text>
+                        <text fg={theme.muted} selectable={false}>Project crews live in .siftable/crews/. Personal crews live in ~/.siftable/crews/.</text>
+                      </>
+                    }
+                  >
+                    {(crew) => (
+                      <>
+                        <text fg={theme.muted} selectable={false}>{`${crew().scope} · ${crew().id}`}</text>
+                        <text fg={theme.muted} selectable={false}>{`${crew().tasks.length} tasks · ${crew().process}`}</text>
+                        <text fg={theme.muted} selectable={false}>{crew().description}</text>
+                      </>
+                    )}
+                  </Show>
+                </box>
+              </Show>
+              <Show when={p().stage === "createScope"}>
+                <text fg={theme.muted} selectable={false}>
+                  Choose where this crew definition should live.
+                </text>
+                <For each={createRows}>
+                  {(row, i) => (
+                    <box width="100%" height={1} backgroundColor={i() === p().createIdx ? theme.border : theme.bgMuted} flexDirection="row">
+                      <text fg={i() === p().createIdx ? theme.accentStrong : theme.muted} selectable={false}>
+                        {(i() === p().createIdx ? "› " : "  ") +
+                          row.title.padEnd(24) +
+                          row.meta.padEnd(28) +
+                          row.desc}
+                      </text>
+                    </box>
+                  )}
+                </For>
+              </Show>
+              <Show when={p().stage === "createForm"}>
+                <For each={formRows()}>
+                  {(row, i) => (
+                    <box width="100%" height={1} backgroundColor={i() === p().draft.fieldIdx ? theme.border : theme.bgMuted} flexDirection="row">
+                      <text fg={i() === p().draft.fieldIdx ? theme.accentStrong : theme.muted} selectable={false}>
+                        {(i() === p().draft.fieldIdx ? "› " : "  ") +
+                          row.label.padEnd(14) +
+                          (row.value ? row.value.slice(0, 42).padEnd(44) : "".padEnd(44)) +
+                          row.desc}
+                      </text>
+                    </box>
+                  )}
+                </For>
+                <box flexDirection="column" paddingTop={1}>
+                  <text fg={theme.muted} selectable={false}>Template: Repo Investigation</text>
+                  <text fg={theme.muted} selectable={false}>Creates mapper, verifier, and summarizer tasks.</text>
+                </box>
+              </Show>
+            </box>
+          );
+        }}
+      </Show>
+
+      <Show when={!picker() && !explorerPicker() && !crewPicker() && slashMatches().length > 0}>
         <box
           flexDirection="column"
           flexShrink={0}

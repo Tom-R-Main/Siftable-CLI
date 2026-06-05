@@ -19,6 +19,7 @@ declare module "bun:ffi" {
     buffer: "buffer";
     ptr: "ptr";
     u32: "u32";
+    u64: "u64";
     bool: "bool";
   };
   export function dlopen<T extends Record<string, { args?: readonly string[]; returns?: string }>>(

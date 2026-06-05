@@ -239,6 +239,7 @@ export interface RepoExplorerFanoutReport {
 export interface RepoExplorerFanoutState {
   enabled: boolean;
   ran: boolean;
+  collabSessionId?: number;
   branchCount: number;
   elapsedMs: number;
   failedBranches: number;
@@ -260,6 +261,7 @@ export interface RepoExplorerActivityBranch {
 export interface RepoExplorerActivityView {
   mode: 'deterministic' | 'scout' | 'fanout';
   classification: ExplorerMode;
+  collabSessionId?: number;
   cacheHit?: boolean;
   cacheMiss?: boolean;
   elapsedMs: number;
@@ -657,6 +659,7 @@ export function createRepoExplorerActivityView(
   return {
     mode,
     classification: report.mode,
+    ...(report.fanout?.collabSessionId ? { collabSessionId: report.fanout.collabSessionId } : {}),
     cacheHit: report.metrics.cacheHit,
     cacheMiss: report.metrics.cacheMiss,
     elapsedMs: report.fanout?.ran
