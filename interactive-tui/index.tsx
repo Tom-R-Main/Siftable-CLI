@@ -25,7 +25,7 @@
  */
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { SyntaxStyle, type KeyEvent, type PasteEvent, type TextareaRenderable } from "@opentui/core";
-import { createSignal, For, Show, Switch, Match, onMount, onCleanup } from "solid-js";
+import { createSignal, createMemo, For, Show, Switch, Match, onMount, onCleanup } from "solid-js";
 import { createStore } from "solid-js/store";
 import {
   ControlClient,
@@ -55,6 +55,7 @@ import {
 } from "./commands";
 import { copyTextToClipboard, readClipboardContent } from "./clipboard";
 import { analyzePaste, type PasteAnalysis } from "./composerPolicy";
+import { estimateTokens } from "./threadEngine";
 import { setConfirmListener, resolveApproval, type ConfirmRequest, type ApprovalDecision } from "./confirmGate";
 import { normalizeImageForModel } from "./imageEngine";
 import {
@@ -139,6 +140,11 @@ if (LOCAL) {
   client = new ControlClient(baseUrl, process.env.EXECUTERM_DASHBOARD_TOKEN);
 }
 
+// Phase 1 of the thread-engine rollout: a live context-size meter in the status
+// bar, driven by the Zig token estimator. Gated until the compaction planner and
+// rollout persistence land; off by default.
+const COMPACTION_ENABLED = process.env.SIFT_CONTEXT_COMPACTION === "1";
+
 type Msg = {
   role: "you" | "assistant" | "system" | "shell" | "tool";
   text: string;
@@ -187,6 +193,11 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+function formatContextTokens(tokens: number): string {
+  if (tokens < 1000) return `~${tokens} ctx`;
+  return `~${(tokens / 1000).toFixed(1)}k ctx`;
 }
 
 function wrapIndex(index: number, length: number): number {
@@ -262,6 +273,33 @@ function App() {
   const attachments = new Map<string, ComposerAttachment>();
   let attachmentSeq = 0;
   let histIndex = 0;
+
+  // Live estimate of the conversation's token footprint (Zig-backed). A proxy
+  // for "how full is the context" until per-model windows + the planner land in
+  // Phase 2. Recomputes only when the transcript changes, and re-estimates only
+  // the messages that actually changed: a per-index cache keyed by content
+  // lengths keeps a long thread O(n) cheap checks + O(changed) estimations
+  // instead of re-encoding every message on every new turn.
+  const tokenCache: number[] = [];
+  const tokenCacheKey: string[] = [];
+  const contextTokens = createMemo(() => {
+    if (!COMPACTION_ENABLED) return 0;
+    let total = 0;
+    for (let i = 0; i < messages.length; i += 1) {
+      const m = messages[i]!;
+      const key = `${m.text.length}:${m.out?.length ?? 0}`;
+      if (tokenCacheKey[i] !== key) {
+        tokenCacheKey[i] = key;
+        tokenCache[i] = estimateTokens(m.text) + (m.out ? estimateTokens(m.out) : 0);
+      }
+      total += tokenCache[i]!;
+    }
+    if (tokenCache.length > messages.length) {
+      tokenCache.length = messages.length;
+      tokenCacheKey.length = messages.length;
+    }
+    return total;
+  });
 
   const push = (m: Msg) => setMessages(messages.length, m);
   const quit = () => {
@@ -1737,7 +1775,8 @@ function App() {
           {status() +
             (model() ? `  ·  ${model()}` : "") +
             (effort() ? `  ·  ${effort()}` : "") +
-            (queued().length ? `  ·  ${queued().length} queued` : "")}
+            (queued().length ? `  ·  ${queued().length} queued` : "") +
+            (COMPACTION_ENABLED && contextTokens() > 0 ? `  ·  ${formatContextTokens(contextTokens())}` : "")}
         </text>
       </box>
     </box>

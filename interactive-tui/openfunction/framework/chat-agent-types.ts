@@ -93,6 +93,13 @@ export interface ChatAgentConfig {
   /** Max tool-calling rounds per turn (default: 10) */
   maxToolRounds?: number;
 
+  /**
+   * Stable key (typically the workspace/cwd) for rollout persistence. When set
+   * and SIFT_CONTEXT_COMPACTION=1, the human-visible conversation is persisted
+   * to ~/.siftable/threads and resumed on the next session with the same key.
+   */
+  persistKey?: string;
+
   /** Skip agent reasoning — plain tool calling only (saves tokens) */
   raw?: boolean;
 

@@ -10,6 +10,7 @@ const native_sources = [_]NativeSource{
     .{ .name = "composer_policy", .path = "native/composer_policy.zig" },
     .{ .name = "fs_engine", .path = "native/fs_engine.zig" },
     .{ .name = "image_engine", .path = "native/image_engine.zig" },
+    .{ .name = "thread_engine", .path = "native/thread_engine.zig" },
 };
 
 pub fn build(b: *std.Build) !void {

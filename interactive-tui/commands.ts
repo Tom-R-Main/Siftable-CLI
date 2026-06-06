@@ -1,4 +1,7 @@
 import {randomUUID} from "node:crypto";
+import {homedir} from "node:os";
+import {existsSync, readFileSync, rmSync} from "node:fs";
+import {rolloutPathForKey} from "./threadEngine";
 import {SiftClient} from "@siftable/mcp-server/dist/exfClient.js";
 import {doneFallbackText, eventTextDelta, type ControlTransport, type RunningAgent} from "./controlClient";
 import {collectDailyReviewContext, collectGitRecapSummary, collectLocalGitSummary, type DailyReviewContext} from "../dist/lib/daily-review-context.js";
@@ -1101,6 +1104,34 @@ export const interactiveCommands: InteractiveCommand[] = [
     },
   },
   {name: "clear", description: "clear the conversation", run: (ctx) => ctx.setMessages([{role: "system", text: "cleared."}])},
+  {
+    name: "threads",
+    description: "show or clear the persisted conversation for this workspace",
+    usage: "/threads [clear]",
+    run: (ctx, args) => {
+      if (process.env.SIFT_CONTEXT_COMPACTION !== "1") {
+        ctx.push({role: "system", text: "Thread persistence is off. Set SIFT_CONTEXT_COMPACTION=1 to enable resume."});
+        return;
+      }
+      const key = ctx.workspaceRoot() || ctx.cwd();
+      const path = rolloutPathForKey(homedir(), key);
+      if (args[0] === "clear") {
+        if (existsSync(path)) rmSync(path);
+        ctx.push({role: "system", text: `Cleared persisted thread for ${key}.`});
+        return;
+      }
+      if (!existsSync(path)) {
+        ctx.push({role: "system", text: `No persisted thread yet for ${key}. It will be saved as you chat.`});
+        return;
+      }
+      const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
+      const turns = lines.filter((l) => l.startsWith('{"r":0')).length;
+      ctx.push({
+        role: "system",
+        text: `Persisted thread for ${key}\n  ${turns} turn(s), ${lines.length} message(s)\n  ${path}\n  (resumes automatically next session · /threads clear to reset)`,
+      });
+    },
+  },
   {name: "quit", aliases: ["exit", "q"], description: "exit", run: (ctx) => ctx.quit()},
   {
     name: "model",

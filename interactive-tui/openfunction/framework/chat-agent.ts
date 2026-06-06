@@ -26,6 +26,17 @@ import type { ChatContent, ChatMessage } from "./adapters/types.js";
 import { chatContentToText } from "./adapters/content.js";
 import type { AIAdapter } from "./adapters/types.js";
 import { ToolRegistry } from "./registry.js";
+import {
+  applyCompactionPlan,
+  buildCompactionConfig,
+  buildSummarizeTranscript,
+  compactionEnabled,
+  COMPACTION_SUMMARY_INSTRUCTION,
+  COMPACTION_SUMMARY_SYSTEM,
+  planCompaction,
+  toPlanMessages,
+} from "./compaction.js";
+import { appendTurn, loadHistory, persistEnabled, rolloutPathForThread } from "./rollout.js";
 import type { ConnectedProvider } from "./context.js";
 import { connectProvider, contextPrompt } from "./context.js";
 import {
@@ -152,6 +163,7 @@ export async function createChatAgent(
     providerToolNames,
     threadId: threadId ?? randomUUID(),
     maxToolRounds: config.maxToolRounds ?? 10,
+    persistKey: config.persistKey,
   });
 }
 
@@ -168,6 +180,7 @@ interface ChatAgentInternals {
   providerToolNames: string[];
   threadId: string;
   maxToolRounds: number;
+  persistKey?: string;
 }
 
 class ChatAgentImpl implements ChatAgent {
@@ -185,6 +198,8 @@ class ChatAgentImpl implements ChatAgent {
   private threadId: string;
   private maxToolRounds: number;
   private history: ChatMessage[] = [];
+  private rolloutPath?: string;
+  private seeded = false;
 
   constructor(internals: ChatAgentInternals) {
     this.name = internals.name;
@@ -199,6 +214,27 @@ class ChatAgentImpl implements ChatAgent {
     this.maxToolRounds = internals.maxToolRounds;
     this.provider = internals.adapter.name;
     this.model = internals.adapter.model;
+    this.rolloutPath =
+      internals.persistKey && persistEnabled() ? rolloutPathForThread(internals.persistKey) : undefined;
+  }
+
+  /**
+   * Seed history from the persisted rollout on the first turn of a session.
+   * Loads the whole prior conversation; if it's large, the pre-turn compaction
+   * pass (which runs right after this) trims it before the model call. Idempotent.
+   */
+  private ensureSeeded(): void {
+    if (this.seeded) return;
+    this.seeded = true;
+    if (!this.rolloutPath) return;
+    const prior = loadHistory(this.rolloutPath);
+    if (prior.length > 0) this.history = [...prior, ...this.history];
+  }
+
+  /** Persist a completed turn (user prompt + final assistant answer). */
+  private appendTurnRollout(userContent: ChatContent, assistantText: string): void {
+    if (!this.rolloutPath) return;
+    appendTurn(this.rolloutPath, chatContentToText(userContent), assistantText || null);
   }
 
   // ── chat() with overloads ──────────────────────────────────────────────
@@ -218,6 +254,40 @@ class ChatAgentImpl implements ChatAgent {
 The assistant has reached the tool-calling round limit for this turn. Do not call more tools. Give the user a concise final answer using only the tool results already present in the conversation. If the evidence is partial, clearly say what was checked, what you found, and what remains uncertain.`;
   }
 
+  /**
+   * Pre-turn context compaction. Runs before the new user message is added, so
+   * it only ever rewrites already-completed turns — the current turn's tool/
+   * assistant alternation is never touched. Prune-then-summarize, turn-aligned
+   * (decided by the Zig planner). No-ops unless SIFT_CONTEXT_COMPACTION=1 and the
+   * native library is present; any summarizer error degrades to prune-only so we
+   * never corrupt history on a transient failure.
+   */
+  private async maybeCompact(): Promise<void> {
+    if (!compactionEnabled()) return;
+    // Short threads can't overflow; skip the planner call entirely.
+    if (this.history.length < 8) return;
+
+    const plan = planCompaction(toPlanMessages(this.history), buildCompactionConfig());
+    if (!plan || !plan.needsCompaction) return;
+
+    let summaryText: string | null = null;
+    const summarizeEnd = plan.summarizeRange[1];
+    if (summarizeEnd > 0) {
+      const transcript = buildSummarizeTranscript(this.history, summarizeEnd);
+      try {
+        const resp = await this.adapter.chat([{ role: "user", content: `${COMPACTION_SUMMARY_INSTRUCTION}\n\n<conversation>\n${transcript}\n</conversation>` }], new ToolRegistry(), {
+          systemPrompt: COMPACTION_SUMMARY_SYSTEM,
+          oneShot: true,
+        });
+        summaryText = resp.text?.trim() || null;
+      } catch {
+        summaryText = null; // fall back to prune-only
+      }
+    }
+
+    this.history = applyCompactionPlan(this.history, plan, summaryText);
+  }
+
   private async finalizeAfterToolRoundLimit(promptOverride?: string): Promise<string> {
     const response = await this.adapter.chat(this.history, new ToolRegistry(), {
       systemPrompt: this.exhaustedToolRoundSystemPrompt(promptOverride),
@@ -232,6 +302,11 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     this.switchThreadIfNeeded(options?.threadId);
     const currentThreadId = this.threadId;
     const promptOverride = options?.systemPrompt;
+
+    // Resume prior session history, then compact it before this turn grows the
+    // context further.
+    this.ensureSeeded();
+    await this.maybeCompact();
 
     // Snapshot history length so we can roll back if the turn fails.
     // Without this, a transient adapter error leaves an orphan user
@@ -396,6 +471,9 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
       });
     }
 
+    // Persist the human-visible turn to the rollout for cross-session resume.
+    if (assistantTurnComplete) this.appendTurnRollout(message, finalText);
+
     return {
       text: finalText,
       toolCalls,
@@ -417,6 +495,11 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     this.switchThreadIfNeeded(options?.threadId);
     const currentThreadId = this.threadId;
     const promptOverride = options?.systemPrompt;
+
+    // Resume prior session history, then compact it before this turn grows the
+    // context further.
+    this.ensureSeeded();
+    await this.maybeCompact();
 
     // See chatAsync for why we snapshot before the user push.
     const historyLengthBefore = this.history.length;
@@ -575,6 +658,9 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
         content: finalText,
       });
     }
+
+    // Persist the human-visible turn to the rollout for cross-session resume.
+    if (assistantTurnComplete) this.appendTurnRollout(message, finalText);
 
     yield {
       type: "done",

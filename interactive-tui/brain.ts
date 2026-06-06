@@ -800,6 +800,9 @@ async function getAgent() {
         memory: false,
         maxToolRounds: 24,
         prompt: LEAN_PROMPT,
+        // Stable key for rollout persistence: same workspace/cwd resumes the
+        // prior conversation (gated by SIFT_CONTEXT_COMPACTION inside the agent).
+        persistKey: getWorkspaceRoot() || getSessionCwd(),
       });
     })();
   }

@@ -3,6 +3,7 @@ const std = @import("std");
 const composer = @import("composer_policy.zig");
 const fs_engine = @import("fs_engine.zig");
 const image_engine = @import("image_engine.zig");
+const thread_engine = @import("thread_engine.zig");
 
 const Io = std.Io;
 const Dir = std.Io.Dir;
@@ -129,6 +130,44 @@ const ComposerCtx = struct {
             @intFromBool(composer.sift_paste_looks_structured(self.input.ptr, @intCast(self.input.len)));
     }
 };
+
+const ThreadCtx = struct {
+    input: []const u8,
+
+    fn estimate(ptr: *anyopaque) u32 {
+        const self: *ThreadCtx = @ptrCast(@alignCast(ptr));
+        return thread_engine.sift_thread_estimate_tokens(self.input.ptr, @intCast(self.input.len));
+    }
+};
+
+const ThreadPlanCtx = struct {
+    msgs: []const u8,
+    config: [6]u32,
+    out: []u8,
+    written: u32 = 0,
+    needed: u32 = 0,
+
+    fn plan(ptr: *anyopaque) u32 {
+        const self: *ThreadPlanCtx = @ptrCast(@alignCast(ptr));
+        return thread_engine.sift_thread_plan_compaction(
+            self.msgs.ptr,
+            @intCast(self.msgs.len),
+            &self.config,
+            self.out.ptr,
+            @intCast(self.out.len),
+            &self.written,
+            &self.needed,
+        ) ^ self.written;
+    }
+};
+
+fn benchWriteRecord(buf: []u8, off: *usize, role: u8, flags: u8, content: []const u8) void {
+    buf[off.*] = role;
+    buf[off.* + 1] = flags;
+    std.mem.writeInt(u32, buf[off.* + 2 ..][0..4], @intCast(content.len), .little);
+    @memcpy(buf[off.* + 6 ..][0..content.len], content);
+    off.* += 6 + content.len;
+}
 
 const ImageCtx = struct {
     input: []const u8,
@@ -470,6 +509,19 @@ pub fn main(init: std.process.Init) !void {
         };
     }
 
+    // Realistic English-ish prose: 5-char words separated by single spaces, with
+    // periodic punctuation and newlines. Exercises the word-run hot path of the
+    // token estimator the way real chat transcripts do.
+    var prose: [16 * 1024]u8 = undefined;
+    for (&prose, 0..) |*byte, i| {
+        byte.* = switch (i % 6) {
+            5 => ' ',
+            else => 'a' + @as(u8, @intCast(i % 26)),
+        };
+        if (i % 64 == 63) byte.* = '\n';
+        if (i % 96 == 95) byte.* = ',';
+    }
+
     const png = "\x89PNG\r\n\x1a\n" ++ "\x00\x00\x00\x0dIHDR" ++
         "\x00\x00\x07\x80" ++ "\x00\x00\x04\x38" ++ "\x08\x02\x00\x00\x00";
 
@@ -598,7 +650,30 @@ pub fn main(init: std.process.Init) !void {
     var read_out: [256 * 1024]u8 = undefined;
     var search_out: [512 * 1024]u8 = undefined;
 
+    // Planner fixture: a realistic ~60-message thread (20 turns of user +
+    // assistant + a tool result each), each message a few hundred chars.
+    var plan_msgs: [64 * 1024]u8 = undefined;
+    var plan_off: usize = 0;
+    {
+        var body: [300]u8 = undefined;
+        @memset(&body, 'a');
+        var turn: usize = 0;
+        while (turn < 20) : (turn += 1) {
+            benchWriteRecord(&plan_msgs, &plan_off, 0, 0, body[0..120]); // user
+            benchWriteRecord(&plan_msgs, &plan_off, 1, 0, body[0..200]); // assistant
+            benchWriteRecord(&plan_msgs, &plan_off, 2, 0, &body); // tool output
+        }
+    }
+    var plan_out: [4096]u8 = undefined;
+    var thread_plan_ctx: ThreadPlanCtx = .{
+        .msgs = plan_msgs[0..plan_off],
+        .config = .{ 200_000, 32_000, 2, 4_000, 40_000, 20_000 },
+        .out = &plan_out,
+    };
+
     var composer_ctx: ComposerCtx = .{ .input = &paste };
+    var thread_prose_ctx: ThreadCtx = .{ .input = &prose };
+    var thread_paste_ctx: ThreadCtx = .{ .input = &paste };
     var image_ctx: ImageCtx = .{ .input = png };
     var read_ctx: ReadCtx = .{ .path = read_path, .out = &read_out };
     var search_rare_ctx: SearchCtx = .{
@@ -924,6 +999,9 @@ pub fn main(init: std.process.Init) !void {
     _ = SearchCtx.search(&search_matcher_common_token_ctx);
     try std.testing.expectEqual(@as(u32, 500), search_matcher_common_token_ctx.stats.matches);
 
+    try runBench("thread estimate_tokens prose 16 KiB", 100_000, prose.len, &thread_prose_ctx, ThreadCtx.estimate);
+    try runBench("thread estimate_tokens structured 16 KiB", 100_000, paste.len, &thread_paste_ctx, ThreadCtx.estimate);
+    try runBench("thread plan_compaction 60-msg thread", 100_000, thread_plan_ctx.msgs.len, &thread_plan_ctx, ThreadPlanCtx.plan);
     try runBench("composer decision only, 16 KiB paste", 100_000, paste.len, &composer_ctx, ComposerCtx.decision);
     try runBench("composer full analysis, 16 KiB paste", 50_000, paste.len, &composer_ctx, ComposerCtx.full);
     try runBench("image probe PNG header", 1_000_000, png.len, &image_ctx, ImageCtx.probe);
