@@ -140,10 +140,10 @@ if (LOCAL) {
   client = new ControlClient(baseUrl, process.env.EXECUTERM_DASHBOARD_TOKEN);
 }
 
-// Phase 1 of the thread-engine rollout: a live context-size meter in the status
-// bar, driven by the Zig token estimator. Gated until the compaction planner and
-// rollout persistence land; off by default.
-const COMPACTION_ENABLED = process.env.SIFT_CONTEXT_COMPACTION === "1";
+// Live context-size meter in the status bar, driven by the Zig token
+// estimator. On by default with the rest of the thread engine; set
+// SIFT_CONTEXT_COMPACTION=0 to opt out.
+const COMPACTION_ENABLED = process.env.SIFT_CONTEXT_COMPACTION !== "0";
 
 type Msg = {
   role: "you" | "assistant" | "system" | "shell" | "tool";

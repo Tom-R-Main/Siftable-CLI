@@ -267,7 +267,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     // Short threads can't overflow; skip the planner call entirely.
     if (this.history.length < 8) return;
 
-    const plan = planCompaction(toPlanMessages(this.history), buildCompactionConfig());
+    const plan = planCompaction(toPlanMessages(this.history), buildCompactionConfig(this.model));
     if (!plan || !plan.needsCompaction) return;
 
     let summaryText: string | null = null;

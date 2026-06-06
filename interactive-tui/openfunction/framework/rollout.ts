@@ -15,9 +15,9 @@ import { rolloutAppend, rolloutLoad, rolloutPathForKey } from "../../threadEngin
 const ROLE_CODE = { user: 0, assistant: 1 } as const;
 const CODE_ROLE = ["user", "assistant", "tool"] as const;
 
-/** Persistence shares the master thread-engine flag. */
+/** Persistence shares the master thread-engine flag. Default ON (opt out with =0). */
 export function persistEnabled(): boolean {
-  return process.env.SIFT_CONTEXT_COMPACTION === "1";
+  return process.env.SIFT_CONTEXT_COMPACTION !== "0";
 }
 
 /** Resolve the on-disk rollout path for a thread key (workspace/cwd). */

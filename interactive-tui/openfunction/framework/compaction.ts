@@ -38,12 +38,31 @@ Be concise and factual.`;
 
 /** Feature flag — mirrors the TUI's SIFT_CONTEXT_COMPACTION gate. */
 export function compactionEnabled(): boolean {
-  return process.env.SIFT_CONTEXT_COMPACTION === "1";
+  // Default ON; set SIFT_CONTEXT_COMPACTION=0 to opt out.
+  return process.env.SIFT_CONTEXT_COMPACTION !== "0";
 }
 
-/** Budget config; context window is overridable via SIFT_CONTEXT_WINDOW. */
-export function buildCompactionConfig(): CompactionConfig {
-  const contextWindow = Number(process.env.SIFT_CONTEXT_WINDOW) || 200_000;
+// Approximate provider context windows (tokens). Substring-matched against the
+// model id; SIFT_CONTEXT_WINDOW overrides. Conservative where a family varies.
+const MODEL_CONTEXT_WINDOWS: Array<[RegExp, number]> = [
+  [/gemini/i, 1_000_000],
+  [/claude/i, 200_000],
+  [/deepseek/i, 128_000],
+  [/gpt-?5|^gpt|o\d|codex/i, 256_000],
+];
+
+function contextWindowFor(modelId?: string): number {
+  const env = Number(process.env.SIFT_CONTEXT_WINDOW);
+  if (env > 0) return env;
+  if (modelId) {
+    for (const [re, w] of MODEL_CONTEXT_WINDOWS) if (re.test(modelId)) return w;
+  }
+  return 200_000;
+}
+
+/** Budget config; window is resolved per-model (SIFT_CONTEXT_WINDOW overrides). */
+export function buildCompactionConfig(modelId?: string): CompactionConfig {
+  const contextWindow = contextWindowFor(modelId);
   // Reserve covers max output tokens + residual token-estimate drift. The Phase 4
   // punctuation-surcharge calibration eliminated the dangerous code under-count
   // (validated vs DeepSeek's real tokenizer: code went -13% -> ~0%), so the 32k

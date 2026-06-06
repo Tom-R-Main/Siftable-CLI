@@ -1109,7 +1109,7 @@ export const interactiveCommands: InteractiveCommand[] = [
     description: "show or clear the persisted conversation for this workspace",
     usage: "/threads [clear]",
     run: (ctx, args) => {
-      if (process.env.SIFT_CONTEXT_COMPACTION !== "1") {
+      if (process.env.SIFT_CONTEXT_COMPACTION === "0") {
         ctx.push({role: "system", text: "Thread persistence is off. Set SIFT_CONTEXT_COMPACTION=1 to enable resume."});
         return;
       }
