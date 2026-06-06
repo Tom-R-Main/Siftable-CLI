@@ -44,11 +44,11 @@ export function compactionEnabled(): boolean {
 /** Budget config; context window is overridable via SIFT_CONTEXT_WINDOW. */
 export function buildCompactionConfig(): CompactionConfig {
   const contextWindow = Number(process.env.SIFT_CONTEXT_WINDOW) || 200_000;
-  // Reserve covers max output tokens + token-estimate drift. A real-tokenizer
-  // experiment (DeepSeek v4) showed the heuristic OVER-counts prose (safe) but
-  // UNDER-counts code by ~13% (the dangerous direction); 32k absorbs that drift
-  // on a 200k window with room for output, pending Phase 4 BPE-accurate counts.
-  const reserved = 32_000;
+  // Reserve covers max output tokens + residual token-estimate drift. The Phase 4
+  // punctuation-surcharge calibration eliminated the dangerous code under-count
+  // (validated vs DeepSeek's real tokenizer: code went -13% -> ~0%), so the 32k
+  // safety band-aid is reduced to a 24k buffer for output + minor residual drift.
+  const reserved = 24_000;
   const usable = Math.max(contextWindow - reserved, Math.floor(contextWindow / 2));
   const preserveRecentTokens = Math.min(8_000, Math.max(2_000, Math.floor(usable * 0.25)));
   return {

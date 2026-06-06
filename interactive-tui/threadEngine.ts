@@ -114,7 +114,13 @@ export function estimateTokens(text: string): number {
  * Exported for parity tests; prefer {@link estimateTokens} at call sites.
  */
 export function estimateTokensFallback(text: string): number {
-  let count = 0;
+  // Mirrors native/thread_engine.zig: word runs ceil(chars/4), multibyte 1 each,
+  // punctuation carries a surcharge (PUNCT_WEIGHT_TENTHS/10) to correct the
+  // code under-count without lowering prose. Keep these two in lockstep.
+  const PUNCT_WEIGHT_TENTHS = 13;
+  let wordTokens = 0;
+  let punct = 0;
+  let multibyte = 0;
   let i = 0;
   const len = text.length;
   while (i < len) {
@@ -127,18 +133,18 @@ export function estimateTokensFallback(text: string): number {
         run += 1;
         i += 1;
       }
-      count += Math.ceil(run / 4);
+      wordTokens += Math.ceil(run / 4);
     } else if (/\s/.test(ch)) {
       i += size;
     } else if (code < 0x80) {
-      count += 1;
+      punct += 1;
       i += size;
     } else {
-      count += 1;
+      multibyte += 1;
       i += size;
     }
   }
-  return count;
+  return wordTokens + multibyte + Math.floor((punct * PUNCT_WEIGHT_TENTHS + 5) / 10);
 }
 
 // ── Compaction planner bridge ────────────────────────────────────────────────

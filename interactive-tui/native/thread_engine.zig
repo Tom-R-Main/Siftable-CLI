@@ -62,8 +62,18 @@ fn wordRunTokens(chars: usize) u32 {
     return @intCast((chars + 3) / 4);
 }
 
+// Calibration (Phase 4): a real-tokenizer study (DeepSeek v4) showed the raw
+// heuristic OVER-counts prose (the safe direction) but UNDER-counts symbol-dense
+// code (the dangerous direction). We correct ONLY upward — punctuation carries a
+// surcharge — so prose stays conservative and pure word-runs are unchanged
+// (preserving the simple ceil(chars/4) model for plain text). PUNCT_WEIGHT is
+// stored as tenths; 14 = 1.4 tokens per standalone punctuation char.
+const PUNCT_WEIGHT_TENTHS: u32 = 13;
+
 fn estimateTokens(input: []const u8) u32 {
-    var count: u32 = 0;
+    var word_tokens: u32 = 0;
+    var punct: u32 = 0;
+    var multibyte: u32 = 0;
     var i: usize = 0;
     while (i < input.len) {
         switch (classOf(input[i])) {
@@ -73,26 +83,30 @@ fn estimateTokens(input: []const u8) u32 {
                 const run_start = i;
                 i += 1;
                 while (i < input.len and class_table[input[i]] == .word) : (i += 1) {}
-                count += wordRunTokens(i - run_start);
+                word_tokens += wordRunTokens(i - run_start);
             },
             .space => {
                 // Whitespace folds into adjacent tokens (BPE attaches leading space).
                 i += 1;
             },
             .punct => {
-                // Standalone ASCII punctuation / symbol: ~1 token each.
-                count += 1;
+                // Standalone ASCII punctuation / symbol. Counted with a surcharge
+                // because real BPE splits dense operator/bracket sequences more
+                // finely than one-token-each.
+                punct += 1;
                 i += 1;
             },
             .multibyte => {
                 // Multibyte codepoint (CJK, emoji, accented): ~1 token per codepoint.
-                count += 1;
+                multibyte += 1;
                 i += 1;
                 while (i < input.len and isContinuationByte(input[i])) : (i += 1) {}
             },
         }
     }
-    return count;
+    // round(punct * weight/10), surcharge only — never below the raw punct count.
+    const punct_tokens = (punct * PUNCT_WEIGHT_TENTHS + 5) / 10;
+    return word_tokens + multibyte + punct_tokens;
 }
 
 pub export fn sift_thread_estimate_tokens(ptr: [*]const u8, len: u32) u32 {
@@ -485,9 +499,10 @@ test "whitespace folds, words counted independently" {
     try std.testing.expectEqual(@as(u32, 6), sift_thread_estimate_tokens(text.ptr, text.len));
 }
 
-test "punctuation counts as standalone tokens" {
-    const text = "a, b."; // a(1) ,(1) b(1) .(1)
-    try std.testing.expectEqual(@as(u32, 4), sift_thread_estimate_tokens(text.ptr, text.len));
+test "punctuation carries a calibration surcharge" {
+    // a(1) b(1) + 2 punct -> round(2*1.4)=3  => 5
+    const text = "a, b.";
+    try std.testing.expectEqual(@as(u32, 5), sift_thread_estimate_tokens(text.ptr, text.len));
 }
 
 test "multibyte codepoints break word runs" {

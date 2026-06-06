@@ -25,7 +25,7 @@ const VECTORS: Array<[string, number]> = [
   ["test", 1], // 4 chars -> ceil(4/4)
   ["hello", 2], // 5 chars -> ceil(5/4)
   ["the quick brown fox", 6], // 1+2+2+1
-  ["a, b.", 4], // a , b .
+  ["a, b.", 5], // a(1) b(1) + round(2 punct * 1.4) = 3
   ["日本語", 3], // 3 CJK codepoints
   ["héllo", 3], // h | é | llo
   ["😀😀", 2], // two emoji (surrogate pairs), one token each
