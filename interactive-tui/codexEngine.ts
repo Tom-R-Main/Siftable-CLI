@@ -335,8 +335,13 @@ export class CodexClient {
 // ── Singleton + lifecycle ────────────────────────────────────────────────────
 let client: CodexClient | null = null;
 let installState: CodexInstallState = 'unknown';
-let threadId: string | null = null;
-let threadContextKey: string | null = null;
+// One Codex thread per active-session context, keyed by `${cwd}|${workspaceRoot}|${model}`.
+// Lane C: a child session runs in its own worktree (cwd), so it must hold its own
+// thread — switching to a child and back must not tear down the parent's thread.
+// Model is part of the key so a `/model` switch starts a fresh thread (matching
+// the OpenFunction agent's reset-on-model-change), rather than silently reusing
+// a thread bound to the old model. See docs/architecture/mergemaster-session-and-git-model.md.
+const threads = new Map<string, string>();
 let accountCache: { account: CodexAccount | null; ts: number } | null = null;
 const ACCOUNT_TTL_MS = 15_000;
 
@@ -383,8 +388,13 @@ export function getCodexInstallState(): CodexInstallState {
 export function shutdownCodex(): void {
   client?.shutdown();
   client = null;
-  threadId = null;
+  threads.clear();
   accountCache = null;
+}
+
+/** Test seam: drop all cached per-context threads without touching the client. */
+export function __resetCodexThreadsForTests(): void {
+  threads.clear();
 }
 
 // Best-effort cleanup so we never orphan an app-server process.
@@ -601,10 +611,18 @@ function toUserInput(input: ChatInput): Array<Record<string, JsonValue>> {
   return out;
 }
 
-async function ensureThread(c: CodexClient, model?: string): Promise<string> {
+/**
+ * Resolve (or lazily start) the Codex thread for the *active* session context.
+ * Threads are cached per `${cwd}|${workspaceRoot}|${model}` so each mergeMaster
+ * session keeps its own conversation: entering a child worktree and returning to
+ * the parent reuses each side's thread instead of restarting. Exported for the
+ * keyed-thread tests (see interactive.codex-client.test.ts).
+ */
+export async function ensureThread(c: CodexClient, model?: string): Promise<string> {
   const cwd = getSessionCwd();
-  const contextKey = `${cwd}|${workspaceRoot()}`;
-  if (threadId && threadContextKey === contextKey) return threadId;
+  const contextKey = `${cwd}|${workspaceRoot()}|${model ?? 'default'}`;
+  const existing = threads.get(contextKey);
+  if (existing) return existing;
   const res = await c.request('thread/start', {
     cwd,
     approvalPolicy: approvalPolicyNow(),
@@ -612,10 +630,10 @@ async function ensureThread(c: CodexClient, model?: string): Promise<string> {
     ...(model ? { model } : {}),
   });
   const thread = res.thread as Record<string, JsonValue> | undefined;
-  threadId = thread && typeof thread.id === 'string' ? thread.id : null;
-  threadContextKey = threadId ? contextKey : null;
-  if (!threadId) throw new Error('codex thread/start returned no thread id');
-  return threadId;
+  const id = thread && typeof thread.id === 'string' ? thread.id : null;
+  if (!id) throw new Error('codex thread/start returned no thread id');
+  threads.set(contextKey, id);
+  return id;
 }
 
 /**

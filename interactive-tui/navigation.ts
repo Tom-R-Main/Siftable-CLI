@@ -130,6 +130,28 @@ export function setSessionCwd(pathInput: string): SessionCwdChange {
   };
 }
 
+/**
+ * Restore the session cwd/workspace-root env to a previously-captured state.
+ *
+ * Unlike calling {@link setSessionCwd} with the old cwd, this sets the workspace
+ * root back to its *exact* prior value rather than re-deriving it from the cwd.
+ * That matters when the prior root was set explicitly (e.g. via
+ * `SIFT_WORKSPACE_ROOT`) rather than discovered: re-derivation could land on a
+ * different directory. Pairs with the `previousCwd`/`previousWorkspaceRoot`
+ * fields {@link setSessionCwd} returns so an enter→leave round-trips exactly,
+ * including through nested switches. An empty captured value means the env var
+ * was unset at capture time, so we unset it again (back to the derived default).
+ */
+export function restoreSessionCwd(previous: {
+  previousCwd: string;
+  previousWorkspaceRoot: string;
+}): void {
+  if (previous.previousCwd) process.env.SIFT_USER_CWD = previous.previousCwd;
+  else delete process.env.SIFT_USER_CWD;
+  if (previous.previousWorkspaceRoot) process.env.SIFT_WORKSPACE_ROOT = previous.previousWorkspaceRoot;
+  else delete process.env.SIFT_WORKSPACE_ROOT;
+}
+
 function defaultDiscoveryRoots(): string[] {
   const roots = [
     process.env.HOME ? join(process.env.HOME, "projects") : "",

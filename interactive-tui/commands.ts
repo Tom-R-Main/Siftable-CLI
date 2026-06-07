@@ -28,8 +28,29 @@ import {
   type CrewScope,
   type SiftCrewDefinition,
 } from "./crewRegistry";
+import type {
+  ChildSessionRecord,
+  ChildSessionView,
+  SpawnChildInput,
+  SpawnChildResult,
+} from "./childSessionController";
 
 export type CommandMessage = { role: "you" | "assistant" | "system" | "shell" | "tool"; text: string };
+
+/**
+ * mergeMaster child-session actions exposed to slash commands. The TUI backs
+ * these with a real childSessionController + sessionContext (worktree spawn, cwd
+ * + transcript swap); tests back them with a fake. Keeping the surface here lets
+ * /spawn·/children·/enter·/leave stay pure handlers over the context.
+ */
+export interface ChildSessionActions {
+  list: () => ChildSessionView[];
+  /** Stable id of the active child, or null when the parent is active. */
+  activeChildId: () => number | null;
+  spawn: (input: SpawnChildInput) => SpawnChildResult;
+  enter: (sessionId: number) => {ok: boolean; reason?: string; session?: ChildSessionRecord};
+  leave: () => {ok: boolean; reason?: string};
+}
 
 export interface InteractiveCommandContext {
   client: ControlTransport;
@@ -59,6 +80,8 @@ export interface InteractiveCommandContext {
   latestExplorerReport: () => string;
   copyText: (text: string) => Promise<string>;
   setAwaitingLogin: (value: boolean) => void;
+  /** mergeMaster child-session control (/spawn · /children · /enter · /leave). */
+  sessions: ChildSessionActions;
 }
 
 export interface InteractiveCommand {
@@ -1199,6 +1222,137 @@ const interactiveCommandsBase: InteractiveCommand[] = [
   },
 ];
 
+// ── child-session (/spawn · /children · /enter · /leave) helpers ─────────────
+
+interface ParsedSpawn {
+  title: string;
+  accessMode: "read_only" | "read_write";
+  writeScope?: string[];
+  /** read_write explicitly opted out of a scope (unserialized). */
+  rwAny: boolean;
+  error?: string;
+}
+
+/**
+ * Parse `/spawn <title> [--rw <globs> | --rw-any | --ro]`. The default is
+ * read_write, which REQUIRES a scope (`--rw`) so Gate-A can serialize writers;
+ * `--rw-any` is the explicit escape hatch that creates an unserialized writer,
+ * and `--ro` makes a read-only child (no worktree write, no scope needed).
+ */
+function parseSpawnArgs(args: string[]): ParsedSpawn {
+  const titleParts: string[] = [];
+  const scope: string[] = [];
+  let ro = false;
+  let rwAny = false;
+  let sawRw = false;
+  let i = 0;
+  while (i < args.length && !args[i].startsWith("--")) titleParts.push(args[i++]);
+  for (; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--ro" || a === "--read-only") ro = true;
+    else if (a === "--rw-any") rwAny = true;
+    else if (a === "--rw" || a === "--read-write") {
+      sawRw = true;
+      while (i + 1 < args.length && !args[i + 1].startsWith("--")) {
+        scope.push(...args[++i].split(",").map((s) => s.trim()).filter(Boolean));
+      }
+    } else {
+      return {title: titleParts.join(" ").trim(), accessMode: "read_write", rwAny: false, error: `unknown flag ${a}`};
+    }
+  }
+  const title = titleParts.join(" ").trim();
+  if (ro) return {title, accessMode: "read_only", rwAny: false};
+  if (sawRw) {
+    if (scope.length === 0) {
+      return {title, accessMode: "read_write", rwAny: false, error: "--rw needs at least one path glob (or use --rw-any)"};
+    }
+    return {title, accessMode: "read_write", writeScope: scope, rwAny: false};
+  }
+  if (rwAny) return {title, accessMode: "read_write", rwAny: true};
+  return {
+    title,
+    accessMode: "read_write",
+    rwAny: false,
+    error: "a write-capable child needs --rw <globs> (or --rw-any to skip serialization, or --ro for read-only)",
+  };
+}
+
+const SPAWN_USAGE = "/spawn <title> [--rw <globs> | --rw-any | --ro]";
+
+function spawnCommand(ctx: InteractiveCommandContext, args: string[]): void {
+  const parsed = parseSpawnArgs(args);
+  if (!parsed.title) {
+    ctx.push({role: "system", text: SPAWN_USAGE});
+    return;
+  }
+  if (parsed.error) {
+    ctx.push({role: "system", text: `/spawn: ${parsed.error}\n${SPAWN_USAGE}`});
+    return;
+  }
+  const res = ctx.sessions.spawn({
+    title: parsed.title,
+    accessMode: parsed.accessMode,
+    writeScope: parsed.writeScope,
+  });
+  if (!res.ok) {
+    const extra = res.blockedBy ? ` (blocked by child #${res.blockedBy})` : "";
+    ctx.push({role: "system", text: `/spawn blocked: ${res.reason}${extra}`});
+    return;
+  }
+  const s = res.session;
+  const warn =
+    s.accessMode === "read_write" && s.writeScope.length === 0
+      ? "\n⚠ read_write with no scope (--rw-any): not serialized against other writers."
+      : "";
+  ctx.push({
+    role: "system",
+    text: `spawned child #${s.sessionId} · ${s.branch}\n  worktree: ${s.worktreePath}${warn}\n  /enter ${s.sessionId} to work in it`,
+  });
+}
+
+function formatChildren(ctx: InteractiveCommandContext): string {
+  const list = ctx.sessions.list();
+  if (!list.length) return "No child sessions. Create one with /spawn <title> --rw <globs>.";
+  const active = ctx.sessions.activeChildId();
+  const rows = list.map((c: ChildSessionView) => {
+    const marker = c.sessionId === active ? "▶" : " ";
+    const scope = c.writeScope.length
+      ? ` [${c.writeScope.join(", ")}]`
+      : c.accessMode === "read_write"
+        ? " [unscoped]"
+        : " [ro]";
+    return `${marker} #${c.sessionId}  ${c.status.padEnd(13)} ${c.branch}${scope}`;
+  });
+  return ["Child sessions (/enter <id> · /leave):", ...rows].join("\n");
+}
+
+function enterCommand(ctx: InteractiveCommandContext, args: string[]): void {
+  const id = Number(args[0]);
+  if (!args[0] || !Number.isInteger(id)) {
+    ctx.push({role: "system", text: "/enter <session-id>  (see /children)"});
+    return;
+  }
+  const res = ctx.sessions.enter(id);
+  if (!res.ok || !res.session) {
+    ctx.push({role: "system", text: `/enter: ${res.reason ?? "could not enter session"}`});
+    return;
+  }
+  const s = res.session;
+  ctx.push({
+    role: "system",
+    text: `entered child #${s.sessionId} · ${s.branch}\n  cwd → ${s.worktreePath}\n  /leave to return to the parent`,
+  });
+}
+
+function leaveCommand(ctx: InteractiveCommandContext): void {
+  const res = ctx.sessions.leave();
+  if (!res.ok) {
+    ctx.push({role: "system", text: `/leave: ${res.reason ?? "not in a child session"}`});
+    return;
+  }
+  ctx.push({role: "system", text: "left child — back in the parent session."});
+}
+
 export const interactiveCommands: InteractiveCommand[] = [
   ...interactiveCommandsBase,
   {
@@ -1271,6 +1425,29 @@ export const interactiveCommands: InteractiveCommand[] = [
             : ctx.latestAssistantText();
       ctx.push({role: "system", text: await ctx.copyText(text)});
     },
+  },
+  {
+    name: "spawn",
+    description: "spawn a child session in its own worktree",
+    usage: "<title> [--rw <globs> | --rw-any | --ro]",
+    run: (ctx, args) => spawnCommand(ctx, args),
+  },
+  {
+    name: "children",
+    aliases: ["kids"],
+    description: "list mergeMaster child sessions",
+    run: (ctx) => ctx.push({role: "system", text: formatChildren(ctx)}),
+  },
+  {
+    name: "enter",
+    description: "enter a child session by id (worktree cwd + its own thread)",
+    usage: "<session-id>",
+    run: (ctx, args) => enterCommand(ctx, args),
+  },
+  {
+    name: "leave",
+    description: "leave the active child session, back to the parent",
+    run: (ctx) => leaveCommand(ctx),
   },
   {name: "clear", description: "clear the conversation", run: (ctx) => ctx.setMessages([{role: "system", text: "cleared."}])},
   {

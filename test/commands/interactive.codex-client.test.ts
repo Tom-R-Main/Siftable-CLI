@@ -7,7 +7,16 @@
  *
  * All driven through an injected FakeCodexProc — no real binary is spawned.
  */
-import { CodexClient } from '../../interactive-tui/codexEngine';
+import {mkdtemp, mkdir, rm, realpath} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import {
+  CodexClient,
+  ensureThread,
+  shutdownCodex,
+  __resetCodexThreadsForTests,
+} from '../../interactive-tui/codexEngine';
+import {getSessionCwd, setSessionCwd} from '../../interactive-tui/navigation';
 import {
   FakeCodexProc,
   completeHandshake,
@@ -179,5 +188,116 @@ describe('CodexClient shutdown', () => {
     expect(proc.killed).toBe(true);
     expect(proc.killSignal).toBe('SIGTERM');
     await expect(p).rejects.toThrow('codex client shut down');
+  });
+});
+
+/**
+ * Lane C — ensureThread keys one Codex thread per active-session context
+ * (`${cwd}|${workspaceRoot}|${model}`). The proof that a child worktree gets its
+ * own thread AND the parent keeps its own is a thread/start *call count*: each
+ * distinct context starts exactly once, re-entering a known context reuses it.
+ */
+describe('ensureThread — per-session keyed threads', () => {
+  const startCount = (proc: FakeCodexProc) =>
+    proc.sent.filter((m) => m.method === 'thread/start').length;
+
+  /** Wait until a thread/start beyond `prevCount` is on the wire; return its id. */
+  async function waitForNewThreadStart(proc: FakeCodexProc, prevCount: number): Promise<number> {
+    for (let i = 0; i < 200; i++) {
+      const starts = proc.sent.filter((m) => m.method === 'thread/start');
+      if (starts.length > prevCount) return starts[starts.length - 1].id as number;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    throw new Error('timed out waiting for a new thread/start');
+  }
+
+  /** Drive ensureThread through a cache MISS: expect a new start, reply, resolve. */
+  async function startMiss(
+    client: CodexClient,
+    proc: FakeCodexProc,
+    threadId: string,
+    model?: string,
+  ): Promise<string> {
+    const prev = startCount(proc);
+    const p = ensureThread(client, model);
+    const id = await waitForNewThreadStart(proc, prev);
+    proc.reply(id, { thread: { id: threadId } });
+    return p;
+  }
+
+  let savedUserCwd: string | undefined;
+  let savedWorkspaceRoot: string | undefined;
+  let dirs: { parent: string; child: string; cleanup: () => Promise<void> };
+
+  beforeEach(async () => {
+    savedUserCwd = process.env.SIFT_USER_CWD;
+    savedWorkspaceRoot = process.env.SIFT_WORKSPACE_ROOT;
+    __resetCodexThreadsForTests();
+    const base = await realpath(await mkdtemp(join(tmpdir(), 'sift-codex-thr-')));
+    const parent = join(base, 'parent');
+    const child = join(base, 'child');
+    await mkdir(parent, { recursive: true });
+    await mkdir(child, { recursive: true });
+    dirs = { parent, child, cleanup: () => rm(base, { recursive: true, force: true }) };
+  });
+
+  afterEach(async () => {
+    __resetCodexThreadsForTests();
+    if (savedUserCwd === undefined) delete process.env.SIFT_USER_CWD;
+    else process.env.SIFT_USER_CWD = savedUserCwd;
+    if (savedWorkspaceRoot === undefined) delete process.env.SIFT_WORKSPACE_ROOT;
+    else process.env.SIFT_WORKSPACE_ROOT = savedWorkspaceRoot;
+    await dirs.cleanup();
+  });
+
+  it('parent → child → parent reuses each thread (one thread/start per context)', async () => {
+    const { client, proc } = await readyClient();
+
+    setSessionCwd(dirs.parent);
+    const tidParent = await startMiss(client, proc, 't-parent');
+
+    setSessionCwd(dirs.child);
+    const tidChild = await startMiss(client, proc, 't-child');
+
+    // Back in the parent context — must reuse, NOT restart (no reply needed).
+    setSessionCwd(dirs.parent);
+    const tidParentAgain = await ensureThread(client);
+
+    expect(startCount(proc)).toBe(2); // exactly two contexts ever started
+    expect(tidParentAgain).toBe(tidParent);
+    expect(tidChild).not.toBe(tidParent); // distinct cwd → distinct thread
+  });
+
+  it('same cwd, different model → a fresh thread/start (model is part of the key)', async () => {
+    const { client, proc } = await readyClient();
+    setSessionCwd(dirs.parent);
+
+    const tidA = await startMiss(client, proc, 't-a', 'modelA');
+    const tidB = await startMiss(client, proc, 't-b', 'modelB');
+
+    expect(startCount(proc)).toBe(2);
+    expect(tidA).not.toBe(tidB);
+    const starts = proc.sent.filter((m) => m.method === 'thread/start');
+    expect((starts[0].params as { model?: string }).model).toBe('modelA');
+    expect((starts[1].params as { model?: string }).model).toBe('modelB');
+
+    // Re-asking modelA reuses the first thread — no third start.
+    const tidAagain = await ensureThread(client, 'modelA');
+    expect(tidAagain).toBe(tidA);
+    expect(startCount(proc)).toBe(2);
+  });
+
+  it('shutdownCodex clears the thread map (next ask starts fresh)', async () => {
+    const { client, proc } = await readyClient();
+    setSessionCwd(dirs.parent);
+
+    const tid1 = await startMiss(client, proc, 't-1');
+    expect(startCount(proc)).toBe(1);
+
+    shutdownCodex(); // drops the cache
+
+    const tid2 = await startMiss(client, proc, 't-2');
+    expect(startCount(proc)).toBe(2); // had to restart — cache was cleared
+    expect(tid2).not.toBe(tid1);
   });
 });

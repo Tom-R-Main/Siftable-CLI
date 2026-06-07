@@ -73,6 +73,9 @@ import {
 } from "./toolView";
 import { serializeConversation } from "./transcript";
 import { getSessionCwd, getWorkspaceRoot, setSessionCwd } from "./navigation";
+import { createChildSessionController } from "./childSessionController";
+import { createSessionContext } from "./sessionContext";
+import { formatChildBar, formatChildBarLine, type ChildBarEntry } from "./childBar";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, extname } from "node:path";
 import {
@@ -225,6 +228,9 @@ function App() {
   const [cursor, setCursor] = createSignal(0);
   const [status, setStatus] = createSignal("connecting…");
   const [agents, setAgents] = createSignal<RunningAgent[]>([]);
+  // mergeMaster child sessions — rendered as their OWN badged bar segment,
+  // separate from the backend RunningAgent rows above.
+  const [childBar, setChildBar] = createSignal<ChildBarEntry[]>([]);
   const [model, setModel] = createSignal("");
   const [effort, setEffort] = createSignal("");
   const [busy, setBusy] = createSignal(false);
@@ -258,6 +264,17 @@ function App() {
   let latestExplorerReport = "";
   const history: string[] = [];
   const attachments = new Map<string, ComposerAttachment>();
+
+  // mergeMaster child sessions: spawn worktrees (lanes A/B via the controller),
+  // and swap cwd + the visible transcript on enter/leave (sessionContext owns the
+  // active-session pointer + per-session transcript buffers). The parent (root)
+  // session is anchored at the workspace the TUI launched in.
+  const childController = createChildSessionController();
+  const sessionCtx = createSessionContext<Msg>({
+    sessionId: 0,
+    conversationKey: `parent:${getWorkspaceRoot() || getSessionCwd()}`,
+    sessionCwd: getSessionCwd(),
+  });
   let attachmentSeq = 0;
   let histIndex = 0;
 
@@ -504,6 +521,12 @@ function App() {
     try {
       const s = await client.state();
       setAgents(s.context?.runningAgents ?? []);
+      setChildBar(
+        formatChildBar(
+          childController.listChildSessions(),
+          sessionCtx.isRoot() ? null : sessionCtx.activeSessionId(),
+        ),
+      );
       if (s.model?.model) setModel(s.model.model);
       setEffort(s.model?.effort ?? "");
       if (awaitingLogin() && s.authStatus === "authenticated") {
@@ -716,7 +739,9 @@ function App() {
   }
 
   // Store the full diagram for /view and push an inline message: the whole thing
-  // if it fits, otherwise a viewport-width-clipped preview plus a pan hint.
+  // if it fits, otherwise a viewport-bounded preview (clipped on BOTH axes) plus
+  // a pan hint. Bounding the height keeps a tall diagram from flooding the
+  // transcript — the full thing is always available via /view.
   function showDiagramInline(fullText: string) {
     const text = fullText.replace(/\n+$/, "");
     setLastDiagram(text);
@@ -724,11 +749,15 @@ function App() {
     const w = lines.reduce((max, l) => Math.max(max, l.length), 0);
     const h = lines.length;
     const maxCols = Math.max(20, terminal().width - 4);
-    if (w <= maxCols) {
+    const maxRows = Math.max(8, Math.floor(terminal().height / 2));
+    if (w <= maxCols && h <= maxRows) {
       push({ role: "system", text });
       return;
     }
-    const clipped = lines.map((l) => (l.length > maxCols ? l.slice(0, maxCols) : l)).join("\n");
+    const clipped = lines
+      .slice(0, maxRows)
+      .map((l) => (l.length > maxCols ? l.slice(0, maxCols) : l))
+      .join("\n");
     push({ role: "system", text: `${clipped}\n… ${w}×${h} clipped — /view to pan (arrows / hjkl).` });
   }
 
@@ -775,6 +804,32 @@ function App() {
       setAwaitingLogin,
       showDiagram: (fullText: string) => showDiagramInline(fullText),
       viewLastDiagram: () => openDiagramViewer(),
+      sessions: {
+        list: () => childController.listChildSessions(),
+        activeChildId: () => (sessionCtx.isRoot() ? null : sessionCtx.activeSessionId()),
+        spawn: (input) => childController.spawnChild(input),
+        enter: (sessionId: number) => {
+          const rec = childController.getChild(sessionId);
+          if (!rec) return { ok: false, reason: `no child session #${sessionId}` };
+          // Save the parent's visible transcript, switch cwd+buffer, show child's.
+          sessionCtx.replaceTranscript([...messages]);
+          const sw = sessionCtx.enter({
+            sessionId: rec.sessionId,
+            conversationKey: rec.conversationKey,
+            sessionCwd: rec.worktreePath,
+          });
+          setMessages([...sw.transcript]);
+          return { ok: true, session: rec };
+        },
+        leave: () => {
+          if (sessionCtx.isRoot()) return { ok: false, reason: "not in a child session" };
+          sessionCtx.replaceTranscript([...messages]);
+          const sw = sessionCtx.leave();
+          if (!sw) return { ok: false, reason: "not in a child session" };
+          setMessages([...sw.transcript]);
+          return { ok: true };
+        },
+      },
     };
   }
 
@@ -1419,6 +1474,9 @@ function App() {
           .join("  ")}`
       : "no local agents";
 
+  // Child-session segment — distinct from the backend agent label above.
+  const childBarLabel = () => formatChildBarLine(childBar());
+
   const composerMaxHeight = () => Math.min(MAX_COMPOSER_LINES, Math.max(4, Math.floor(terminal().height / 3)));
 
   // Empty state → centered hero. The ascii wordmark only renders when the
@@ -1496,6 +1554,12 @@ function App() {
           <text fg={busy() ? theme.warn : theme.ok} selectable={false}>{busy() ? spinner() + " " : "● "}</text>
           <text fg={theme.muted} selectable={false}>{agentLabel()}</text>
         </box>
+        <Show when={childBar().length}>
+          <box flexDirection="row" alignItems="center">
+            <text fg={theme.signal} selectable={false}>⌥ </text>
+            <text fg={theme.muted} selectable={false}>{childBarLabel()}</text>
+          </box>
+        </Show>
       </box>
 
       <Show when={showHero()}>

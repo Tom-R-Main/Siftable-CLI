@@ -66,6 +66,13 @@ export function buildCommandContext(overrides: Partial<InteractiveCommandContext
     showDiagram: jest.fn(),
     viewLastDiagram: jest.fn(() => false),
     setAwaitingLogin: jest.fn(),
+    sessions: {
+      list: jest.fn(() => []),
+      activeChildId: jest.fn(() => null),
+      spawn: jest.fn(() => ({ok: false, reason: 'sessions stub'})),
+      enter: jest.fn(() => ({ok: false, reason: 'sessions stub'})),
+      leave: jest.fn(() => ({ok: false, reason: 'not in a child session'})),
+    },
     ...overrides,
   };
   return {ctx, apiClient, messages, createdWork};

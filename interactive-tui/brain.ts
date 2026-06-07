@@ -131,8 +131,21 @@ interface OfModule {
   err: (error: string) => unknown;
 }
 
-let agentPromise: Promise<{ chat: (msg: ChatInput, o: { stream: true }) => AsyncIterable<OfChunk> }> | null =
-  null;
+// One OpenFunction agent per active-session context, keyed by the workspace/cwd
+// identity (the same string used as the rollout persistKey). Lane C: a child
+// session runs in its own worktree → its own workspace root → its own agent
+// instance and rollout, so entering a child and returning to the parent reuses
+// each side's agent instead of rebuilding a singleton bound to whoever built it
+// first. read_only children that share the parent's cwd intentionally share its
+// agent; their visible transcripts stay separate via sessionContext.
+type OfAgent = { chat: (msg: ChatInput, o: { stream: true }) => AsyncIterable<OfChunk> };
+const agents = new Map<string, Promise<OfAgent>>();
+
+/** The active session's agent/rollout identity at the brain layer. Equals the
+ *  persistKey; a distinct worktree (child) yields a distinct key. */
+function agentSessionKey(): string {
+  return getWorkspaceRoot() || getSessionCwd();
+}
 
 /** Provider id that routes the brain to the Codex app-server engine. */
 const CODEX_PROVIDER = 'codex';
@@ -251,7 +264,7 @@ export function setBrainModel(input: {
     // OpenFunction adapters read provider keys from env (e.g. OPENROUTER_API_KEY).
     process.env[`${input.provider.toUpperCase()}_API_KEY`] = input.apiKey;
   }
-  agentPromise = null; // force rebuild with the new model/key/effort on next ask
+  agents.clear(); // a model/provider/key change invalidates every session's agent
   return getBrainModel();
 }
 
@@ -874,9 +887,13 @@ async function loadOpenFunctionModule(): Promise<OfModule> {
   return injected ?? ((await import(entryPath())) as unknown as OfModule);
 }
 
-async function getAgent() {
-  if (!agentPromise) {
-    agentPromise = (async () => {
+export async function getAgent(): Promise<OfAgent> {
+  // Bind the key at call time so the agent is built for whatever session is
+  // active now; the persistKey is the same string, captured at build time.
+  const key = agentSessionKey();
+  let pending = agents.get(key);
+  if (!pending) {
+    pending = (async () => {
       const of = await loadOpenFunctionModule();
       return of.createChatAgent({
         name: 'siftable-control',
@@ -890,11 +907,17 @@ async function getAgent() {
         prompt: LEAN_PROMPT + formatSkillsForPrompt(currentSkills()),
         // Stable key for rollout persistence: same workspace/cwd resumes the
         // prior conversation (gated by SIFT_CONTEXT_COMPACTION inside the agent).
-        persistKey: getWorkspaceRoot() || getSessionCwd(),
+        persistKey: key,
       });
     })();
+    agents.set(key, pending);
   }
-  return agentPromise;
+  return pending;
+}
+
+/** Test seam: drop all cached per-session agents (e.g. between unit tests). */
+export function __resetBrainAgentsForTests(): void {
+  agents.clear();
 }
 
 function explorerScoutEnabled(): boolean {
