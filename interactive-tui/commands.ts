@@ -31,9 +31,12 @@ import {
 import type {
   ChildSessionRecord,
   ChildSessionView,
+  ReviewChildOptions,
+  ReviewChildResult,
   SpawnChildInput,
   SpawnChildResult,
 } from "./childSessionController";
+import type {MergePacket} from "./mergeGate";
 
 export type CommandMessage = { role: "you" | "assistant" | "system" | "shell" | "tool"; text: string };
 
@@ -41,7 +44,7 @@ export type CommandMessage = { role: "you" | "assistant" | "system" | "shell" | 
  * mergeMaster child-session actions exposed to slash commands. The TUI backs
  * these with a real childSessionController + sessionContext (worktree spawn, cwd
  * + transcript swap); tests back them with a fake. Keeping the surface here lets
- * /spawn·/children·/enter·/leave stay pure handlers over the context.
+ * /spawn·/children·/enter·/leave·/ready stay pure handlers over the context.
  */
 export interface ChildSessionActions {
   list: () => ChildSessionView[];
@@ -50,6 +53,8 @@ export interface ChildSessionActions {
   spawn: (input: SpawnChildInput) => SpawnChildResult;
   enter: (sessionId: number) => {ok: boolean; reason?: string; session?: ChildSessionRecord};
   leave: () => {ok: boolean; reason?: string};
+  /** Run the lane-D ready-to-merge gate on a child (sets its status). */
+  review: (sessionId: number, opts?: ReviewChildOptions) => ReviewChildResult;
 }
 
 export interface InteractiveCommandContext {
@@ -598,6 +603,9 @@ export function applyExplorerSettings(settings: ExplorerSettings): {ok: boolean;
   if (keyMessage) return {ok: false, message: keyMessage};
 
   process.env.SIFT_EXPLORER_BUDGET = settings.budget;
+  process.env.SIFT_EXPLORER_THOROUGHNESS = settings.budget === "cheap" ? "quick" : settings.budget === "deep" ? "deep" : "medium";
+  process.env.SIFT_EXPLORER_PROVIDER = model.provider;
+  process.env.SIFT_EXPLORER_MODEL = model.model;
   process.env.SIFT_EXPLORER_SCOUT_PROVIDER = model.provider;
   process.env.SIFT_EXPLORER_SCOUT_MODEL = model.model;
 
@@ -606,15 +614,19 @@ export function applyExplorerSettings(settings: ExplorerSettings): {ok: boolean;
     process.env.SIFT_EXPLORER_SCOUT = "0";
     process.env.SIFT_EXPLORER_FANOUT = "0";
   } else if (settings.mode === "scout") {
-    process.env.SIFT_EXPLORER = "on";
+    process.env.SIFT_EXPLORER = "fast-context";
     process.env.SIFT_EXPLORER_SCOUT = "1";
     process.env.SIFT_EXPLORER_FANOUT = "0";
   } else if (settings.mode === "fanout") {
-    process.env.SIFT_EXPLORER = "on";
+    process.env.SIFT_EXPLORER = "fast-context";
     process.env.SIFT_EXPLORER_SCOUT = "0";
     process.env.SIFT_EXPLORER_FANOUT = "1";
+  } else if (settings.mode === "deterministic") {
+    process.env.SIFT_EXPLORER = "deterministic";
+    process.env.SIFT_EXPLORER_SCOUT = "0";
+    process.env.SIFT_EXPLORER_FANOUT = "0";
   } else {
-    process.env.SIFT_EXPLORER = "on";
+    process.env.SIFT_EXPLORER = "fast-context";
     process.env.SIFT_EXPLORER_SCOUT = "0";
     process.env.SIFT_EXPLORER_FANOUT = "0";
   }
@@ -1353,6 +1365,52 @@ function leaveCommand(ctx: InteractiveCommandContext): void {
   ctx.push({role: "system", text: "left child — back in the parent session."});
 }
 
+const READY_USAGE = "/ready [<session-id>] [--commit]";
+
+/** Render a merge packet as a compact, human-readable status block. */
+function formatPacket(p: MergePacket): string {
+  const head = p.verdict === "ready_to_merge" ? "✓ ready to merge" : "✗ merge blocked";
+  const stat = `${p.files.length} file(s), +${p.totalAdditions} −${p.totalDeletions}`;
+  const drift = p.behindBy > 0 ? `, base +${p.behindBy} ahead` : "";
+  const lines = [`#${p.childSessionId} ${p.childBranch} → ${p.baseBranch}: ${head}`, `  ${stat}${drift}`];
+  for (const b of p.blockers) lines.push(`  • ${b}`);
+  return lines.join("\n");
+}
+
+function resolveTargetChild(ctx: InteractiveCommandContext, raw: string | undefined): {id: number} | {error: string} {
+  if (raw) {
+    const id = Number(raw);
+    if (!Number.isInteger(id)) return {error: `not a session id: ${raw}`};
+    return {id};
+  }
+  const active = ctx.sessions.activeChildId();
+  if (active == null) return {error: "no active child — pass a session id (see /children) or /enter one"};
+  return {id: active};
+}
+
+function readyCommand(ctx: InteractiveCommandContext, args: string[]): void {
+  const autoCommit = args.includes("--commit");
+  const idArg = args.find((a) => !a.startsWith("--"));
+  const target = resolveTargetChild(ctx, idArg);
+  if ("error" in target) {
+    ctx.push({role: "system", text: `/ready: ${target.error}\n${READY_USAGE}`});
+    return;
+  }
+  const res = ctx.sessions.review(target.id, {autoCommit});
+  if (!res.ok) {
+    ctx.push({role: "system", text: `/ready: ${res.reason}`});
+    return;
+  }
+  let text = formatPacket(res.packet);
+  if (res.committed) text = `committed working changes first.\n${text}`;
+  // If blocked solely because the tree is dirty, point at the one-step fix.
+  if (res.packet.verdict === "merge_blocked" && res.packet.dirty && !autoCommit) {
+    text += `\n  → run /ready ${target.id} --commit to commit + re-check`;
+  }
+  if (res.note) text += `\n  (${res.note})`;
+  ctx.push({role: "system", text});
+}
+
 export const interactiveCommands: InteractiveCommand[] = [
   ...interactiveCommandsBase,
   {
@@ -1448,6 +1506,12 @@ export const interactiveCommands: InteractiveCommand[] = [
     name: "leave",
     description: "leave the active child session, back to the parent",
     run: (ctx) => leaveCommand(ctx),
+  },
+  {
+    name: "ready",
+    description: "run the ready-to-merge gate on a child (sets ready/blocked)",
+    usage: "[<session-id>] [--commit]",
+    run: (ctx, args) => readyCommand(ctx, args),
   },
   {name: "clear", description: "clear the conversation", run: (ctx) => ctx.setMessages([{role: "system", text: "cleared."}])},
   {

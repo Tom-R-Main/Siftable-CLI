@@ -30,6 +30,7 @@ import {
   evaluateChildAdmission,
   getMergeMasterSession,
   isTerminalStatus,
+  setSessionHeadCommit,
   transitionSessionStatus,
   type CreateChildInput,
   type CreateParentInput,
@@ -37,6 +38,8 @@ import {
   type MergeMasterAccessMode,
   type MergeMasterStatus,
 } from "./mergeMaster";
+import {commitChild as gitCommitChild, evaluateMerge, type MergePacket} from "./mergeGate";
+import {isWorktreeDirty} from "./worktreeService";
 
 /** A child session this controller created and tracks for enter/list/remove. */
 export interface ChildSessionRecord {
@@ -91,10 +94,37 @@ export interface ChildSessionControllerDeps {
   now?: () => number;
 }
 
+/** Options for {@link ChildSessionController.reviewChild}. */
+export interface ReviewChildOptions {
+  /** Stage + commit the child's working changes first (default off). */
+  autoCommit?: boolean;
+  /** Commit message used when `autoCommit` commits. */
+  message?: string;
+}
+
+/** Outcome of running the lane-D gate on a child. */
+export type ReviewChildResult =
+  | {
+      ok: true;
+      /** The merge packet (diff stat, conflicts, scope, verdict, blockers). */
+      packet: MergePacket;
+      /** True if the gate's verdict was applied to the child's status. */
+      statusApplied: boolean;
+      /** True if `autoCommit` produced a new commit. */
+      committed: boolean;
+      /** Set when the verdict could not be applied (e.g. illegal transition). */
+      note?: string;
+    }
+  | {ok: false; reason: string};
+
 export interface ChildSessionController {
   spawnChild(input: SpawnChildInput): SpawnChildResult;
   listChildSessions(): ChildSessionView[];
   getChild(sessionId: number): ChildSessionRecord | undefined;
+  /** Run the ready-to-merge gate (lane D) and set ready_to_merge / merge_blocked. */
+  reviewChild(sessionId: number, opts?: ReviewChildOptions): ReviewChildResult;
+  /** Stage + commit a child's working changes (no gate). Returns the new tip. */
+  commitChild(sessionId: number, message?: string): {ok: boolean; committed?: boolean; headCommit?: string; reason?: string};
   removeChild(
     sessionId: number,
     opts?: {deleteBranch?: boolean; force?: boolean},
@@ -228,6 +258,57 @@ export function createChildSessionController(
     }));
   }
 
+  function commitChild(
+    sessionId: number,
+    message?: string,
+  ): {ok: boolean; committed?: boolean; headCommit?: string; reason?: string} {
+    const rec = records.get(sessionId);
+    if (!rec) return {ok: false, reason: "unknown child session"};
+    try {
+      const res = gitCommitChild(rec, message ?? `sift: child #${sessionId} work`, runner);
+      // Keep the registry's recorded tip in sync with the branch's real tip.
+      if (res.committed) setSessionHeadCommit(sessionId, res.headCommit, now());
+      return {ok: true, committed: res.committed, headCommit: res.headCommit};
+    } catch (err) {
+      return {ok: false, reason: err instanceof Error ? err.message : String(err)};
+    }
+  }
+
+  function reviewChild(sessionId: number, opts: ReviewChildOptions = {}): ReviewChildResult {
+    const rec = records.get(sessionId);
+    if (!rec) return {ok: false, reason: "unknown child session"};
+    const live = getMergeMasterSession(sessionId);
+    if (live && isTerminalStatus(live.status)) {
+      return {ok: false, reason: `child #${sessionId} is ${live.status} (terminal) — nothing to review`};
+    }
+
+    let committed = false;
+    try {
+      if (opts.autoCommit && isWorktreeDirty(rec.worktreePath, runner)) {
+        const c = gitCommitChild(rec, opts.message ?? `sift: child #${sessionId} work`, runner);
+        committed = c.committed;
+        if (c.committed) setSessionHeadCommit(sessionId, c.headCommit, now());
+      }
+      const packet = evaluateMerge(rec, runner);
+      // The gate read the live branch tip; mirror it into the registry so the
+      // merge view (lane E) and any reader sees the same headCommit we judged.
+      setSessionHeadCommit(sessionId, packet.headCommit, now());
+      const code = transitionSessionStatus(sessionId, packet.verdict, now());
+      const statusApplied = code === 0;
+      return {
+        ok: true,
+        packet,
+        statusApplied,
+        committed,
+        note: statusApplied
+          ? undefined
+          : `verdict ${packet.verdict} not applied from status ${live?.status ?? "unknown"} (code ${code})`,
+      };
+    } catch (err) {
+      return {ok: false, reason: err instanceof Error ? err.message : String(err)};
+    }
+  }
+
   function removeChild(
     sessionId: number,
     opts?: {deleteBranch?: boolean; force?: boolean},
@@ -260,6 +341,8 @@ export function createChildSessionController(
     spawnChild,
     listChildSessions,
     getChild: (sessionId) => records.get(sessionId),
+    reviewChild,
+    commitChild,
     removeChild,
   };
 }

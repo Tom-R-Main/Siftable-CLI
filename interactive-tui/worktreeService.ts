@@ -545,3 +545,152 @@ export function assertWorktreeClean(
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Merge evaluation (read-only) — lane D
+// ---------------------------------------------------------------------------
+//
+// These helpers answer "what would merging this child onto the current base
+// produce?" WITHOUT mutating anything. They never check out, stage, commit, or
+// create a merge — every operation runs against the shared object database only
+// (`merge-base`, `diff`, and crucially `merge-tree --write-tree`, which predicts
+// the merged tree in-memory). The lane D gate (`mergeGate.ts`) composes them.
+
+/** Resolve a revision to its full commit SHA, or null if it does not resolve. */
+export function resolveCommit(
+  repoRoot: string,
+  rev: string,
+  runner: GitRunner = defaultRunner,
+): string | null {
+  const res = runner(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], repoRoot);
+  const sha = res.status === 0 ? res.stdout.trim() : "";
+  return sha || null;
+}
+
+/**
+ * Best-common-ancestor of two commits (the fork point), or null when they share
+ * no history. Read-only: `git merge-base` only walks the commit graph.
+ */
+export function mergeBase(
+  repoRoot: string,
+  a: string,
+  b: string,
+  runner: GitRunner = defaultRunner,
+): string | null {
+  const res = runner(["merge-base", a, b], repoRoot);
+  // Exit 1 here means "no merge base" (unrelated histories), not an error.
+  if (res.status === 1) return null;
+  if (res.spawnError || res.status !== 0) {
+    throw new WorktreeError(
+      "git_failed",
+      `git merge-base ${a} ${b} failed: ${res.spawnError ?? res.stderr ?? `exit ${res.status}`}`,
+    );
+  }
+  return res.stdout.trim() || null;
+}
+
+/**
+ * Count commits in a revision range, e.g. `countCommits(root, "base..tip")` for
+ * how far the base branch moved since a child forked. Read-only graph walk.
+ */
+export function countCommits(
+  repoRoot: string,
+  range: string,
+  runner: GitRunner = defaultRunner,
+): number {
+  const out = git(runner, ["rev-list", "--count", range], repoRoot);
+  const n = Number.parseInt(out.trim(), 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** One file in a diff stat. `binary` files report null line counts. */
+export interface DiffFile {
+  path: string;
+  additions: number | null;
+  deletions: number | null;
+  binary: boolean;
+}
+
+/**
+ * `git diff --numstat from..to` parsed per file. Renames are disabled
+ * (`--no-renames`) so a moved file shows as a delete of the old path plus an add
+ * of the new one — both real paths, which keeps the lane D scope check honest
+ * (a rename out of scope is still a write out of scope).
+ */
+export function diffNumstat(
+  repoRoot: string,
+  from: string,
+  to: string,
+  runner: GitRunner = defaultRunner,
+): DiffFile[] {
+  const out = git(runner, ["diff", "--numstat", "--no-renames", `${from}..${to}`], repoRoot);
+  const files: DiffFile[] = [];
+  for (const line of out.split("\n")) {
+    if (!line) continue;
+    const tab = line.split("\t");
+    if (tab.length < 3) continue;
+    const [add, del, ...rest] = tab;
+    const path = rest.join("\t");
+    const binary = add === "-" && del === "-";
+    files.push({
+      path,
+      additions: binary ? null : Number.parseInt(add, 10) || 0,
+      deletions: binary ? null : Number.parseInt(del, 10) || 0,
+      binary,
+    });
+  }
+  return files;
+}
+
+/** Outcome of a read-only merge prediction. */
+export interface MergeConflictPrediction {
+  /** True when the merge would apply with no conflicts. */
+  clean: boolean;
+  /** Paths git reports as conflicting (empty when clean). */
+  conflicts: string[];
+  /** OID of the merged tree git wrote in-memory (informational; null on error). */
+  mergedTree: string | null;
+}
+
+/**
+ * Predict whether merging `head` into `base` conflicts — WITHOUT touching any
+ * working tree or index. Uses `git merge-tree --write-tree` (git ≥2.38), which
+ * computes the merged tree in the object store and exits 1 iff there are
+ * conflicts. Output is: the merged-tree OID on line 1, then the conflicted file
+ * names (`--name-only`), then a blank line before informational messages.
+ *
+ * Exit 1 is a normal result here (conflicts), so this bypasses the throwing
+ * `git()` wrapper; only a spawn failure or an unexpected exit code throws.
+ */
+export function predictMergeConflicts(
+  repoRoot: string,
+  base: string,
+  head: string,
+  runner: GitRunner = defaultRunner,
+): MergeConflictPrediction {
+  const res = runner(["merge-tree", "--write-tree", "--name-only", base, head], repoRoot);
+  if (res.spawnError) {
+    throw new WorktreeError(
+      "git_failed",
+      `failed to run git merge-tree: ${res.spawnError}`,
+      "Ensure `git` ≥ 2.38 is installed and on PATH (or set SIFT_GIT_BIN).",
+    );
+  }
+  if (res.status !== 0 && res.status !== 1) {
+    throw new WorktreeError(
+      "git_failed",
+      `git merge-tree exited ${res.status}: ${res.stderr || "(no stderr)"}`,
+    );
+  }
+  const lines = res.stdout.split("\n");
+  const mergedTree = lines[0]?.trim() || null;
+  if (res.status === 0) return { clean: true, conflicts: [], mergedTree };
+  // Conflicted file names run from line 1 up to the blank line that precedes
+  // the human-readable "Auto-merging…/CONFLICT…" messages.
+  const conflicts: string[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i] === "") break;
+    if (lines[i].trim()) conflicts.push(lines[i]);
+  }
+  return { clean: false, conflicts, mergedTree };
+}

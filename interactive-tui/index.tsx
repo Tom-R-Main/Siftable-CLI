@@ -829,6 +829,7 @@ function App() {
           setMessages([...sw.transcript]);
           return { ok: true };
         },
+        review: (sessionId, opts) => childController.reviewChild(sessionId, opts),
       },
     };
   }
