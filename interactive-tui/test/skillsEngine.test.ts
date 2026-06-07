@@ -5,8 +5,9 @@
  * Run with: bun test   (from packages/exf-cli/interactive-tui)
  */
 import { afterAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import {
   discoverSkills,
@@ -144,4 +145,25 @@ describe("formatting", () => {
     expect(out).toContain("[project]");
     expect(out).toContain("[builtin]");
   });
+});
+
+// Cross-agent skills (plan, mermaid) must be reachable by Codex, which scans the
+// repo's .agents/skills root. We expose them there as symlinks to the canonical
+// builtin dirs; this guard fails if a symlink is deleted or drifts so the skills
+// silently stop being advertised to Codex again.
+describe("repo .agents/skills cross-agent symlinks (drift guard)", () => {
+  // test file → interactive-tui → exf-cli → packages → repo root
+  const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+  const canonicalDir = fileURLToPath(new URL("../skills", import.meta.url));
+
+  for (const name of ["plan", "mermaid"]) {
+    it(`.agents/skills/${name} symlinks to the canonical builtin skill`, () => {
+      const link = join(repoRoot, ".agents", "skills", name);
+      expect(existsSync(link)).toBe(true);
+      expect(lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(realpathSync(link)).toBe(realpathSync(join(canonicalDir, name)));
+      // and the link actually resolves to a loadable SKILL.md
+      expect(existsSync(join(link, "SKILL.md"))).toBe(true);
+    });
+  }
 });

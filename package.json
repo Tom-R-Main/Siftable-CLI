@@ -161,6 +161,7 @@
     "interactive-tui/native/*.ts",
     "interactive-tui/native/*.zig",
     "interactive-tui/scripts/build-native.sh",
+    "interactive-tui/skills/**/*",
     "interactive-tui/openfunction/**/*"
   ],
   "publishConfig": {

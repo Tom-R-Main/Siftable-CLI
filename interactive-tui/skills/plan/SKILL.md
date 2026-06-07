@@ -61,10 +61,11 @@ Biggest uncertainty: <what to frame before committing>
 Next approval point: <where you stop and ask>
 ```
 
-**2. A Mermaid flowchart** in a fenced ` ```mermaid ` block — it auto-renders in
-the terminal. This is the heart of "visual". Model the *dependency structure*,
-not a generic org chart: nodes are tasks/decisions/reviews; edges are
-"blocks / unlocks / must precede".
+**2. A Mermaid flowchart** in a fenced ` ```mermaid ` block — **just write the
+block; sift interactive auto-renders it** in the terminal. This is the primary
+path and the heart of "visual" — you do not need any tool to make the picture
+appear. Model the *dependency structure*, not a generic org chart: nodes are
+tasks/decisions/reviews; edges are "blocks / unlocks / must precede".
 
 **3. A structured plan** with these sections, in order:
 
@@ -90,7 +91,10 @@ Node shapes — **ONLY these four**: `[rect]`, `(rounded)`, `((circle))`,
 is no wrapping). **NEVER** use `subgraph`, `style`, `classDef`, `:::class`,
 `click`, `<br/>`, `A & B`, exotic shapes (`([])` `[()]` `{{}}` `[[]]`), a
 `--- title ---` block, or `end` as a node id. See the `mermaid` skill for the
-full subset and how to validate (`render_mermaid` tool or `sift mermaid`).
+full subset. To validate a tricky diagram before presenting it, use the
+`render_mermaid` tool, or `sift mermaid` *if your CLI has it* (run
+`sift mermaid --help` to check) — but validation is optional: a correct block in
+your reply renders on its own, so prefer just writing it cleanly.
 
 A weekly / mixed plan looks like this (verified-renderable):
 
