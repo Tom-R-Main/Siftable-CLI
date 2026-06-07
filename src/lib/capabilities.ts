@@ -32,6 +32,12 @@ export const CAPABILITIES: Capability[] = [
     description: 'Perform spreadsheet-like lookup, search, duplicate review, reconciliation, pivots, formula planning, analysis, and explicitly materialized derived outputs.',
   },
   {
+    id: 'viz.terminal_render',
+    status: 'ready',
+    commands: ['sift mermaid'],
+    description: 'Render Mermaid diagrams (flowchart, sequence, state, class, ER, C4, architecture, mindmap) directly to the terminal as cells via the image-to-ascii engine.',
+  },
+  {
     id: 'agent.work',
     status: 'ready',
     commands: ['sift agents list', 'sift work create', 'sift work claim', 'sift work start', 'sift work heartbeat', 'sift work complete', 'sift work review'],

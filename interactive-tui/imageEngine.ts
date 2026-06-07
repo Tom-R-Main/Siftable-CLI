@@ -25,15 +25,47 @@ export interface NormalizedImageResult extends ImageProbeResult {
   original?: ImageProbeResult;
 }
 
+export interface RawRgbaFrame {
+  width: number;
+  height: number;
+  stride?: number;
+  columns: number;
+  rows: number;
+  invert?: boolean;
+}
+
+export interface RawRgbaAnsiResult {
+  ansi: string;
+  columns: number;
+  rows: number;
+  source: "zig" | "ts";
+}
+
+export interface TuiImageAnsiOptions extends ImageProbeOptions {
+  columns?: number;
+  rows?: number;
+  invert?: boolean;
+}
+
+export interface TuiImageAnsiResult extends RawRgbaAnsiResult {
+  image: NormalizedImageResult;
+  rawWidth: number;
+  rawHeight: number;
+}
+
 export const DEFAULT_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 export const DEFAULT_MAX_IMAGE_PIXELS = 4096 * 4096;
 const DEFAULT_NORMALIZE_MAX_SIDE = 2048;
+const DEFAULT_RENDER_COLUMNS = 48;
 
 const STATUS_OK = 0;
 const STATUS_INVALID_ARGS = 1;
 const STATUS_UNSUPPORTED = 2;
 const STATUS_TOO_LARGE = 3;
 const STATUS_MALFORMED = 4;
+const STATUS_OUTPUT_TOO_SMALL = 5;
+const RENDER_FLAG_INVERT = 0x1;
+const DENSITY_RAMP = " .:-=+*#%@";
 
 const MIME_BY_CODE: Record<number, string> = {
   1: "image/png",
@@ -51,6 +83,15 @@ let native:
         maxBytes: number,
         maxPixels: number,
         out: Uint32Array,
+      ) => number;
+      sift_image_render_density_ansi: (
+        bytes: Uint8Array,
+        len: number,
+        options: Uint32Array,
+        out: Uint8Array,
+        outCap: number,
+        written: Uint32Array,
+        needed: Uint32Array,
       ) => number;
     }
   | null
@@ -70,6 +111,10 @@ function nativeSymbols() {
   const { dlopen, FFIType } = require("bun:ffi") as typeof import("bun:ffi");
   const lib = dlopen(nativeLibraryPath, {
     sift_image_probe: { args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr], returns: FFIType.u32 },
+    sift_image_render_density_ansi: {
+      args: [FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.u32,
+    },
   });
   native = lib.symbols as typeof native;
   return native;
@@ -98,6 +143,38 @@ export function probeImage(bytes: Uint8Array, options: ImageProbeOptions = {}): 
 
 export function nativeImageProbeAvailable(): boolean {
   return nativeSymbols() !== null;
+}
+
+export function renderRawRgbaToAnsi(raw: Uint8Array, frame: RawRgbaFrame): RawRgbaAnsiResult {
+  const width = uint32(frame.width, "image render: invalid width");
+  const height = uint32(frame.height, "image render: invalid height");
+  const stride = uint32(frame.stride ?? width * 4, "image render: invalid stride");
+  const columns = uint32(frame.columns, "image render: invalid columns");
+  const rows = uint32(frame.rows, "image render: invalid rows");
+  const flags = frame.invert ? RENDER_FLAG_INVERT : 0;
+  const requiredBytes = (height - 1) * stride + width * 4;
+  if (!raw.byteLength || stride < width * 4 || raw.byteLength < requiredBytes) {
+    throw new Error("image render: invalid raw RGBA frame");
+  }
+
+  const symbols = nativeSymbols();
+  if (symbols) {
+    const options = Uint32Array.from([width, height, stride, columns, rows, flags]);
+    const written = new Uint32Array(1);
+    const needed = new Uint32Array(1);
+    let out = new Uint8Array(Math.max(32, (columns + 1) * rows));
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const status = symbols.sift_image_render_density_ansi(raw, raw.byteLength, options, out, out.byteLength, written, needed);
+      if (status === STATUS_OK) {
+        return { ansi: new TextDecoder().decode(out.subarray(0, written[0])), columns, rows, source: "zig" };
+      }
+      if (status !== STATUS_OUTPUT_TOO_SMALL) throw new Error(statusMessage(status));
+      out = new Uint8Array(Math.max(out.byteLength * 2, needed[0]));
+    }
+    throw new Error("image render: native output did not fit after buffer growth");
+  }
+
+  return { ansi: renderRawRgbaToAnsiFallback(raw, { width, height, stride, columns, rows, invert: frame.invert }), columns, rows, source: "ts" };
 }
 
 /**
@@ -153,13 +230,46 @@ export async function normalizeImageForModel(
   throw lastError ?? new Error("image paste: image too large after downscaling");
 }
 
-type SharpFactory = (input?: Buffer | Uint8Array) => {
-  rotate: () => ReturnType<SharpFactory>;
-  resize: (options: { width: number; height: number; fit: "inside"; withoutEnlargement: boolean }) => ReturnType<SharpFactory>;
-  flatten: (options: { background: string }) => ReturnType<SharpFactory>;
-  jpeg: (options: { quality: number; mozjpeg: boolean }) => ReturnType<SharpFactory>;
-  toBuffer: () => Promise<Buffer>;
+export async function renderImageAsAnsiForTui(
+  bytes: Uint8Array,
+  options: TuiImageAnsiOptions = {}
+): Promise<TuiImageAnsiResult> {
+  const image = await normalizeImageForModel(bytes, options);
+  const sharp = await loadSharp();
+  if (!sharp) throw new Error("image render: sharp is unavailable for raw pixel extraction");
+
+  const decoded = await sharp(Buffer.from(image.data)).rotate().ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const rawWidth = decoded.info.width;
+  const rawHeight = decoded.info.height;
+  const columns = uint32(options.columns ?? Math.min(DEFAULT_RENDER_COLUMNS, rawWidth), "image render: invalid columns");
+  const defaultRows = Math.max(1, Math.round(columns * (rawHeight / Math.max(1, rawWidth)) * 0.5));
+  const rows = uint32(options.rows ?? defaultRows, "image render: invalid rows");
+  const rendered = renderRawRgbaToAnsi(decoded.data, {
+    width: rawWidth,
+    height: rawHeight,
+    stride: rawWidth * 4,
+    columns,
+    rows,
+    invert: options.invert,
+  });
+
+  return { ...rendered, image, rawWidth, rawHeight };
+}
+
+type SharpPipeline = {
+  rotate: () => SharpPipeline;
+  resize: (options: { width: number; height: number; fit: "inside"; withoutEnlargement: boolean }) => SharpPipeline;
+  flatten: (options: { background: string }) => SharpPipeline;
+  ensureAlpha: () => SharpPipeline;
+  raw: () => SharpPipeline;
+  jpeg: (options: { quality: number; mozjpeg: boolean }) => SharpPipeline;
+  toBuffer: {
+    (): Promise<Buffer>;
+    (options: { resolveWithObject: true }): Promise<{ data: Buffer; info: { width: number; height: number } }>;
+  };
 };
+
+type SharpFactory = (input?: Buffer | Uint8Array) => SharpPipeline;
 
 async function loadSharp(): Promise<SharpFactory | null> {
   try {
@@ -191,9 +301,56 @@ function statusMessage(status: number): string {
       return "image paste: image too large";
     case STATUS_MALFORMED:
       return "image paste: malformed image";
+    case STATUS_OUTPUT_TOO_SMALL:
+      return "image render: output buffer too small";
     default:
       return `image paste: native status ${status}`;
   }
+}
+
+function uint32(value: number, message: string): number {
+  if (!Number.isFinite(value) || value <= 0 || value > 0xffffffff || Math.floor(value) !== value) throw new Error(message);
+  return value;
+}
+
+function renderRawRgbaToAnsiFallback(raw: Uint8Array, frame: Required<Pick<RawRgbaFrame, "width" | "height" | "stride" | "columns" | "rows">> & Pick<RawRgbaFrame, "invert">): string {
+  let ansi = "";
+  for (let row = 0; row < frame.rows; row += 1) {
+    for (let col = 0; col < frame.columns; col += 1) {
+      ansi += densityGlyph(averageCellLuma(raw, frame, col, row), frame.invert === true);
+    }
+    ansi += "\n";
+  }
+  return ansi;
+}
+
+function averageCellLuma(raw: Uint8Array, frame: Required<Pick<RawRgbaFrame, "width" | "height" | "stride" | "columns" | "rows">>, col: number, row: number): number {
+  let x0 = Math.floor((col * frame.width) / frame.columns);
+  let x1 = Math.floor(((col + 1) * frame.width) / frame.columns);
+  let y0 = Math.floor((row * frame.height) / frame.rows);
+  let y1 = Math.floor(((row + 1) * frame.height) / frame.rows);
+  if (x1 <= x0) x1 = Math.min(frame.width, x0 + 1);
+  if (y1 <= y0) y1 = Math.min(frame.height, y0 + 1);
+  x0 = Math.min(x0, frame.width - 1);
+  y0 = Math.min(y0, frame.height - 1);
+
+  let total = 0;
+  let count = 0;
+  for (let y = y0; y < y1; y += 1) {
+    for (let x = x0; x < x1; x += 1) {
+      const offset = y * frame.stride + x * 4;
+      const luma = Math.floor((299 * raw[offset] + 587 * raw[offset + 1] + 114 * raw[offset + 2]) / 1000);
+      total += Math.floor((luma * raw[offset + 3]) / 255);
+      count += 1;
+    }
+  }
+  return count > 0 ? Math.floor(total / count) : 0;
+}
+
+function densityGlyph(luma: number, invert: boolean): string {
+  const tone = invert ? 255 - Math.min(luma, 255) : Math.min(luma, 255);
+  const index = Math.floor((tone * (DENSITY_RAMP.length - 1) + 127) / 255);
+  return DENSITY_RAMP[index];
 }
 
 function eqAscii(bytes: Uint8Array, at: number, text: string): boolean {

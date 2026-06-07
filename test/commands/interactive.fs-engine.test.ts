@@ -10,6 +10,7 @@ import {
   findLocalFiles,
   inspectLocalWorkspace,
   readText,
+  scanRepositoryManifest,
   searchLiteral,
   writeText,
 } from '../../interactive-tui/fsEngine';
@@ -212,6 +213,26 @@ describe('sift interactive — fs engine fallback policy', () => {
     expect(result.keyFiles.map((file) => file.path)).toContain('package.json');
     expect(result.symbols.some((symbol) => symbol.symbol === 'buildLocalTools')).toBe(true);
     expect(result.stats.scannedFiles).toBeGreaterThan(0);
+  });
+
+  it('emits a deterministic repository scan manifest with the shared traversal policy', async () => {
+    const manifest = await scanRepositoryManifest(root, {maxFiles: 100, maxDepth: 8, maxFileBytes: 64, sourceOnly: false});
+
+    expect(manifest.source).toBe('ts');
+    expect(manifest.files.map((file) => file.path)).toEqual([
+      'package.json',
+      'src/alpha.txt',
+      'src/beta.txt',
+      'src/brain.ts',
+      'src/positions.txt',
+    ]);
+    expect(manifest.stats.scannedFiles).toBe(5);
+    expect(manifest.stats.skippedByReason.vendor).toBeGreaterThanOrEqual(2);
+    expect(manifest.stats.skippedByReason.buildOutput).toBeGreaterThanOrEqual(2);
+    expect(manifest.stats.skippedByReason.hidden).toBeGreaterThanOrEqual(1);
+    expect(manifest.stats.skippedByReason.binary).toBe(1);
+    expect(manifest.stats.skippedByReason.invalidUtf8).toBe(1);
+    expect(manifest.stats.bytesScanned).toBeGreaterThan(0);
   });
 
   it('finds files by path/name separately from content search', async () => {

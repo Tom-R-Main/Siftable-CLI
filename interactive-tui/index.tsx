@@ -24,8 +24,8 @@
  * used by the local brain is vendored under interactive-tui/openfunction.
  */
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
-import { SyntaxStyle, type KeyEvent, type PasteEvent, type TextareaRenderable } from "@opentui/core";
-import { createSignal, createMemo, For, Show, Switch, Match, onMount, onCleanup } from "solid-js";
+import { type KeyEvent, type PasteEvent, type TextareaRenderable } from "@opentui/core";
+import { createSignal, createMemo, createEffect, For, Show, Switch, Match, onMount, onCleanup } from "solid-js";
 import { createStore } from "solid-js/store";
 import {
   ControlClient,
@@ -54,10 +54,13 @@ import {
   type ExplorerSettings,
 } from "./commands";
 import { copyTextToClipboard, readClipboardContent } from "./clipboard";
+import { isExplicitCopyChord } from "./keybindings";
+import { play as playSound, initSounds, setSoundsEnabled, soundsEnabled, disposeSounds } from "./audio";
 import { analyzePaste, type PasteAnalysis } from "./composerPolicy";
 import { estimateTokens } from "./threadEngine";
 import { setConfirmListener, resolveApproval, type ConfirmRequest, type ApprovalDecision } from "./confirmGate";
 import { normalizeImageForModel } from "./imageEngine";
+import { extractMermaidBlocks, renderMermaidSource, resolveCellRenderBin } from "./cellRender";
 import {
   asExplorerActivityView,
   explorerToolCallText,
@@ -72,45 +75,22 @@ import { serializeConversation } from "./transcript";
 import { getSessionCwd, getWorkspaceRoot, setSessionCwd } from "./navigation";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, extname } from "node:path";
-import { theme } from "./theme";
+import {
+  theme,
+  buildSyntaxStyle,
+  applyScheme,
+  saveScheme,
+  loadSavedScheme,
+  currentSchemeName,
+  schemeIndexOf,
+  SCHEMES,
+  type SchemeName,
+} from "./theme";
 import { ApprovalOverlay } from "./views";
 import {createCrewFromTemplate, listCrewDefinitions, type SiftCrewDefinition} from "./crewRegistry";
 
-// "Sieve" markdown + code-block theme. Tree-sitter capture scopes map to the
-// warm palette in theme.ts; unknown scopes fall back to `default` (warm white).
-// fromStyles accepts hex strings (ColorInput) directly — no RGBA wrapping needed.
-const syntaxStyle = SyntaxStyle.fromStyles({
-  default: { fg: theme.text },
-  // Markdown structure
-  "markup.heading": { fg: theme.signalText, bold: true },
-  "markup.strong": { fg: theme.text, bold: true },
-  "markup.italic": { fg: theme.user, italic: true },
-  "markup.strikethrough": { fg: theme.dim },
-  "markup.list": { fg: theme.signal },
-  "markup.quote": { fg: theme.muted, italic: true },
-  "markup.raw": { fg: theme.cool }, // inline `code`
-  "markup.raw.block": { fg: theme.text }, // fenced block body
-  "markup.link": { fg: theme.cool, underline: true },
-  "markup.link.label": { fg: theme.cool },
-  "markup.link.url": { fg: theme.cool, underline: true },
-  "string.special.url": { fg: theme.cool, underline: true },
-  // Code-block syntax (tree-sitter)
-  keyword: { fg: theme.warn },
-  string: { fg: theme.ok },
-  number: { fg: theme.signalText },
-  boolean: { fg: theme.signalText },
-  constant: { fg: theme.signalText },
-  comment: { fg: theme.dim, italic: true },
-  function: { fg: theme.cool },
-  type: { fg: theme.signalText },
-  variable: { fg: theme.text },
-  property: { fg: theme.text },
-  attribute: { fg: theme.signal },
-  tag: { fg: theme.warn },
-  label: { fg: theme.signal },
-  operator: { fg: theme.muted },
-  punctuation: { fg: theme.muted },
-});
+// The markdown/code highlight theme is derived from the active palette inside
+// App (createMemo), so it rebuilds when the user swaps color schemes.
 
 // ── Transport seam ─────────────────────────────────────────────────────────
 // The ONLY place that differs between in-process (A0) and daemon (future)
@@ -140,9 +120,9 @@ if (LOCAL) {
   client = new ControlClient(baseUrl, process.env.EXECUTERM_DASHBOARD_TOKEN);
 }
 
-// Live context-size meter in the status bar, driven by the Zig token
-// estimator. On by default with the rest of the thread engine; set
-// SIFT_CONTEXT_COMPACTION=0 to opt out.
+// Phase 1 of the thread-engine rollout: a live context-size meter in the status
+// bar, driven by the Zig token estimator. Gated until the compaction planner and
+// rollout persistence land; off by default.
 const COMPACTION_ENABLED = process.env.SIFT_CONTEXT_COMPACTION !== "0";
 
 type Msg = {
@@ -180,6 +160,7 @@ const SLASH_COMMAND_COLUMN_WIDTH = Math.max(14, ...COMMANDS.map((command) => com
 
 const WORD = /\w/;
 const MAX_COMPOSER_LINES = 12;
+const THEME_WINDOW = 7; // visible rows in the appearance picker (keeps it short)
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
 
 function appendTextPart(parts: ChatInputPart[], text: string) {
@@ -252,6 +233,9 @@ function App() {
   const [showExplorerDetails, setShowExplorerDetails] = createSignal(false);
   const [explorerSettings, setExplorerSettings] = createSignal<ExplorerSettings>({...DEFAULT_EXPLORER_SETTINGS});
   const [slashSel, setSlashSel] = createSignal(0);
+  // Most recent rendered diagram (full natural size) + the pannable viewer overlay.
+  const [lastDiagram, setLastDiagram] = createSignal<string | null>(null);
+  const [viewer, setViewer] = createSignal<{ lines: string[]; w: number; h: number; x: number; y: number } | null>(null);
   // Interactive model picker: stage "model" (↑/↓) → stage "effort" (←/→).
   const [picker, setPicker] = createSignal<
     { stage: "model" | "effort"; modelIdx: number; effortIdx: number } | null
@@ -262,6 +246,9 @@ function App() {
   const [crewPicker, setCrewPicker] = createSignal<
     { stage: "library" | "createScope" | "createForm"; rowIdx: number; createIdx: number; crews: SiftCrewDefinition[]; draft: CrewCreateDraft } | null
   >(null);
+  // Settings → Appearance: ↑/↓ live-previews a color scheme, Enter saves, Esc
+  // reverts to the scheme that was active when the picker opened.
+  const [themePicker, setThemePicker] = createSignal<{ idx: number; original: SchemeName } | null>(null);
   const [transcriptSelected, setTranscriptSelected] = createSignal(false);
   // A1 write/edit approval: set by the confirm gate while a mutation waits.
   const [confirm, setConfirm] = createSignal<ConfirmRequest | null>(null);
@@ -471,14 +458,6 @@ function App() {
     push({ role: "system", text: await copyText(latestAssistantText()) });
   }
 
-  async function copyLatestExplorerReport(): Promise<void> {
-    if (!latestExplorerReport) {
-      setStatus("no explorer report to copy yet");
-      return;
-    }
-    setStatus(await copyText(latestExplorerReport));
-  }
-
   async function copyCurrentSelection(): Promise<boolean> {
     if (transcriptSelected()) {
       const text = conversationText();
@@ -609,9 +588,12 @@ function App() {
 
   async function submitOne(input: ChatInput, displayText = typeof input === "string" ? input : input.map((p) => (p.type === "text" ? p.text : "[image]")).join("")) {
     push({ role: "you", text: displayText });
+    playSound("confirm");
     setBusy(true);
     setStatus("thinking… (Esc to stop)");
+    const turnStart = messages.length;
     abortController = new AbortController();
+    let firstTool = true;
     // Lazy assistant bubble: text segments and tool-step lines interleave in
     // event order. A tool call closes the current text bubble so the next text
     // starts a fresh one below the step.
@@ -646,6 +628,11 @@ function App() {
             indexes.push(lastToolIdx);
             toolIndexes.set(e.toolCall.name, indexes);
             push({ role: "tool", text });
+            // The "sift" sound, once per turn, when work starts churning.
+            if (firstTool) {
+              firstTool = false;
+              playSound("process");
+            }
             assistantIdx = null; // next text opens a fresh bubble below this step
             setStatus(`⚙ ${e.toolCall.name}… (Esc to stop)`);
           } else if (e.type === "tool_result") {
@@ -671,6 +658,7 @@ function App() {
             setStatus("working… (Esc to stop)");
           } else if (e.type === "error") {
             got = true;
+            playSound("block");
             setMessages(ensureAssistant(), "text", (t) => `${t}\n\n[error: ${e.error ?? "unknown"}]`);
           } else if (e.type === "done") {
             done = e;
@@ -682,8 +670,11 @@ function App() {
         const fallback = done ? doneFallbackText(done) : "";
         setMessages(ensureAssistant(), "text", fallback || "(no response)");
       }
+      playSound("notify"); // turn complete
+      autoRenderMermaid(turnStart);
     } catch (err) {
       const aborted = err instanceof Error && err.name === "AbortError";
+      playSound(aborted ? "panelClose" : "block");
       setMessages(ensureAssistant(), "text", (t) =>
         aborted
           ? `${t}${t ? "  " : ""}⏸ paused`
@@ -702,6 +693,55 @@ function App() {
     }
   }
 
+  // After a completed turn, render any ```mermaid blocks the assistant emitted as
+  // terminal-cell diagrams below the reply. The markdown source stays visible;
+  // this adds the rendered view. Opt out with SIFT_MERMAID_AUTORENDER=0, and skip
+  // silently when the renderer isn't installed or the source fails to parse.
+  function autoRenderMermaid(turnStart: number) {
+    if (process.env.SIFT_MERMAID_AUTORENDER === "0") return;
+    if (!resolveCellRenderBin()) return;
+    const seen = new Set<string>();
+    for (let i = turnStart; i < messages.length; i += 1) {
+      const m = messages[i];
+      if (m.role !== "assistant" || !m.text) continue;
+      for (const block of extractMermaidBlocks(m.text)) {
+        if (seen.has(block)) continue;
+        seen.add(block);
+        // Render at natural size so the full diagram is available to /view; the
+        // inline message is clipped to the viewport width with a pan hint.
+        const result = renderMermaidSource(block, { color: "none" });
+        if (result.ok && result.text.trim()) showDiagramInline(result.text);
+      }
+    }
+  }
+
+  // Store the full diagram for /view and push an inline message: the whole thing
+  // if it fits, otherwise a viewport-width-clipped preview plus a pan hint.
+  function showDiagramInline(fullText: string) {
+    const text = fullText.replace(/\n+$/, "");
+    setLastDiagram(text);
+    const lines = text.split("\n");
+    const w = lines.reduce((max, l) => Math.max(max, l.length), 0);
+    const h = lines.length;
+    const maxCols = Math.max(20, terminal().width - 4);
+    if (w <= maxCols) {
+      push({ role: "system", text });
+      return;
+    }
+    const clipped = lines.map((l) => (l.length > maxCols ? l.slice(0, maxCols) : l)).join("\n");
+    push({ role: "system", text: `${clipped}\n… ${w}×${h} clipped — /view to pan (arrows / hjkl).` });
+  }
+
+  /** Open the pannable full-screen viewer on the most recent diagram. */
+  function openDiagramViewer(): boolean {
+    const text = lastDiagram();
+    if (!text) return false;
+    const lines = text.split("\n");
+    const w = lines.reduce((max, l) => Math.max(max, l.length), 0);
+    setViewer({ lines, w, h: lines.length, x: 0, y: 0 });
+    return true;
+  }
+
   function commandCtx() {
     return {
       client,
@@ -718,15 +758,28 @@ function App() {
       workspaceRoot: () => getWorkspaceRoot(),
       push,
       setMessages: (next: CommandMessage[]) => setMessages(next),
+      submit: (sendText: string, displayText?: string) => {
+        const sendInput = buildChatInput(sendText);
+        if (busy()) {
+          setQueued((q) => [...q, { sendInput, displayText: displayText ?? sendText }]);
+          push({ role: "system", text: `↳ queued (${queued().length}) — runs when this turn finishes` });
+          return;
+        }
+        void submitOne(sendInput, displayText ?? sendText);
+      },
       quit,
       latestAssistantText,
       conversationText,
+      latestExplorerReport: () => latestExplorerReport,
       copyText,
       setAwaitingLogin,
+      showDiagram: (fullText: string) => showDiagramInline(fullText),
+      viewLastDiagram: () => openDiagramViewer(),
     };
   }
 
   function openModelPicker() {
+    playSound("panelOpen");
     setText("");
     setExplorerPicker(null);
     setCrewPicker(null);
@@ -768,6 +821,7 @@ function App() {
   }
 
   function openExplorerPicker() {
+    playSound("panelOpen");
     setText("");
     setPicker(null);
     setCrewPicker(null);
@@ -786,10 +840,28 @@ function App() {
   }
 
   function openCrewPicker() {
+    playSound("panelOpen");
     setText("");
     setPicker(null);
     setExplorerPicker(null);
     setCrewPicker(crewPickerState());
+  }
+
+  function openThemePicker() {
+    setText("");
+    setPicker(null);
+    setExplorerPicker(null);
+    setCrewPicker(null);
+    setThemePicker({ idx: schemeIndexOf(currentSchemeName()), original: currentSchemeName() });
+    playSound("panelOpen");
+  }
+
+  // Live-preview the scheme at `idx` (recolors the whole UI immediately).
+  function previewThemeAt(idx: number) {
+    const next = SCHEMES[Math.max(0, Math.min(SCHEMES.length - 1, idx))];
+    applyScheme(next.name);
+    setThemePicker((tp) => (tp ? { ...tp, idx } : tp));
+    playSound("tap");
   }
 
   function uniqueProjectCrewId(base: string, crews: SiftCrewDefinition[]): string {
@@ -921,6 +993,24 @@ function App() {
       openCrewPicker();
       return;
     }
+    if (bare === "theme" || bare === "themes" || bare === "appearance") {
+      openThemePicker();
+      return;
+    }
+    if (bare === "sounds" || bare === "sound" || bare.startsWith("sounds ") || bare.startsWith("sound ")) {
+      const arg = bare.split(/\s+/)[1];
+      const next = arg === "on" ? true : arg === "off" ? false : !soundsEnabled();
+      const audible = await setSoundsEnabled(next);
+      push({
+        role: "system",
+        text: next
+          ? audible
+            ? "sounds: on"
+            : "sounds: on — but no audio device is available here (e.g. over SSH)"
+          : "sounds: off",
+      });
+      return;
+    }
     await runInteractiveCommand(commandCtx(), cmd);
   }
 
@@ -946,6 +1036,36 @@ function App() {
           resolveApproval(cf.id, decision);
           setConfirm(null);
         }
+        return;
+      }
+
+      // Diagram viewer owns the keyboard while open: arrows / hjkl pan, PgUp/PgDn
+      // page vertically, Home/End jump horizontally, Esc or q closes.
+      const vw = viewer();
+      if (vw) {
+        key.preventDefault?.();
+        key.stopPropagation?.();
+        const k = (n: string) => key.name === n || key.sequence === n;
+        if (key.name === "escape" || k("q")) {
+          setViewer(null);
+          return;
+        }
+        const cols = Math.max(10, terminal().width - 2);
+        const rows = Math.max(5, terminal().height - 4);
+        const maxX = Math.max(0, vw.w - cols);
+        const maxY = Math.max(0, vw.h - rows);
+        const step = 4;
+        let { x, y } = vw;
+        if (key.name === "left" || k("h")) x -= step;
+        else if (key.name === "right" || k("l")) x += step;
+        else if (key.name === "up" || k("k")) y -= step;
+        else if (key.name === "down" || k("j")) y += step;
+        else if (key.name === "pageup") y -= rows - 1;
+        else if (key.name === "pagedown") y += rows - 1;
+        else if (key.name === "home" || k("0")) x = 0;
+        else if (key.name === "end" || k("$")) x = maxX;
+        else return;
+        setViewer({ ...vw, x: Math.max(0, Math.min(maxX, x)), y: Math.max(0, Math.min(maxY, y)) });
         return;
       }
 
@@ -976,6 +1096,33 @@ function App() {
         else if (key.name === "right")
           setPicker({ ...pk, effortIdx: Math.min(efforts.length - 1, pk.effortIdx + 1) });
         else if (isEnter) void confirmPicker(INTERACTIVE_MODEL_CHOICES[pk.modelIdx], efforts[pk.effortIdx]);
+        return;
+      }
+
+      // Appearance picker owns the keyboard while open: ↑/↓ (or ←/→) live-preview
+      // a scheme, Enter saves it, Esc reverts to the scheme that was active on open.
+      const tp = themePicker();
+      if (tp) {
+        key.preventDefault?.();
+        key.stopPropagation?.();
+        const isEnter =
+          key.name === "return" || key.name === "enter" || key.sequence === "\r" || key.sequence === "\n";
+        if (key.name === "escape") {
+          applyScheme(tp.original);
+          setThemePicker(null);
+          playSound("panelClose");
+        } else if (key.name === "up" || key.name === "left") {
+          previewThemeAt(Math.max(0, tp.idx - 1));
+        } else if (key.name === "down" || key.name === "right") {
+          previewThemeAt(Math.min(SCHEMES.length - 1, tp.idx + 1));
+        } else if (isEnter) {
+          const chosen = SCHEMES[tp.idx];
+          applyScheme(chosen.name);
+          saveScheme(chosen.name);
+          setThemePicker(null);
+          playSound("toggleOn");
+          push({ role: "system", text: `appearance: ${chosen.label} — ${chosen.description}` });
+        }
         return;
       }
 
@@ -1098,7 +1245,8 @@ function App() {
 
       // Copy latest response fallback. Ctrl+Shift+C covers Windows/Linux
       // terminal convention; Cmd+C only works in terminals that preserve meta.
-      if ((isCmd && key.name === "c") || (key.ctrl && key.shift && key.name === "c")) {
+      // A bare "c" is intentionally NOT a copy chord — it types (see keybindings.ts).
+      if (isExplicitCopyChord(key)) {
         key.preventDefault?.();
         key.stopPropagation?.();
         if (hasSelection) void copyCurrentSelection();
@@ -1134,30 +1282,9 @@ function App() {
         return;
       }
 
-      // macOS terminals can drop the Cmd modifier and deliver Cmd+C as a bare
-      // printable "c". If a transcript selection exists, treat that as copy and
-      // keep the selection visible; otherwise a normal "c" types normally.
-      if (hasSelection && key.name === "c" && key.sequence === "c" && !key.ctrl && !key.meta && !key.shift) {
-        key.preventDefault?.();
-        key.stopPropagation?.();
-        void copyCurrentSelection();
-        return;
-      }
-      if (
-        !busy() &&
-        !input() &&
-        latestExplorerReport &&
-        key.name === "c" &&
-        key.sequence === "c" &&
-        !key.ctrl &&
-        !key.meta &&
-        !key.shift
-      ) {
-        key.preventDefault?.();
-        key.stopPropagation?.();
-        void copyLatestExplorerReport();
-        return;
-      }
+      // A bare "c" is never copy: it types normally so a message can start with
+      // "c" on a blank composer. Copy is explicit — the chords above or /copy
+      // (use `/copy explorer` for the latest explorer report).
       if (key.ctrl && key.name === "d" && !input()) {
         key.preventDefault?.();
         key.stopPropagation?.();
@@ -1269,9 +1396,17 @@ function App() {
   );
 
   onMount(() => {
+    // Restore the user's saved color scheme (default Sieve) before first paint.
+    applyScheme(loadSavedScheme());
+    // Restore the saved sound preference (off by default); loads the kit if on.
+    void initSounds();
+    onCleanup(() => disposeSounds());
     void refreshState();
     // Route brain write/edit approval requests into the confirm overlay.
-    setConfirmListener((req) => setConfirm(req));
+    setConfirmListener((req) => {
+      playSound("notify"); // a decision is waiting on you
+      setConfirm(req);
+    });
     onCleanup(() => setConfirmListener(null));
     const timer = setInterval(() => void refreshState(), 2000);
     onCleanup(() => clearInterval(timer));
@@ -1292,6 +1427,53 @@ function App() {
   const showHero = () => messages.length === 0;
   const heroWide = () => terminal().width >= 72; // "block" wordmark is ~68 cols
 
+  // Markdown highlight theme, rebuilt whenever the active palette changes so
+  // assistant replies recolor along with the chrome on a scheme swap.
+  const syntaxStyle = createMemo(() => buildSyntaxStyle({ ...theme }));
+
+  // ── Motion ────────────────────────────────────────────────────────────────
+  // Two interval-driven animations, each running ONLY while it's visible, so
+  // idle CPU stays at zero (opentui re-renders only when these signals change).
+  const SPINNER = ["◐", "◓", "◑", "◒"]; // quarter-circle rotation — on "sift" theme
+  const [spin, setSpin] = createSignal(0);
+  const spinner = () => SPINNER[spin() % SPINNER.length];
+  createEffect(() => {
+    if (!busy()) {
+      setSpin(0);
+      return;
+    }
+    const id = setInterval(() => setSpin((s) => s + 1), 120);
+    onCleanup(() => clearInterval(id));
+  });
+
+  // Empty-state "sifting" strip: a dim mesh of dots that drifts each tick,
+  // evoking sand through a sieve. Runs only while the hero is shown.
+  const SIFT_WIDTH = 34;
+  const [sift, setSift] = createSignal(0);
+  const siftRow = (offset: number) => {
+    const t = sift() + offset;
+    let s = "";
+    for (let i = 0; i < SIFT_WIDTH; i += 1) s += (i + t) % 3 === 0 ? "·" : " ";
+    return s;
+  };
+  createEffect(() => {
+    if (!showHero()) return;
+    const id = setInterval(() => setSift((t) => t + 1), 170);
+    onCleanup(() => clearInterval(id));
+  });
+
+  // Role-threaded gutter bar — a 1-col color thread down the left of each turn.
+  const gutterColor = (role: Msg["role"]) =>
+    role === "you"
+      ? theme.user
+      : role === "assistant"
+        ? theme.roleAssistant
+        : role === "shell"
+          ? theme.shell
+          : role === "tool"
+            ? theme.tool
+            : theme.border;
+
   return (
     <box width="100%" height="100%" flexDirection="column" backgroundColor={theme.bg}>
       <box
@@ -1306,8 +1488,14 @@ function App() {
         justifyContent="space-between"
         alignItems="center"
       >
-        <text fg={theme.accentStrong} selectable={false}>sift interactive</text>
-        <text fg={theme.muted} selectable={false}>{agentLabel()}</text>
+        <box flexDirection="row" alignItems="center">
+          <text fg={theme.signal} selectable={false}>◇ </text>
+          <text fg={theme.accentStrong} selectable={false}>siftable</text>
+        </box>
+        <box flexDirection="row" alignItems="center">
+          <text fg={busy() ? theme.warn : theme.ok} selectable={false}>{busy() ? spinner() + " " : "● "}</text>
+          <text fg={theme.muted} selectable={false}>{agentLabel()}</text>
+        </box>
       </box>
 
       <Show when={showHero()}>
@@ -1325,6 +1513,10 @@ function App() {
           >
             <ascii_font text="siftable" font="block" color={theme.signal} />
           </Show>
+          <box paddingTop={1} flexDirection="column" alignItems="center">
+            <text fg={theme.dim} selectable={false}>{siftRow(0)}</text>
+            <text fg={theme.dim} selectable={false}>{siftRow(1)}</text>
+          </box>
           <box paddingTop={1}>
             <text fg={theme.muted} selectable={false}>sift the signal from your work</text>
           </box>
@@ -1348,10 +1540,12 @@ function App() {
         <For each={messages}>
           {(m) => (
             <box
-              flexDirection="column"
+              flexDirection="row"
               paddingTop={1}
               backgroundColor={transcriptSelected() && m.role !== "system" ? theme.transcriptSelection : theme.bg}
             >
+              <box width={1} flexShrink={0} backgroundColor={gutterColor(m.role)} />
+              <box flexDirection="column" flexGrow={1} paddingLeft={1}>
               <Switch>
                 <Match when={m.role === "system"}>
                   <text fg={theme.muted} selectable={false}>{m.text}</text>
@@ -1374,13 +1568,14 @@ function App() {
                   <markdown
                     content={m.text || "…"}
                     streaming={true}
-                    syntaxStyle={syntaxStyle}
+                    syntaxStyle={syntaxStyle()}
                     internalBlockMode="top-level"
                     fg={theme.text}
                     bg={theme.bg}
                   />
                 </Match>
               </Switch>
+              </box>
             </box>
           )}
         </For>
@@ -1389,6 +1584,37 @@ function App() {
 
       <Show when={confirm()}>
         {(c) => <ApprovalOverlay request={c()} theme={theme} />}
+      </Show>
+
+      <Show when={viewer()}>
+        {(v) => {
+          const cols = () => Math.max(10, terminal().width - 2);
+          const rows = () => Math.max(5, terminal().height - 4);
+          const visible = () => v().lines.slice(v().y, v().y + rows()).map((l) => l.slice(v().x, v().x + cols()));
+          return (
+            <box
+              position="absolute"
+              top={0}
+              left={0}
+              width="100%"
+              height="100%"
+              zIndex={100}
+              flexDirection="column"
+              backgroundColor={theme.bg}
+            >
+              <box width="100%" paddingLeft={1} paddingRight={1} backgroundColor={theme.bgMuted} flexDirection="row" justifyContent="space-between">
+                <text fg={theme.accentStrong} selectable={false}>◇ diagram viewer</text>
+                <text fg={theme.muted} selectable={false}>{`${v().w}×${v().h}  ·  ${v().x},${v().y}`}</text>
+              </box>
+              <box flexGrow={1} flexDirection="column" paddingLeft={1}>
+                <For each={visible()}>{(line) => <text fg={theme.text} selectable={false}>{line || " "}</text>}</For>
+              </box>
+              <box width="100%" paddingLeft={1} backgroundColor={theme.bgMuted}>
+                <text fg={theme.muted} selectable={false}>↑↓←→ / hjkl pan · PgUp/PgDn · Home/End · esc to close</text>
+              </box>
+            </box>
+          );
+        }}
       </Show>
 
       <Show when={picker()}>
@@ -1442,6 +1668,58 @@ function App() {
                   </For>
                 </box>
               </Show>
+            </box>
+          );
+        }}
+      </Show>
+
+      <Show when={themePicker()}>
+        {(p) => {
+          // Window the list so 10+ schemes never push the composer off a short
+          // terminal: show THEME_WINDOW rows centred on the selection.
+          const total = SCHEMES.length;
+          const start = () => Math.max(0, Math.min(p().idx - Math.floor(THEME_WINDOW / 2), Math.max(0, total - THEME_WINDOW)));
+          const view = () => SCHEMES.slice(start(), start() + THEME_WINDOW).map((s, j) => ({ s, i: start() + j }));
+          return (
+            <box
+              flexDirection="column"
+              flexShrink={0}
+              borderStyle="single"
+              borderColor={theme.accent}
+              backgroundColor={theme.bgMuted}
+              paddingLeft={1}
+              paddingRight={1}
+            >
+              <text fg={theme.accentStrong} selectable={false}>
+                {`Appearance  (${p().idx + 1}/${total})   ↑/↓ preview · Enter save · Esc cancel`}
+              </text>
+              <For each={view()}>
+                {(row) => (
+                  <box
+                    width="100%"
+                    height={1}
+                    backgroundColor={row.i === p().idx ? theme.border : theme.bgMuted}
+                    flexDirection="row"
+                  >
+                    {/* Each row is painted in its own scheme's colors so the list
+                        previews the palette at a glance. */}
+                    <text fg={row.s.colors.signalText} selectable={false}>
+                      {(row.i === p().idx ? "› " : "  ") + row.s.label.padEnd(11)}
+                    </text>
+                    <text fg={row.s.colors.signal} selectable={false}>{"█"}</text>
+                    <text fg={row.s.colors.roleAssistant} selectable={false}>{"█"}</text>
+                    <text fg={row.s.colors.ok} selectable={false}>{"█"}</text>
+                    <text fg={row.s.colors.warn} selectable={false}>{"█"}</text>
+                    <text fg={row.s.colors.err} selectable={false}>{"█ "}</text>
+                    <text fg={row.i === p().idx ? row.s.colors.muted : theme.dim} selectable={false}>
+                      {row.s.description + (row.s.name === p().original ? "  · current" : "")}
+                    </text>
+                  </box>
+                )}
+              </For>
+              <text fg={theme.dim} selectable={false}>
+                {(start() > 0 ? "↑ more" : "      ") + (start() + THEME_WINDOW < total ? "   ↓ more" : "")}
+              </text>
             </box>
           );
         }}
@@ -1637,7 +1915,7 @@ function App() {
         }}
       </Show>
 
-      <Show when={!picker() && !explorerPicker() && !crewPicker() && slashMatches().length > 0}>
+      <Show when={!picker() && !explorerPicker() && !crewPicker() && !themePicker() && slashMatches().length > 0}>
         <box
           flexDirection="column"
           flexShrink={0}
@@ -1672,26 +1950,27 @@ function App() {
       <box
         width="100%"
         borderStyle="single"
-        borderColor={theme.accent}
+        borderColor={busy() ? theme.warn : theme.borderActive}
+        backgroundColor={theme.bgMuted}
         paddingLeft={1}
         paddingRight={1}
         flexDirection="row"
         alignItems="flex-start"
         flexShrink={0}
       >
-        <text fg={theme.accent} selectable={false}>{busy() ? "… " : "› "}</text>
+        <text fg={busy() ? theme.warn : theme.signal} selectable={false}>{busy() ? spinner() + " " : "› "}</text>
         <textarea
           width="100%"
           minHeight={1}
           maxHeight={composerMaxHeight()}
           wrapMode="word"
           placeholder="type a message  ( / commands · ! shell · ? keys )"
-          placeholderColor={theme.muted}
+          placeholderColor={theme.dim}
           textColor={theme.text}
           focusedTextColor={theme.text}
-          backgroundColor={theme.bg}
-          focusedBackgroundColor={theme.bg}
-          cursorColor={theme.accentStrong}
+          backgroundColor={theme.bgMuted}
+          focusedBackgroundColor={theme.bgMuted}
+          cursorColor={theme.signalText}
           // Match opencode's input_select_all binding (`super+a`) and support
           // terminals that report Cmd as `meta`; Ctrl+A remains line-start.
           // Also match opencode's input_newline binding:
@@ -1770,14 +2049,32 @@ function App() {
         />
       </box>
 
-      <box width="100%" height={1} paddingLeft={1} backgroundColor={theme.bgMuted}>
-        <text fg={theme.muted} selectable={false}>
-          {status() +
-            (model() ? `  ·  ${model()}` : "") +
-            (effort() ? `  ·  ${effort()}` : "") +
-            (queued().length ? `  ·  ${queued().length} queued` : "") +
-            (COMPACTION_ENABLED && contextTokens() > 0 ? `  ·  ${formatContextTokens(contextTokens())}` : "")}
-        </text>
+      <box
+        width="100%"
+        height={1}
+        paddingLeft={1}
+        backgroundColor={theme.bgMuted}
+        flexDirection="row"
+        alignItems="center"
+      >
+        <text fg={busy() ? theme.warn : theme.ok} selectable={false}>{busy() ? spinner() + " " : "● "}</text>
+        <text fg={theme.text} selectable={false}>{status()}</text>
+        <Show when={model()}>
+          <text fg={theme.dim} selectable={false}>{"   ·   "}</text>
+          <text fg={theme.muted} selectable={false}>{model()}</text>
+        </Show>
+        <Show when={effort()}>
+          <text fg={theme.dim} selectable={false}>{"   ·   "}</text>
+          <text fg={theme.muted} selectable={false}>{effort()}</text>
+        </Show>
+        <Show when={queued().length > 0}>
+          <text fg={theme.dim} selectable={false}>{"   ·   "}</text>
+          <text fg={theme.signal} selectable={false}>{`${queued().length} queued`}</text>
+        </Show>
+        <Show when={COMPACTION_ENABLED && contextTokens() > 0}>
+          <text fg={theme.dim} selectable={false}>{"   ·   "}</text>
+          <text fg={theme.muted} selectable={false}>{formatContextTokens(contextTokens())}</text>
+        </Show>
       </box>
     </box>
   );

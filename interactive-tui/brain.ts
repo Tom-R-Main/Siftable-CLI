@@ -64,6 +64,8 @@ import {
   setSessionCwd,
 } from './navigation';
 import { runCollabBranches, type CollabBranchRunContext } from './collabRunner';
+import { renderMermaidFile, renderMermaidSource } from './cellRender';
+import { discoverSkills, formatSkillsForPrompt, loadSkill, type SkillInfo } from './skillsEngine';
 
 /** Relay-compatible event shape the TUI already understands (token, tool_call, tool_result, done, error). */
 export interface BrainEvent {
@@ -298,6 +300,26 @@ async function runShellCommand(
       resolve({command, cwd, exitCode: 1, stdout, stderr: err.message, output: err.message, timedOut});
     });
   });
+}
+
+/**
+ * Discovered skills, cached for the process. Discovery is keyed off the current
+ * workspace root / session cwd, which are stable for a session; call
+ * `refreshSkills()` to rescan (e.g. after `change_directory`).
+ */
+let skillsCache: SkillInfo[] | null = null;
+export function currentSkills(): SkillInfo[] {
+  if (skillsCache) return skillsCache;
+  try {
+    skillsCache = discoverSkills({ projectRoot: getWorkspaceRoot() || undefined, cwd: getSessionCwd() });
+  } catch {
+    skillsCache = [];
+  }
+  return skillsCache;
+}
+export function refreshSkills(): SkillInfo[] {
+  skillsCache = null;
+  return currentSkills();
 }
 
 /**
@@ -717,6 +739,70 @@ function buildLocalTools(of: OfModule): unknown[] {
     },
   });
 
+  const renderMermaidTool = of.defineTool({
+    name: 'render_mermaid',
+    description:
+      'Render a Mermaid diagram to terminal cells (flowchart, sequence, state, class, ER, C4, architecture, mindmap). ' +
+      'Pass `source` with inline Mermaid text, or `file` with a path to a .mmd file. ' +
+      'Use this to validate that a diagram parses before presenting it, or to render a diagram file. ' +
+      'For diagrams shown to the user in your reply, prefer writing a ```mermaid fenced block (the TUI auto-renders it).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source: { type: 'string', description: 'Inline Mermaid source. Mutually exclusive with file.' },
+        file: { type: 'string', description: 'Path to a .mmd file. Mutually exclusive with source.' },
+        ascii: { type: 'boolean', description: 'Use ASCII glyphs instead of Unicode box drawing. Default false.' },
+      },
+    },
+    handler: async (params) => {
+      try {
+        const glyph = params.ascii ? ('ascii' as const) : ('unicode' as const);
+        const opts = { glyph, color: 'none' as const, maxWidth: 120, overflow: 'clip' as const };
+        const file = typeof params.file === 'string' ? params.file.trim() : '';
+        const source = typeof params.source === 'string' ? params.source.trim() : '';
+        if (!file && !source) return of.err('render_mermaid: provide either source or file');
+        const result = file
+          ? renderMermaidFile(resolveLocalPath(file), opts)
+          : renderMermaidSource(source, opts);
+        if (!result.ok) return of.err(result.error || 'render_mermaid: render failed');
+        return of.ok({ rendered: result.text }, result.text);
+      } catch (e) {
+        return of.err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  });
+
+  const skillTool = of.defineTool({
+    name: 'skill',
+    description:
+      'Load a skill — a reusable set of instructions for a specific task. The available skills are listed in your system prompt under "Skills". ' +
+      'When a task matches a skill\'s description, call this with its name to load the full instructions and any bundled resources before proceeding.',
+    inputSchema: {
+      type: 'object',
+      properties: { name: { type: 'string', description: 'The skill name, exactly as listed under Skills.' } },
+      required: ['name'],
+    },
+    handler: async (params) => {
+      try {
+        const name = String(params.name || '').trim();
+        if (!name) return of.err('skill: name is required');
+        const loaded = loadSkill(name, currentSkills());
+        if (!loaded) {
+          const names = currentSkills().map((s) => s.name).join(', ') || '(none)';
+          return of.err(`skill: unknown skill "${name}". Available: ${names}`);
+        }
+        const filesBlock =
+          loaded.files.length > 0
+            ? `\n\nBundled resources (relative to ${loaded.info.dir}):\n${loaded.files.map((f) => `- ${f}`).join('\n')}`
+            : '';
+        const content = `# Skill: ${loaded.info.name}\n\n${loaded.body}${filesBlock}`;
+        return of.ok({ name: loaded.info.name, path: loaded.info.path }, content);
+      } catch (e) {
+        return of.err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  });
+
   const tools: unknown[] = [
     changeDirectory,
     runTerminalCommand,
@@ -728,6 +814,8 @@ function buildLocalTools(of: OfModule): unknown[] {
     batchReadFilesTool,
     readFile,
     listDir,
+    renderMermaidTool,
+    skillTool,
   ];
   // A1 write surface: only when a workspace root is set. Each call is still
   // confirm-gated and Zig-jailed; registration just exposes the tools.
@@ -799,7 +887,7 @@ async function getAgent() {
         tools: buildLocalTools(of),
         memory: false,
         maxToolRounds: 24,
-        prompt: LEAN_PROMPT,
+        prompt: LEAN_PROMPT + formatSkillsForPrompt(currentSkills()),
         // Stable key for rollout persistence: same workspace/cwd resumes the
         // prior conversation (gated by SIFT_CONTEXT_COMPACTION inside the agent).
         persistKey: getWorkspaceRoot() || getSessionCwd(),

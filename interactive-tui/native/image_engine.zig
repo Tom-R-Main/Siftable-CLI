@@ -5,6 +5,7 @@ const STATUS_INVALID_ARGS: u32 = 1;
 const STATUS_UNSUPPORTED: u32 = 2;
 const STATUS_TOO_LARGE: u32 = 3;
 const STATUS_MALFORMED: u32 = 4;
+const STATUS_OUTPUT_TOO_SMALL: u32 = 5;
 
 const MIME_PNG: u32 = 1;
 const MIME_JPEG: u32 = 2;
@@ -19,8 +20,42 @@ pub const ImageInfo = extern struct {
     bytes: u32,
 };
 
+pub const ImageRenderOptions = extern struct {
+    width: u32,
+    height: u32,
+    stride: u32,
+    columns: u32,
+    rows: u32,
+    flags: u32,
+};
+
+const RENDER_FLAG_INVERT: u32 = 0x1;
+const MAX_RENDER_CELLS: u32 = 1_000_000;
+const density_ramp = " .:-=+*#%@";
+
+const Writer = struct {
+    buf: []u8,
+    len: usize = 0,
+    needed: usize = 0,
+    overflow: bool = false,
+
+    fn appendByte(self: *Writer, byte: u8) void {
+        self.needed += 1;
+        if (self.len + 1 > self.buf.len) {
+            self.overflow = true;
+            return;
+        }
+        self.buf[self.len] = byte;
+        self.len += 1;
+    }
+};
+
 fn bytes(ptr: [*]const u8, len: u32) []const u8 {
     return ptr[0..@intCast(len)];
+}
+
+fn outputSlice(ptr: [*]u8, cap: u32) []u8 {
+    return ptr[0..@intCast(cap)];
 }
 
 fn be16(input: []const u8, at: usize) u32 {
@@ -169,6 +204,94 @@ pub export fn sift_image_probe(
     return STATUS_OK;
 }
 
+fn validateRenderInput(input_len: u32, options: ImageRenderOptions) u32 {
+    if (input_len == 0) return STATUS_INVALID_ARGS;
+    if (options.width == 0 or options.height == 0 or options.columns == 0 or options.rows == 0) return STATUS_INVALID_ARGS;
+    if (options.columns > MAX_RENDER_CELLS / options.rows) return STATUS_TOO_LARGE;
+
+    const min_stride = @as(u64, options.width) * 4;
+    if (@as(u64, options.stride) < min_stride) return STATUS_INVALID_ARGS;
+
+    const last_row = @as(u64, options.height - 1) * @as(u64, options.stride);
+    const required = last_row + min_stride;
+    if (required > @as(u64, input_len)) return STATUS_INVALID_ARGS;
+
+    return STATUS_OK;
+}
+
+fn averageCellLuma(input: []const u8, options: ImageRenderOptions, col: u32, row: u32) u32 {
+    var x0 = (@as(u64, col) * @as(u64, options.width)) / @as(u64, options.columns);
+    var x1 = (@as(u64, col + 1) * @as(u64, options.width)) / @as(u64, options.columns);
+    var y0 = (@as(u64, row) * @as(u64, options.height)) / @as(u64, options.rows);
+    var y1 = (@as(u64, row + 1) * @as(u64, options.height)) / @as(u64, options.rows);
+
+    if (x1 <= x0) x1 = @min(@as(u64, options.width), x0 + 1);
+    if (y1 <= y0) y1 = @min(@as(u64, options.height), y0 + 1);
+    x0 = @min(x0, options.width - 1);
+    y0 = @min(y0, options.height - 1);
+
+    var total: u64 = 0;
+    var count: u64 = 0;
+    var y = y0;
+    while (y < y1) : (y += 1) {
+        var x = x0;
+        while (x < x1) : (x += 1) {
+            const offset = y * @as(u64, options.stride) + x * 4;
+            const r = @as(u32, input[@intCast(offset)]);
+            const g = @as(u32, input[@intCast(offset + 1)]);
+            const b = @as(u32, input[@intCast(offset + 2)]);
+            const a = @as(u32, input[@intCast(offset + 3)]);
+            const luma = (299 * r + 587 * g + 114 * b) / 1000;
+            total += (luma * a) / 255;
+            count += 1;
+        }
+    }
+
+    if (count == 0) return 0;
+    return @intCast(total / count);
+}
+
+fn densityGlyph(luma: u32, invert: bool) u8 {
+    const tone = if (invert) 255 - @min(luma, 255) else @min(luma, 255);
+    const idx = (tone * (density_ramp.len - 1) + 127) / 255;
+    return density_ramp[idx];
+}
+
+pub export fn sift_image_render_density_ansi(
+    ptr: [*]const u8,
+    len: u32,
+    options_ptr: *const ImageRenderOptions,
+    out_ptr: [*]u8,
+    out_cap: u32,
+    written: *u32,
+    needed: *u32,
+) u32 {
+    written.* = 0;
+    needed.* = 0;
+
+    const options = options_ptr.*;
+    const validation = validateRenderInput(len, options);
+    if (validation != STATUS_OK) return validation;
+
+    const input = bytes(ptr, len);
+    var w = Writer{ .buf = outputSlice(out_ptr, out_cap) };
+    const invert = (options.flags & RENDER_FLAG_INVERT) != 0;
+
+    var row: u32 = 0;
+    while (row < options.rows) : (row += 1) {
+        var col: u32 = 0;
+        while (col < options.columns) : (col += 1) {
+            w.appendByte(densityGlyph(averageCellLuma(input, options, col, row), invert));
+        }
+        w.appendByte('\n');
+    }
+
+    needed.* = @intCast(w.needed);
+    written.* = @intCast(w.len);
+    if (w.overflow) return STATUS_OUTPUT_TOO_SMALL;
+    return STATUS_OK;
+}
+
 test "probe png dimensions" {
     const png = "\x89PNG\r\n\x1a\n" ++ "\x00\x00\x00\x0dIHDR" ++ "\x00\x00\x00\x02" ++ "\x00\x00\x00\x03" ++ "\x08\x02\x00\x00\x00";
     var info: ImageInfo = .{ .mime_code = 0, .width = 0, .height = 0, .bytes = 0 };
@@ -182,4 +305,54 @@ test "reject oversized bytes" {
     const gif = "GIF89a" ++ "\x02\x00\x03\x00";
     var info: ImageInfo = .{ .mime_code = 0, .width = 0, .height = 0, .bytes = 0 };
     try std.testing.expectEqual(STATUS_TOO_LARGE, sift_image_probe(gif.ptr, gif.len, 4, 100, &info));
+}
+
+test "render raw rgba density ansi" {
+    const rgba = [_]u8{
+        0,   0,   0,   255,
+        255, 255, 255, 255,
+    };
+    const options = ImageRenderOptions{
+        .width = 2,
+        .height = 1,
+        .stride = 8,
+        .columns = 2,
+        .rows = 1,
+        .flags = 0,
+    };
+    var out: [8]u8 = undefined;
+    var written: u32 = 0;
+    var needed: u32 = 0;
+
+    try std.testing.expectEqual(
+        STATUS_OK,
+        sift_image_render_density_ansi(rgba[0..].ptr, rgba.len, &options, &out, out.len, &written, &needed),
+    );
+    try std.testing.expectEqual(@as(u32, 3), written);
+    try std.testing.expectEqual(@as(u32, 3), needed);
+    try std.testing.expectEqualStrings(" @\n", out[0..written]);
+}
+
+test "render raw rgba reports output size" {
+    const rgba = [_]u8{
+        0,   0,   0,   255,
+        255, 255, 255, 255,
+    };
+    const options = ImageRenderOptions{
+        .width = 2,
+        .height = 1,
+        .stride = 8,
+        .columns = 2,
+        .rows = 1,
+        .flags = 0,
+    };
+    var out: [2]u8 = undefined;
+    var written: u32 = 0;
+    var needed: u32 = 0;
+
+    try std.testing.expectEqual(
+        STATUS_OUTPUT_TOO_SMALL,
+        sift_image_render_density_ansi(rgba[0..].ptr, rgba.len, &options, &out, out.len, &written, &needed),
+    );
+    try std.testing.expectEqual(@as(u32, 3), needed);
 }

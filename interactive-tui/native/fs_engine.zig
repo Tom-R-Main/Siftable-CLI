@@ -1,4 +1,5 @@
 const std = @import("std");
+const repo_scan = @import("repo_scan.zig");
 
 const Io = std.Io;
 const Dir = std.Io.Dir;
@@ -50,6 +51,9 @@ const SEARCH_DETAIL_MASK: u32 = 0x3 << SEARCH_DETAIL_SHIFT;
 const SEARCH_DETAIL_PATHS: u32 = 0x1 << SEARCH_DETAIL_SHIFT;
 const SEARCH_DETAIL_LOCATIONS: u32 = 0x2 << SEARCH_DETAIL_SHIFT;
 const SEARCH_DETAIL_FULL: u32 = 0x3 << SEARCH_DETAIL_SHIFT;
+
+pub const RepoScanCaps = repo_scan.RepoScanCaps;
+pub const RepoScanStats = repo_scan.RepoScanStats;
 
 const VENDOR_DIRS = [_][]const u8{
     "node_modules",
@@ -773,6 +777,28 @@ pub export fn sift_fs_search_literal(
     writeSearchStats(&w, &stats, &diagnostics);
     stats_out.* = stats;
     return finish(&w, written_out, needed_out);
+}
+
+pub export fn sift_repo_scan_manifest(
+    root_ptr: [*]const u8,
+    root_len: u32,
+    caps_ptr: *const RepoScanCaps,
+    out_ptr: [*]u8,
+    out_cap: u32,
+    written_out: *u32,
+    needed_out: *u32,
+    stats_out: *RepoScanStats,
+) u32 {
+    return repo_scan.scanManifest(
+        root_ptr,
+        root_len,
+        caps_ptr,
+        out_ptr,
+        out_cap,
+        written_out,
+        needed_out,
+        stats_out,
+    );
 }
 
 /// Atomic full-file write. Enforces the writable root, optionally refuses to

@@ -114,6 +114,122 @@ pub export fn sift_thread_estimate_tokens(ptr: [*]const u8, len: u32) u32 {
     return estimateTokens(bytes(ptr, len));
 }
 
+// ── Text chunk planner ──────────────────────────────────────────────────────
+//
+// Native offset planner for the backend's structural chunking algorithm. It
+// deliberately returns offsets rather than strings so the host keeps ownership
+// of text decoding and JSON escaping. The TypeScript bridge passes an already
+// trimmed UTF-8 buffer and decodes the returned [start,end) byte ranges.
+
+fn isChunkWhitespace(byte: u8) bool {
+    return byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r' or byte == 0x0b or byte == 0x0c;
+}
+
+fn trimRange(input: []const u8, start: usize, end: usize) struct { start: usize, end: usize } {
+    var s = start;
+    var e = end;
+    while (s < e and isChunkWhitespace(input[s])) : (s += 1) {}
+    while (e > s and isChunkWhitespace(input[e - 1])) : (e -= 1) {}
+    return .{ .start = s, .end = e };
+}
+
+fn lastIndexOfAtOrBefore(input: []const u8, needle: []const u8, position: usize) ?usize {
+    if (needle.len == 0 or input.len < needle.len) return null;
+    var i = @min(position, input.len - needle.len);
+    while (true) {
+        if (std.mem.eql(u8, input[i .. i + needle.len], needle)) return i;
+        if (i == 0) break;
+        i -= 1;
+    }
+    return null;
+}
+
+pub export fn sift_thread_plan_chunks(
+    text_ptr: [*]const u8,
+    text_len: u32,
+    max_chars: u32,
+    overlap_chars: u32,
+    out_ptr: [*]u8,
+    out_cap: u32,
+    written_out: *u32,
+    needed_out: *u32,
+) u32 {
+    if (max_chars == 0) return STATUS_INVALID_ARGS;
+
+    const raw = if (text_len == 0) raw_empty: {
+        break :raw_empty @as([]const u8, &.{});
+    } else bytes(text_ptr, text_len);
+    const outer = trimRange(raw, 0, raw.len);
+    const input = raw[outer.start..outer.end];
+
+    var w = PlanWriter{ .buf = outputSlicePlan(out_ptr, out_cap) };
+    w.append("{\"chunks\":[");
+    if (input.len == 0) {
+        w.append("]}");
+        return finishPlan(&w, written_out, needed_out);
+    }
+
+    const max_len: usize = @intCast(max_chars);
+    const overlap_len: usize = @intCast(overlap_chars);
+    var start: usize = 0;
+    var index: u32 = 0;
+    var first = true;
+
+    while (start < input.len) {
+        var end = @min(start + max_len, input.len);
+
+        if (end < input.len) {
+            if (lastIndexOfAtOrBefore(input, "\n\n", end)) |paragraph_break| {
+                if (paragraph_break > start + overlap_len) {
+                    end = paragraph_break;
+                } else if (lastIndexOfAtOrBefore(input, ". ", end)) |sentence_break| {
+                    if (sentence_break > start + overlap_len) {
+                        end = sentence_break + 1;
+                    } else if (lastIndexOfAtOrBefore(input, " ", end)) |word_break| {
+                        if (word_break > start + overlap_len) end = word_break;
+                    }
+                } else if (lastIndexOfAtOrBefore(input, " ", end)) |word_break| {
+                    if (word_break > start + overlap_len) end = word_break;
+                }
+            } else if (lastIndexOfAtOrBefore(input, ". ", end)) |sentence_break| {
+                if (sentence_break > start + overlap_len) {
+                    end = sentence_break + 1;
+                } else if (lastIndexOfAtOrBefore(input, " ", end)) |word_break| {
+                    if (word_break > start + overlap_len) end = word_break;
+                }
+            } else if (lastIndexOfAtOrBefore(input, " ", end)) |word_break| {
+                if (word_break > start + overlap_len) end = word_break;
+            }
+        }
+
+        var body = trimRange(input, start, end);
+        if (body.start == body.end) {
+            end = @min(start + max_len, input.len);
+            body = trimRange(input, start, end);
+            if (body.start == body.end) break;
+            if (!first) w.append(",");
+            w.appendFmt("{{\"index\":{d},\"start\":{d},\"end\":{d}}}", .{ index, body.start, body.end });
+            first = false;
+            index += 1;
+            start = @min(end, input.len);
+            continue;
+        }
+
+        if (!first) w.append(",");
+        w.appendFmt("{{\"index\":{d},\"start\":{d},\"end\":{d}}}", .{ index, body.start, body.end });
+        first = false;
+        index += 1;
+
+        if (end == input.len) break;
+
+        start = @max(end - @min(overlap_len, end), start + 1);
+        while (start < input.len and isChunkWhitespace(input[start])) : (start += 1) {}
+    }
+
+    w.append("]}");
+    return finishPlan(&w, written_out, needed_out);
+}
+
 // ── Compaction planner ──────────────────────────────────────────────────────
 //
 // Pure decision engine: given the framed message history + a budget config, it
@@ -523,6 +639,63 @@ test "large english body lands near chars/4" {
     @memset(&buf, 'a');
     // One 4000-char word run -> ceil(4000/4) = 1000
     try std.testing.expectEqual(@as(u32, 1000), sift_thread_estimate_tokens(buf[0..].ptr, buf.len));
+}
+
+const TestChunks = struct {
+    status: u32,
+    json: []const u8,
+};
+
+fn tRunChunks(input: []const u8, max_chars: u32, overlap_chars: u32, out: []u8) TestChunks {
+    var written: u32 = 0;
+    var needed: u32 = 0;
+    const status = sift_thread_plan_chunks(
+        input.ptr,
+        @intCast(input.len),
+        max_chars,
+        overlap_chars,
+        out.ptr,
+        @intCast(out.len),
+        &written,
+        &needed,
+    );
+    return .{ .status = status, .json = out[0..written] };
+}
+
+test "chunks: short text returns one trimmed offset" {
+    var out: [256]u8 = undefined;
+    const r = tRunChunks("  Short note.  ", 1000, 200, &out);
+    try std.testing.expectEqual(STATUS_OK, r.status);
+    try std.testing.expectEqualStrings("{\"chunks\":[{\"index\":0,\"start\":0,\"end\":11}]}", r.json);
+}
+
+test "chunks: prefers paragraph break over sentence break" {
+    var out: [512]u8 = undefined;
+    const text = "First paragraph here.\n\nSecond paragraph starts now and continues.";
+    const r = tRunChunks(text, 40, 5, &out);
+    try std.testing.expectEqual(STATUS_OK, r.status);
+    try std.testing.expect(std.mem.indexOf(u8, r.json, "{\"index\":0,\"start\":0,\"end\":21}") != null);
+}
+
+test "chunks: falls back to sentence break when paragraph is unavailable" {
+    var out: [512]u8 = undefined;
+    const text = "Sentence one is here. Sentence two follows. Sentence three completes.";
+    const r = tRunChunks(text, 30, 5, &out);
+    try std.testing.expectEqual(STATUS_OK, r.status);
+    try std.testing.expect(std.mem.indexOf(u8, r.json, "{\"index\":0,\"start\":0,\"end\":21}") != null);
+}
+
+test "chunks: emits overlapping word-boundary ranges" {
+    var text: [1200]u8 = undefined;
+    var i: usize = 0;
+    while (i < text.len) : (i += 6) {
+        @memcpy(text[i .. i + 6], "lorem ");
+    }
+    var out: [4096]u8 = undefined;
+    const r = tRunChunks(&text, 200, 50, &out);
+    try std.testing.expectEqual(STATUS_OK, r.status);
+    try std.testing.expect(std.mem.indexOf(u8, r.json, "{\"index\":0,\"start\":0,\"end\":197}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.json, "{\"index\":1,\"start\":147,") != null);
 }
 
 // ── Planner test helpers ────────────────────────────────────────────────────

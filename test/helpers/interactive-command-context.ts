@@ -60,7 +60,11 @@ export function buildCommandContext(overrides: Partial<InteractiveCommandContext
     quit: jest.fn(),
     latestAssistantText: () => 'latest answer',
     conversationText: () => 'you: please hand this off\nsiftable: ok',
+    latestExplorerReport: () => 'explorer report body',
     copyText: jest.fn(async (text) => `copied ${text.length} chars.`),
+    submit: jest.fn(),
+    showDiagram: jest.fn(),
+    viewLastDiagram: jest.fn(() => false),
     setAwaitingLogin: jest.fn(),
     ...overrides,
   };

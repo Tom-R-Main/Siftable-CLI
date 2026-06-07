@@ -1,6 +1,7 @@
 import {randomUUID} from "node:crypto";
 import {homedir} from "node:os";
 import {existsSync, readFileSync, rmSync} from "node:fs";
+import {isAbsolute, join} from "node:path";
 import {rolloutPathForKey} from "./threadEngine";
 import {SiftClient} from "@siftable/mcp-server/dist/exfClient.js";
 import {doneFallbackText, eventTextDelta, type ControlTransport, type RunningAgent} from "./controlClient";
@@ -8,6 +9,16 @@ import {collectDailyReviewContext, collectGitRecapSummary, collectLocalGitSummar
 import {requestApproval} from "./confirmGate";
 import {listCollabSessions, type CollabBranchSnapshot, type CollabSessionSnapshot} from "./collabEngine";
 import {runSiftCrew} from "./crewAdapter";
+import {
+  extractMermaidBlocks,
+  renderMermaidFile,
+  renderMermaidSource,
+  type CellRenderResult,
+  type MermaidRenderOptions,
+} from "./cellRender";
+import {discoverSkills, formatSkillsList, loadSkill} from "./skillsEngine";
+import {planAgentWork, buildAgentWorkGraph, resolveWorkItemRef, type RawWorkItem} from "./planning/agentWork";
+import {loadPlanOverlay, addDeclaredEdges, type DeclaredEdge} from "./planning/planStore";
 import {
   createCrewFromTemplate,
   crewStoragePath,
@@ -35,9 +46,17 @@ export interface InteractiveCommandContext {
   workspaceRoot: () => string;
   push: (message: CommandMessage) => void;
   setMessages: (messages: CommandMessage[]) => void;
+  /** Start an agent turn (queues if the agent is busy). `displayText` is what the
+   * transcript shows; `sendText` is what the model receives. */
+  submit: (sendText: string, displayText?: string) => void;
+  /** Show a rendered diagram inline (clipped to the viewport) and store it for /view. */
+  showDiagram: (fullText: string) => void;
+  /** Open the most recent diagram in the pannable viewer; false if none yet. */
+  viewLastDiagram: () => boolean;
   quit: () => void;
   latestAssistantText: () => string;
   conversationText: () => string;
+  latestExplorerReport: () => string;
   copyText: (text: string) => Promise<string>;
   setAwaitingLogin: (value: boolean) => void;
 }
@@ -1036,7 +1055,152 @@ async function runCrewCommand(ctx: InteractiveCommandContext, args: string[]): P
   }
 }
 
+/**
+ * Push a cell-render result as a system message. The renderer emits terminal
+ * cells (Unicode box drawing / ASCII), which display verbatim in the opentui
+ * `<text>` widget; on failure the precise `file:line:col` diagnostic is shown.
+ */
+function pushCellRender(ctx: InteractiveCommandContext, label: string, result: CellRenderResult): void {
+  if (result.ok && result.text.trim()) {
+    // Route through showDiagram so wide diagrams get a clipped preview + are
+    // openable in the pannable /view overlay.
+    ctx.showDiagram(result.text);
+    return;
+  }
+  const detail = result.error?.trim() || "no output";
+  ctx.push({role: "system", text: `${label}: ${detail}`});
+}
+
+/** Recognizes literal Mermaid source by its leading diagram header (supported subset). */
+const MERMAID_HEADER_RE =
+  /^\s*(flowchart|graph|sequenceDiagram|stateDiagram(-v2)?|classDiagram|erDiagram|mindmap|C4Context|C4Container|C4Component|architecture-beta|requirementDiagram|cardDiagram)\b/;
+
+/**
+ * Wrap a natural-language request as a diagram-generation instruction. Works on
+ * any engine (codex or the OpenFunction brain) because the guidance travels in
+ * the prompt — the reply's ```mermaid block is auto-rendered by the TUI.
+ */
+function mermaidRequestPrompt(request: string): string {
+  return (
+    "Draw a Mermaid diagram for the request below and reply with ONLY a ```mermaid fenced code block " +
+    "(it will be auto-rendered in the terminal). Use the supported subset: flowchart/sequenceDiagram/" +
+    "stateDiagram-v2/classDiagram/erDiagram/mindmap; node shapes [] () (()) {} only; no subgraph, style, " +
+    "classDef, click, or <br/>; keep labels short.\n\nRequest: " +
+    request
+  );
+}
+
+/**
+ * Wrap a natural-language objective as a planning instruction backed by the
+ * `plan` skill. Engine-agnostic: the guidance travels in the prompt, the model
+ * grounds itself in the four-lane Siftable map and replies with a plan card +
+ * a ```mermaid flowchart (auto-rendered by the TUI). Read-only: it plans, it
+ * does not mutate tasks or claim work.
+ */
+function planRequestPrompt(objective: string): string {
+  return (
+    "Use the `plan` skill to plan the objective below. Ground the plan in the Siftable map " +
+    "(User Request → Siftable Assistant → Local Codebase / Sift Tasks / Notes & CRM / Agent Queue). " +
+    "This is read-only planning: inspect and propose, do NOT edit files, mutate tasks, or claim work.\n\n" +
+    "Reply with:\n" +
+    "1. A short plan card (objective, critical path, biggest uncertainty, next approval point).\n" +
+    "2. A ```mermaid flowchart TD of the plan graph (follow the mermaid skill's supported subset: " +
+    "node shapes [] () (()) {} only; no subgraph/style/classDef/click/<br/>; keep labels short).\n" +
+    "3. A structured plan: assumptions · context used · suggested sequence · parallelism · " +
+    "critical path · risks · execution gates · verification.\n\n" +
+    "Objective: " +
+    objective
+  );
+}
+
+/** Shared flag parsing for the `/mermaid` slash command. */
+function mermaidOptionsFromArgs(args: string[]): MermaidRenderOptions {
+  const truecolor = args.includes("--truecolor") || flagValue(args, "--color") === "truecolor";
+  return {
+    glyph: args.includes("--ascii") ? "ascii" : "unicode",
+    color: truecolor ? "truecolor" : "none",
+    maxWidth: 120,
+    overflow: "clip",
+  };
+}
+
+const interactiveCommandsBase: InteractiveCommand[] = [
+  {
+    name: "skills",
+    description: "list available skills (or show one with /skills <name>)",
+    usage: "[name]",
+    run: (ctx, args) => {
+      const skills = discoverSkills({projectRoot: ctx.workspaceRoot() || undefined, cwd: ctx.cwd()});
+      const name = positionalArgs(args)[0];
+      if (!name) {
+        ctx.push({role: "system", text: formatSkillsList(skills)});
+        return;
+      }
+      const loaded = loadSkill(name, skills);
+      if (!loaded) {
+        ctx.push({role: "system", text: `skill not found: ${name}\n\n${formatSkillsList(skills)}`});
+        return;
+      }
+      const files = loaded.files.length ? `\n\nbundled: ${loaded.files.join(", ")}` : "";
+      ctx.push({role: "system", text: `# ${loaded.info.name}  (${loaded.info.source})\n${loaded.info.path}\n\n${loaded.body}${files}`});
+    },
+  },
+  {
+    name: "mermaid",
+    aliases: ["diagram"],
+    description: "diagram something — ask the agent to draw it, or render a file / .mmd source",
+    usage: "[request | file.mmd | mermaid source]",
+    run: (ctx, args) => {
+      const opts = mermaidOptionsFromArgs(args);
+      const text = textArg(positionalArgs(args));
+
+      // No args → render the ```mermaid blocks from the last assistant reply.
+      if (!text) {
+        const blocks = extractMermaidBlocks(ctx.latestAssistantText());
+        if (blocks.length === 0) {
+          ctx.push({
+            role: "system",
+            text: "usage: /mermaid <what to diagram>  ·  e.g. /mermaid our deploy pipeline  ·  or /mermaid <file.mmd>  ·  or /mermaid with no args to render the last reply's diagram",
+          });
+          return;
+        }
+        blocks.forEach((block, i) => {
+          pushCellRender(ctx, blocks.length > 1 ? `mermaid #${i + 1}` : "mermaid", renderMermaidSource(block, opts));
+        });
+        return;
+      }
+
+      // A real file path → render it directly.
+      const resolved = isAbsolute(text) ? text : join(ctx.cwd(), text);
+      if (/\.mmd$/i.test(text) || existsSync(resolved)) {
+        pushCellRender(ctx, "mermaid", renderMermaidFile(resolved, opts));
+        return;
+      }
+
+      // Literal Mermaid source (starts with a supported header) → render directly.
+      if (MERMAID_HEADER_RE.test(text)) {
+        pushCellRender(ctx, "mermaid", renderMermaidSource(text, opts));
+        return;
+      }
+
+      // Otherwise it's a natural-language request → ask the agent to draw it.
+      // The agent replies with a ```mermaid block, which the TUI auto-renders.
+      ctx.submit(mermaidRequestPrompt(text), `/mermaid ${text}`);
+    },
+  },
+  {
+    name: "view",
+    description: "open the last diagram in a pannable full-screen viewer",
+    run: (ctx) => {
+      if (!ctx.viewLastDiagram()) {
+        ctx.push({role: "system", text: "no diagram to view yet — render one with /mermaid first"});
+      }
+    },
+  },
+];
+
 export const interactiveCommands: InteractiveCommand[] = [
+  ...interactiveCommandsBase,
   {
     name: "help",
     description: "show commands",
@@ -1096,10 +1260,15 @@ export const interactiveCommands: InteractiveCommand[] = [
   {
     name: "copy",
     description: "copy response/transcript",
-    usage: "[last|all]",
+    usage: "[last|all|explorer]",
     run: async (ctx, args) => {
       const target = (args[0] || "last").toLowerCase();
-      const text = target === "all" || target === "transcript" ? ctx.conversationText() : ctx.latestAssistantText();
+      const text =
+        target === "all" || target === "transcript"
+          ? ctx.conversationText()
+          : target === "explorer"
+            ? ctx.latestExplorerReport()
+            : ctx.latestAssistantText();
       ctx.push({role: "system", text: await ctx.copyText(text)});
     },
   },
@@ -1131,6 +1300,27 @@ export const interactiveCommands: InteractiveCommand[] = [
         text: `Persisted thread for ${key}\n  ${turns} turn(s), ${lines.length} message(s)\n  ${path}\n  (resumes automatically next session · /threads clear to reset)`,
       });
     },
+  },
+  {
+    name: "theme",
+    aliases: ["appearance", "themes"],
+    description: "change the color scheme",
+    run: (ctx) =>
+      ctx.push({
+        role: "system",
+        text: "Press Enter on /theme to open the appearance picker (↑/↓ preview · Enter save · Esc cancel).",
+      }),
+  },
+  {
+    name: "sounds",
+    aliases: ["sound"],
+    description: "toggle UI sound effects (on/off)",
+    usage: "[on|off]",
+    run: (ctx) =>
+      ctx.push({
+        role: "system",
+        text: "Press Enter on /sounds to toggle UI sound effects, or /sounds on|off.",
+      }),
   },
   {name: "quit", aliases: ["exit", "q"], description: "exit", run: (ctx) => ctx.quit()},
   {
@@ -1298,6 +1488,120 @@ export const interactiveCommands: InteractiveCommand[] = [
           `account: ${acct}\n` +
           `engine:  ${status.active ? `active · ${status.model}` : "not selected — run /model codex/gpt-5.5"}`,
       });
+    },
+  },
+  {
+    name: "plan",
+    description: "plan visually — agent work queue (deterministic) or a natural-language objective",
+    usage: "[objective | work [--apply] [--after SRC:DST] [--limit N] | view]",
+    run: async (ctx, args) => {
+      const sub = (args[0] ?? "").toLowerCase();
+      if (sub === "view") {
+        if (!ctx.viewLastDiagram()) {
+          ctx.push({role: "system", text: "no plan diagram to view yet — run /plan first"});
+        }
+        return;
+      }
+      if (sub === "task") {
+        ctx.push({
+          role: "system",
+          text: "/plan task (human-task planning with confirm-gated mutations) is not wired yet. Use /plan work to plan the agent queue.",
+        });
+        return;
+      }
+
+      // A free-text objective (anything that isn't bare /plan, /plan work, or
+      // bare flags) → ask the agent to plan it via the `plan` skill. It replies
+      // with a plan card + a ```mermaid block that the TUI auto-renders.
+      const positional = positionalArgs(args);
+      if (positional.length && sub !== "work") {
+        const objective = positional.join(" ").trim();
+        ctx.submit(planRequestPrompt(objective), `/plan ${objective}`);
+        return;
+      }
+      const limit = Math.max(1, Math.min(100, Number(flagValue(args, "--limit")) || 50));
+      const response = await ctx.apiClient.listWorkItems({limit});
+      const rows = listFrom(response, "workItems");
+      const items: RawWorkItem[] = rows.map((row) => ({
+        id: String(row.id ?? ""),
+        title: (row.title ?? null) as string | null,
+        prompt: (row.prompt ?? null) as string | null,
+        status: (row.status ?? null) as string | null,
+        taskId: (row.taskId ?? row.task_id ?? null) as string | null,
+        queueRank: (row.queueRank ?? row.queue_rank ?? null) as number | null,
+        writeScope: (row.writeScope ?? row.write_scope ?? null) as Record<string, unknown> | null,
+        verificationCommands: (row.verificationCommands ?? row.verification_commands ?? null) as string[] | null,
+      }));
+
+      // Durable precedence overlay lives in the repo (.siftable/plans/overlay.json).
+      const root = ctx.workspaceRoot() || ctx.cwd();
+      const overlay = loadPlanOverlay(root);
+      const declaredEdges = overlay.declaredEdges.map((e) => ({source: e.source, target: e.target}));
+      const notices: string[] = [];
+
+      // --after SRC:DST teaches a precedence the planner can't infer from scope.
+      const taught: DeclaredEdge[] = [];
+      for (let i = 0; i < args.length; i += 1) {
+        if (args[i] !== "--after") continue;
+        const spec = args[i + 1] ?? "";
+        const [srcRef, dstRef] = spec.split(":");
+        if (!srcRef || !dstRef) {
+          notices.push(`--after expects SRC:DST, got "${spec}"`);
+          continue;
+        }
+        const src = resolveWorkItemRef(items, srcRef);
+        const dst = resolveWorkItemRef(items, dstRef);
+        if ("error" in src) { notices.push(`--after: ${src.error}`); continue; }
+        if ("error" in dst) { notices.push(`--after: ${dst.error}`); continue; }
+        taught.push({source: src.id, target: dst.id, note: `declared via --after (${srcRef}:${dstRef})`});
+      }
+
+      // Validate that taught edges don't create a precedence cycle before saving.
+      if (taught.length) {
+        const trial = planAgentWork(items, {declaredEdges: [...declaredEdges, ...taught]});
+        if (trial.snapshot.status === "blocked" && trial.snapshot.invalidCycles.length) {
+          notices.push("Refused to record --after edge(s): would create a precedence cycle.");
+          taught.length = 0;
+        } else {
+          const {added} = addDeclaredEdges(root, taught);
+          declaredEdges.push(...added.map((e) => ({source: e.source, target: e.target})));
+          notices.push(`Recorded ${added.length} precedence edge(s) from --after.`);
+        }
+      }
+
+      // --apply promotes the planner's derived edges (lane chains, sibling rank)
+      // into durable declared edges so they survive and stay inspectable.
+      if (args.includes("--apply")) {
+        const {derivedHardEdges} = buildAgentWorkGraph(items, {declaredEdges});
+        const {added} = addDeclaredEdges(
+          root,
+          derivedHardEdges.map((e) => ({source: e.source, target: e.target, note: "derived: lane/sibling order"})),
+        );
+        declaredEdges.push(...added.map((e) => ({source: e.source, target: e.target})));
+        notices.push(
+          added.length
+            ? `Applied: persisted ${added.length} derived precedence edge(s) to ${root}/.siftable/plans/overlay.json`
+            : "Applied: no new derived edges to persist (already recorded).",
+        );
+        notices.push("Note: work-item queue rank is not writable via the API; precedence is enforced at spawn time by Gate A and reflected in the order below.");
+      }
+
+      const {text, mermaid} = planAgentWork(items, {declaredEdges});
+      const header = notices.length ? notices.join("\n") + "\n\n" : "";
+      ctx.push({role: "system", text: header + text});
+
+      // Draw the computed plan graph (the real precedence DAG) so the plan is
+      // visual, not just a report. Routes through showDiagram → clipped preview
+      // + pannable /view (or /plan view). ★ marks critical-path nodes.
+      if (mermaid) {
+        const rendered = renderMermaidSource(mermaid, {
+          glyph: "unicode",
+          color: "none",
+          maxWidth: 120,
+          overflow: "clip",
+        });
+        if (rendered.ok && rendered.text.trim()) ctx.showDiagram(rendered.text);
+      }
     },
   },
   {

@@ -9,13 +9,16 @@
  */
 import { describe, it, expect } from "bun:test";
 import {
+  chunkTextNative,
   estimateTokens,
   estimateTokensFallback,
+  nativeChunkingAvailable,
   planCompaction,
   tokenEstimateSource,
   type CompactionConfig,
   type PlanMessage,
 } from "../threadEngine";
+import { chunkText as chunkTextTs } from "../../../../exf-app/src/services/chunkingService";
 
 // Locked heuristic: ceil(word_run/4) per Latin/alnum run, +1 per standalone
 // ASCII punctuation, +1 per multibyte codepoint, whitespace folds away. These
@@ -80,6 +83,59 @@ describe("estimateTokensFallback parity", () => {
     ];
     for (const text of corpus) {
       expect(estimateTokensFallback(text)).toBe(estimateTokens(text));
+    }
+  });
+});
+
+describe("chunkTextNative parity", () => {
+  const CASES: Array<{ name: string; text: string; maxChars: number; overlapChars: number }> = [
+    {
+      name: "short note",
+      text: "Short note.",
+      maxChars: 1000,
+      overlapChars: 200,
+    },
+    {
+      name: "paragraph break priority",
+      text: "First paragraph here.\n\nSecond paragraph starts now and continues.",
+      maxChars: 40,
+      overlapChars: 5,
+    },
+    {
+      name: "sentence break fallback",
+      text: "Sentence one is here. Sentence two follows. Sentence three completes.",
+      maxChars: 30,
+      overlapChars: 5,
+    },
+    {
+      name: "word-boundary overlap",
+      text: "lorem ".repeat(200),
+      maxChars: 200,
+      overlapChars: 50,
+    },
+    {
+      name: "single contiguous run",
+      text: "a".repeat(2000),
+      maxChars: 500,
+      overlapChars: 50,
+    },
+    {
+      name: "trimmed extreme whitespace",
+      text: " ".repeat(2000) + "word" + " ".repeat(2000),
+      maxChars: 100,
+      overlapChars: 20,
+    },
+  ];
+
+  it("loads the native planner in the bun runtime", () => {
+    expect(nativeChunkingAvailable()).toBe(true);
+  });
+
+  it("matches the backend TypeScript chunker on locked structural cases", () => {
+    for (const c of CASES) {
+      const nativeChunks = chunkTextNative(c.text, c.maxChars, c.overlapChars);
+      expect(nativeChunks, c.name).not.toBeNull();
+      expect(nativeChunks).toEqual(chunkTextTs(c.text, c.maxChars, c.overlapChars));
     }
   });
 });

@@ -68,6 +68,28 @@ export interface SearchCaps {
 
 export type SearchDetail = "paths" | "locations" | "snippets" | "full";
 
+export interface RepositoryScanCaps extends SearchCaps {
+  sourceOnly?: boolean;
+}
+
+export interface RepositoryScanManifest {
+  files: Array<{
+    path: string;
+    bytes: number;
+    depth: number;
+  }>;
+  stats: {
+    scannedFiles: number;
+    skippedFiles: number;
+    truncated: number;
+    capped: boolean;
+    capReason: "maxFiles" | "maxDepth" | null;
+    bytesScanned: number;
+    skippedByReason: SearchSkippedByReason;
+  };
+  source: "zig" | "ts";
+}
+
 export interface SearchMatch {
   path: string;
   line: number;
@@ -248,6 +270,7 @@ const SEARCH_FLAG_INCLUDE_HIDDEN = 0x1;
 const SEARCH_FLAG_INCLUDE_VENDOR = 0x8;
 const SEARCH_FLAG_INCLUDE_BUILD_OUTPUTS = 0x10;
 const SEARCH_FLAG_IGNORE_GITIGNORE = 0x20;
+const SCAN_FLAG_SOURCE_ONLY = 0x2;
 const SEARCH_DETAIL_SHIFT = 24;
 const SEARCH_DETAIL_PATHS = 1 << SEARCH_DETAIL_SHIFT;
 const SEARCH_DETAIL_LOCATIONS = 2 << SEARCH_DETAIL_SHIFT;
@@ -371,6 +394,16 @@ type NativeSymbols = {
     needed: Uint32Array,
     stats: Uint32Array,
   ) => number;
+  sift_repo_scan_manifest: (
+    root: Uint8Array,
+    rootLen: number,
+    caps: Uint32Array,
+    out: Uint8Array,
+    outCap: number,
+    written: Uint32Array,
+    needed: Uint32Array,
+    stats: Uint32Array,
+  ) => number;
   sift_fs_write_text: (
     root: Uint8Array,
     rootLen: number,
@@ -423,6 +456,19 @@ function nativeSymbols(): NativeSymbols | null {
       args: [
         FFIType.ptr,
         FFIType.u32,
+        FFIType.ptr,
+        FFIType.u32,
+        FFIType.ptr,
+        FFIType.ptr,
+        FFIType.u32,
+        FFIType.ptr,
+        FFIType.ptr,
+        FFIType.ptr,
+      ],
+      returns: FFIType.u32,
+    },
+    sift_repo_scan_manifest: {
+      args: [
         FFIType.ptr,
         FFIType.u32,
         FFIType.ptr,
@@ -544,6 +590,44 @@ export async function searchLiteral(root: string, query: string, caps: SearchCap
     }
   }
   return searchLiteralFallback(root, query, caps);
+}
+
+export async function scanRepositoryManifest(root: string, caps: RepositoryScanCaps = {}): Promise<RepositoryScanManifest> {
+  const symbols = nativeSymbols();
+  if (symbols) {
+    const rootBytes = encoder.encode(root);
+    const capWords = new Uint32Array([
+      caps.maxFiles ?? DEFAULT_MAX_FILES,
+      caps.maxDepth ?? DEFAULT_MAX_DEPTH,
+      caps.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES,
+      searchFlags(caps) | (caps.sourceOnly === false ? 0 : SCAN_FLAG_SOURCE_ONLY),
+    ]);
+
+    let cap = 256 * 1024;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const out = new Uint8Array(cap);
+      const written = new Uint32Array(1);
+      const needed = new Uint32Array(1);
+      const stats = new Uint32Array(8);
+      const status = symbols.sift_repo_scan_manifest(
+        rootBytes,
+        rootBytes.byteLength,
+        capWords,
+        out,
+        out.byteLength,
+        written,
+        needed,
+        stats,
+      );
+      if (status === STATUS_OK) return { ...JSON.parse(readJsonFromOut(out, written)), source: "zig" };
+      if (status === STATUS_OUTPUT_TOO_SMALL) {
+        cap = grow(cap, needed);
+        continue;
+      }
+      throw new Error(nativeStatusMessage(status, "scan_repository"));
+    }
+  }
+  return scanRepositoryManifestFallback(root, caps);
 }
 
 function searchFlags(caps: SearchCaps): number {
@@ -1220,6 +1304,65 @@ async function searchLiteralFallback(root: string, query: string, caps: SearchCa
     }
   }
   return { matches, stats, source: "ts" };
+}
+
+async function scanRepositoryManifestFallback(root: string, caps: RepositoryScanCaps): Promise<RepositoryScanManifest> {
+  const absRoot = resolvePath(root || ".");
+  const traversal = await collectTraversalFiles(absRoot, {
+    maxFiles: caps.maxFiles ?? DEFAULT_MAX_FILES,
+    maxDepth: caps.maxDepth ?? DEFAULT_MAX_DEPTH,
+    maxFileBytes: caps.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES,
+    caps,
+    sourceOnly: caps.sourceOnly !== false,
+    respectGitignore: caps.respectGitignore !== false,
+  });
+  const skippedByReason = {...traversal.skippedByReason};
+  let skippedFiles = traversal.skippedFiles;
+  let bytesScanned = 0;
+  const files: RepositoryScanManifest["files"] = [];
+
+  for (const file of traversal.files) {
+    try {
+      const data = await readFile(file.absPath);
+      if (isLikelyBinaryBuffer(data)) {
+        skippedFiles += 1;
+        skippedByReason.binary += 1;
+        continue;
+      }
+      if (!isValidUtf8(data)) {
+        skippedFiles += 1;
+        skippedByReason.invalidUtf8 += 1;
+        continue;
+      }
+      bytesScanned += data.byteLength;
+      files.push({
+        path: file.path,
+        bytes: data.byteLength,
+        depth: file.depth,
+      });
+    } catch {
+      skippedFiles += 1;
+      skippedByReason.ioError += 1;
+    }
+  }
+
+  files.sort((a, b) => a.path.localeCompare(b.path));
+
+  return {
+    files,
+    stats: {
+      scannedFiles: files.length,
+      skippedFiles,
+      truncated: traversal.truncated ? 1 : 0,
+      capped: traversal.truncated,
+      capReason: traversal.capReason === "maxMatches" || traversal.capReason === "maxBytes"
+        ? null
+        : traversal.capReason,
+      bytesScanned,
+      skippedByReason,
+    },
+    source: "ts",
+  };
 }
 
 export function fsEngineAvailable(): boolean {

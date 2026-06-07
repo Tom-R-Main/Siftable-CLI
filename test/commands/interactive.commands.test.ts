@@ -90,6 +90,22 @@ describe('interactive command registry', () => {
     expect(messages.at(-1)?.text).toBe('copied 38 chars.');
   });
 
+  it('routes /copy targets to the right source (copy stays explicit via the command)', async () => {
+    const {ctx, messages} = buildContext();
+
+    await runInteractiveCommand(ctx, '/copy'); // defaults to the latest assistant reply
+    expect(messages.at(-1)?.text).toBe(`copied ${'latest answer'.length} chars.`);
+
+    await runInteractiveCommand(ctx, '/copy last');
+    expect(messages.at(-1)?.text).toBe(`copied ${'latest answer'.length} chars.`);
+
+    await runInteractiveCommand(ctx, '/copy all');
+    expect(messages.at(-1)?.text).toBe(`copied ${'you: please hand this off\nsiftable: ok'.length} chars.`);
+
+    await runInteractiveCommand(ctx, '/copy explorer');
+    expect(messages.at(-1)?.text).toBe(`copied ${'explorer report body'.length} chars.`);
+  });
+
   it('hydrates missing direct-provider keys from Sift Vault after approval', async () => {
     const previous = process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;

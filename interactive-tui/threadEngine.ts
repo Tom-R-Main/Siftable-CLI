@@ -18,6 +18,16 @@ const decoder = new TextDecoder();
 let native:
   | {
       sift_thread_estimate_tokens: (bytes: Uint8Array, len: number) => number;
+      sift_thread_plan_chunks: (
+        text: Uint8Array,
+        textLen: number,
+        maxChars: number,
+        overlapChars: number,
+        out: Uint8Array,
+        outCap: number,
+        written: Uint32Array,
+        needed: Uint32Array,
+      ) => number;
       sift_thread_plan_compaction: (
         msgs: Uint8Array,
         msgsLen: number,
@@ -62,6 +72,10 @@ function nativeSymbols() {
   const lib = dlopen(nativeLibraryPath, {
     // ptr accepts a Uint8Array and matches Zig's [*]const u8 C ABI.
     sift_thread_estimate_tokens: { args: [FFIType.ptr, FFIType.u32], returns: FFIType.u32 },
+    sift_thread_plan_chunks: {
+      args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.u32,
+    },
     sift_thread_plan_compaction: {
       args: [FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr],
       returns: FFIType.u32,
@@ -145,6 +159,74 @@ export function estimateTokensFallback(text: string): number {
     }
   }
   return wordTokens + multibyte + Math.floor((punct * PUNCT_WEIGHT_TENTHS + 5) / 10);
+}
+
+// ── Text chunk planner bridge ───────────────────────────────────────────────
+
+export interface NativeTextChunk {
+  index: number;
+  body: string;
+}
+
+interface NativeChunkOffset {
+  index: number;
+  start: number;
+  end: number;
+}
+
+interface NativeChunkPlan {
+  chunks: NativeChunkOffset[];
+}
+
+/** True when the native text chunk planner can be called. */
+export function nativeChunkingAvailable(): boolean {
+  return nativeSymbols() != null;
+}
+
+/**
+ * Run the native structural chunk planner and decode its returned byte ranges.
+ *
+ * This mirrors `exf-app/src/services/chunkingService.ts` for bridge evaluation;
+ * backend call sites should keep using the TypeScript chunker until the lane-B
+ * bridge decision exists.
+ */
+export function chunkTextNative(text: string, maxChars = 1000, overlapChars = 200): NativeTextChunk[] | null {
+  const symbols = nativeSymbols();
+  if (!symbols) return null;
+
+  const normalised = text.trim();
+  if (!normalised) return [];
+
+  const input = encoder.encode(normalised);
+  let cap = Math.max(512, Math.ceil(input.byteLength / Math.max(1, maxChars)) * 48 + 128);
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const out = new Uint8Array(cap);
+    const written = new Uint32Array(1);
+    const needed = new Uint32Array(1);
+    const status = symbols.sift_thread_plan_chunks(
+      input,
+      input.byteLength,
+      maxChars,
+      overlapChars,
+      out,
+      out.byteLength,
+      written,
+      needed,
+    );
+    if (status === STATUS_OK) {
+      const plan = JSON.parse(decoder.decode(out.subarray(0, written[0]))) as NativeChunkPlan;
+      return plan.chunks.map((chunk) => ({
+        index: chunk.index,
+        body: decoder.decode(input.subarray(chunk.start, chunk.end)),
+      }));
+    }
+    if (status === STATUS_OUTPUT_TOO_SMALL) {
+      cap = Math.max(needed[0]! + 64, cap * 2);
+      continue;
+    }
+    return null;
+  }
+  return null;
 }
 
 // ── Compaction planner bridge ────────────────────────────────────────────────

@@ -11,6 +11,7 @@ const native_sources = [_]NativeSource{
     .{ .name = "fs_engine", .path = "native/fs_engine.zig" },
     .{ .name = "image_engine", .path = "native/image_engine.zig" },
     .{ .name = "thread_engine", .path = "native/thread_engine.zig" },
+    .{ .name = "merge_master", .path = "native/merge_master.zig" },
 };
 
 pub fn build(b: *std.Build) !void {
