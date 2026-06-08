@@ -31,12 +31,15 @@ import {
 import type {
   ChildSessionRecord,
   ChildSessionView,
+  MergeChildOptions,
+  MergeChildResult,
   ReviewChildOptions,
   ReviewChildResult,
   SpawnChildInput,
   SpawnChildResult,
 } from "./childSessionController";
 import type {MergePacket} from "./mergeGate";
+import type {ParentMergeView} from "./mergeView";
 
 export type CommandMessage = { role: "you" | "assistant" | "system" | "shell" | "tool"; text: string };
 
@@ -55,6 +58,10 @@ export interface ChildSessionActions {
   leave: () => {ok: boolean; reason?: string};
   /** Run the lane-D ready-to-merge gate on a child (sets its status). */
   review: (sessionId: number, opts?: ReviewChildOptions) => ReviewChildResult;
+  /** Read-only dashboard of every child's mergeability (lane E). */
+  mergeView: () => ParentMergeView;
+  /** Land a ready child onto the base via squash-merge (lane E). */
+  merge: (sessionId: number, opts?: MergeChildOptions) => MergeChildResult;
 }
 
 export interface InteractiveCommandContext {
@@ -1411,6 +1418,76 @@ function readyCommand(ctx: InteractiveCommandContext, args: string[]): void {
   ctx.push({role: "system", text});
 }
 
+const MERGE_USAGE = '/merge [<session-id>] [--keep] [-m "message"]';
+
+/**
+ * Parse `/merge` args. `-m` consumes the next token as the message (quotes are
+ * already stripped by parseCommandArgs, so a quoted phrase arrives as one token);
+ * `--keep` retains the worktree+branch; the first remaining bare token is the id.
+ * With no id, the command renders the dashboard rather than landing anything.
+ */
+export function parseMergeArgs(args: string[]): {id?: number; keep: boolean; message?: string; error?: string} {
+  let keep = false;
+  let message: string | undefined;
+  let id: number | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const tok = args[i];
+    if (tok === "--keep") {
+      keep = true;
+    } else if (tok === "-m" || tok === "--message") {
+      message = args[++i]; // may be undefined if -m is trailing; harmless
+    } else if (tok.startsWith("-")) {
+      return {keep, message, error: `unknown flag: ${tok}`};
+    } else if (id === undefined) {
+      const n = Number(tok);
+      if (!Number.isInteger(n)) return {keep, message, error: `not a session id: ${tok}`};
+      id = n;
+    }
+  }
+  return {id, keep, message};
+}
+
+/** Render the parent merge dashboard (ready-first, with counts + ready totals). */
+function formatMergeView(view: ParentMergeView): string {
+  if (view.rows.length === 0) return "No child sessions to merge. /spawn one, /ready it, then /merge <id>.";
+  const rows = view.rows.map((r) => {
+    const mark = r.verdict === "ready_to_merge" ? "✓" : r.verdict === "merge_blocked" ? "✗" : "·";
+    const stat = r.verdict ? `${r.files} file(s), +${r.additions} −${r.deletions}` : r.status;
+    const drift = r.behindBy > 0 ? `, base +${r.behindBy}` : "";
+    const head = `${mark} #${r.sessionId} ${r.branch} → ${r.baseBranch}: ${stat}${drift}`;
+    return r.blockers.length ? [head, ...r.blockers.map((b) => `    • ${b}`)].join("\n") : head;
+  });
+  const footer = `${view.readyCount} ready · ${view.blockedCount} blocked` +
+    (view.readyCount > 0 ? `  (+${view.totalAdditions} −${view.totalDeletions} if all land)` : "");
+  return ["Merge view (/merge <id> to land · --keep to retain):", ...rows, footer].join("\n");
+}
+
+function mergeCommand(ctx: InteractiveCommandContext, args: string[]): void {
+  const parsed = parseMergeArgs(args);
+  if (parsed.error) {
+    ctx.push({role: "system", text: `/merge: ${parsed.error}\n${MERGE_USAGE}`});
+    return;
+  }
+  // No id → dashboard.
+  if (parsed.id === undefined) {
+    ctx.push({role: "system", text: formatMergeView(ctx.sessions.mergeView())});
+    return;
+  }
+  const res = ctx.sessions.merge(parsed.id, {keep: parsed.keep, message: parsed.message});
+  if (!res.ok) {
+    let text = `/merge: ${res.reason}`;
+    if (res.packet) text = `${formatPacket(res.packet)}\n  → ${res.reason}`;
+    ctx.push({role: "system", text});
+    return;
+  }
+  const sha = res.baseCommit.slice(0, 7);
+  const tail = res.cleaned ? "worktree + branch removed" : "worktree + branch kept";
+  const verb = res.merged ? "merged" : "already up-to-date";
+  let text = `${verb} #${parsed.id} → ${res.packet.baseBranch} (${sha}) · ${tail}`;
+  if (res.note) text += `\n  (${res.note})`;
+  ctx.push({role: "system", text});
+}
+
 export const interactiveCommands: InteractiveCommand[] = [
   ...interactiveCommandsBase,
   {
@@ -1512,6 +1589,12 @@ export const interactiveCommands: InteractiveCommand[] = [
     description: "run the ready-to-merge gate on a child (sets ready/blocked)",
     usage: "[<session-id>] [--commit]",
     run: (ctx, args) => readyCommand(ctx, args),
+  },
+  {
+    name: "merge",
+    description: "land a ready child onto the base (squash-merge), or show the merge view",
+    usage: '[<session-id>] [--keep] [-m "message"]',
+    run: (ctx, args) => mergeCommand(ctx, args),
   },
   {name: "clear", description: "clear the conversation", run: (ctx) => ctx.setMessages([{role: "system", text: "cleared."}])},
   {

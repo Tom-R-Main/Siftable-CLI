@@ -21,8 +21,11 @@ import {
   removeChildWorktree,
   resolveRepoRoot,
   createGitRunner,
+  squashMergeChild,
+  WorktreeError,
   type GitRunner,
 } from "./worktreeService";
+import {assembleParentMergeView, type MergeReadinessRow, type ParentMergeView} from "./mergeView";
 import {
   conversationKeyForSession,
   createGatedChildSession,
@@ -117,6 +120,31 @@ export type ReviewChildResult =
     }
   | {ok: false; reason: string};
 
+/** Options for {@link ChildSessionController.mergeChild}. */
+export interface MergeChildOptions {
+  /** Keep the child worktree + branch after a successful merge (default: remove). */
+  keep?: boolean;
+  /** Override the squash commit message. */
+  message?: string;
+}
+
+/** Outcome of landing a child onto the base (lane E). */
+export type MergeChildResult =
+  | {
+      ok: true;
+      /** True when a squash commit was created; false when already up-to-date. */
+      merged: boolean;
+      /** The gate packet that authorized the merge. */
+      packet: MergePacket;
+      /** Base tip after the landing. */
+      baseCommit: string;
+      /** True when the child worktree + branch were removed. */
+      cleaned: boolean;
+      /** Extra context (already-up-to-date, cleanup skipped/failed, …). */
+      note?: string;
+    }
+  | {ok: false; reason: string; packet?: MergePacket};
+
 export interface ChildSessionController {
   spawnChild(input: SpawnChildInput): SpawnChildResult;
   listChildSessions(): ChildSessionView[];
@@ -125,6 +153,10 @@ export interface ChildSessionController {
   reviewChild(sessionId: number, opts?: ReviewChildOptions): ReviewChildResult;
   /** Stage + commit a child's working changes (no gate). Returns the new tip. */
   commitChild(sessionId: number, message?: string): {ok: boolean; committed?: boolean; headCommit?: string; reason?: string};
+  /** Read-only dashboard: every child's mergeability as the parent sees it. */
+  listMergeReadiness(): ParentMergeView;
+  /** Land a ready child onto the base via squash-merge (lane E). */
+  mergeChild(sessionId: number, opts?: MergeChildOptions): MergeChildResult;
   removeChild(
     sessionId: number,
     opts?: {deleteBranch?: boolean; force?: boolean},
@@ -309,6 +341,152 @@ export function createChildSessionController(
     }
   }
 
+  function listMergeReadiness(): ParentMergeView {
+    const rows: MergeReadinessRow[] = [];
+    for (const rec of records.values()) {
+      const live = getMergeMasterSession(rec.sessionId);
+      const status = live?.status ?? "unknown";
+      // Terminal children and read-only children have nothing to land → null verdict.
+      if ((live && isTerminalStatus(live.status)) || rec.accessMode === "read_only") {
+        rows.push({
+          sessionId: rec.sessionId,
+          branch: rec.branch,
+          baseBranch: rec.baseBranch,
+          status,
+          verdict: null,
+          files: 0,
+          additions: 0,
+          deletions: 0,
+          behindBy: 0,
+          blockers: [],
+        });
+        continue;
+      }
+      try {
+        const packet = evaluateMerge(rec, runner);
+        rows.push({
+          sessionId: rec.sessionId,
+          branch: rec.branch,
+          baseBranch: rec.baseBranch,
+          status,
+          verdict: packet.verdict,
+          files: packet.files.length,
+          additions: packet.totalAdditions,
+          deletions: packet.totalDeletions,
+          behindBy: packet.behindBy,
+          blockers: packet.blockers,
+        });
+      } catch (err) {
+        rows.push({
+          sessionId: rec.sessionId,
+          branch: rec.branch,
+          baseBranch: rec.baseBranch,
+          status,
+          verdict: null,
+          files: 0,
+          additions: 0,
+          deletions: 0,
+          behindBy: 0,
+          blockers: [err instanceof Error ? err.message : String(err)],
+        });
+      }
+    }
+    return assembleParentMergeView(rows);
+  }
+
+  function mergeChild(sessionId: number, opts: MergeChildOptions = {}): MergeChildResult {
+    const rec = records.get(sessionId);
+    if (!rec) return {ok: false, reason: "unknown child session"};
+    const live = getMergeMasterSession(sessionId);
+    if (live && isTerminalStatus(live.status)) {
+      return {ok: false, reason: `child #${sessionId} is ${live.status} (terminal) — nothing to merge`};
+    }
+
+    // Re-gate at merge time: the base may have moved since /ready. The gate sets
+    // the child's status; we only land when both the verdict AND the registry agree.
+    let packet: MergePacket;
+    try {
+      packet = evaluateMerge(rec, runner);
+    } catch (err) {
+      return {ok: false, reason: err instanceof Error ? err.message : String(err)};
+    }
+    setSessionHeadCommit(sessionId, packet.headCommit, now());
+    const code = transitionSessionStatus(sessionId, packet.verdict, now());
+    if (packet.verdict !== "ready_to_merge") {
+      return {ok: false, reason: `merge blocked: ${packet.blockers.join("; ") || "not ready"}`, packet};
+    }
+    if (code !== 0) {
+      // Verdict is clean, but the registry refused it (e.g. child is needs_input).
+      return {
+        ok: false,
+        reason: `child #${sessionId} is ${live?.status ?? "unknown"} — resume it (set running) before merging`,
+        packet,
+      };
+    }
+
+    // Land it. squashMergeChild is fully self-rolling-back on any failure.
+    let result;
+    try {
+      result = squashMergeChild(
+        {
+          repoRoot: rec.repoRoot,
+          parentWorktreePath: rec.repoRoot,
+          baseBranch: rec.baseBranch,
+          childBranch: rec.branch,
+          message: opts.message ?? `sift: merge child #${sessionId} (${rec.branch}) — ${rec.title}`,
+        },
+        runner,
+      );
+    } catch (err) {
+      // A conflict that surfaced between the gate and the merge → fall back to blocked.
+      if (err instanceof WorktreeError && err.kind === "merge_conflict") {
+        transitionSessionStatus(sessionId, "merge_blocked", now());
+      }
+      return {ok: false, reason: err instanceof Error ? err.message : String(err), packet};
+    }
+
+    // The work is on the base now → terminal merged; free its Gate-A scope.
+    transitionSessionStatus(sessionId, "merged", now());
+    // Keep the parent's recorded tip in step with the advanced base.
+    setSessionHeadCommit(rec.parentSessionId, result.baseCommitAfter, now());
+
+    let cleaned = false;
+    let note = result.alreadyUpToDate ? "child had no net changes (already up-to-date)" : undefined;
+    if (!opts.keep) {
+      // Force-delete the branch: squash doesn't mark it merged, so `-d` would
+      // refuse — but the work is provably preserved in the base squash commit.
+      const removal = removeChild_internal(rec, {deleteBranch: true, forceBranchDelete: true});
+      cleaned = removal.ok;
+      // Drop the record only once its worktree is actually gone; on a cleanup
+      // failure (or with --keep) the merged child stays listed for follow-up.
+      if (removal.ok) records.delete(sessionId);
+      else note = `merged, but cleanup failed: ${removal.reason}`;
+    }
+    return {ok: true, merged: result.merged, packet, baseCommit: result.baseCommitAfter, cleaned, note};
+  }
+
+  /** Internal worktree teardown that does not touch registry status (merge already did). */
+  function removeChild_internal(
+    rec: ChildSessionRecord,
+    opts: {deleteBranch?: boolean; force?: boolean; forceBranchDelete?: boolean},
+  ): {ok: boolean; reason?: string} {
+    try {
+      removeChildWorktree(
+        {
+          repoRoot: rec.repoRoot,
+          worktreePath: rec.worktreePath,
+          deleteBranch: opts.deleteBranch ?? true,
+          force: opts.force ?? false,
+          forceBranchDelete: opts.forceBranchDelete ?? false,
+        },
+        runner,
+      );
+      return {ok: true};
+    } catch (err) {
+      return {ok: false, reason: err instanceof Error ? err.message : String(err)};
+    }
+  }
+
   function removeChild(
     sessionId: number,
     opts?: {deleteBranch?: boolean; force?: boolean},
@@ -343,6 +521,8 @@ export function createChildSessionController(
     getChild: (sessionId) => records.get(sessionId),
     reviewChild,
     commitChild,
+    listMergeReadiness,
+    mergeChild,
     removeChild,
   };
 }

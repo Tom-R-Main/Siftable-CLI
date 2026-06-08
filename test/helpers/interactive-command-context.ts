@@ -73,6 +73,8 @@ export function buildCommandContext(overrides: Partial<InteractiveCommandContext
       enter: jest.fn(() => ({ok: false, reason: 'sessions stub'})),
       leave: jest.fn(() => ({ok: false, reason: 'not in a child session'})),
       review: jest.fn(() => ({ok: false, reason: 'sessions stub'})),
+      mergeView: jest.fn(() => ({rows: [], readyCount: 0, blockedCount: 0, totalAdditions: 0, totalDeletions: 0})),
+      merge: jest.fn(() => ({ok: false, reason: 'sessions stub'})),
     },
     ...overrides,
   };

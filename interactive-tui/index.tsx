@@ -830,6 +830,8 @@ function App() {
           return { ok: true };
         },
         review: (sessionId, opts) => childController.reviewChild(sessionId, opts),
+        mergeView: () => childController.listMergeReadiness(),
+        merge: (sessionId, opts) => childController.mergeChild(sessionId, opts),
       },
     };
   }

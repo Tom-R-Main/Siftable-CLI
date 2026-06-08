@@ -58,6 +58,12 @@ export type WorktreeErrorKind =
   | "not_found"
   /** Refused to operate on the primary (repo-root) worktree. */
   | "primary_worktree"
+  /** A merge could not proceed because the predicted/actual result conflicts. */
+  | "merge_conflict"
+  /** The parent worktree is not on the branch the merge targets. */
+  | "wrong_branch"
+  /** The squash commit was rejected (commit hook, signing, validation…). */
+  | "commit_failed"
   /** The underlying `git` invocation failed (non-zero exit or spawn error). */
   | "git_failed";
 
@@ -454,6 +460,16 @@ export interface RemoveChildWorktreeOptions {
    * is a destructive-action guard, not a thing to silently discard.
    */
   force?: boolean;
+  /**
+   * Force-delete the branch (`git branch -D`) instead of the safe `-d`, even when
+   * the worktree removal itself is *not* forced. This is what a post-squash-merge
+   * cleanup needs: `git merge --squash` lands the work as a fresh single-parent
+   * commit on the base without marking the child branch as merged, so `-d` would
+   * refuse ("not fully merged") even though the work is provably preserved. Kept
+   * separate from {@link force} so forcing a branch delete never loosens the
+   * dirty-worktree guard.
+   */
+  forceBranchDelete?: boolean;
 }
 
 export interface RemoveChildWorktreeResult {
@@ -514,7 +530,8 @@ export function removeChildWorktree(
     // strand the caller in a half-done state. `-d` refuses an unmerged branch;
     // surface that as a retained branch (with a reason) the UI can act on, rather
     // than a raw git_failed that hides the fact the worktree removal succeeded.
-    const del = runner(["branch", opts.force ? "-D" : "-d", entry.branch], repoRoot);
+    const forceDelete = opts.force || opts.forceBranchDelete;
+    const del = runner(["branch", forceDelete ? "-D" : "-d", entry.branch], repoRoot);
     if (del.status === 0) {
       branchDeleted = true;
     } else {
@@ -693,4 +710,143 @@ export function predictMergeConflicts(
     if (lines[i].trim()) conflicts.push(lines[i]);
   }
   return { clean: false, conflicts, mergedTree };
+}
+
+// ---------------------------------------------------------------------------
+// Squash-merge landing (mutating) — lane E
+// ---------------------------------------------------------------------------
+//
+// This is the one *mutating* git action lane E adds: it lands a child's branch
+// onto the base as a single squash commit, the way Pro Git's
+// `git merge --squash <branch>` + `git commit` workflow does. It runs in the
+// parent's primary worktree (the user's real checkout), so it is fenced by hard
+// guards — the tree must be clean, on the target branch, and the merge must be
+// predicted conflict-free *first* (read-only). Any failure rolls the base back
+// to the exact tip it had before, so a refused merge is a perfect no-op.
+
+export interface SquashMergeOptions {
+  /** Any directory inside the repo; the real top-level is resolved from it. */
+  repoRoot: string;
+  /** The parent's primary working tree (must equal the resolved repo root). */
+  parentWorktreePath: string;
+  /** Branch the child lands onto; must be checked out in the parent worktree. */
+  baseBranch: string;
+  /** The child's `sift/…` branch to squash in. */
+  childBranch: string;
+  /** Message for the squash commit. */
+  message: string;
+}
+
+export interface SquashMergeResult {
+  /** True when a squash commit was actually created. */
+  merged: boolean;
+  /** True when there was nothing to land (child already in base / empty diff). */
+  alreadyUpToDate: boolean;
+  /** Base tip before the action. */
+  baseCommitBefore: string;
+  /** Base tip after the action (equals `baseCommitBefore` when up-to-date). */
+  baseCommitAfter: string;
+}
+
+/**
+ * Squash-merge `childBranch` into `baseBranch` in the parent's primary worktree.
+ *
+ * Sequence (every guard runs before any mutation):
+ *  1. the parent worktree is the canonical primary worktree for the repo;
+ *  2. it is on `baseBranch`;
+ *  3. it is clean (no staged/unstaged/untracked changes);
+ *  4. if the child tip is already an ancestor of the base tip → up-to-date no-op;
+ *  5. a read-only conflict prediction (`merge-tree --write-tree`) is clean.
+ * Only then does it run `git merge --squash` + `git commit`. A conflict that
+ * appears during the real `--squash` (the base moved between prediction and now),
+ * an empty squash, or a commit rejected by a hook all roll the base back to its
+ * prior tip with `git reset --hard <baseTip>` — safe because the tree was clean.
+ */
+export function squashMergeChild(
+  opts: SquashMergeOptions,
+  runner: GitRunner = defaultRunner,
+): SquashMergeResult {
+  const repoRoot = resolveRepoRoot(opts.repoRoot, runner);
+  const parent = canonicalize(opts.parentWorktreePath);
+
+  // 1. Parent must be the canonical primary worktree, not a child checkout.
+  if (parent !== canonicalize(repoRoot)) {
+    throw new WorktreeError(
+      "primary_worktree",
+      `parent worktree ${parent} is not the repo root ${canonicalize(repoRoot)}`,
+      "Squash-merge lands onto the parent's primary worktree; pass the repo root.",
+    );
+  }
+  const entry = listWorktrees(repoRoot, runner).find((w) => canonicalize(w.path) === parent);
+  if (!entry || !entry.isPrimary) {
+    throw new WorktreeError(
+      "primary_worktree",
+      `${parent} is not the primary worktree`,
+      "Only the primary (repo-root) worktree can receive a squash merge.",
+    );
+  }
+
+  // 2. Parent must be on the branch the child lands onto.
+  const headBranch = runner(["rev-parse", "--abbrev-ref", "HEAD"], parent).stdout.trim();
+  if (headBranch !== opts.baseBranch) {
+    throw new WorktreeError(
+      "wrong_branch",
+      `parent worktree is on "${headBranch}", not the base branch "${opts.baseBranch}"`,
+      `Check out "${opts.baseBranch}" in the repo root before merging.`,
+    );
+  }
+
+  // 3. Parent must be clean — we never squash into a dirty working tree.
+  assertWorktreeClean(parent, "parent", runner);
+
+  const baseTip = resolveCommit(repoRoot, opts.baseBranch, runner);
+  const childHead = resolveCommit(repoRoot, opts.childBranch, runner);
+  if (!baseTip) throw new WorktreeError("not_found", `base branch not found: ${opts.baseBranch}`);
+  if (!childHead) throw new WorktreeError("not_found", `child branch not found: ${opts.childBranch}`);
+
+  // 4. Already-landed: child tip is reachable from the base tip → nothing to do.
+  const ancestor = runner(["merge-base", "--is-ancestor", childHead, baseTip], repoRoot);
+  if (ancestor.status === 0) {
+    return { merged: false, alreadyUpToDate: true, baseCommitBefore: baseTip, baseCommitAfter: baseTip };
+  }
+
+  // 5. Read-only prediction: never start a merge that would conflict.
+  const prediction = predictMergeConflicts(repoRoot, baseTip, childHead, runner);
+  if (!prediction.clean) {
+    throw new WorktreeError(
+      "merge_conflict",
+      `squash merge would conflict with ${opts.baseBranch} in: ${prediction.conflicts.join(", ")}`,
+      "Rebase or resolve the child against the current base, then re-run the gate.",
+    );
+  }
+
+  // --- mutate: stage the squashed changeset, then commit it ---
+  const rollback = () => runner(["reset", "--hard", baseTip], parent);
+
+  const squash = runner(["merge", "--squash", opts.childBranch], parent);
+  if (squash.status !== 0 || worktreeStatus(parent, runner).entries.some((e) => /^(U.|.U|DD|AA)/.test(e))) {
+    rollback();
+    throw new WorktreeError(
+      "merge_conflict",
+      `git merge --squash ${opts.childBranch} hit a conflict (base moved since prediction): ${squash.stderr || "(no stderr)"}`,
+      "The base advanced under the child; rebase/resolve and re-run the gate.",
+    );
+  }
+
+  const commit = runner(["commit", "-m", opts.message], parent);
+  if (commit.status !== 0) {
+    rollback();
+    if (/nothing to commit/i.test(`${commit.stdout}\n${commit.stderr}`)) {
+      // The squash produced an empty diff (child only re-did base churn).
+      return { merged: false, alreadyUpToDate: true, baseCommitBefore: baseTip, baseCommitAfter: baseTip };
+    }
+    throw new WorktreeError(
+      "commit_failed",
+      `squash commit rejected: ${commit.stderr || commit.stdout || `exit ${commit.status}`}`,
+      "A commit hook or signing step rejected the merge; the base was rolled back to its prior tip.",
+    );
+  }
+
+  const baseCommitAfter = resolveCommit(repoRoot, opts.baseBranch, runner) ?? baseTip;
+  return { merged: true, alreadyUpToDate: false, baseCommitBefore: baseTip, baseCommitAfter };
 }
