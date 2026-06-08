@@ -13,6 +13,8 @@ echo "built native/libfs_engine.${suffix}"
 echo "built native/libimage_engine.${suffix}"
 echo "built native/libcollab_engine.${suffix}"
 echo "built native/libthread_engine.${suffix}"
+echo "built native/libmerge_master.${suffix}"
+echo "built native/libskill_meta.${suffix}"
 
 # Vendor the cell-render binary (the sibling image-to-ascii / "Cell Render" repo)
 # so `sift mermaid`, `sift image`, and the TUI /mermaid + /image commands work

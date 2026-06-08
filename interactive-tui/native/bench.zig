@@ -4,6 +4,7 @@ const composer = @import("composer_policy.zig");
 const fs_engine = @import("fs_engine.zig");
 const image_engine = @import("image_engine.zig");
 const thread_engine = @import("thread_engine.zig");
+const skill_meta = @import("skill_meta.zig");
 
 const Io = std.Io;
 const Dir = std.Io.Dir;
@@ -128,6 +129,25 @@ const ComposerCtx = struct {
             composer.sift_paste_char_count(self.input.ptr, @intCast(self.input.len)) ^
             composer.sift_paste_line_count(self.input.ptr, @intCast(self.input.len)) ^
             @intFromBool(composer.sift_paste_looks_structured(self.input.ptr, @intCast(self.input.len)));
+    }
+};
+
+const SkillMetaCtx = struct {
+    input: []const u8,
+    out: [512]u8 = undefined,
+
+    fn step(ptr: *anyopaque) u32 {
+        const self: *SkillMetaCtx = @ptrCast(@alignCast(ptr));
+        var written: u32 = 0;
+        var needed: u32 = 0;
+        return skill_meta.sift_skill_parse(
+            self.input.ptr,
+            @intCast(self.input.len),
+            &self.out,
+            self.out.len,
+            &written,
+            &needed,
+        );
     }
 };
 
@@ -1004,6 +1024,24 @@ pub fn main(init: std.process.Init) !void {
     try runBench("thread plan_compaction 60-msg thread", 100_000, thread_plan_ctx.msgs.len, &thread_plan_ctx, ThreadPlanCtx.plan);
     try runBench("composer decision only, 16 KiB paste", 100_000, paste.len, &composer_ctx, ComposerCtx.decision);
     try runBench("composer full analysis, 16 KiB paste", 50_000, paste.len, &composer_ctx, ComposerCtx.full);
+
+    const skill_md =
+        "---\n" ++
+        "name: branches\n" ++
+        "description: Fan work out across parallel child branches and land the good ones.\n" ++
+        "triggers:\n" ++
+        "  - split this into parallel agents\n" ++
+        "  - fan out the work\n" ++
+        "allowed-tools:\n" ++
+        "  - list_branches\n" ++
+        "  - spawn_branch\n" ++
+        "metadata:\n" ++
+        "  author: siftable\n" ++
+        "---\n\n# Branches\n\n" ++
+        ("Body prose the parser scans past but never copies. " ** 12) ++ "\n";
+    var skill_ctx: SkillMetaCtx = .{ .input = skill_md };
+    try runBench("skill_meta parse, realistic SKILL.md", 1_000_000, skill_md.len, &skill_ctx, SkillMetaCtx.step);
+
     try runBench("image probe PNG header", 1_000_000, png.len, &image_ctx, ImageCtx.probe);
     try runBench("fs read_text 64 KiB cached file", 5_000, read_content.len, &read_ctx, ReadCtx.read);
     try runBench("fs search walk only 200 files", 1_000, 0, &walk_search_ctx, WalkCtx.walk);

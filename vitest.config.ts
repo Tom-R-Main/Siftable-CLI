@@ -8,5 +8,7 @@ export default defineConfig({
     setupFiles: ['test/vitest.setup.ts'],
     pool: 'forks',
     fileParallelism: false,
+    // Match the jest setup's jest.setTimeout(30000) — some DB/git tests need it.
+    testTimeout: 30000,
   },
 });

@@ -43,10 +43,15 @@ import {
   createRepoExplorerEffectiveness,
   formatRepoExplorerEffectiveness,
   formatExplorerReport,
+  formatExplorerRetrievalContext,
+  globLocalFilesForExplorer,
+  grepLocalFilesForExplorer,
   injectExplorerContext,
+  isSecretLikeExplorerPath,
   markRepoExplorerScoutState,
   observeRepoExplorerToolCall,
   parseRepoExplorerScoutReportDetailed,
+  resolveExplorerRuntimeMode,
   type ExplorerReport,
   type ExplorerScoutRole,
   type RepoExplorerFanoutBranch,
@@ -66,6 +71,8 @@ import {
 import { runCollabBranches, type CollabBranchRunContext } from './collabRunner';
 import { renderMermaidFile, renderMermaidSource } from './cellRender';
 import { discoverSkills, formatSkillsForPrompt, loadSkill, type SkillInfo } from './skillsEngine';
+import type { ChildSessionController } from './childSessionController';
+import type { CompactionReport } from './controlClient';
 
 /** Relay-compatible event shape the TUI already understands (token, tool_call, tool_result, done, error). */
 export interface BrainEvent {
@@ -117,9 +124,22 @@ interface OfChunk {
   result?: { content?: string; text?: string };
 }
 
+/** Outcome of an explicit ChatAgent.compact() call (structural mirror of the
+ *  framework's CompactionOutcome — kept local so the brain stays decoupled from
+ *  the dynamically-imported vendored types). */
+interface OfCompactionOutcome {
+  ran: boolean;
+  reason?: string;
+  beforeTokens: number;
+  afterTokens: number;
+  prunedMessages: number;
+  summarized: boolean;
+}
+
 interface OfModule {
   createChatAgent: (config: Record<string, unknown>) => Promise<{
     chat: (msg: ChatInput, o: { stream: true }) => AsyncIterable<OfChunk>;
+    compact?: (options?: { force?: boolean }) => Promise<OfCompactionOutcome>;
   }>;
   defineTool: (def: {
     name: string;
@@ -138,7 +158,10 @@ interface OfModule {
 // each side's agent instead of rebuilding a singleton bound to whoever built it
 // first. read_only children that share the parent's cwd intentionally share its
 // agent; their visible transcripts stay separate via sessionContext.
-type OfAgent = { chat: (msg: ChatInput, o: { stream: true }) => AsyncIterable<OfChunk> };
+type OfAgent = {
+  chat: (msg: ChatInput, o: { stream: true }) => AsyncIterable<OfChunk>;
+  compact?: (options?: { force?: boolean }) => Promise<OfCompactionOutcome>;
+};
 const agents = new Map<string, Promise<OfAgent>>();
 
 /** The active session's agent/rollout identity at the brain layer. Equals the
@@ -163,46 +186,50 @@ const SCOUT_PROMPT =
   'Use only the provided read-only tools when needed. Return JSON only with keys: confidence, missingLikelyFiles, recommendedReads, warnings.';
 
 const DEFAULT_SCOUT_BUDGET = {
-  maxToolCalls: 6,
-  maxSearches: 3,
-  maxFilesRead: 6,
-  maxElapsedMs: 4_000,
-  maxReturnedChars: 8_000,
+  maxToolCalls: 32,
+  maxSearches: 24,
+  maxFilesRead: 16,
+  maxElapsedMs: 5_000,
+  maxReturnedChars: 12_000,
 };
 
 const FANOUT_BUDGET = {
   maxConcurrentScouts: 4,
   maxWaves: 1,
-  maxScoutToolCalls: 4,
-  maxSearchesPerScout: 2,
-  maxFilesReadPerScout: 3,
-  maxElapsedMs: 6_000,
-  maxScoutSectionChars: 8_000,
+  maxScoutToolCalls: 8,
+  maxSearchesPerScout: 6,
+  maxFilesReadPerScout: 4,
+  maxElapsedMs: 5_000,
+  maxScoutSectionChars: 12_000,
 };
 
-function explorerBudgetProfile(): 'cheap' | 'normal' | 'deep' {
-  const raw = String(process.env.SIFT_EXPLORER_BUDGET || 'normal').toLowerCase();
-  return raw === 'cheap' || raw === 'deep' ? raw : 'normal';
+function explorerBudgetProfile(): 'quick' | 'medium' | 'deep' {
+  const thoroughness = String(process.env.SIFT_EXPLORER_THOROUGHNESS || '').toLowerCase();
+  if (thoroughness === 'quick' || thoroughness === 'medium' || thoroughness === 'deep') return thoroughness;
+  const legacy = String(process.env.SIFT_EXPLORER_BUDGET || 'normal').toLowerCase();
+  if (legacy === 'cheap') return 'quick';
+  if (legacy === 'deep') return 'deep';
+  return 'medium';
 }
 
 function repoExplorerScoutBudget() {
   const profile = explorerBudgetProfile();
-  if (profile === 'cheap') {
+  if (profile === 'quick') {
     return {
-      maxToolCalls: 4,
-      maxSearches: 2,
-      maxFilesRead: 3,
+      maxToolCalls: 8,
+      maxSearches: 8,
+      maxFilesRead: 8,
       maxElapsedMs: 2_500,
-      maxReturnedChars: 6_000,
+      maxReturnedChars: 8_000,
     };
   }
   if (profile === 'deep') {
     return {
-      maxToolCalls: 8,
-      maxSearches: 4,
-      maxFilesRead: 8,
-      maxElapsedMs: 8_000,
-      maxReturnedChars: 12_000,
+      maxToolCalls: 48,
+      maxSearches: 36,
+      maxFilesRead: 24,
+      maxElapsedMs: 9_000,
+      maxReturnedChars: 18_000,
     };
   }
   return DEFAULT_SCOUT_BUDGET;
@@ -210,26 +237,26 @@ function repoExplorerScoutBudget() {
 
 function repoExplorerFanoutBudget() {
   const profile = explorerBudgetProfile();
-  if (profile === 'cheap') {
+  if (profile === 'quick') {
     return {
-      maxConcurrentScouts: 2,
+      maxConcurrentScouts: 4,
       maxWaves: 1,
-      maxScoutToolCalls: 3,
-      maxSearchesPerScout: 1,
+      maxScoutToolCalls: 2,
+      maxSearchesPerScout: 2,
       maxFilesReadPerScout: 2,
-      maxElapsedMs: 4_000,
-      maxScoutSectionChars: 6_000,
+      maxElapsedMs: 2_500,
+      maxScoutSectionChars: 8_000,
     };
   }
   if (profile === 'deep') {
     return {
       maxConcurrentScouts: 4,
       maxWaves: 1,
-      maxScoutToolCalls: 5,
-      maxSearchesPerScout: 3,
-      maxFilesReadPerScout: 5,
-      maxElapsedMs: 10_000,
-      maxScoutSectionChars: 12_000,
+      maxScoutToolCalls: 12,
+      maxSearchesPerScout: 9,
+      maxFilesReadPerScout: 6,
+      maxElapsedMs: 9_000,
+      maxScoutSectionChars: 18_000,
     };
   }
   return FANOUT_BUDGET;
@@ -266,6 +293,19 @@ export function setBrainModel(input: {
   }
   agents.clear(); // a model/provider/key change invalidates every session's agent
   return getBrainModel();
+}
+
+/**
+ * The live mergeMaster child-session controller (lanes A–E), registered by the
+ * local TUI after it creates one (index.tsx). It is a live in-process object
+ * handle that manages local git worktrees, so it is wired DIRECTLY rather than
+ * over the control transport (which is remoteable and cannot carry a reference).
+ * Null in any headless/remote brain — the branch tools refuse with a clear
+ * message when it is absent, so registration is what gates the capability.
+ */
+let sessionController: ChildSessionController | null = null;
+export function setSessionController(ctrl: ChildSessionController | null): void {
+  sessionController = ctrl;
 }
 
 const MAX_READ_BYTES = 64 * 1024;
@@ -816,6 +856,177 @@ function buildLocalTools(of: OfModule): unknown[] {
     },
   });
 
+  const listBranchesTool = of.defineTool({
+    name: 'list_branches',
+    description:
+      "List the parent session's child branches (mergeMaster) and their merge readiness: " +
+      "each child's branch, live status, gate verdict (ready_to_merge / merge_blocked), changed " +
+      'file count, +/- lines, how far the base has advanced since the child forked, and any blockers. ' +
+      'Read-only — runs the ready-to-merge gate without mutating anything. Use it to decide what to ' +
+      'land or what still needs work before proposing a merge.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: async () => {
+      if (!sessionController) {
+        return of.err(
+          'list_branches: no child-session controller available (not running in the local TUI, or not inside a git repo).',
+        );
+      }
+      try {
+        const view = sessionController.listMergeReadiness();
+        if (view.rows.length === 0) {
+          return of.ok({ rows: [], readyCount: 0, blockedCount: 0 }, 'No child branches yet.');
+        }
+        const lines = view.rows.map((r) => {
+          const verdict = r.verdict ?? r.status;
+          const stat = r.verdict ? `${r.files} file(s), +${r.additions} -${r.deletions}` : r.status;
+          const drift = r.behindBy > 0 ? `, base +${r.behindBy}` : '';
+          const blockers = r.blockers.length ? ` — ${r.blockers.join('; ')}` : '';
+          return `#${r.sessionId} ${r.branch} → ${r.baseBranch}: ${verdict} (${stat}${drift})${blockers}`;
+        });
+        const summary = `${view.readyCount} ready · ${view.blockedCount} blocked`;
+        return of.ok({ ...view }, [`Child branches (${summary}):`, ...lines].join('\n'));
+      } catch (e) {
+        return of.err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  });
+
+  const spawnBranchTool = of.defineTool({
+    name: 'spawn_branch',
+    description:
+      'Spawn a child branch (mergeMaster) — a new git worktree on its own sift/* branch for isolated ' +
+      'parallel work, reviewed and landed later. Prefer a SCOPED writer: pass `scope` with the file globs ' +
+      'the child will write, so concurrent writers are serialized (Gate-A). Use `readonly` for an ' +
+      'investigator that only reads, or `unscoped` for a writer with no declared scope (not serialized).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Short human title for the branch/session.' },
+        scope: { type: 'array', items: { type: 'string' }, description: 'File globs this child will write (Gate-A scope).' },
+        readonly: { type: 'boolean', description: 'Read-only child: shares the parent tree, no branch/worktree writes.' },
+        unscoped: { type: 'boolean', description: 'Writer with no declared scope (escape hatch; not serialized).' },
+      },
+      required: ['title'],
+    },
+    handler: async (params) => {
+      if (!sessionController) return of.err('spawn_branch: no child-session controller available.');
+      const title = String(params.title || '').trim();
+      if (!title) return of.err('spawn_branch: title is required.');
+      const readonly = params.readonly === true;
+      const unscoped = params.unscoped === true;
+      const scope = Array.isArray(params.scope) ? params.scope.map(String).filter(Boolean) : [];
+      if (!readonly && scope.length === 0 && !unscoped) {
+        return of.err('spawn_branch: a writer needs `scope` (file globs); or pass `unscoped: true`, or `readonly: true`.');
+      }
+      try {
+        const res = sessionController.spawnChild({
+          title,
+          accessMode: readonly ? 'read_only' : 'read_write',
+          writeScope: readonly || unscoped ? undefined : scope,
+        });
+        if (!res.ok) {
+          const extra = res.blockedBy ? ` (blocked by child #${res.blockedBy})` : '';
+          return of.err(`spawn_branch blocked: ${res.reason}${extra}`);
+        }
+        const s = res.session;
+        return of.ok(
+          { sessionId: s.sessionId, branch: s.branch, worktreePath: s.worktreePath, baseBranch: s.baseBranch },
+          `Spawned child #${s.sessionId} on ${s.branch} (worktree: ${s.worktreePath}).`,
+        );
+      } catch (e) {
+        return of.err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  });
+
+  const readyBranchTool = of.defineTool({
+    name: 'ready_branch',
+    description:
+      'Run the ready-to-merge gate on a child branch (mergeMaster lane D). Re-evaluates the child against ' +
+      'the CURRENT base — diff stat, write-scope containment, conflict prediction — and sets it ' +
+      'ready_to_merge or merge_blocked. Pass `autoCommit` to stage+commit the child\'s working changes ' +
+      'first. Returns the verdict and any blockers; lands nothing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Child session id.' },
+        autoCommit: { type: 'boolean', description: "Commit the child's uncommitted changes before gating." },
+        message: { type: 'string', description: 'Commit message when autoCommit is set.' },
+      },
+      required: ['id'],
+    },
+    handler: async (params) => {
+      if (!sessionController) return of.err('ready_branch: no child-session controller available.');
+      const id = Number(params.id);
+      if (!Number.isInteger(id)) return of.err('ready_branch: id must be a session id (integer).');
+      try {
+        const res = sessionController.reviewChild(id, {
+          autoCommit: params.autoCommit === true,
+          message: typeof params.message === 'string' ? params.message : undefined,
+        });
+        if (!res.ok) return of.err(`ready_branch: ${res.reason}`);
+        const p = res.packet;
+        const stat = `${p.files.length} file(s), +${p.totalAdditions} -${p.totalDeletions}`;
+        const blockers = p.blockers.length ? `\nblockers: ${p.blockers.join('; ')}` : '';
+        const note = res.note ? `\nnote: ${res.note}` : '';
+        return of.ok(
+          { verdict: p.verdict, blockers: p.blockers, packet: p },
+          `#${id} ${p.childBranch} → ${p.baseBranch}: ${p.verdict} (${stat})${blockers}${note}`,
+        );
+      } catch (e) {
+        return of.err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  });
+
+  const mergeBranchTool = of.defineTool({
+    name: 'merge_branch',
+    description:
+      'Land a ready child branch onto the base via squash-merge (mergeMaster lane E). REQUIRES interactive ' +
+      'user approval — every land prompts. Re-runs the gate, squash-merges in the parent worktree, and ' +
+      'cleans up the child (worktree + branch) unless `keep`. Refuses as a full no-op (rolled back) if the ' +
+      'child is not ready_to_merge or a conflict surfaces. Run list_branches / ready_branch first.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Child session id to land.' },
+        keep: { type: 'boolean', description: 'Keep the worktree + branch after landing (default: remove).' },
+        message: { type: 'string', description: 'Override the squash commit message.' },
+      },
+      required: ['id'],
+    },
+    handler: async (params) => {
+      if (!sessionController) return of.err('merge_branch: no child-session controller available.');
+      const id = Number(params.id);
+      if (!Number.isInteger(id)) return of.err('merge_branch: id must be a session id (integer).');
+      // Landing mutates the user's base + force-deletes the child branch, so it is
+      // always approval-gated — the human stays the ultimate merge authority.
+      const approved = await requestConfirm({
+        kind: 'command',
+        path: `merge child #${id} → base (squash)`,
+        detail: params.keep ? 'squash-merge · keep worktree + branch' : 'squash-merge · remove worktree + branch',
+      });
+      if (!approved) return of.err('merge_branch declined by user');
+      try {
+        const res = sessionController.mergeChild(id, {
+          keep: params.keep === true,
+          message: typeof params.message === 'string' ? params.message : undefined,
+        });
+        if (!res.ok) return of.err(`merge_branch: ${res.reason}`);
+        const sha = res.baseCommit.slice(0, 7);
+        const tail = res.cleaned ? 'worktree + branch removed' : 'worktree + branch kept';
+        const verb = res.merged ? 'merged' : 'already up-to-date';
+        const note = res.note ? ` (${res.note})` : '';
+        return of.ok(
+          { merged: res.merged, baseCommit: res.baseCommit, cleaned: res.cleaned },
+          `${verb} #${id} → ${res.packet.baseBranch} (${sha}) · ${tail}${note}`,
+        );
+      } catch (e) {
+        return of.err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  });
+
   const tools: unknown[] = [
     changeDirectory,
     runTerminalCommand,
@@ -829,6 +1040,10 @@ function buildLocalTools(of: OfModule): unknown[] {
     listDir,
     renderMermaidTool,
     skillTool,
+    listBranchesTool,
+    spawnBranchTool,
+    readyBranchTool,
+    mergeBranchTool,
   ];
   // A1 write surface: only when a workspace root is set. Each call is still
   // confirm-gated and Zig-jailed; registration just exposes the tools.
@@ -918,6 +1133,33 @@ export async function getAgent(): Promise<OfAgent> {
 /** Test seam: drop all cached per-session agents (e.g. between unit tests). */
 export function __resetBrainAgentsForTests(): void {
   agents.clear();
+}
+
+/**
+ * Force a context compaction on the active session's agent (the TUI's
+ * `/compact`). Codex compacts its own context server-side, so for the `/codex`
+ * engine this is a reported no-op. For the OpenFunction engine it prunes + (if
+ * needed) summarizes the older turns of the live in-memory history — the same
+ * pipeline auto-compaction uses, but run on demand regardless of budget.
+ */
+export async function compactActiveThread(): Promise<CompactionReport> {
+  if (currentProvider === CODEX_PROVIDER) {
+    return {
+      engine: "codex",
+      ran: false,
+      reason: "Codex manages its own context server-side — /compact is a no-op for the /codex engine.",
+    };
+  }
+  const agent = await getAgent();
+  if (typeof agent.compact !== "function") {
+    return {
+      engine: "openfunction",
+      ran: false,
+      reason: "this brain build does not support /compact (update the vendored OpenFunction framework)",
+    };
+  }
+  const outcome = await agent.compact({ force: true });
+  return { engine: "openfunction", ...outcome };
 }
 
 function explorerScoutEnabled(): boolean {
@@ -1023,6 +1265,68 @@ function buildRepoExplorerScoutTools(
     },
   });
 
+  const globLocalFiles = of.defineTool({
+    name: 'glob_local_files',
+    description: 'Read-only glob over source files using Explorer skip policy. Use for quick path discovery such as **/*.ts or **/commands/**.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        root: { type: 'string', description: 'Directory to scan. Defaults to the workspace root.' },
+        pattern: { type: 'string', description: 'Glob pattern relative to root, e.g. **/*.ts or src/**/command*.ts.' },
+        maxFiles: { type: 'integer', description: 'Max matches to return, capped by the scout.' },
+      },
+      required: ['pattern'],
+    },
+    handler: async (params) => {
+      try {
+        checkBudget('search');
+        const pattern = String(params.pattern || '');
+        if (!pattern) return of.err('pattern is required');
+        const result = await globLocalFilesForExplorer({
+          root: params.root ? resolveLocalPath(String(params.root)) : workspaceRoot(),
+          pattern,
+          maxFiles: Math.min(typeof params.maxFiles === 'number' ? params.maxFiles : 80, 120),
+        });
+        return of.ok(result, `Matched ${result.matches.length} file(s)`);
+      } catch (e) {
+        return of.err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  });
+
+  const grepLocalFiles = of.defineTool({
+    name: 'grep_local_files',
+    description: 'Read-only regex grep over source files using Explorer skip policy. Use for broad identifier or command-routing discovery.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        root: { type: 'string', description: 'Directory to search. Defaults to the workspace root.' },
+        pattern: { type: 'string', description: 'JavaScript regular expression source, case-insensitive.' },
+        include: { type: 'string', description: 'Optional glob limiting files before grep, e.g. **/*.ts.' },
+        maxFiles: { type: 'integer', description: 'Max files to scan, capped by the scout.' },
+        maxMatches: { type: 'integer', description: 'Max matches to return, capped by the scout.' },
+      },
+      required: ['pattern'],
+    },
+    handler: async (params) => {
+      try {
+        checkBudget('search');
+        const pattern = String(params.pattern || '');
+        if (!pattern) return of.err('pattern is required');
+        const result = await grepLocalFilesForExplorer({
+          root: params.root ? resolveLocalPath(String(params.root)) : workspaceRoot(),
+          pattern,
+          include: params.include ? String(params.include) : undefined,
+          maxFiles: Math.min(typeof params.maxFiles === 'number' ? params.maxFiles : 250, 400),
+          maxMatches: Math.min(typeof params.maxMatches === 'number' ? params.maxMatches : 80, 120),
+        });
+        return of.ok(result, `Found ${result.matches.length} match(es)`);
+      } catch (e) {
+        return of.err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  });
+
   const readFileRegion = of.defineTool({
     name: 'read_file_region',
     description: 'Read one bounded line region from a local file. Read-only.',
@@ -1039,6 +1343,9 @@ function buildRepoExplorerScoutTools(
     handler: async (params) => {
       try {
         checkBudget('read', 1);
+        if (isSecretLikeExplorerPath(String(params.path || ''))) {
+          return of.err('refusing to read secret-like file path');
+        }
         const root = params.root ? resolveWorkspacePath(String(params.root)) : workspaceRoot();
         return of.ok(await batchReadFiles([{
           path: String(params.path || ''),
@@ -1078,6 +1385,10 @@ function buildRepoExplorerScoutTools(
       try {
         const rawFiles = Array.isArray(params.files) ? params.files.slice(0, 6) : [];
         checkBudget('read', rawFiles.length || 1);
+        const secretLike = rawFiles
+          .map((item) => item && typeof item === 'object' ? item as Record<string, unknown> : {})
+          .find((record) => isSecretLikeExplorerPath(String(record.path || '')));
+        if (secretLike) return of.err('refusing to read secret-like file path');
         const root = params.root ? resolveWorkspacePath(String(params.root)) : workspaceRoot();
         const files = rawFiles.map((item) => {
           const record = item && typeof item === 'object' ? item as Record<string, unknown> : {};
@@ -1095,7 +1406,7 @@ function buildRepoExplorerScoutTools(
     },
   });
 
-  return [inspectWorkspace, searchLocalFiles, readFileRegion, readManyRegions];
+  return [inspectWorkspace, globLocalFiles, grepLocalFiles, searchLocalFiles, readFileRegion, readManyRegions];
 }
 
 async function runRepoExplorerScout(
@@ -1107,9 +1418,11 @@ async function runRepoExplorerScout(
   const state: RepoExplorerScoutState = { enabled: true, ran: true, elapsedMs: 0, failed: false };
   try {
     const of = await loadOpenFunctionModule();
-    const provider = process.env.SIFT_EXPLORER_SCOUT_PROVIDER ||
+    const provider = process.env.SIFT_EXPLORER_PROVIDER ||
+      process.env.SIFT_EXPLORER_SCOUT_PROVIDER ||
       (currentProvider === CODEX_PROVIDER ? 'openrouter' : currentProvider);
-    const model = process.env.SIFT_EXPLORER_SCOUT_MODEL ||
+    const model = process.env.SIFT_EXPLORER_MODEL ||
+      process.env.SIFT_EXPLORER_SCOUT_MODEL ||
       (currentProvider === CODEX_PROVIDER ? DEFAULT_OPENFUNCTION_MODEL : currentModel);
     const scout = await of.createChatAgent({
       name: 'siftable-repo-explorer-scout',
@@ -1221,9 +1534,11 @@ async function runRepoExplorerFanoutBranch(
   const { branch, startedAt } = context;
   try {
     const of = await loadOpenFunctionModule();
-    const provider = process.env.SIFT_EXPLORER_SCOUT_PROVIDER ||
+    const provider = process.env.SIFT_EXPLORER_PROVIDER ||
+      process.env.SIFT_EXPLORER_SCOUT_PROVIDER ||
       (currentProvider === CODEX_PROVIDER ? 'openrouter' : currentProvider);
-    const model = process.env.SIFT_EXPLORER_SCOUT_MODEL ||
+    const model = process.env.SIFT_EXPLORER_MODEL ||
+      process.env.SIFT_EXPLORER_SCOUT_MODEL ||
       (currentProvider === CODEX_PROVIDER ? DEFAULT_OPENFUNCTION_MODEL : currentModel);
     context.appendEvent('agent_configured', { provider, model });
     const scout = await of.createChatAgent({
@@ -1453,6 +1768,7 @@ export async function openfunctionAsk(
   let explorerEffectiveness: RepoExplorerEffectiveness | null = null;
   let explorerEffectivenessStartedAt = 0;
   const debugExplorer = process.env.SIFT_EXPLORER_DEBUG === '1';
+  const explorerRuntimeMode = resolveExplorerRuntimeMode();
   const emitPostExplorer = (event: BrainEvent) => {
     if (explorerEffectiveness && event.type === 'tool_call') {
       observeRepoExplorerToolCall(explorerEffectiveness, event.toolCall ?? {});
@@ -1465,10 +1781,10 @@ export async function openfunctionAsk(
     console.error(formatRepoExplorerEffectiveness(explorerEffectiveness));
   };
 
-  if (!signal?.aborted && classifyExplorerPrompt(chatInputText(input)) !== 'skipped') {
+  if (!signal?.aborted && explorerRuntimeMode !== 'off' && classifyExplorerPrompt(chatInputText(input)) !== 'skipped') {
     onEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer', detail: 'read-only preflight' } });
     try {
-      const report = await buildExplorerReport(input, { root: getWorkspaceRoot() || getSessionCwd() });
+      const report = await buildExplorerReport(input);
       if (report.mode !== 'skipped' && explorerFanoutEnabled()) {
         onEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer_fanout', detail: 'read-only parallel scouts' } });
         const fanoutState = await runRepoExplorerFanout(input, report);
@@ -1478,7 +1794,6 @@ export async function openfunctionAsk(
             name: 'repo_explorer_fanout',
             success: true,
             output: `${fanoutState.branchCount} branch(es); ${fanoutState.suggestedFiles.length} suggested file(s); ${fanoutState.failedBranches} failed branch(es); ${fanoutState.elapsedMs}ms`,
-            explorerActivity: createRepoExplorerActivityView(report),
           },
         });
       } else if (report.mode !== 'skipped' && explorerScoutEnabled()) {
@@ -1492,13 +1807,14 @@ export async function openfunctionAsk(
             output: scoutState.failed
               ? `failed non-fatally: ${scoutState.failureReason ?? 'unknown error'}`
               : `${report.modelScout?.recommendedReads.length ?? 0} scout read(s); ${report.modelScout?.missingLikelyFiles.length ?? 0} missing file(s); ${scoutState.elapsedMs}ms`,
-            explorerActivity: createRepoExplorerActivityView(report),
           },
         });
       }
       let explorerActivity: unknown;
       if (report.mode !== 'skipped') {
-        const reportText = formatExplorerReport(report);
+        const reportText = explorerRuntimeMode === 'fast-context'
+          ? formatExplorerRetrievalContext(report)
+          : formatExplorerReport(report);
         preparedInput = injectExplorerContext(input, reportText) as ChatInput;
         explorerEffectiveness = createRepoExplorerEffectiveness(report);
         explorerEffectivenessStartedAt = Date.now();
@@ -1511,7 +1827,7 @@ export async function openfunctionAsk(
           name: 'repo_explorer',
           success: true,
           output: report.mode !== 'skipped'
-            ? `${report.mode}; ${report.metrics.queriesRun} querie(s); ${report.likelyFiles.length} likely file(s); ${report.metrics.filesSearched} file(s) searched; ${report.metrics.reportChars} char report; ${report.metrics.elapsedMs}ms`
+            ? `${report.mode}; ${report.metrics.queriesRun} querie(s); ${report.likelyFiles.length} likely file(s); ${report.metrics.filesSearched} file(s) searched; ${report.metrics.reportChars} char ${explorerRuntimeMode === 'fast-context' ? 'artifact' : 'report'}; ${report.metrics.elapsedMs}ms`
             : 'skipped',
           ...(explorerActivity ? { explorerActivity } : {}),
         },

@@ -229,11 +229,96 @@ function parseSkillFile(skillMdPath: string, source: SkillSource): SkillInfo | n
   } catch {
     return null;
   }
+  const meta = readSkillMeta(raw);
+  if (!meta) return null;
+  const dir = skillMdPath.slice(0, skillMdPath.length - (SKILL_FILE.length + 1));
+  return { name: meta.name, description: meta.description, path: skillMdPath, dir, source };
+}
+
+// --- Native frontmatter parser (Zig skill_meta) with a pure-TS fallback ------
+//
+// SKILL.md frontmatter parsing lives in native/skill_meta.zig — the codex-in-Rust
+// → Zig analog, since a byte/line parser is native-kernel territory. The dylib is
+// loaded over Bun FFI when present; under ts-jest/node it is absent and the
+// `parseFrontmatter` reader below is the byte-for-byte-equivalent fallback. The
+// two MUST stay in lockstep (the Zig inline tests are the contract of record).
+
+type SkillMetaSymbols = {
+  sift_skill_parse: (
+    content: Uint8Array,
+    contentLen: number,
+    out: Uint8Array,
+    outCap: number,
+    written: Uint32Array,
+    needed: Uint32Array,
+  ) => number;
+};
+
+let skillMetaSyms: SkillMetaSymbols | null | undefined;
+
+function skillMetaNative(): SkillMetaSymbols | null {
+  if (skillMetaSyms !== undefined) return skillMetaSyms;
+  if (typeof Bun === "undefined" || process.env.SIFT_NO_NATIVE === "1") {
+    skillMetaSyms = null;
+    return skillMetaSyms;
+  }
+  try {
+    const { default: libraryPath } = require("./native/skill_meta") as { default: string };
+    if (!existsSync(libraryPath)) {
+      skillMetaSyms = null;
+      return skillMetaSyms;
+    }
+    const { dlopen, FFIType } = require("bun:ffi") as typeof import("bun:ffi");
+    const lib = dlopen(libraryPath, {
+      sift_skill_parse: {
+        args: [FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr],
+        returns: FFIType.u32,
+      },
+    });
+    skillMetaSyms = lib.symbols as unknown as SkillMetaSymbols;
+  } catch {
+    skillMetaSyms = null;
+  }
+  return skillMetaSyms;
+}
+
+const skillMetaEncoder = new TextEncoder();
+const skillMetaDecoder = new TextDecoder();
+
+/** Run the native parser; null when the dylib is unavailable OR it's not a skill. */
+function parseMetaNative(raw: string): { name: string; description: string } | null {
+  const syms = skillMetaNative();
+  if (!syms) return null;
+  const content = skillMetaEncoder.encode(raw);
+  let cap = 4096;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const out = new Uint8Array(cap);
+    const written = new Uint32Array(1);
+    const needed = new Uint32Array(1);
+    const status = syms.sift_skill_parse(content, content.length, out, cap, written, needed);
+    if (status === 1) return null; // not a skill (no frontmatter / no name)
+    if (status === 0) {
+      return JSON.parse(skillMetaDecoder.decode(out.subarray(0, written[0]))) as {
+        name: string;
+        description: string;
+      };
+    }
+    cap = Math.max(needed[0], cap * 2); // output too small — grow once and retry
+  }
+  return null;
+}
+
+/** Skill name/description: native (Zig) when the dylib is loaded, else the TS fallback. */
+function readSkillMeta(raw: string): { name: string; description: string } | null {
+  const native = parseMetaNative(raw);
+  if (native) return native;
+  // A null from the native path is authoritative ONLY when the dylib actually
+  // ran; if it's unavailable (node/jest), parse with the TS fallback instead.
+  if (skillMetaNative()) return null;
   const fm = parseFrontmatter(raw);
   const name = (fm.name || "").trim();
   if (!name) return null;
-  const dir = skillMdPath.slice(0, skillMdPath.length - (SKILL_FILE.length + 1));
-  return { name, description: (fm.description || "").trim(), path: skillMdPath, dir, source };
+  return { name, description: (fm.description || "").trim() };
 }
 
 /**
@@ -245,7 +330,11 @@ function parseFrontmatter(raw: string): Record<string, string> {
   const block = frontmatterBlock(raw);
   if (block == null) return {};
   const out: Record<string, string> = {};
-  for (const line of block.split("\n")) {
+  for (const rawLine of block.split("\n")) {
+    // Drop a trailing CR so CRLF files parse identically to LF — JS regex `.`/`$`
+    // don't span `\r`, so without this `name: x\r` fails to match (the native
+    // skill_meta.zig parser strips it too; the two must stay in lockstep).
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
     if (!line.trim() || line.startsWith("#")) continue;
     if (/^\s/.test(line)) continue; // nested / list item — skip
     const m = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);

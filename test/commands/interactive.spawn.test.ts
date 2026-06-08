@@ -139,7 +139,7 @@ describe('/children · /enter · /leave', () => {
   it('/children reports an empty list cleanly', () => {
     const {ctx, messages} = buildCommandContext({sessions: fakeSessions()});
     run(ctx, 'children');
-    expect(lastSystemText(messages)).toMatch(/No child sessions/);
+    expect(lastSystemText(messages)).toMatch(/No child branches/);
   });
 
   it('/enter resolves by stable session id', () => {

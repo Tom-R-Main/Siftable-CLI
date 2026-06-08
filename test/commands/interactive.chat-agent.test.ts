@@ -1,19 +1,32 @@
+// Vitest-native: this is the suite's only module-mock test, and it relied on
+// CommonJS require() of TS modules + a synchronous jest.mock factory — both
+// ts-jest idioms vite's ESM pipeline doesn't transform. Rather than contort it
+// into a dual-runner shape (sync require vs async importActual have no shared
+// form), it's authored against vitest and excluded from jest (see jest.config.js
+// testPathIgnorePatterns). vi.mock is hoisted above the imports below.
+import {describe, it, expect, vi} from 'vitest';
 import type {AIAdapter, ChatMessage} from '../../interactive-tui/openfunction/framework/adapters/types';
 import type {ToolRegistry} from '../../interactive-tui/openfunction/framework/registry';
+import {createChatAgent} from '../../interactive-tui/openfunction/framework/chat-agent';
+import {defineTool, ok} from '../../interactive-tui/openfunction/framework/tool';
 
-jest.mock('../../interactive-tui/openfunction/framework/memory', () => ({
-  createConversationMemory: jest.fn(),
-  createFactMemory: jest.fn(),
-  createMemoryTools: jest.fn(() => []),
+vi.mock('../../interactive-tui/openfunction/framework/memory', () => ({
+  createConversationMemory: vi.fn(),
+  createFactMemory: vi.fn(),
+  createMemoryTools: vi.fn(() => []),
 }));
 
-jest.mock('../../interactive-tui/openfunction/framework/chat-agent-resolve', () => {
-  const {ToolRegistry} = require('../../interactive-tui/openfunction/framework/registry');
+vi.mock('../../interactive-tui/openfunction/framework/chat-agent-resolve', async () => {
+  // The real ToolRegistry class is needed inside buildAgentRegistry; under vitest
+  // that must come from importActual (async), not a sync require.
+  const {ToolRegistry} = await vi.importActual<
+    typeof import('../../interactive-tui/openfunction/framework/registry')
+  >('../../interactive-tui/openfunction/framework/registry');
   return {
-    resolveAdapter: jest.fn(),
-    resolveContextProviders: jest.fn(async () => []),
-    resolveSystemPrompt: jest.fn((config: {prompt?: string}) => config.prompt ?? 'You are a test assistant.'),
-    buildAgentRegistry: jest.fn((config: {tools?: unknown[] | typeof ToolRegistry}) => {
+    resolveAdapter: vi.fn(),
+    resolveContextProviders: vi.fn(async () => []),
+    resolveSystemPrompt: vi.fn((config: {prompt?: string}) => config.prompt ?? 'You are a test assistant.'),
+    buildAgentRegistry: vi.fn((config: {tools?: unknown[] | InstanceType<typeof ToolRegistry>}) => {
       if (config.tools instanceof ToolRegistry) return config.tools;
       const registry = new ToolRegistry();
       if (Array.isArray(config.tools)) registry.registerAll(config.tools);
@@ -21,9 +34,6 @@ jest.mock('../../interactive-tui/openfunction/framework/chat-agent-resolve', () 
     }),
   };
 });
-
-const {createChatAgent} = require('../../interactive-tui/openfunction/framework/chat-agent');
-const {defineTool, ok} = require('../../interactive-tui/openfunction/framework/tool');
 
 describe('OpenFunction chat agent loop', () => {
   it('streams a final answer after tool-round exhaustion instead of the sentinel', async () => {

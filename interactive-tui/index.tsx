@@ -33,6 +33,7 @@ import {
   doneFallbackText,
   type ChatInput,
   type ChatInputPart,
+  type CompactionReport,
   type ControlTransport,
   type RunningAgent,
   type SseEvent,
@@ -74,6 +75,9 @@ import {
 import { serializeConversation } from "./transcript";
 import { getSessionCwd, getWorkspaceRoot, setSessionCwd } from "./navigation";
 import { createChildSessionController } from "./childSessionController";
+import { setSessionController } from "./brain";
+import { reduceBranchesKey, initialBranchesState, draftToSpawnInput, type BranchesState } from "./branchesOverlay";
+import type { ParentMergeView } from "./mergeView";
 import { createSessionContext } from "./sessionContext";
 import { formatChildBar, formatChildBarLine, type ChildBarEntry } from "./childBar";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -255,6 +259,11 @@ function App() {
   // Settings → Appearance: ↑/↓ live-previews a color scheme, Enter saves, Esc
   // reverts to the scheme that was active when the picker opened.
   const [themePicker, setThemePicker] = createSignal<{ idx: number; original: SchemeName } | null>(null);
+  // /branches hub: the child merge dashboard. State machine lives in the pure
+  // branchesOverlay reducer; here we hold its state + the readiness snapshot.
+  const [branchesPicker, setBranchesPicker] = createSignal<
+    { state: BranchesState; view: ParentMergeView; status?: string } | null
+  >(null);
   const [transcriptSelected, setTranscriptSelected] = createSignal(false);
   // A1 write/edit approval: set by the confirm gate while a mutation waits.
   const [confirm, setConfirm] = createSignal<ConfirmRequest | null>(null);
@@ -270,6 +279,11 @@ function App() {
   // active-session pointer + per-session transcript buffers). The parent (root)
   // session is anchored at the workspace the TUI launched in.
   const childController = createChildSessionController();
+  // Register the live controller with the in-process brain so its agent tools
+  // (list_branches, …) drive the SAME safe lanes A–E controller the human UI
+  // uses — not raw shell git. A direct in-process handle (the control transport
+  // is remoteable and can't carry a reference); harmless under a remote client.
+  setSessionController(childController);
   const sessionCtx = createSessionContext<Msg>({
     sessionId: 0,
     conversationKey: `parent:${getWorkspaceRoot() || getSessionCwd()}`,
@@ -802,6 +816,10 @@ function App() {
       latestExplorerReport: () => latestExplorerReport,
       copyText,
       setAwaitingLogin,
+      compactThread: async (): Promise<CompactionReport> =>
+        client.compact
+          ? client.compact()
+          : { engine: "openfunction", ran: false, reason: "compaction is only available with the local brain" },
       showDiagram: (fullText: string) => showDiagramInline(fullText),
       viewLastDiagram: () => openDiagramViewer(),
       sessions: {
@@ -912,6 +930,28 @@ function App() {
     setCrewPicker(null);
     setThemePicker({ idx: schemeIndexOf(currentSchemeName()), original: currentSchemeName() });
     playSound("panelOpen");
+  }
+
+  // /branches: snapshot the child readiness dashboard and open the hub overlay.
+  function openBranchesPicker() {
+    setText("");
+    setPicker(null);
+    setExplorerPicker(null);
+    setCrewPicker(null);
+    setThemePicker(null);
+    setBranchesPicker({ state: initialBranchesState(), view: childController.listMergeReadiness() });
+    playSound("panelOpen");
+  }
+
+  // Re-snapshot readiness after a mutating action and clamp the cursor (a merged
+  // or abandoned child leaves the list). Used by B2/B3; in B1 only the open path
+  // populates rows.
+  function refreshBranchesPicker(status?: string) {
+    const bp = branchesPicker();
+    if (!bp) return;
+    const view = childController.listMergeReadiness();
+    const rowIdx = Math.max(0, Math.min(Math.max(view.rows.length - 1, 0), bp.state.rowIdx));
+    setBranchesPicker({ state: { ...bp.state, rowIdx, confirmAbandon: false }, view, status });
   }
 
   // Live-preview the scheme at `idx` (recolors the whole UI immediately).
@@ -1053,6 +1093,10 @@ function App() {
     }
     if (bare === "theme" || bare === "themes" || bare === "appearance") {
       openThemePicker();
+      return;
+    }
+    if (bare === "branches" || bare === "b") {
+      openBranchesPicker();
       return;
     }
     if (bare === "sounds" || bare === "sound" || bare.startsWith("sounds ") || bare.startsWith("sound ")) {
@@ -1284,6 +1328,58 @@ function App() {
         } else if (cp.draft.fieldIdx === 0) editCrewDraftText(key, "name");
         else if (cp.draft.fieldIdx === 1) editCrewDraftText(key, "id");
         else if (cp.draft.fieldIdx === 2) editCrewDraftText(key, "description");
+        return;
+      }
+
+      // /branches hub: the pure reducer decides the transition; we dispatch the
+      // resulting action to the live controller and refresh the snapshot.
+      const bp = branchesPicker();
+      if (bp) {
+        key.preventDefault?.();
+        key.stopPropagation?.();
+        const action = reduceBranchesKey(bp.state, key, bp.view.rows);
+        if (action.kind === "none") {
+          // Skip the re-render when the reducer returned the same state object
+          // (no-op key, or navigation already clamped at an edge).
+          if (action.state !== bp.state) setBranchesPicker({ ...bp, state: action.state });
+        } else if (action.kind === "close") {
+          setBranchesPicker(null);
+        } else if (action.kind === "enter") {
+          setBranchesPicker(null);
+          commandCtx().sessions.enter(action.sessionId);
+        } else if (action.kind === "ready") {
+          const res = childController.reviewChild(action.sessionId);
+          refreshBranchesPicker(
+            res.ok ? `#${action.sessionId} → ${res.packet.verdict}` : `ready: ${res.reason}`,
+          );
+        } else if (action.kind === "merge") {
+          const res = childController.mergeChild(action.sessionId);
+          refreshBranchesPicker(
+            res.ok
+              ? `${res.merged ? "merged" : "up-to-date"} #${action.sessionId} → ${res.packet.baseBranch} (${res.baseCommit.slice(0, 7)})${res.cleaned ? " · cleaned" : ""}`
+              : `merge: ${res.reason}`,
+          );
+        } else if (action.kind === "abandon") {
+          const res = childController.removeChild(action.sessionId, { deleteBranch: true });
+          refreshBranchesPicker(res.ok ? `abandoned #${action.sessionId}` : `abandon: ${res.reason}`);
+        } else if (action.kind === "spawn") {
+          const mapped = draftToSpawnInput(action.draft);
+          if (!mapped.ok) {
+            setBranchesPicker({ ...bp, status: `spawn: ${mapped.error}` }); // stay in the form
+          } else {
+            const res = commandCtx().sessions.spawn(mapped.input);
+            if (res.ok) {
+              setBranchesPicker({
+                state: initialBranchesState(),
+                view: childController.listMergeReadiness(),
+                status: `spawned #${res.session.sessionId} on ${res.session.branch}`,
+              });
+            } else {
+              const extra = res.blockedBy ? ` (blocked by child #${res.blockedBy})` : "";
+              setBranchesPicker({ ...bp, status: `spawn blocked: ${res.reason}${extra}` }); // stay in the form
+            }
+          }
+        }
         return;
       }
 
@@ -1982,7 +2078,96 @@ function App() {
         }}
       </Show>
 
-      <Show when={!picker() && !explorerPicker() && !crewPicker() && !themePicker() && slashMatches().length > 0}>
+      <Show when={branchesPicker()}>
+        {(bp) => {
+          // Narrowing accessors: each binds bp().state inside the closure so TS
+          // narrows the union (and bp() stays reactive per call).
+          const view = () => bp().view;
+          const rows = () => view().rows;
+          const sel = () => { const s = bp().state; return s.stage === "list" ? s.rowIdx : 0; };
+          const armed = () => { const s = bp().state; return s.stage === "list" && s.confirmAbandon; };
+          const draft = () => { const s = bp().state; return s.stage === "spawnForm" ? s.draft : null; };
+          const activeId = sessionCtx.isRoot() ? null : sessionCtx.activeSessionId();
+          const modeLabel = (m: string) => (m === "rw" ? "rw (scoped)" : m === "ro" ? "ro (read-only)" : "rw-any (unscoped)");
+          const header = () => {
+            if (draft()) return "Spawn a branch    type · ↑/↓ fields · ←/→ mode · Enter next/spawn · Esc back";
+            const v = view();
+            const totals = v.readyCount > 0 ? `  (+${v.totalAdditions} −${v.totalDeletions} if all land)` : "";
+            return `Branches    ${v.rows.length} · ${v.readyCount} ready · ${v.blockedCount} blocked${totals}`;
+          };
+          return (
+            <box
+              flexDirection="column"
+              flexShrink={0}
+              borderStyle="single"
+              borderColor={theme.accent}
+              backgroundColor={theme.bgMuted}
+              paddingLeft={1}
+              paddingRight={1}
+            >
+              <text fg={theme.accentStrong} selectable={false}>{header()}</text>
+
+              <Show when={!draft()}>
+                <Show when={rows().length === 0}>
+                  <text fg={theme.muted} selectable={false}>No branches yet — press s to spawn one. Esc to close.</text>
+                </Show>
+                <For each={rows()}>
+                  {(r, i) => {
+                    const selected = () => i() === sel();
+                    const mark = r.verdict === "ready_to_merge" ? "✓" : r.verdict === "merge_blocked" ? "✗" : "·";
+                    const stat = r.verdict ? `${r.files} file(s), +${r.additions} −${r.deletions}` : String(r.status);
+                    const drift = r.behindBy > 0 ? `  base +${r.behindBy}` : "";
+                    const active = r.sessionId === activeId ? "  ● active" : "";
+                    const head = `${selected() ? "› " : "  "}${mark} #${r.sessionId} ${r.branch} → ${r.baseBranch}: ${stat}${drift}${active}`;
+                    return (
+                      <box flexDirection="column" width="100%" backgroundColor={selected() ? theme.border : theme.bgMuted}>
+                        <text fg={selected() ? theme.accentStrong : theme.muted} selectable={false}>{head}</text>
+                        <For each={r.blockers}>
+                          {(b) => <text fg={theme.muted} selectable={false}>{`      • ${b}`}</text>}
+                        </For>
+                      </box>
+                    );
+                  }}
+                </For>
+                <Show when={armed() && rows()[sel()]}>
+                  <text fg={theme.accentStrong} selectable={false}>
+                    {`abandon #${rows()[sel()]?.sessionId} (${rows()[sel()]?.branch})? y = confirm · any other key = cancel`}
+                  </text>
+                </Show>
+                <text fg={theme.muted} selectable={false}>↑/↓ select · ↵ enter · r ready-gate · m merge · a abandon · s spawn · esc close</text>
+              </Show>
+
+              <Show when={draft()}>
+                {(d) => {
+                  const fields = () => [
+                    {label: "Title", value: d().title || "(type a title)"},
+                    {label: "Scope", value: d().scope || (d().mode === "rw" ? "(globs, e.g. src/a.ts)" : "(n/a for this mode)")},
+                    {label: "Mode", value: modeLabel(d().mode)},
+                    {label: "Spawn", value: "↵ to create"},
+                  ];
+                  return (
+                    <For each={fields()}>
+                      {(f, i) => (
+                        <box width="100%" height={1} backgroundColor={i() === d().fieldIdx ? theme.border : theme.bgMuted} flexDirection="row">
+                          <text fg={i() === d().fieldIdx ? theme.accentStrong : theme.muted} selectable={false}>
+                            {`${i() === d().fieldIdx ? "› " : "  "}${f.label.padEnd(8)}${f.value}`}
+                          </text>
+                        </box>
+                      )}
+                    </For>
+                  );
+                }}
+              </Show>
+
+              <Show when={bp().status}>
+                <text fg={theme.muted} selectable={false}>{bp().status}</text>
+              </Show>
+            </box>
+          );
+        }}
+      </Show>
+
+      <Show when={!picker() && !explorerPicker() && !crewPicker() && !themePicker() && !branchesPicker() && slashMatches().length > 0}>
         <box
           flexDirection="column"
           flexShrink={0}

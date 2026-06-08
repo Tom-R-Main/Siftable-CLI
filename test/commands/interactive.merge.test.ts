@@ -76,7 +76,7 @@ describe("/merge", () => {
     run(ctx, "merge", []);
     expect(mergeView).toHaveBeenCalled();
     expect(merge).not.toHaveBeenCalled();
-    expect(lastText(messages)).toContain("Merge view");
+    expect(lastText(messages)).toContain("Branches (");
     expect(lastText(messages)).toContain("1 ready · 1 blocked");
   });
 

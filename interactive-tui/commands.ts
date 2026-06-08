@@ -4,7 +4,7 @@ import {existsSync, readFileSync, rmSync} from "node:fs";
 import {isAbsolute, join} from "node:path";
 import {rolloutPathForKey} from "./threadEngine";
 import {SiftClient} from "@siftable/mcp-server/dist/exfClient.js";
-import {doneFallbackText, eventTextDelta, type ControlTransport, type RunningAgent} from "./controlClient";
+import {doneFallbackText, eventTextDelta, type CompactionReport, type ControlTransport, type RunningAgent} from "./controlClient";
 import {collectDailyReviewContext, collectGitRecapSummary, collectLocalGitSummary, type DailyReviewContext} from "../dist/lib/daily-review-context.js";
 import {requestApproval} from "./confirmGate";
 import {listCollabSessions, type CollabBranchSnapshot, type CollabSessionSnapshot} from "./collabEngine";
@@ -92,6 +92,8 @@ export interface InteractiveCommandContext {
   latestExplorerReport: () => string;
   copyText: (text: string) => Promise<string>;
   setAwaitingLogin: (value: boolean) => void;
+  /** Force a context compaction on the active session's agent (/compact). */
+  compactThread: () => Promise<CompactionReport>;
   /** mergeMaster child-session control (/spawn · /children · /enter · /leave). */
   sessions: ChildSessionActions;
 }
@@ -858,6 +860,22 @@ function summarizeShip(ctx: InteractiveCommandContext): string {
   ].filter(Boolean).join("\n");
 }
 
+/** Human-readable result line(s) for a `/compact` run. */
+function formatCompactionReport(report: CompactionReport): string {
+  if (!report.ran) {
+    return report.reason ? `Nothing to compact — ${report.reason}.` : "Nothing to compact.";
+  }
+  const before = report.beforeTokens ?? 0;
+  const after = report.afterTokens ?? 0;
+  const saved = Math.max(0, before - after);
+  const pct = before > 0 ? Math.round((saved / before) * 100) : 0;
+  const what: string[] = [];
+  if (report.summarized) what.push("summarized older turns");
+  if ((report.prunedMessages ?? 0) > 0) what.push(`pruned ${report.prunedMessages} tool output${report.prunedMessages === 1 ? "" : "s"}`);
+  const action = what.length ? what.join(" + ") : "compacted";
+  return `Compacted: ${action}.\n  context ~${before.toLocaleString()} → ~${after.toLocaleString()} tokens (−${saved.toLocaleString()}, ${pct}%).`;
+}
+
 function recap(ctx: InteractiveCommandContext, windowArg: string): string {
   const since = windowArg === "90d" || !windowArg ? "90 days ago" : windowArg;
   const summary = collectGitRecapSummary({cwd: ctx.cwd(), since});
@@ -1331,7 +1349,7 @@ function spawnCommand(ctx: InteractiveCommandContext, args: string[]): void {
 
 function formatChildren(ctx: InteractiveCommandContext): string {
   const list = ctx.sessions.list();
-  if (!list.length) return "No child sessions. Create one with /spawn <title> --rw <globs>.";
+  if (!list.length) return "No child branches. /spawn <title> --rw <globs> to start one; /branches to review.";
   const active = ctx.sessions.activeChildId();
   const rows = list.map((c: ChildSessionView) => {
     const marker = c.sessionId === active ? "▶" : " ";
@@ -1449,7 +1467,7 @@ export function parseMergeArgs(args: string[]): {id?: number; keep: boolean; mes
 
 /** Render the parent merge dashboard (ready-first, with counts + ready totals). */
 function formatMergeView(view: ParentMergeView): string {
-  if (view.rows.length === 0) return "No child sessions to merge. /spawn one, /ready it, then /merge <id>.";
+  if (view.rows.length === 0) return "No child branches yet. /spawn one, then /branches to review and land.";
   const rows = view.rows.map((r) => {
     const mark = r.verdict === "ready_to_merge" ? "✓" : r.verdict === "merge_blocked" ? "✗" : "·";
     const stat = r.verdict ? `${r.files} file(s), +${r.additions} −${r.deletions}` : r.status;
@@ -1459,7 +1477,7 @@ function formatMergeView(view: ParentMergeView): string {
   });
   const footer = `${view.readyCount} ready · ${view.blockedCount} blocked` +
     (view.readyCount > 0 ? `  (+${view.totalAdditions} −${view.totalDeletions} if all land)` : "");
-  return ["Merge view (/merge <id> to land · --keep to retain):", ...rows, footer].join("\n");
+  return ["Branches (/branches to open · /merge <id> to land · --keep to retain):", ...rows, footer].join("\n");
 }
 
 function mergeCommand(ctx: InteractiveCommandContext, args: string[]): void {
@@ -1562,30 +1580,42 @@ export const interactiveCommands: InteractiveCommand[] = [
     },
   },
   {
+    name: "branches",
+    aliases: ["b"],
+    description: "review child branches and land the ready ones",
+    run: (ctx) => ctx.push({role: "system", text: formatMergeView(ctx.sessions.mergeView())}),
+  },
+  {
     name: "spawn",
-    description: "spawn a child session in its own worktree",
+    description: "start a child branch in its own worktree",
     usage: "<title> [--rw <globs> | --rw-any | --ro]",
     run: (ctx, args) => spawnCommand(ctx, args),
   },
   {
+    // Folded into /branches; kept as a typeable + scriptable alias (hidden from
+    // /help and the slash palette). Same for /enter, /leave, /ready below.
     name: "children",
     aliases: ["kids"],
+    hidden: true,
     description: "list mergeMaster child sessions",
     run: (ctx) => ctx.push({role: "system", text: formatChildren(ctx)}),
   },
   {
     name: "enter",
+    hidden: true,
     description: "enter a child session by id (worktree cwd + its own thread)",
     usage: "<session-id>",
     run: (ctx, args) => enterCommand(ctx, args),
   },
   {
     name: "leave",
+    hidden: true,
     description: "leave the active child session, back to the parent",
     run: (ctx) => leaveCommand(ctx),
   },
   {
     name: "ready",
+    hidden: true,
     description: "run the ready-to-merge gate on a child (sets ready/blocked)",
     usage: "[<session-id>] [--commit]",
     run: (ctx, args) => readyCommand(ctx, args),
@@ -1623,6 +1653,20 @@ export const interactiveCommands: InteractiveCommand[] = [
         role: "system",
         text: `Persisted thread for ${key}\n  ${turns} turn(s), ${lines.length} message(s)\n  ${path}\n  (resumes automatically next session · /threads clear to reset)`,
       });
+    },
+  },
+  {
+    name: "compact",
+    aliases: ["compress"],
+    description: "summarize older turns now to free up context",
+    run: async (ctx) => {
+      ctx.push({role: "system", text: "Compacting conversation…"});
+      try {
+        const report = await ctx.compactThread();
+        ctx.push({role: "system", text: formatCompactionReport(report)});
+      } catch (e) {
+        ctx.push({role: "system", text: `Compaction failed: ${e instanceof Error ? e.message : String(e)}`});
+      }
     },
   },
   {
