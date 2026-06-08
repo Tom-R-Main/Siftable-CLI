@@ -1,10 +1,13 @@
-# @siftable/cli
+<p align="center"><strong>Siftable CLI</strong> is the command-line interface to <a href="https://siftable.io">Siftable</a> — your tasks, agent work queues, knowledge, calendar, people, and code intelligence, scriptable from the shell.</p>
 
-Command-line interface for [Siftable](https://siftable.io) — an automation harness for human planning tasks, executable agent work queues, calendar, knowledge, code indexing, and CRM.
+<br/>
 
-Source: [github.com/Tom-R-Main/Siftable-CLI](https://github.com/Tom-R-Main/Siftable-CLI)
+If you want Siftable inside your editor or coding agent (Claude, Cursor, other MCP clients), use the <a href="https://www.npmjs.com/package/@siftable/mcp-server"><strong>Siftable MCP server</strong></a>.
+<br/>If you want the web app, go to <a href="https://siftable.io">siftable.io</a>.
 
-## Installation
+## Quickstart
+
+### Installing the CLI
 
 There's one package on the npm registry — install it with whatever you use:
 
@@ -18,11 +21,9 @@ bun  install -g @siftable/cli     # bun
 pnpm add     -g @siftable/cli     # pnpm
 ```
 
-This gives you the `sift` command (plus `siftable` and the `exf` compatibility alias).
+Then run `sift` to get started. The binary installs as `sift`, with `siftable` and the `exf` compatibility alias. Full install notes live at [siftable.io/docs.html#cli-install](https://siftable.io/docs.html#cli-install).
 
-## Quick Start
-
-### 1. Authenticate
+### Authenticating
 
 ```bash
 sift auth login
@@ -34,7 +35,7 @@ Or set a Personal Access Token directly:
 export SIFT_TOKEN=sift_pat_your_token_here
 ```
 
-### 2. Run your first command
+### Your first commands
 
 ```bash
 sift tasks list
@@ -43,32 +44,31 @@ sift notes search "deployment process"
 sift work list --agent codex --json
 ```
 
-## Mental Model
-
-Users plan commitments with `sift tasks`. Agents execute bounded queue items with `sift work`. User-visible executor identities, aliases, capabilities, and default permissions live under `sift agents`.
-
-`sift tasks` is for human planning: outcomes, priority, acceptance criteria, project linkage, and human approval. `sift work` is for executable agent packets: claim leases, assigned aliases, write scope, verification commands, artifacts, and review state. Link them with `sift work create --task <task-id>` instead of assigning an executor directly to a task.
-
-`sift` is the primary command. `siftable` is an explicit product alias, and `exf` remains as a compatibility alias for older automations.
-
-## Interactive Copilot (`sift interactive`)
+### The interactive copilot
 
 ```bash
 sift interactive
 ```
 
-A terminal copilot that acts on your filesystem and the Siftable work graph. It
-requires [Bun](https://bun.sh) (`curl -fsSL https://bun.sh/install | bash`); the
-command will tell you if Bun isn't installed.
+A terminal copilot that acts on your filesystem and the Siftable work graph. It requires [Bun](https://bun.sh) (`curl -fsSL https://bun.sh/install | bash`); the command tells you if Bun isn't installed.
 
-Performance-critical paths (context compaction, long-thread memory, filesystem
-scanning, merge orchestration) run through native [Zig](https://ziglang.org)
-modules loaded via Bun FFI. The published package ships prebuilt libraries for
-**macOS (Apple Silicon)** and **Linux (x64)** — those platforms get the fast
-native path by default. Every native module has a lockstep TypeScript fallback,
-so other platforms still work, just without the native acceleration.
+Performance-critical paths (context compaction, long-thread memory, filesystem scanning, merge orchestration) run through native [Zig](https://ziglang.org) modules loaded via Bun FFI. The published package ships prebuilt libraries for **macOS (Apple Silicon)** and **Linux (x64)**, which get the fast native path by default. Every native module has a lockstep TypeScript fallback, so other platforms still work — just without the native acceleration.
 
-## Command Reference
+## Mental model
+
+Users plan commitments with `sift tasks`. Agents execute bounded queue items with `sift work`. User-visible executor identities, aliases, capabilities, and default permissions live under `sift agents`.
+
+- **`sift tasks`** — human planning: outcomes, priority, acceptance criteria, project linkage, and human approval.
+- **`sift work`** — executable agent packets: claim leases, assigned aliases, write scope, verification commands, artifacts, and review state.
+
+Link the two with `sift work create --task <task-id>` rather than assigning an executor directly to a task.
+
+## Commands
+
+The most-used surface, grouped by domain. Run `sift --help` or `sift <topic> --help` for the complete set (including `datasets`, `graph`, `timeline`, `research`, and `evidence`).
+
+<details>
+<summary><strong>Full command reference</strong></summary>
 
 ### Auth
 | Command | Description |
@@ -87,16 +87,6 @@ so other platforms still work, just without the native acceleration.
 | `sift tasks complete <id>` | Mark a human planning task complete |
 | `sift tasks delete <id>` | Delete a human planning task |
 
-### Agents
-| Command | Description |
-|---------|-------------|
-| `sift agents list` | List user-visible agent aliases |
-| `sift agents get <alias>` | Get alias capabilities and permissions |
-| `sift agents create` | Create an agent alias |
-| `sift agents update <alias>` | Update alias metadata |
-| `sift agents disable <alias>` | Disable an alias without deleting history |
-| `sift agents work <alias>` | List executable work assigned to an alias |
-
 ### Work
 | Command | Description |
 |---------|-------------|
@@ -112,10 +102,15 @@ so other platforms still work, just without the native acceleration.
 | `sift work release <id>` | Release a claim back to the queue |
 | `sift work cancel <id>` | Cancel work |
 
-### Codex Automation
+### Agents
 | Command | Description |
 |---------|-------------|
-| `sift codex daily-review collect --json` | Collect read-only Siftable and local git context for daily Codex reviews |
+| `sift agents list` | List user-visible agent aliases |
+| `sift agents get <alias>` | Get alias capabilities and permissions |
+| `sift agents create` | Create an agent alias |
+| `sift agents update <alias>` | Update alias metadata |
+| `sift agents disable <alias>` | Disable an alias without deleting history |
+| `sift agents work <alias>` | List executable work assigned to an alias |
 
 ### Projects
 | Command | Description |
@@ -150,15 +145,6 @@ so other platforms still work, just without the native acceleration.
 | `sift people list` | List contacts |
 | `sift people search <query>` | Search contacts |
 
-### Vault
-| Command | Description |
-|---------|-------------|
-| `sift vault list` | List vault entries (metadata only) |
-| `sift vault create` | Store an encrypted secret |
-| `sift vault read <id>` | Decrypt and read a secret |
-| `sift vault search <query>` | Search vault entries |
-| `sift vault update <id>` | Update entry metadata |
-
 ### Codebase
 | Command | Description |
 |---------|-------------|
@@ -170,7 +156,7 @@ so other platforms still work, just without the native acceleration.
 | `sift codebase snapshot <id>` | Get latest snapshot |
 | `sift codebase delete <id>` | Delete a repository |
 
-### Code Tools
+### Code tools
 | Command | Description |
 |---------|-------------|
 | `sift code history <repo>` | Get commit history |
@@ -183,23 +169,30 @@ so other platforms still work, just without the native acceleration.
 | `sift code memory search <query>` | Search stored facts |
 | `sift code memory delete <id>` | Delete a stored fact |
 
+### Vault
+| Command | Description |
+|---------|-------------|
+| `sift vault list` | List vault entries (metadata only) |
+| `sift vault create` | Store an encrypted secret |
+| `sift vault read <id>` | Decrypt and read a secret |
+| `sift vault search <query>` | Search vault entries |
+| `sift vault update <id>` | Update entry metadata |
+
 ### Documents
 | Command | Description |
 |---------|-------------|
 | `sift documents upload <file>` | Upload a document (PDF, MD, TXT) as a note |
 
-## Global Flags
+### Codex automation
+| Command | Description |
+|---------|-------------|
+| `sift codex daily-review collect --json` | Collect read-only Siftable and local git context for daily Codex reviews |
 
-| Flag | Env Var | Description |
-|------|---------|-------------|
-| `--token` | `SIFT_TOKEN` | Personal access token |
-| `--api-url` | `SIFT_API_URL` | API base URL (default: `https://siftable.io`) |
-| `--json` | — | Output raw JSON instead of tables |
-| `--no-input` | — | Disable interactive prompts |
+</details>
 
-## Agent / Script Usage
+## Scripting
 
-All commands support `--json` for structured output, making the CLI composable with other tools:
+Every command supports `--json` for structured output, so the CLI composes with other tools:
 
 ```bash
 # List tasks as JSON and filter with jq
@@ -216,7 +209,18 @@ export SIFT_TOKEN=sift_pat_...
 sift tasks complete "$TASK_ID"
 ```
 
-## Environment Variables
+## Configuration
+
+Global flags (each maps to an environment variable where noted):
+
+| Flag | Env var | Description |
+|------|---------|-------------|
+| `--token` | `SIFT_TOKEN` | Personal access token |
+| `--api-url` | `SIFT_API_URL` | API base URL (default: `https://siftable.io`) |
+| `--json` | — | Output raw JSON instead of tables |
+| `--no-input` | — | Disable interactive prompts |
+
+Other environment variables:
 
 | Variable | Description |
 |----------|-------------|
@@ -226,6 +230,12 @@ sift tasks complete "$TASK_ID"
 
 Legacy `EXF_TOKEN`, `EXF_API_URL`, `EXF_WORKSPACE_ID`, and `exf_pat_` tokens remain supported while older automation configs migrate.
 
+## Docs
+
+- [**Siftable docs**](https://siftable.io/docs.html) — install, authentication, and usage
+- [**Siftable MCP server**](https://www.npmjs.com/package/@siftable/mcp-server) — editor and agent integration
+- [**Issues & source**](https://github.com/Tom-R-Main/Siftable-CLI)
+
 ## License
 
-MIT
+MIT — see [LICENSE](./LICENSE).
