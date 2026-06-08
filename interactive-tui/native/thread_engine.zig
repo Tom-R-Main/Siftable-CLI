@@ -255,7 +255,7 @@ const ROLE_TOOL: u8 = 2;
 const FLAG_PROTECTED: u8 = 0x1; // tool output that must never be pruned (e.g. skill)
 
 // Config layout (u32 each): see PlanConfig below.
-const CONFIG_FIELDS: usize = 6;
+const CONFIG_FIELDS: usize = 7;
 const MAX_MESSAGES: usize = 4096;
 
 const PlanConfig = struct {
@@ -265,6 +265,9 @@ const PlanConfig = struct {
     preserve_recent_tokens: u32,
     prune_protect_tokens: u32,
     prune_min_tokens: u32,
+    // Manual `/compact`: when non-zero, plan a prune+summarize pass even when the
+    // thread is still within budget (auto-compaction only fires on overflow).
+    force: u32,
 };
 
 const PlanWriter = struct {
@@ -352,8 +355,10 @@ pub export fn sift_thread_plan_compaction(
         .preserve_recent_tokens = config_ptr[3],
         .prune_protect_tokens = config_ptr[4],
         .prune_min_tokens = config_ptr[5],
+        .force = config_ptr[6],
     };
     if (cfg.context_window == 0) return STATUS_INVALID_ARGS;
+    const forced = cfg.force != 0;
 
     var parsed: Parsed = undefined;
     const input = if (msgs_len == 0) input_empty: {
@@ -371,7 +376,8 @@ pub export fn sift_thread_plan_compaction(
     else
         cfg.context_window / 2;
 
-    const needs = total > usable;
+    // Forced compaction (manual /compact) always runs the pipeline; auto only on overflow.
+    const needs = total > usable or forced;
 
     // ── Prune phase ─────────────────────────────────────────────────────
     // Walk backward, protecting the most recent `prune_protect_tokens` worth of
@@ -418,7 +424,9 @@ pub export fn sift_thread_plan_compaction(
     // turns (bounded by `preserve_recent_tokens`, always ≥1), summarize the rest.
     var tail_start: usize = 0;
     var summarize_end: usize = 0;
-    if (needs and projected > usable) {
+    // Auto: summarize only when pruning alone can't fit. Forced: always summarize
+    // the older turns (that's the whole point of an explicit /compact).
+    if (needs and (projected > usable or forced)) {
         // Turn starts = indices of user messages.
         var turn_starts: [MAX_MESSAGES]usize = undefined;
         var num_turns: usize = 0;
@@ -736,6 +744,11 @@ const TestPlan = struct {
 };
 
 fn tRunPlan(buf: []const u8, cfg: [6]u32, out: []u8) TestPlan {
+    // Default the manual-force flag off; tRunPlanForce exercises it explicitly.
+    return tRunPlanForce(buf, cfg ++ [_]u32{0}, out);
+}
+
+fn tRunPlanForce(buf: []const u8, cfg: [7]u32, out: []u8) TestPlan {
     var written: u32 = 0;
     var needed: u32 = 0;
     const status = sift_thread_plan_compaction(buf.ptr, @intCast(buf.len), &cfg, out.ptr, @intCast(out.len), &written, &needed);
@@ -753,6 +766,26 @@ test "plan: under budget needs no compaction" {
     try std.testing.expect(!tBool(r.json, "\"needsCompaction\""));
     try std.testing.expectEqual(@as(i64, 10), tField(r.json, "\"estimatedTokens\""));
     try std.testing.expectEqual(@as(i64, 0), tField(r.json, "\"tailStartIndex\""));
+}
+
+test "plan: force compacts a within-budget thread (manual /compact)" {
+    var buf: [16384]u8 = undefined;
+    var off: usize = 0;
+    tWriteRecord(&buf, &off, ROLE_USER, 0, "a" ** 40); // 10  turn0
+    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, "a" ** 40); // 10
+    tWriteRecord(&buf, &off, ROLE_USER, 0, "a" ** 40); // 10  turn1
+    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, "a" ** 40); // 10
+    tWriteRecord(&buf, &off, ROLE_USER, 0, "a" ** 40); // 10  turn2
+    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, "a" ** 40); // 10
+    var out: [512]u8 = undefined;
+    // total 60 << usable 900: auto would no-op. force=1 still summarizes the
+    // older turns, keeping the most recent tail_turns=1 verbatim.
+    const r = tRunPlanForce(buf[0..off], .{ 1000, 100, 1, 1000, 40, 20, 1 }, &out);
+    try std.testing.expectEqual(STATUS_OK, r.status);
+    try std.testing.expect(tBool(r.json, "\"needsCompaction\""));
+    // tail_turns=1 -> keep turn2 (user at index 4); summarize [0,4).
+    try std.testing.expectEqual(@as(i64, 4), tField(r.json, "\"tailStartIndex\""));
+    try std.testing.expect(std.mem.indexOf(u8, r.json, "\"summarizeRange\":[0,4]") != null);
 }
 
 test "plan: prune alone frees enough, no summarize" {

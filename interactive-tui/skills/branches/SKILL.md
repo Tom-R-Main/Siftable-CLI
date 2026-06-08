@@ -15,6 +15,9 @@ allowed-tools:
   - spawn_branch
   - ready_branch
   - merge_branch
+  - rebase_branch
+  - sendback_branch
+  - reject_branch
 metadata:
   author: siftable
 ---
@@ -43,6 +46,24 @@ drive the lifecycle with four tools, and the human approves every land.
 - **`merge_branch`** — land a ready child via squash-merge (lane E).
   **Approval-gated: the human approves every land.** Refuses as a perfect no-op
   if the child isn't `ready_to_merge` or a conflict surfaces.
+
+### Recovery tools (lane F — autonomous, no approval prompt)
+
+When a child is `merge_blocked`, these get it moving again. They're reversible /
+isolated, so they don't prompt — only `merge_branch` does.
+
+- **`rebase_branch`** — replay the child's commits onto the *current* base tip,
+  in its own worktree. Self-aborting: a conflict runs `git rebase --abort` and
+  leaves the child byte-identical (still `merge_blocked`) with the conflicted
+  paths reported. A clean rebase re-runs the gate — usually `merge_blocked` →
+  `ready_to_merge`. Reach for this first when the base has moved under a child.
+- **`sendback_branch`** — resume a reviewed child (→ `running`) and post your
+  instruction into **its** conversation thread, so the child agent acts on it
+  next (e.g. "rebase onto main and re-resolve src/x.ts"). Use after a rebase
+  conflict, or to ask for changes instead of landing.
+- **`reject_branch`** — a terminal "not landing this", but it **keeps** the
+  worktree + branch so the work stays inspectable (unlike abandon, which cleans
+  up). Only a reviewed child (`ready_to_merge` / `merge_blocked`) can be rejected.
 
 ## When to spawn vs. work inline
 
@@ -90,10 +111,12 @@ until it's `running` again.
 4. `ready_branch` — gate it. If `merge_blocked`, read the blockers.
 5. Decide:
    - `ready_to_merge` → `merge_branch` (the human approves the land).
-   - `merge_blocked` by **conflict** → the base moved or the child overlaps;
-     rebase/resolve the child against the base, then `ready_branch` again.
-   - `merge_blocked` by **out-of-scope** writes → tighten or re-scope the work.
-   - not worth saving → leave it (it stays inspectable) or abandon it.
+   - `merge_blocked` by **conflict** → `rebase_branch` to catch up to the base.
+     Clean → it's ready; conflict → `sendback_branch` with how to resolve it.
+   - `merge_blocked` by **out-of-scope** writes → tighten or re-scope the work,
+     or `sendback_branch` asking the child to drop the stray edits.
+   - not worth saving → `reject_branch` (terminal, kept for inspection) or
+     abandon it (cleaned up).
 6. Repeat until the ready set is empty.
 
 ## Decision guidance
@@ -102,8 +125,10 @@ until it's `running` again.
   re-checks against the new base. Don't panic-merge.
 - **Two children both ready, related concerns** → land the smaller/safer one
   first, then `ready_branch` the other (the base just moved, so re-gate it).
-- **A child stuck `merge_blocked` twice** → stop fanning out. Resolve it inline
-  or abandon it. Don't loop forever spawning around a hard conflict.
+- **A child stuck `merge_blocked` twice** → stop fanning out. Try one
+  `rebase_branch`; if it still conflicts, `sendback_branch` with explicit
+  resolution steps, `reject_branch`, or resolve inline. Don't loop forever
+  spawning around a hard conflict.
 
 ## Boundaries
 

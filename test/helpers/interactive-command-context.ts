@@ -66,6 +66,7 @@ export function buildCommandContext(overrides: Partial<InteractiveCommandContext
     showDiagram: jest.fn(),
     viewLastDiagram: jest.fn(() => false),
     setAwaitingLogin: jest.fn(),
+    compactThread: jest.fn(async () => ({engine: 'openfunction' as const, ran: false, reason: 'test stub'})),
     sessions: {
       list: jest.fn(() => []),
       activeChildId: jest.fn(() => null),
@@ -75,6 +76,9 @@ export function buildCommandContext(overrides: Partial<InteractiveCommandContext
       review: jest.fn(() => ({ok: false, reason: 'sessions stub'})),
       mergeView: jest.fn(() => ({rows: [], readyCount: 0, blockedCount: 0, totalAdditions: 0, totalDeletions: 0})),
       merge: jest.fn(() => ({ok: false, reason: 'sessions stub'})),
+      rebase: jest.fn(() => ({ok: false, reason: 'sessions stub'})),
+      sendBack: jest.fn(() => ({ok: false, reason: 'sessions stub'})),
+      reject: jest.fn(() => ({ok: false, reason: 'sessions stub'})),
     },
     ...overrides,
   };

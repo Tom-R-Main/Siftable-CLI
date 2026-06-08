@@ -33,6 +33,14 @@ describe("branchesOverlay reducer — action keys", () => {
     expect(reduceBranchesKey(list(2), {name: "m", sequence: "m"}, rows)).toEqual({kind: "merge", sessionId: 4});
   });
 
+  it("u rebases the selected row (lane F, no confirm)", () => {
+    expect(reduceBranchesKey(list(1), {name: "u", sequence: "u"}, rows)).toEqual({kind: "rebase", sessionId: 3});
+  });
+
+  it("x rejects the selected row (lane F, no confirm)", () => {
+    expect(reduceBranchesKey(list(0), {name: "x", sequence: "x"}, rows)).toEqual({kind: "reject", sessionId: 2});
+  });
+
   it("a arms the abandon confirm rather than abandoning immediately", () => {
     expect(reduceBranchesKey(list(0), {name: "a", sequence: "a"}, rows)).toEqual({
       kind: "none",
@@ -70,7 +78,7 @@ describe("branchesOverlay reducer — action keys", () => {
   });
 
   it("action keys no-op on an empty field", () => {
-    for (const ch of ["r", "m", "a"]) {
+    for (const ch of ["r", "m", "u", "x", "a"]) {
       expect(reduceBranchesKey(list(0), {name: ch, sequence: ch}, [])).toEqual({kind: "none", state: list(0)});
     }
   });

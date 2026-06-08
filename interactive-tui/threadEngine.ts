@@ -255,6 +255,12 @@ export interface CompactionConfig {
   pruneProtectTokens: number;
   /** Only prune if it frees at least this many tokens. */
   pruneMinTokens: number;
+  /**
+   * Manual `/compact`: plan a prune+summarize pass even when the thread is still
+   * within budget. Auto-compaction leaves this unset (false) and only fires on
+   * overflow.
+   */
+  force?: boolean;
 }
 
 /** The plan returned by the Zig planner — what the host should execute. */
@@ -314,6 +320,7 @@ export function planCompaction(
     config.preserveRecentTokens,
     config.pruneProtectTokens,
     config.pruneMinTokens,
+    config.force ? 1 : 0,
   ]);
 
   let cap = Math.max(512, messages.length * 8 + 256);

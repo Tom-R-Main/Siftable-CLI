@@ -48,6 +48,7 @@ import {
   EXPLORER_BUDGET_CHOICES,
   EXPLORER_MODE_CHOICES,
   explorerModelChoices,
+  modeUsesScoutModel,
   explorerSettingsSummary,
   runInteractiveCommand,
   INTERACTIVE_MODEL_CHOICES,
@@ -850,6 +851,9 @@ function App() {
         review: (sessionId, opts) => childController.reviewChild(sessionId, opts),
         mergeView: () => childController.listMergeReadiness(),
         merge: (sessionId, opts) => childController.mergeChild(sessionId, opts),
+        rebase: (sessionId) => childController.rebaseChild(sessionId),
+        sendBack: (sessionId, instruction) => childController.sendBackChild(sessionId, instruction),
+        reject: (sessionId, reason) => childController.rejectChild(sessionId, reason),
       },
     };
   }
@@ -950,6 +954,13 @@ function App() {
     const bp = branchesPicker();
     if (!bp) return;
     const view = childController.listMergeReadiness();
+    // Only the list stage carries a cursor; if the spawn form is open, refresh
+    // the snapshot without touching the draft. (Narrow before reading rowIdx so
+    // a future spawn-stage caller can't graft a stray cursor onto the form.)
+    if (bp.state.stage !== "list") {
+      setBranchesPicker({ ...bp, view, status });
+      return;
+    }
     const rowIdx = Math.max(0, Math.min(Math.max(view.rows.length - 1, 0), bp.state.rowIdx));
     setBranchesPicker({ state: { ...bp.state, rowIdx, confirmAbandon: false }, view, status });
   }
@@ -1242,16 +1253,26 @@ function App() {
           return;
         }
         if (ep.stage === "menu") {
-          if (key.name === "up") setExplorerPicker({ ...ep, rowIdx: Math.max(0, ep.rowIdx - 1) });
-          else if (key.name === "down") setExplorerPicker({ ...ep, rowIdx: Math.min(menuRows - 1, ep.rowIdx + 1) });
-          else if (key.name === "left" || key.name === "right") {
+          // The "Scout model" row (idx 1) is inert when the active mode doesn't
+          // drive a scout LLM (off/deterministic/warpgrep) — skip it in nav and
+          // ignore ←/→/Enter on it so it can't mislead.
+          const usesModel = modeUsesScoutModel(EXPLORER_MODE_CHOICES[ep.modeIdx]?.id);
+          if (key.name === "up") {
+            let next = Math.max(0, ep.rowIdx - 1);
+            if (next === 1 && !usesModel) next = 0;
+            setExplorerPicker({ ...ep, rowIdx: next });
+          } else if (key.name === "down") {
+            let next = Math.min(menuRows - 1, ep.rowIdx + 1);
+            if (next === 1 && !usesModel) next = 2;
+            setExplorerPicker({ ...ep, rowIdx: next });
+          } else if (key.name === "left" || key.name === "right") {
             const delta = key.name === "right" ? 1 : -1;
             if (ep.rowIdx === 0) setExplorerPicker({ ...ep, modeIdx: wrapIndex(ep.modeIdx + delta, EXPLORER_MODE_CHOICES.length) });
-            else if (ep.rowIdx === 1) setExplorerPicker({ ...ep, modelIdx: wrapIndex(ep.modelIdx + delta, models.length) });
+            else if (ep.rowIdx === 1 && usesModel) setExplorerPicker({ ...ep, modelIdx: wrapIndex(ep.modelIdx + delta, models.length) });
             else if (ep.rowIdx === 2) setExplorerPicker({ ...ep, budgetIdx: wrapIndex(ep.budgetIdx + delta, EXPLORER_BUDGET_CHOICES.length) });
           } else if (isEnter) {
             if (ep.rowIdx === 0) setExplorerPicker({ ...ep, stage: "mode" });
-            else if (ep.rowIdx === 1) setExplorerPicker({ ...ep, stage: "model" });
+            else if (ep.rowIdx === 1 && usesModel) setExplorerPicker({ ...ep, stage: "model" });
             else if (ep.rowIdx === 2) setExplorerPicker({ ...ep, stage: "budget" });
             else if (ep.rowIdx === 3) applyExplorerPicker(ep);
             else if (ep.rowIdx === 4) {
@@ -1358,6 +1379,18 @@ function App() {
             res.ok
               ? `${res.merged ? "merged" : "up-to-date"} #${action.sessionId} → ${res.packet.baseBranch} (${res.baseCommit.slice(0, 7)})${res.cleaned ? " · cleaned" : ""}`
               : `merge: ${res.reason}`,
+          );
+        } else if (action.kind === "rebase") {
+          const res = childController.rebaseChild(action.sessionId);
+          refreshBranchesPicker(
+            res.ok
+              ? `${res.rebased ? "rebased" : "current"} #${action.sessionId} → ${res.verdict}`
+              : `rebase: ${res.reason}${res.conflicts?.length ? ` (${res.conflicts.join(", ")})` : ""}`,
+          );
+        } else if (action.kind === "reject") {
+          const res = childController.rejectChild(action.sessionId);
+          refreshBranchesPicker(
+            res.ok ? `rejected #${action.sessionId} · worktree kept` : `reject: ${res.reason}`,
           );
         } else if (action.kind === "abandon") {
           const res = childController.removeChild(action.sessionId, { deleteBranch: true });
@@ -1892,9 +1925,17 @@ function App() {
         {(p) => {
           const models = explorerModelChoices();
           const preview = () => previewExplorerSettings(p());
+          const scoutRow = () => {
+            const mode = EXPLORER_MODE_CHOICES[p().modeIdx]?.id;
+            if (modeUsesScoutModel(mode)) {
+              return {value: models[p().modelIdx]?.label ?? "-", desc: models[p().modelIdx]?.description ?? ""};
+            }
+            if (mode === "warpgrep") return {value: "Morph (built-in)", desc: "warp-grep brings its own model — scout model unused"};
+            return {value: "—", desc: "not used in this mode"};
+          };
           const rows = () => [
             {label: "Mode", value: EXPLORER_MODE_CHOICES[p().modeIdx]?.label ?? "-", desc: EXPLORER_MODE_CHOICES[p().modeIdx]?.description ?? ""},
-            {label: "Scout model", value: models[p().modelIdx]?.label ?? "-", desc: models[p().modelIdx]?.description ?? ""},
+            {label: "Scout model", value: scoutRow().value, desc: scoutRow().desc},
             {label: "Budget", value: EXPLORER_BUDGET_CHOICES[p().budgetIdx]?.label ?? "-", desc: EXPLORER_BUDGET_CHOICES[p().budgetIdx]?.description ?? ""},
             {label: "Apply for next turn", value: "", desc: explorerSettingsSummary(preview())},
             {label: "Reset", value: "", desc: explorerSettingsSummary(DEFAULT_EXPLORER_SETTINGS)},
@@ -2134,7 +2175,7 @@ function App() {
                     {`abandon #${rows()[sel()]?.sessionId} (${rows()[sel()]?.branch})? y = confirm · any other key = cancel`}
                   </text>
                 </Show>
-                <text fg={theme.muted} selectable={false}>↑/↓ select · ↵ enter · r ready-gate · m merge · a abandon · s spawn · esc close</text>
+                <text fg={theme.muted} selectable={false}>↑/↓ select · ↵ enter · r ready · m merge · u rebase · x reject · a abandon · s spawn · esc close</text>
               </Show>
 
               <Show when={draft()}>

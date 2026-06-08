@@ -253,9 +253,15 @@ describe('model catalog + reasoning effort', () => {
     return {ctx, messages};
   }
 
-  it('every catalogued model has a non-empty effort list whose default is a member', () => {
+  it('catalogued models with reasoning efforts keep a coherent default (apply-only models may omit them)', () => {
     for (const choice of INTERACTIVE_MODEL_CHOICES) {
-      expect(choice.reasoningEfforts?.length).toBeGreaterThan(0);
+      // Apply-only models (e.g. Morph fast-apply) have no reasoning axis, so the
+      // picker confirms on Enter with no effort step — omitting the list is valid.
+      if (choice.reasoningEfforts === undefined) {
+        expect(choice.defaultEffort).toBeUndefined();
+        continue;
+      }
+      expect(choice.reasoningEfforts.length).toBeGreaterThan(0);
       if (choice.defaultEffort) {
         expect(choice.reasoningEfforts).toContain(choice.defaultEffort);
       }

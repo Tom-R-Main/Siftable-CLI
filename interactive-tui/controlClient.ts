@@ -59,6 +59,23 @@ export interface CodexLogin {
   completion?: Promise<{ success: boolean; email?: string; error?: string }>;
 }
 
+/** Result of an explicit `/compact` (manual context compaction). */
+export interface CompactionReport {
+  /** Which engine handled the request. Codex compacts server-side. */
+  engine: "openfunction" | "codex";
+  /** True when the conversation history was actually rewritten. */
+  ran: boolean;
+  /** When ran=false, a human-readable reason. */
+  reason?: string;
+  /** Heuristic token estimate before/after (OpenFunction engine only). */
+  beforeTokens?: number;
+  afterTokens?: number;
+  /** Messages whose tool output was cleared. */
+  prunedMessages?: number;
+  /** True when an LLM summary replaced the older-turn prefix. */
+  summarized?: boolean;
+}
+
 /**
  * Common surface both transports implement so the TUI is transport-agnostic.
  * The `codex*` ops are optional because Codex is an in-process (local) engine;
@@ -74,6 +91,8 @@ export interface ControlTransport {
   codexLogout?(): Promise<void>;
   /** Switch the active brain engine to/from Codex; returns the new model state. */
   codexSetActive?(active: boolean): Promise<{ provider: string; model: string }>;
+  /** Force a context compaction now. Optional: only the local brain implements it. */
+  compact?(): Promise<CompactionReport>;
 }
 
 export class ControlClient implements ControlTransport {

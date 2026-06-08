@@ -60,7 +60,7 @@ describe("branchesOverlay reducer — list stage", () => {
   });
 
   it("an unhandled key leaves the state unchanged", () => {
-    expect(reduceBranchesKey(list(1), {name: "x", sequence: "x"}, rows)).toEqual({kind: "none", state: list(1)});
+    expect(reduceBranchesKey(list(1), {name: "z", sequence: "z"}, rows)).toEqual({kind: "none", state: list(1)});
   });
 
   it("returns the SAME state object on no-op keys so the overlay skips re-render", () => {

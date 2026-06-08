@@ -223,6 +223,29 @@ export interface ChatAgent {
    */
   deleteThread(threadId: string): boolean;
 
+  /**
+   * Explicitly compact the conversation now (the TUI's `/compact`). Forces a
+   * prune+summarize pass even when still within the context budget and reports
+   * what changed. No-ops (ran=false with a reason) when compaction is disabled,
+   * the native thread engine is unavailable, or there is nothing to compact.
+   */
+  compact(options?: { force?: boolean }): Promise<CompactionOutcome>;
+
   /** Shut down — disconnect providers, clean up */
   destroy(): Promise<void>;
+}
+
+/** Result of an explicit {@link ChatAgent.compact} call. Token counts are the
+ *  thread engine's heuristic estimate, not a billing-accurate BPE count. */
+export interface CompactionOutcome {
+  /** True when history was actually rewritten (pruned and/or summarized). */
+  ran: boolean;
+  /** When ran=false, why nothing happened. */
+  reason?: string;
+  beforeTokens: number;
+  afterTokens: number;
+  /** Count of messages whose tool output was cleared. */
+  prunedMessages: number;
+  /** True when an LLM summary replaced the older-turn prefix. */
+  summarized: boolean;
 }

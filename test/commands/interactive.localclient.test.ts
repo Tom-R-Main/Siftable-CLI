@@ -331,4 +331,15 @@ describe('LocalControlClient (in-process transport)', () => {
       await expect(client.login()).rejects.toThrow(/sift auth login/);
     });
   });
+
+  describe('compact()', () => {
+    it('delegates to the brain compaction and returns its report', async () => {
+      const report = {engine: 'openfunction' as const, ran: true, beforeTokens: 100, afterTokens: 40, prunedMessages: 0, summarized: true};
+      const compact = jest.fn(async () => report);
+      const client = new LocalControlClient({compact});
+      const result = await client.compact();
+      expect(compact).toHaveBeenCalledTimes(1);
+      expect(result).toEqual(report);
+    });
+  });
 });

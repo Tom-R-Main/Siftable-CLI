@@ -55,6 +55,8 @@ export type BranchesAction =
   | {kind: "enter"; sessionId: number}
   | {kind: "ready"; sessionId: number}
   | {kind: "merge"; sessionId: number}
+  | {kind: "rebase"; sessionId: number}
+  | {kind: "reject"; sessionId: number}
   | {kind: "abandon"; sessionId: number}
   | {kind: "spawn"; draft: SpawnDraft};
 
@@ -138,14 +140,20 @@ function reduceList(state: BranchesListState, key: BranchesKey, rows: MergeReadi
   }
   if (isEnter(key)) return row ? {kind: "enter", sessionId: row.sessionId} : {kind: "none", state};
 
-  // Action keys. `a` arms a two-step confirm (abandon is destructive); `r`/`m`
+  // Action keys. `a` arms a two-step confirm (abandon is destructive); the rest
   // fire directly — an explicit keypress in the dashboard is the authority. `s`
-  // opens the spawn sub-form.
+  // opens the spawn sub-form. Lane-F recovery: `u` rebases (update onto base,
+  // auto-aborts on conflict), `x` rejects (terminal but keeps the worktree).
+  // Send-back stays on /sendback (it needs free-text instructions).
   switch (charKey(key)) {
     case "r":
       return row ? {kind: "ready", sessionId: row.sessionId} : {kind: "none", state};
     case "m":
       return row ? {kind: "merge", sessionId: row.sessionId} : {kind: "none", state};
+    case "u":
+      return row ? {kind: "rebase", sessionId: row.sessionId} : {kind: "none", state};
+    case "x":
+      return row ? {kind: "reject", sessionId: row.sessionId} : {kind: "none", state};
     case "a":
       return row ? {kind: "none", state: {...state, confirmAbandon: true}} : {kind: "none", state};
     case "s":

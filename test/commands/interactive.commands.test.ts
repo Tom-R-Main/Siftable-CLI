@@ -3,6 +3,7 @@ import {
   applyExplorerSettings,
   DEFAULT_EXPLORER_SETTINGS,
   explorerModelChoices,
+  modeUsesScoutModel,
   findModelChoice,
   runInteractiveCommand,
   commandSuggestions,
@@ -49,9 +50,12 @@ describe('interactive command registry', () => {
     const previousExplorer = process.env.SIFT_EXPLORER;
     const previousScout = process.env.SIFT_EXPLORER_SCOUT;
     const previousFanout = process.env.SIFT_EXPLORER_FANOUT;
+    const previousExplorerProvider = process.env.SIFT_EXPLORER_PROVIDER;
+    const previousExplorerModel = process.env.SIFT_EXPLORER_MODEL;
     const previousProvider = process.env.SIFT_EXPLORER_SCOUT_PROVIDER;
     const previousModel = process.env.SIFT_EXPLORER_SCOUT_MODEL;
     const previousBudget = process.env.SIFT_EXPLORER_BUDGET;
+    const previousThoroughness = process.env.SIFT_EXPLORER_THOROUGHNESS;
 
     try {
       const model = explorerModelChoices().find((choice) => choice.id === DEFAULT_EXPLORER_SETTINGS.modelId);
@@ -63,20 +67,64 @@ describe('interactive command registry', () => {
       });
 
       expect(result.ok).toBe(true);
-      expect(process.env.SIFT_EXPLORER).toBe('on');
+      expect(process.env.SIFT_EXPLORER).toBe('fast-context');
       expect(process.env.SIFT_EXPLORER_SCOUT).toBe('0');
       expect(process.env.SIFT_EXPLORER_FANOUT).toBe('1');
+      expect(process.env.SIFT_EXPLORER_PROVIDER).toBe(model?.provider);
+      expect(process.env.SIFT_EXPLORER_MODEL).toBe(model?.model);
       expect(process.env.SIFT_EXPLORER_SCOUT_PROVIDER).toBe(model?.provider);
       expect(process.env.SIFT_EXPLORER_SCOUT_MODEL).toBe(model?.model);
       expect(process.env.SIFT_EXPLORER_BUDGET).toBe('cheap');
+      expect(process.env.SIFT_EXPLORER_THOROUGHNESS).toBe('quick');
     } finally {
       restoreEnv('SIFT_EXPLORER', previousExplorer);
       restoreEnv('SIFT_EXPLORER_SCOUT', previousScout);
       restoreEnv('SIFT_EXPLORER_FANOUT', previousFanout);
+      restoreEnv('SIFT_EXPLORER_PROVIDER', previousExplorerProvider);
+      restoreEnv('SIFT_EXPLORER_MODEL', previousExplorerModel);
       restoreEnv('SIFT_EXPLORER_SCOUT_PROVIDER', previousProvider);
       restoreEnv('SIFT_EXPLORER_SCOUT_MODEL', previousModel);
       restoreEnv('SIFT_EXPLORER_BUDGET', previousBudget);
+      restoreEnv('SIFT_EXPLORER_THOROUGHNESS', previousThoroughness);
     }
+  });
+
+  it('toggles warp-grep mode via SIFT_EXPLORER_WARPGREP and resets it for other modes', () => {
+    const keys = ['SIFT_EXPLORER', 'SIFT_EXPLORER_SCOUT', 'SIFT_EXPLORER_FANOUT', 'SIFT_EXPLORER_WARPGREP'];
+    const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+    try {
+      const warp = applyExplorerSettings({
+        mode: 'warpgrep',
+        modelId: DEFAULT_EXPLORER_SETTINGS.modelId,
+        budget: 'deep',
+      });
+      expect(warp.ok).toBe(true);
+      expect(process.env.SIFT_EXPLORER).toBe('fast-context');
+      expect(process.env.SIFT_EXPLORER_SCOUT).toBe('0');
+      expect(process.env.SIFT_EXPLORER_FANOUT).toBe('0');
+      expect(process.env.SIFT_EXPLORER_WARPGREP).toBe('1');
+
+      // Switching to any other mode must turn warp-grep back off.
+      applyExplorerSettings({
+        mode: 'fanout',
+        modelId: DEFAULT_EXPLORER_SETTINGS.modelId,
+        budget: 'deep',
+      });
+      expect(process.env.SIFT_EXPLORER_WARPGREP).toBe('0');
+      expect(process.env.SIFT_EXPLORER_FANOUT).toBe('1');
+    } finally {
+      for (const k of keys) restoreEnv(k, saved[k]);
+    }
+  });
+
+  it('marks only scout/fanout modes as scout-model driven', () => {
+    expect(modeUsesScoutModel('scout')).toBe(true);
+    expect(modeUsesScoutModel('fanout')).toBe(true);
+    expect(modeUsesScoutModel('warpgrep')).toBe(false);
+    expect(modeUsesScoutModel('deterministic')).toBe(false);
+    expect(modeUsesScoutModel('off')).toBe(false);
+    expect(modeUsesScoutModel('auto')).toBe(false);
+    expect(modeUsesScoutModel(undefined)).toBe(false);
   });
 
   it('runs core commands through a context object', async () => {
@@ -88,6 +136,40 @@ describe('interactive command registry', () => {
 
     await runInteractiveCommand(ctx, '/copy all');
     expect(messages.at(-1)?.text).toBe('copied 38 chars.');
+  });
+
+  it('runs /compact and renders the savings report', async () => {
+    const compactThread = jest.fn(async () => ({
+      engine: 'openfunction' as const,
+      ran: true,
+      beforeTokens: 12000,
+      afterTokens: 3000,
+      prunedMessages: 2,
+      summarized: true,
+    }));
+    const {ctx, messages} = buildContext({compactThread});
+
+    await runInteractiveCommand(ctx, '/compact');
+
+    expect(compactThread).toHaveBeenCalledTimes(1);
+    const joined = messages.map((m) => m.text).join('\n');
+    expect(joined).toContain('Compacting conversation…');
+    expect(joined).toContain('summarized older turns');
+    expect(joined).toContain('pruned 2 tool outputs');
+    expect(messages.at(-1)?.text).toContain('75%'); // 9000/12000 saved
+  });
+
+  it('reports a /compact no-op with its reason', async () => {
+    const compactThread = jest.fn(async () => ({
+      engine: 'codex' as const,
+      ran: false,
+      reason: 'Codex manages its own context server-side',
+    }));
+    const {ctx, messages} = buildContext({compactThread});
+
+    await runInteractiveCommand(ctx, '/compact');
+    expect(messages.at(-1)?.text).toContain('Nothing to compact');
+    expect(messages.at(-1)?.text).toContain('server-side');
   });
 
   it('routes /copy targets to the right source (copy stays explicit via the command)', async () => {

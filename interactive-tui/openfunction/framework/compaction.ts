@@ -16,6 +16,7 @@
 import type { ChatContent, ChatMessage } from "./adapters/types.js";
 import { chatContentToText } from "./adapters/content.js";
 import {
+  estimateTokens,
   planCompaction,
   type CompactionConfig,
   type CompactionPlan,
@@ -78,6 +79,13 @@ export function buildCompactionConfig(modelId?: string): CompactionConfig {
     pruneProtectTokens: 40_000,
     pruneMinTokens: 20_000,
   };
+}
+
+/** Sum the heuristic token estimate across a history (for before/after reports). */
+export function estimateHistoryTokens(history: ChatMessage[]): number {
+  let sum = 0;
+  for (const m of history) sum += estimateTokens(chatContentToText(m.content));
+  return sum;
 }
 
 /** Project ChatMessages onto the planner's role + plain-text view. */

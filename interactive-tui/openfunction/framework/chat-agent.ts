@@ -33,6 +33,7 @@ import {
   compactionEnabled,
   COMPACTION_SUMMARY_INSTRUCTION,
   COMPACTION_SUMMARY_SYSTEM,
+  estimateHistoryTokens,
   planCompaction,
   toPlanMessages,
 } from "./compaction.js";
@@ -58,6 +59,7 @@ import type {
   ChatResult,
   ChatStreamChunk,
   ChatAgentChatOptions,
+  CompactionOutcome,
   ServeOptions,
   MemoryConfig,
 } from "./chat-agent-types.js";
@@ -266,9 +268,46 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     if (!compactionEnabled()) return;
     // Short threads can't overflow; skip the planner call entirely.
     if (this.history.length < 8) return;
+    await this.runCompaction(false);
+  }
 
-    const plan = planCompaction(toPlanMessages(this.history), buildCompactionConfig(this.model));
-    if (!plan || !plan.needsCompaction) return;
+  /**
+   * Public, explicit compaction (the TUI's `/compact`). Seeds prior history,
+   * then forces a prune+summarize pass even when the thread is still within
+   * budget, and reports what changed so the caller can show before/after. Safe
+   * to call between turns; the same gating that protects {@link maybeCompact}
+   * applies (disabled flag, native library absent, summarizer error → prune-only).
+   */
+  async compact(options?: { force?: boolean }): Promise<CompactionOutcome> {
+    this.ensureSeeded();
+    return this.runCompaction(options?.force ?? true);
+  }
+
+  /**
+   * Shared compaction core. `force` runs the pipeline regardless of budget
+   * (manual /compact); otherwise it only acts on overflow (auto, pre-turn).
+   * Returns an outcome describing whether history changed and by how much.
+   */
+  private async runCompaction(force: boolean): Promise<CompactionOutcome> {
+    const before = estimateHistoryTokens(this.history);
+    const unchanged = (reason: string): CompactionOutcome => ({
+      ran: false,
+      reason,
+      beforeTokens: before,
+      afterTokens: before,
+      prunedMessages: 0,
+      summarized: false,
+    });
+
+    if (!compactionEnabled()) return unchanged("compaction is disabled (SIFT_CONTEXT_COMPACTION=0)");
+    if (this.history.length === 0) return unchanged("no conversation to compact yet");
+
+    const plan = planCompaction(toPlanMessages(this.history), {
+      ...buildCompactionConfig(this.model),
+      force,
+    });
+    if (!plan) return unchanged("native thread engine unavailable — rebuild with scripts/build-native.sh");
+    if (!plan.needsCompaction) return unchanged("already within the context budget");
 
     let summaryText: string | null = null;
     const summarizeEnd = plan.summarizeRange[1];
@@ -286,6 +325,13 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     }
 
     this.history = applyCompactionPlan(this.history, plan, summaryText);
+    return {
+      ran: true,
+      beforeTokens: before,
+      afterTokens: estimateHistoryTokens(this.history),
+      prunedMessages: plan.prune.length,
+      summarized: summaryText != null && summarizeEnd > 0,
+    };
   }
 
   private async finalizeAfterToolRoundLimit(promptOverride?: string): Promise<string> {

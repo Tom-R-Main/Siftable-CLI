@@ -71,7 +71,7 @@ describe("/merge", () => {
     const mergeView = jest.fn(() => view());
     const merge = jest.fn();
     const {ctx, messages} = buildCommandContext({
-      sessions: {list: jest.fn(() => []), activeChildId: jest.fn(() => null), spawn: jest.fn(), enter: jest.fn(), leave: jest.fn(), review: jest.fn(), mergeView, merge},
+      sessions: {list: jest.fn(() => []), activeChildId: jest.fn(() => null), spawn: jest.fn(), enter: jest.fn(), leave: jest.fn(), review: jest.fn(), mergeView, merge, rebase: jest.fn(), sendBack: jest.fn(), reject: jest.fn()},
     });
     run(ctx, "merge", []);
     expect(mergeView).toHaveBeenCalled();
@@ -83,7 +83,7 @@ describe("/merge", () => {
   it("lands a child and reports the new base + cleanup", () => {
     const merge = jest.fn(() => ({ok: true as const, merged: true, packet: packet(), baseCommit: "abcdef1234567", cleaned: true}));
     const {ctx, messages} = buildCommandContext({
-      sessions: {list: jest.fn(() => []), activeChildId: jest.fn(() => null), spawn: jest.fn(), enter: jest.fn(), leave: jest.fn(), review: jest.fn(), mergeView: jest.fn(), merge},
+      sessions: {list: jest.fn(() => []), activeChildId: jest.fn(() => null), spawn: jest.fn(), enter: jest.fn(), leave: jest.fn(), review: jest.fn(), mergeView: jest.fn(), merge, rebase: jest.fn(), sendBack: jest.fn(), reject: jest.fn()},
     });
     run(ctx, "merge", ["2"]);
     expect(merge).toHaveBeenCalledWith(2, {keep: false, message: undefined});
@@ -98,7 +98,7 @@ describe("/merge", () => {
       packet: packet({verdict: "merge_blocked", conflicts: ["x.ts"], blockers: ["conflicts with main in: x.ts"]}),
     }));
     const {ctx, messages} = buildCommandContext({
-      sessions: {list: jest.fn(() => []), activeChildId: jest.fn(() => null), spawn: jest.fn(), enter: jest.fn(), leave: jest.fn(), review: jest.fn(), mergeView: jest.fn(), merge},
+      sessions: {list: jest.fn(() => []), activeChildId: jest.fn(() => null), spawn: jest.fn(), enter: jest.fn(), leave: jest.fn(), review: jest.fn(), mergeView: jest.fn(), merge, rebase: jest.fn(), sendBack: jest.fn(), reject: jest.fn()},
     });
     run(ctx, "merge", ["2"]);
     expect(lastText(messages)).toContain("merge blocked");
@@ -108,7 +108,7 @@ describe("/merge", () => {
   it("passes --keep and -m through", () => {
     const merge = jest.fn(() => ({ok: true as const, merged: true, packet: packet(), baseCommit: "0000000aaaa", cleaned: false}));
     const {ctx, messages} = buildCommandContext({
-      sessions: {list: jest.fn(() => []), activeChildId: jest.fn(() => null), spawn: jest.fn(), enter: jest.fn(), leave: jest.fn(), review: jest.fn(), mergeView: jest.fn(), merge},
+      sessions: {list: jest.fn(() => []), activeChildId: jest.fn(() => null), spawn: jest.fn(), enter: jest.fn(), leave: jest.fn(), review: jest.fn(), mergeView: jest.fn(), merge, rebase: jest.fn(), sendBack: jest.fn(), reject: jest.fn()},
     });
     run(ctx, "merge", ["2", "--keep", "-m", "ship it"]);
     expect(merge).toHaveBeenCalledWith(2, {keep: true, message: "ship it"});
@@ -118,7 +118,7 @@ describe("/merge", () => {
   it("rejects a bad id without calling merge", () => {
     const merge = jest.fn();
     const {ctx, messages} = buildCommandContext({
-      sessions: {list: jest.fn(() => []), activeChildId: jest.fn(() => null), spawn: jest.fn(), enter: jest.fn(), leave: jest.fn(), review: jest.fn(), mergeView: jest.fn(), merge},
+      sessions: {list: jest.fn(() => []), activeChildId: jest.fn(() => null), spawn: jest.fn(), enter: jest.fn(), leave: jest.fn(), review: jest.fn(), mergeView: jest.fn(), merge, rebase: jest.fn(), sendBack: jest.fn(), reject: jest.fn()},
     });
     run(ctx, "merge", ["nope"]);
     expect(merge).not.toHaveBeenCalled();

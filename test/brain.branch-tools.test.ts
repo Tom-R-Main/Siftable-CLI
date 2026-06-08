@@ -289,4 +289,56 @@ describe('lane E A2 — child-session brain tools', () => {
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toContain('merge blocked');
   });
+
+  // ── lane F: rebase_branch / sendback_branch / reject_branch ────────────────
+  it('registers the lane-F recovery tools and they are NOT approval-gated', async () => {
+    // No confirm listener is set; an autonomous tool must still run (merge would deny).
+    const rebaseChild = jest.fn(() => ({ok: true, rebased: true, headCommit: 'abcdef1234567', verdict: 'ready_to_merge', statusApplied: true}));
+    setSessionController(stubController({rebaseChild} as unknown as Partial<ChildSessionController>));
+    const tools = await branchTools();
+    expect(Object.keys(tools)).toEqual(expect.arrayContaining(['rebase_branch', 'sendback_branch', 'reject_branch']));
+    const res = (await tools.rebase_branch.handler({id: 2})) as ToolResult;
+    expect(rebaseChild).toHaveBeenCalledWith(2);
+    expect(res.ok).toBe(true); // ran without any approval prompt
+    if (res.ok) expect(res.message).toContain('rebased #2');
+  });
+
+  it('rebase_branch surfaces conflicts on a failed rebase', async () => {
+    const rebaseChild = jest.fn(() => ({ok: false, reason: 'rebase onto main conflicts', conflicts: ['shared.txt']}));
+    setSessionController(stubController({rebaseChild} as unknown as Partial<ChildSessionController>));
+    const res = (await (await branchTools()).rebase_branch.handler({id: 3})) as ToolResult;
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toContain('shared.txt');
+  });
+
+  it('sendback_branch requires an instruction, then posts it through', async () => {
+    const sendBackChild = jest.fn(() => ({ok: true, posted: true, conversationKey: 'k'}));
+    setSessionController(stubController({sendBackChild} as unknown as Partial<ChildSessionController>));
+    const tools = await branchTools();
+
+    const bad = (await tools.sendback_branch.handler({id: 2, instruction: '  '})) as ToolResult;
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.error).toMatch(/instruction is required/);
+    expect(sendBackChild).not.toHaveBeenCalled();
+
+    const ok = (await tools.sendback_branch.handler({id: 2, instruction: 'rebase onto main'})) as ToolResult;
+    expect(sendBackChild).toHaveBeenCalledWith(2, 'rebase onto main');
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.message).toContain('sent #2 back to work');
+  });
+
+  it('reject_branch passes the reason through and surfaces a refusal', async () => {
+    const rejectChild = jest.fn(() => ({ok: true}));
+    setSessionController(stubController({rejectChild} as unknown as Partial<ChildSessionController>));
+    let res = (await (await branchTools()).reject_branch.handler({id: 2, reason: 'out of scope'})) as ToolResult;
+    expect(rejectChild).toHaveBeenCalledWith(2, 'out of scope');
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.message).toContain('rejected #2');
+
+    const rejectChild2 = jest.fn(() => ({ok: false, reason: 'review it first'}));
+    setSessionController(stubController({rejectChild: rejectChild2} as unknown as Partial<ChildSessionController>));
+    res = (await (await branchTools()).reject_branch.handler({id: 2})) as ToolResult;
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toContain('review it first');
+  });
 });

@@ -7,6 +7,16 @@ Raw output: `/tmp/repo-explorer-eval.json` (not committed)
 
 The baseline uses the harness fake agent, so it is a repeatable behavior smoke rather than a final answer-quality score. Run with `--real-agent` for manual quality notes.
 
+Follow-on quality program: `packages/exf-cli/docs/fast-context-explorer-quality-gates.md`.
+
+Current gate command:
+
+```sh
+npm run explorer:eval --workspace @siftable/cli -- --json --assert
+```
+
+As of 2026-06-07, the asserted fixture gate passes with Fast Context ahead of deterministic retrieval on precision-weighted score and no forbidden top-file hits.
+
 | mode | runs | avg elapsed ms | avg report chars | avg post tool calls | avg searches | avg reads | scout files used | redundant broad searches | scout failures |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | explorer off | 8 | 0 | 0 | 2 | 1 | 1 | 0 | 0 | 0 |

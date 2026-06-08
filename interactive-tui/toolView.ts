@@ -32,6 +32,7 @@ export type ExplorerActivityBranch = {
 export type ExplorerActivityView = {
   mode: "deterministic" | "scout" | "fanout";
   classification?: string;
+  evidenceQuality?: "low" | "medium" | "high";
   cacheHit?: boolean;
   cacheMiss?: boolean;
   elapsedMs: number;
@@ -146,6 +147,15 @@ function modeText(mode: ExplorerActivityView["mode"]): string {
   return mode === "fanout" ? "fan-out" : mode;
 }
 
+function explorerStatusText(activity: ExplorerActivityView): string {
+  const branches = activity.branches ?? [];
+  if (activity.mode === "fanout" && branches.length > 0 && branches.every((branch) => branch.status !== "ok")) {
+    return "fallback only";
+  }
+  if (activity.evidenceQuality === "low") return "low-confidence map";
+  return "checked repo";
+}
+
 export function formatExplorerActivityLine(activity: ExplorerActivityView): string {
   const branchText = activity.mode === "fanout" && activity.branches?.length
     ? `${activity.branches.filter((branch) => branch.status === "ok").length}/${activity.branches.length} scouts`
@@ -158,7 +168,7 @@ export function formatExplorerActivityLine(activity: ExplorerActivityView): stri
     : "";
   return [
     "◇ Explorer",
-    "checked repo",
+    explorerStatusText(activity),
     roles,
     branchText,
     formatCount("file", activity.suggestedFileCount),
@@ -225,6 +235,7 @@ export function asExplorerActivityView(input: unknown): ExplorerActivityView | n
   const record = input as Partial<ExplorerActivityView>;
   if (
     (record.mode === "deterministic" || record.mode === "scout" || record.mode === "fanout") &&
+    (record.evidenceQuality === undefined || record.evidenceQuality === "low" || record.evidenceQuality === "medium" || record.evidenceQuality === "high") &&
     typeof record.elapsedMs === "number" &&
     typeof record.reportChars === "number" &&
     typeof record.suggestedFileCount === "number"

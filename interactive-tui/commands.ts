@@ -33,8 +33,10 @@ import type {
   ChildSessionView,
   MergeChildOptions,
   MergeChildResult,
+  RebaseChildResult,
   ReviewChildOptions,
   ReviewChildResult,
+  SendBackChildResult,
   SpawnChildInput,
   SpawnChildResult,
 } from "./childSessionController";
@@ -62,6 +64,12 @@ export interface ChildSessionActions {
   mergeView: () => ParentMergeView;
   /** Land a ready child onto the base via squash-merge (lane E). */
   merge: (sessionId: number, opts?: MergeChildOptions) => MergeChildResult;
+  /** Replay a child onto the moved base; re-gate on success (lane F). */
+  rebase: (sessionId: number) => RebaseChildResult;
+  /** Resume a reviewed child, posting instructions into its thread (lane F). */
+  sendBack: (sessionId: number, instruction: string) => SendBackChildResult;
+  /** Reject a reviewed child (terminal, worktree + branch kept) (lane F). */
+  reject: (sessionId: number, reason?: string) => {ok: boolean; reason?: string};
 }
 
 export interface InteractiveCommandContext {
@@ -129,7 +137,7 @@ export interface InteractiveModelChoice {
   defaultEffort?: string;
 }
 
-export type ExplorerModeSetting = "auto" | "off" | "deterministic" | "scout" | "fanout";
+export type ExplorerModeSetting = "auto" | "off" | "deterministic" | "scout" | "fanout" | "warpgrep";
 export type ExplorerBudgetSetting = "cheap" | "normal" | "deep";
 
 export interface ExplorerSettings {
@@ -260,6 +268,20 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     defaultEffort: "low",
   },
   {
+    id: "openrouter/morph/morph-v3-large",
+    provider: "openrouter",
+    model: "morph/morph-v3-large",
+    label: "Morph v3 Large",
+    description: "OpenRouter · ⚡ apply-only (~700 tps, single-turn)",
+    aliases: ["morph", "morph-v3-large", "morph/morph-v3-large"],
+    auth: "api-key",
+    // Fast-apply model — no reasoning axis (picker confirms on Enter). NOTE:
+    // Morph's endpoint rejects system prompts / multi-turn ("Multi-turn
+    // conversations are not supported", HTTP 400) and has no tool-calling, so it
+    // is NOT usable as a chat brain or Explorer scout. It belongs on the
+    // edit_file apply path. For Morph-powered code search use warp-grep, not this.
+  },
+  {
     id: "openai/gpt-5.4-mini",
     provider: "openai",
     model: "gpt-5.4-mini",
@@ -318,7 +340,18 @@ export const EXPLORER_MODE_CHOICES: ExplorerModeChoice[] = [
   {id: "deterministic", label: "Deterministic only", description: "fastest, no scout model"},
   {id: "scout", label: "Scout", description: "one read-only model helper"},
   {id: "fanout", label: "Fan-out", description: "parallel read-only role scouts"},
+  {id: "warpgrep", label: "Warp-grep", description: "Morph code-search subagent · fast, no index (MORPH_API_KEY)"},
 ];
+
+/**
+ * Whether a mode actually drives the user-selected scout LLM. Only `scout` and
+ * `fanout` do — `off`/`deterministic` run no model, and `warpgrep` brings its
+ * own (Morph, server-side). The Explorer overlay uses this to render the
+ * "Scout model" row inert (and skip it in navigation) when it has no effect.
+ */
+export function modeUsesScoutModel(mode: ExplorerModeSetting | undefined): boolean {
+  return mode === "scout" || mode === "fanout";
+}
 
 export const EXPLORER_BUDGET_CHOICES: ExplorerBudgetChoice[] = [
   {id: "cheap", label: "Cheap", description: "smaller model budget"},
@@ -338,9 +371,16 @@ export function explorerModelChoices(): InteractiveModelChoice[] {
 
 export function explorerSettingsSummary(settings: ExplorerSettings): string {
   const model = explorerModelChoices().find((choice) => choice.id === settings.modelId);
+  // Only surface the scout model when the mode actually uses it — otherwise it
+  // reads as if (e.g.) warp-grep runs on Gemini, which it doesn't.
+  const modelPart = modeUsesScoutModel(settings.mode)
+    ? (model ? `model ${model.label}` : `model ${settings.modelId}`)
+    : settings.mode === "warpgrep"
+      ? "model Morph (built-in)"
+      : "model —";
   return [
     `mode ${settings.mode}`,
-    model ? `model ${model.label}` : `model ${settings.modelId}`,
+    modelPart,
     `budget ${settings.budget}`,
   ].join(" · ");
 }
@@ -618,6 +658,8 @@ export function applyExplorerSettings(settings: ExplorerSettings): {ok: boolean;
   process.env.SIFT_EXPLORER_SCOUT_PROVIDER = model.provider;
   process.env.SIFT_EXPLORER_SCOUT_MODEL = model.model;
 
+  // Reset the warp-grep flag for every mode; only the warpgrep branch turns it on.
+  process.env.SIFT_EXPLORER_WARPGREP = "0";
   if (settings.mode === "off") {
     process.env.SIFT_EXPLORER = "off";
     process.env.SIFT_EXPLORER_SCOUT = "0";
@@ -630,6 +672,11 @@ export function applyExplorerSettings(settings: ExplorerSettings): {ok: boolean;
     process.env.SIFT_EXPLORER = "fast-context";
     process.env.SIFT_EXPLORER_SCOUT = "0";
     process.env.SIFT_EXPLORER_FANOUT = "1";
+  } else if (settings.mode === "warpgrep") {
+    process.env.SIFT_EXPLORER = "fast-context";
+    process.env.SIFT_EXPLORER_SCOUT = "0";
+    process.env.SIFT_EXPLORER_FANOUT = "0";
+    process.env.SIFT_EXPLORER_WARPGREP = "1";
   } else if (settings.mode === "deterministic") {
     process.env.SIFT_EXPLORER = "deterministic";
     process.env.SIFT_EXPLORER_SCOUT = "0";
@@ -1506,6 +1553,77 @@ function mergeCommand(ctx: InteractiveCommandContext, args: string[]): void {
   ctx.push({role: "system", text});
 }
 
+const REBASE_USAGE = "/rebase [<session-id>]";
+const SENDBACK_USAGE = '/sendback [<session-id>] <instructions>';
+const REJECT_USAGE = "/reject [<session-id>] [reason]";
+
+function rebaseCommand(ctx: InteractiveCommandContext, args: string[]): void {
+  const target = resolveTargetChild(ctx, args.find((a) => !a.startsWith("-")));
+  if ("error" in target) {
+    ctx.push({role: "system", text: `/rebase: ${target.error}\n${REBASE_USAGE}`});
+    return;
+  }
+  const res = ctx.sessions.rebase(target.id);
+  if (!res.ok) {
+    let text = `/rebase: ${res.reason}`;
+    if (res.conflicts?.length) text += `\n  conflicts: ${res.conflicts.join(", ")}\n  → /sendback ${target.id} <how to resolve>`;
+    ctx.push({role: "system", text});
+    return;
+  }
+  const verb = res.rebased ? "rebased" : "already current";
+  const tail = res.verdict === "ready_to_merge" ? "→ ready to merge" : `→ ${res.verdict}`;
+  ctx.push({role: "system", text: `${verb} #${target.id} onto base (${res.headCommit.slice(0, 7)}) ${tail}`});
+}
+
+function sendBackCommand(ctx: InteractiveCommandContext, args: string[]): void {
+  // First bare token may be the id; the rest is the free-text instruction. With
+  // an active child and no leading id, the whole arg string is the instruction.
+  const active = ctx.sessions.activeChildId();
+  let idArg: string | undefined;
+  let rest = args;
+  if (args[0] !== undefined && Number.isInteger(Number(args[0]))) {
+    idArg = args[0];
+    rest = args.slice(1);
+  } else if (active == null) {
+    ctx.push({role: "system", text: `/sendback: no active child — pass a session id\n${SENDBACK_USAGE}`});
+    return;
+  }
+  const target = resolveTargetChild(ctx, idArg);
+  if ("error" in target) {
+    ctx.push({role: "system", text: `/sendback: ${target.error}\n${SENDBACK_USAGE}`});
+    return;
+  }
+  const instruction = rest.join(" ").trim();
+  if (!instruction) {
+    ctx.push({role: "system", text: `/sendback: needs instructions to post to the child\n${SENDBACK_USAGE}`});
+    return;
+  }
+  const res = ctx.sessions.sendBack(target.id, instruction);
+  if (!res.ok) {
+    ctx.push({role: "system", text: `/sendback: ${res.reason}`});
+    return;
+  }
+  const posted = res.posted ? "instructions posted to its thread" : "instructions not persisted (thread off)";
+  ctx.push({role: "system", text: `sent #${target.id} back to work (running) · ${posted}`});
+}
+
+function rejectCommand(ctx: InteractiveCommandContext, args: string[]): void {
+  const idArg = args.find((a) => !a.startsWith("-"));
+  const target = resolveTargetChild(ctx, idArg);
+  if ("error" in target) {
+    ctx.push({role: "system", text: `/reject: ${target.error}\n${REJECT_USAGE}`});
+    return;
+  }
+  // Anything after the id is a free-text reason (recorded, worktree retained).
+  const reason = args.filter((a) => a !== idArg && !a.startsWith("-")).join(" ").trim() || undefined;
+  const res = ctx.sessions.reject(target.id, reason);
+  if (!res.ok) {
+    ctx.push({role: "system", text: `/reject: ${res.reason}`});
+    return;
+  }
+  ctx.push({role: "system", text: `rejected #${target.id} (terminal) · worktree + branch kept for inspection`});
+}
+
 export const interactiveCommands: InteractiveCommand[] = [
   ...interactiveCommandsBase,
   {
@@ -1625,6 +1743,24 @@ export const interactiveCommands: InteractiveCommand[] = [
     description: "land a ready child onto the base (squash-merge), or show the merge view",
     usage: '[<session-id>] [--keep] [-m "message"]',
     run: (ctx, args) => mergeCommand(ctx, args),
+  },
+  {
+    name: "rebase",
+    description: "replay a blocked child onto the moved base (auto-aborts on conflict)",
+    usage: "[<session-id>]",
+    run: (ctx, args) => rebaseCommand(ctx, args),
+  },
+  {
+    name: "sendback",
+    description: "send a reviewed child back to work with instructions",
+    usage: "[<session-id>] <instructions>",
+    run: (ctx, args) => sendBackCommand(ctx, args),
+  },
+  {
+    name: "reject",
+    description: "reject a reviewed child (terminal, but keeps its worktree for inspection)",
+    usage: "[<session-id>] [reason]",
+    run: (ctx, args) => rejectCommand(ctx, args),
   },
   {name: "clear", description: "clear the conversation", run: (ctx) => ctx.setMessages([{role: "system", text: "cleared."}])},
   {

@@ -63,6 +63,7 @@ describe('toolView — tool call labels', () => {
 describe('toolView — explorer activity', () => {
   const activity = {
     mode: 'fanout' as const,
+    evidenceQuality: 'medium' as const,
     cacheHit: true,
     elapsedMs: 211,
     reportChars: 7980,
@@ -93,6 +94,35 @@ describe('toolView — explorer activity', () => {
     expect(formatExplorerActivityLine(activity)).toBe(
       '◇ Explorer · checked repo · source_runtime/tests/ui_surface · 1/2 scouts · 14 files · 211ms · 1 warning',
     );
+  });
+
+  it('does not label all-failed fanout as a successful repo check', () => {
+    expect(formatExplorerActivityLine({
+      ...activity,
+      evidenceQuality: 'low',
+      suggestedFileCount: 8,
+      branches: [
+        {id: 'routing_config', status: 'failed', elapsedMs: 3155, suggestedFileCount: 0, warningCount: 1},
+        {id: 'tests', status: 'failed', elapsedMs: 5948, suggestedFileCount: 0, warningCount: 1},
+      ],
+      warnings: ['routing_config failed: budget', 'tests failed: budget'],
+    })).toBe(
+      '◇ Explorer · fallback only · source_runtime/tests/ui_surface · 0/2 scouts · 8 files · 211ms · 2 warnings',
+    );
+  });
+
+  it('labels weak deterministic maps as low confidence', () => {
+    expect(formatExplorerActivityLine({
+      mode: 'deterministic',
+      evidenceQuality: 'low',
+      elapsedMs: 31,
+      reportChars: 1200,
+      suggestedFileCount: 0,
+      primaryCandidates: [],
+      scoutSuggestedFiles: [],
+      fanoutSuggestedFiles: [],
+      warnings: [],
+    })).toBe('◇ Explorer · low-confidence map · 0 files · 31ms');
   });
 
   it('formats expanded explorer activity without the raw report body', () => {

@@ -77,6 +77,8 @@ export class WorktreeError extends Error {
     readonly kind: WorktreeErrorKind,
     message: string,
     readonly remedy?: string,
+    /** Conflicted paths, when {@link kind} is `merge_conflict`. */
+    readonly paths?: string[],
   ) {
     super(message);
     this.name = "WorktreeError";
@@ -849,4 +851,83 @@ export function squashMergeChild(
 
   const baseCommitAfter = resolveCommit(repoRoot, opts.baseBranch, runner) ?? baseTip;
   return { merged: true, alreadyUpToDate: false, baseCommitBefore: baseTip, baseCommitAfter };
+}
+
+// ---------------------------------------------------------------------------
+// Child rebase (catch up to a moved base) — lane F
+// ---------------------------------------------------------------------------
+
+export interface RebaseChildOptions {
+  /** The child's linked worktree — the rebase runs here, on the child branch. */
+  worktreePath: string;
+  /** The child's own branch (the one checked out in `worktreePath`). */
+  childBranch: string;
+  /** The branch to replay the child's commits onto (the parent's base). */
+  baseBranch: string;
+}
+
+export interface RebaseChildResult {
+  /** True if commits were replayed; false if the child already contained the base. */
+  rebased: boolean;
+  /** The child branch tip after the rebase (== before, when `rebased` is false). */
+  headCommitAfter: string;
+  /** The base tip the child was replayed onto. */
+  baseTip: string;
+}
+
+/** Paths git reports as unmerged (conflicted) in `worktree`. */
+function unmergedPaths(worktree: string, runner: GitRunner): string[] {
+  const res = runner(["diff", "--name-only", "--diff-filter=U"], worktree);
+  if (res.status !== 0) return [];
+  return res.stdout
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Replay the child's branch onto the current base tip, inside the child's own
+ * worktree (refs are shared across linked worktrees, so the base ref resolves
+ * here). **Self-aborting:** a conflict triggers `git rebase --abort`, so the
+ * child is left byte-identical to before the attempt (still inspectable), and a
+ * `WorktreeError("merge_conflict", …, …, conflictedPaths)` is thrown. A clean
+ * rebase leaves the child on its branch at the replayed tip; the caller re-runs
+ * the lane-D gate, which typically flips `merge_blocked` → `ready_to_merge`.
+ *
+ * This is the read_write counterpart to the read-only lane-D conflict
+ * *prediction*: the gate tells you a child won't land; this is the one supported
+ * way to fix that without leaving the user in a half-rebased worktree.
+ */
+export function rebaseChildOntoBase(
+  opts: RebaseChildOptions,
+  runner: GitRunner = defaultRunner,
+): RebaseChildResult {
+  const worktree = canonicalize(opts.worktreePath);
+  // A rebase rewrites commits and churns the index → demand a clean tree first.
+  assertWorktreeClean(worktree, "child", runner);
+
+  const baseTip = resolveCommit(worktree, opts.baseBranch, runner);
+  if (!baseTip) throw new WorktreeError("not_found", `base branch not found: ${opts.baseBranch}`);
+  const before = resolveCommit(worktree, "HEAD", runner);
+  if (!before) throw new WorktreeError("not_found", `child HEAD not found in ${worktree}`);
+
+  // Already current: the base tip is reachable from the child tip → no replay.
+  if (runner(["merge-base", "--is-ancestor", baseTip, before], worktree).status === 0) {
+    return {rebased: false, headCommitAfter: before, baseTip};
+  }
+
+  const res = runner(["rebase", baseTip], worktree);
+  if (res.status !== 0) {
+    // Capture conflicts BEFORE aborting (abort clears the unmerged index).
+    const conflicts = unmergedPaths(worktree, runner);
+    runner(["rebase", "--abort"], worktree);
+    throw new WorktreeError(
+      "merge_conflict",
+      `rebase onto ${opts.baseBranch} conflicts in: ${conflicts.join(", ") || "(unknown)"}`,
+      "The rebase was aborted (child unchanged). Resolve in the child, or send it back with instructions.",
+      conflicts,
+    );
+  }
+  const after = resolveCommit(worktree, "HEAD", runner) ?? before;
+  return {rebased: after !== before, headCommitAfter: after, baseTip};
 }

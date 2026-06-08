@@ -18,6 +18,7 @@ import {
   openfunctionAsk,
   setBrainModel,
   getBrainModel,
+  compactActiveThread,
   type BrainEvent,
 } from "./brain";
 import {
@@ -32,6 +33,7 @@ import type {
   ChatInput,
   CodexLogin,
   CodexStatus,
+  CompactionReport,
   ControlState,
   ControlTransport,
   SseEvent,
@@ -45,6 +47,8 @@ export interface LocalBrainDeps {
   getToken: () => string | undefined;
   /** Read the Codex account (memoized in the engine); null when logged out. */
   getCodexAccount: typeof getCodexAccount;
+  /** Force a context compaction on the active session's agent. */
+  compact: typeof compactActiveThread;
 }
 
 const defaultDeps: LocalBrainDeps = {
@@ -53,6 +57,7 @@ const defaultDeps: LocalBrainDeps = {
   getModel: getBrainModel,
   getToken: () => process.env.SIFT_PAT || process.env.EXF_PAT,
   getCodexAccount,
+  compact: compactActiveThread,
 };
 
 export class LocalControlClient implements ControlTransport {
@@ -87,6 +92,10 @@ export class LocalControlClient implements ControlTransport {
 
   async config(input: { provider?: string; model?: string; apiKey?: string; effort?: string }): Promise<{ provider: string; model: string; effort?: string }> {
     return this.deps.setModel(input);
+  }
+
+  async compact(): Promise<CompactionReport> {
+    return this.deps.compact();
   }
 
   async codexStatus(): Promise<CodexStatus> {

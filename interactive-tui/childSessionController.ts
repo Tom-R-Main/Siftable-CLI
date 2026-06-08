@@ -22,9 +22,11 @@ import {
   resolveRepoRoot,
   createGitRunner,
   squashMergeChild,
+  rebaseChildOntoBase,
   WorktreeError,
   type GitRunner,
 } from "./worktreeService";
+import {appendTurn, rolloutPathForThread, persistEnabled} from "./openfunction/framework/rollout";
 import {assembleParentMergeView, type MergeReadinessRow, type ParentMergeView} from "./mergeView";
 import {
   conversationKeyForSession,
@@ -95,6 +97,12 @@ export interface ChildSessionControllerDeps {
   createParent?: (input: CreateParentInput) => number;
   /** Clock for registry timestamps (kept deterministic in tests). */
   now?: () => number;
+  /**
+   * Post a parent instruction into a child's conversation thread (lane F
+   * send-back). Defaults to appending a user-role turn to the child's rollout;
+   * inject a spy in tests. Returns true when the message was persisted.
+   */
+  postToThread?: (conversationKey: string, instruction: string) => boolean;
 }
 
 /** Options for {@link ChildSessionController.reviewChild}. */
@@ -145,6 +153,26 @@ export type MergeChildResult =
     }
   | {ok: false; reason: string; packet?: MergePacket};
 
+/** Outcome of rebasing a child onto the moved base (lane F). */
+export type RebaseChildResult =
+  | {
+      ok: true;
+      /** True if commits were replayed (false when already up to date). */
+      rebased: boolean;
+      /** The child branch tip after the rebase. */
+      headCommit: string;
+      /** The gate verdict re-evaluated after a clean rebase. */
+      verdict: MergePacket["verdict"];
+      /** True if the re-evaluated verdict was applied to the child's status. */
+      statusApplied: boolean;
+    }
+  | {ok: false; reason: string; conflicts?: string[]};
+
+/** Outcome of sending a child back to work with instructions (lane F). */
+export type SendBackChildResult =
+  | {ok: true; posted: boolean; conversationKey: string}
+  | {ok: false; reason: string};
+
 export interface ChildSessionController {
   spawnChild(input: SpawnChildInput): SpawnChildResult;
   listChildSessions(): ChildSessionView[];
@@ -157,6 +185,12 @@ export interface ChildSessionController {
   listMergeReadiness(): ParentMergeView;
   /** Land a ready child onto the base via squash-merge (lane E). */
   mergeChild(sessionId: number, opts?: MergeChildOptions): MergeChildResult;
+  /** Replay a (usually blocked) child onto the moved base; re-gate on success (lane F). */
+  rebaseChild(sessionId: number): RebaseChildResult;
+  /** Resume a reviewed child, posting the parent's instructions into its thread (lane F). */
+  sendBackChild(sessionId: number, instruction: string): SendBackChildResult;
+  /** Reject a reviewed child: terminal, but keep its worktree + branch inspectable (lane F). */
+  rejectChild(sessionId: number, reason?: string): {ok: boolean; reason?: string};
   removeChild(
     sessionId: number,
     opts?: {deleteBranch?: boolean; force?: boolean},
@@ -171,6 +205,19 @@ export function createChildSessionController(
   const registerSession = deps.registerSession ?? createGatedChildSession;
   const createParent = deps.createParent ?? createParentSession;
   const now = deps.now ?? (() => 0);
+  const postToThread =
+    deps.postToThread ??
+    ((conversationKey: string, instruction: string): boolean => {
+      // Append the parent's instruction as a user-role turn so the child agent
+      // picks it up on resume. Skipped if rollout persistence is off / unavailable.
+      if (!persistEnabled()) return false;
+      try {
+        appendTurn(rolloutPathForThread(conversationKey), instruction, null);
+        return true;
+      } catch {
+        return false;
+      }
+    });
 
   const records = new Map<number, ChildSessionRecord>();
   const parents = new Map<string, number>(); // repoRoot → parent sessionId
@@ -465,6 +512,88 @@ export function createChildSessionController(
     return {ok: true, merged: result.merged, packet, baseCommit: result.baseCommitAfter, cleaned, note};
   }
 
+  function rebaseChild(sessionId: number): RebaseChildResult {
+    const rec = records.get(sessionId);
+    if (!rec) return {ok: false, reason: "unknown child session"};
+    const live = getMergeMasterSession(sessionId);
+    if (live && isTerminalStatus(live.status)) {
+      return {ok: false, reason: `child #${sessionId} is ${live.status} (terminal) — nothing to rebase`};
+    }
+
+    let rebased: boolean;
+    let headCommitAfter: string;
+    try {
+      const res = rebaseChildOntoBase(
+        {worktreePath: rec.worktreePath, childBranch: rec.branch, baseBranch: rec.baseBranch},
+        runner,
+      );
+      rebased = res.rebased;
+      headCommitAfter = res.headCommitAfter;
+    } catch (err) {
+      // A conflict left the child untouched (rebase --abort); mark it blocked so
+      // the parent knows it needs a send-back, and surface the conflicted paths.
+      if (err instanceof WorktreeError && err.kind === "merge_conflict") {
+        transitionSessionStatus(sessionId, "merge_blocked", now());
+        return {ok: false, reason: err.message, conflicts: err.paths ?? []};
+      }
+      return {ok: false, reason: err instanceof Error ? err.message : String(err)};
+    }
+
+    setSessionHeadCommit(sessionId, headCommitAfter, now());
+    // Re-gate against the (now-current) base; a clean rebase usually flips
+    // merge_blocked → ready_to_merge.
+    try {
+      const packet = evaluateMerge(rec, runner);
+      setSessionHeadCommit(sessionId, packet.headCommit, now());
+      const code = transitionSessionStatus(sessionId, packet.verdict, now());
+      return {ok: true, rebased, headCommit: packet.headCommit, verdict: packet.verdict, statusApplied: code === 0};
+    } catch (err) {
+      return {ok: false, reason: err instanceof Error ? err.message : String(err)};
+    }
+  }
+
+  function sendBackChild(sessionId: number, instruction: string): SendBackChildResult {
+    const rec = records.get(sessionId);
+    if (!rec) return {ok: false, reason: "unknown child session"};
+    const live = getMergeMasterSession(sessionId);
+    if (!live) return {ok: false, reason: `child #${sessionId} not in registry`};
+    if (isTerminalStatus(live.status)) {
+      return {ok: false, reason: `child #${sessionId} is ${live.status} (terminal) — cannot send back`};
+    }
+    if (live.status === "running") {
+      // Already working — there's nothing to "send back". (The backend treats a
+      // running→running set as an idempotent no-op, so guard it here explicitly.)
+      return {ok: false, reason: `child #${sessionId} is already running — nothing to send back`};
+    }
+    // Resume the work first; only post once the transition is legal.
+    const code = transitionSessionStatus(sessionId, "running", now());
+    if (code !== 0) {
+      return {ok: false, reason: `cannot resume child #${sessionId} from ${live.status}`};
+    }
+    const text = instruction.trim();
+    const posted = text ? postToThread(rec.conversationKey, text) : false;
+    return {ok: true, posted, conversationKey: rec.conversationKey};
+  }
+
+  function rejectChild(sessionId: number, _reason?: string): {ok: boolean; reason?: string} {
+    const rec = records.get(sessionId);
+    if (!rec) return {ok: false, reason: "unknown child session"};
+    const live = getMergeMasterSession(sessionId);
+    if (live && isTerminalStatus(live.status)) {
+      return {ok: false, reason: `child #${sessionId} is ${live.status} (terminal)`};
+    }
+    const code = transitionSessionStatus(sessionId, "rejected", now());
+    if (code !== 0) {
+      return {
+        ok: false,
+        reason: `cannot reject child #${sessionId} from ${live?.status ?? "unknown"} — review it first (only a ready/blocked child can be rejected)`,
+      };
+    }
+    // Deliberately leave the worktree + branch on disk: rejected is terminal but
+    // inspectable. The record stays tracked so it still shows in the merge view.
+    return {ok: true};
+  }
+
   /** Internal worktree teardown that does not touch registry status (merge already did). */
   function removeChild_internal(
     rec: ChildSessionRecord,
@@ -523,6 +652,9 @@ export function createChildSessionController(
     commitChild,
     listMergeReadiness,
     mergeChild,
+    rebaseChild,
+    sendBackChild,
+    rejectChild,
     removeChild,
   };
 }

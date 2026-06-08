@@ -59,6 +59,7 @@ import {
   type RepoExplorerFanoutReport,
   type RepoExplorerFanoutState,
   type RepoExplorerScoutState,
+  type RepoExplorerScoutReport,
   type RepoExplorerEffectiveness,
 } from './explorer';
 import {
@@ -228,7 +229,10 @@ function repoExplorerScoutBudget() {
       maxToolCalls: 48,
       maxSearches: 36,
       maxFilesRead: 24,
-      maxElapsedMs: 9_000,
+      // Deep runs as long as it needs. Low-tps reasoning scouts (~36-38 tps on
+      // GPT-5.4 Mini) burn most of their budget on reasoning tokens before any
+      // JSON, so this is wall-clock to first useful output, not slack.
+      maxElapsedMs: 20_000,
       maxReturnedChars: 18_000,
     };
   }
@@ -255,7 +259,7 @@ function repoExplorerFanoutBudget() {
       maxScoutToolCalls: 12,
       maxSearchesPerScout: 9,
       maxFilesReadPerScout: 6,
-      maxElapsedMs: 9_000,
+      maxElapsedMs: 20_000,
       maxScoutSectionChars: 18_000,
     };
   }
@@ -1027,6 +1031,100 @@ function buildLocalTools(of: OfModule): unknown[] {
     },
   });
 
+  const rebaseBranchTool = of.defineTool({
+    name: 'rebase_branch',
+    description:
+      'Catch a child branch up to the moved base by replaying its commits onto the current base tip ' +
+      '(mergeMaster lane F). Autonomous — it is reversible: a conflict triggers `git rebase --abort`, ' +
+      'leaving the child byte-identical (still merge_blocked) with the conflicted paths reported, so you ' +
+      'can then sendback_branch with resolution instructions. A clean rebase re-runs the gate and usually ' +
+      'flips merge_blocked → ready_to_merge. Touches only the child worktree, never the base.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'number', description: 'Child session id to rebase.' } },
+      required: ['id'],
+    },
+    handler: async (params) => {
+      if (!sessionController) return of.err('rebase_branch: no child-session controller available.');
+      const id = Number(params.id);
+      if (!Number.isInteger(id)) return of.err('rebase_branch: id must be a session id (integer).');
+      try {
+        const res = sessionController.rebaseChild(id);
+        if (!res.ok) {
+          const conflicts = res.conflicts?.length ? ` conflicts: ${res.conflicts.join(', ')}` : '';
+          return of.err(`rebase_branch: ${res.reason}${conflicts}`);
+        }
+        const verb = res.rebased ? 'rebased' : 'already current';
+        return of.ok(
+          { rebased: res.rebased, verdict: res.verdict, headCommit: res.headCommit },
+          `${verb} #${id} onto base (${res.headCommit.slice(0, 7)}) → ${res.verdict}`,
+        );
+      } catch (e) {
+        return of.err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  });
+
+  const sendBackBranchTool = of.defineTool({
+    name: 'sendback_branch',
+    description:
+      'Send a reviewed child branch back to work with instructions (mergeMaster lane F). Resumes the child ' +
+      '(→ running) and posts your instruction as a user-turn into ITS conversation thread, so the child ' +
+      'agent acts on it next. Autonomous (non-destructive). Use after a child is merge_blocked / ready / ' +
+      'needs_input — e.g. "rebase onto main and re-resolve src/x.ts". Refuses a child that is already running.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Child session id to resume.' },
+        instruction: { type: 'string', description: 'What the child should do next (posted into its thread).' },
+      },
+      required: ['id', 'instruction'],
+    },
+    handler: async (params) => {
+      if (!sessionController) return of.err('sendback_branch: no child-session controller available.');
+      const id = Number(params.id);
+      if (!Number.isInteger(id)) return of.err('sendback_branch: id must be a session id (integer).');
+      const instruction = typeof params.instruction === 'string' ? params.instruction.trim() : '';
+      if (!instruction) return of.err('sendback_branch: instruction is required.');
+      try {
+        const res = sessionController.sendBackChild(id, instruction);
+        if (!res.ok) return of.err(`sendback_branch: ${res.reason}`);
+        const posted = res.posted ? 'posted to its thread' : 'not persisted (thread off)';
+        return of.ok({ posted: res.posted }, `sent #${id} back to work (running) · instruction ${posted}`);
+      } catch (e) {
+        return of.err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  });
+
+  const rejectBranchTool = of.defineTool({
+    name: 'reject_branch',
+    description:
+      'Reject a reviewed child branch (mergeMaster lane F): a terminal decision NOT to land it. Unlike ' +
+      'abandon, reject KEEPS the worktree + branch on disk so the work stays inspectable. Only a reviewed ' +
+      'child (ready_to_merge / merge_blocked) can be rejected. Autonomous (no git mutation, no cleanup).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Child session id to reject.' },
+        reason: { type: 'string', description: 'Why it was rejected (for the record).' },
+      },
+      required: ['id'],
+    },
+    handler: async (params) => {
+      if (!sessionController) return of.err('reject_branch: no child-session controller available.');
+      const id = Number(params.id);
+      if (!Number.isInteger(id)) return of.err('reject_branch: id must be a session id (integer).');
+      try {
+        const res = sessionController.rejectChild(id, typeof params.reason === 'string' ? params.reason : undefined);
+        if (!res.ok) return of.err(`reject_branch: ${res.reason}`);
+        return of.ok({ rejected: true }, `rejected #${id} (terminal) · worktree + branch kept`);
+      } catch (e) {
+        return of.err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  });
+
   const tools: unknown[] = [
     changeDirectory,
     runTerminalCommand,
@@ -1044,6 +1142,9 @@ function buildLocalTools(of: OfModule): unknown[] {
     spawnBranchTool,
     readyBranchTool,
     mergeBranchTool,
+    rebaseBranchTool,
+    sendBackBranchTool,
+    rejectBranchTool,
   ];
   // A1 write surface: only when a workspace root is set. Each call is still
   // confirm-gated and Zig-jailed; registration just exposes the tools.
@@ -1466,6 +1567,98 @@ async function runRepoExplorerScout(
   }
 }
 
+function explorerWarpgrepEnabled(): boolean {
+  return process.env.SIFT_EXPLORER_WARPGREP === '1';
+}
+
+// Minimal local mirror of @morphllm/morphsdk's WarpGrepResult so the dynamic
+// import can stay loosely typed (the SDK is an optional runtime dependency).
+interface WarpGrepResultLike {
+  success?: boolean;
+  error?: string;
+  contexts?: Array<{ file?: string; content?: string; lines?: '*' | Array<[number, number]> }>;
+}
+
+/**
+ * warp-grep scout backend (Morph). Instead of driving a slow reasoning model
+ * through our own tool loop, hand the user's request to Morph's warp-grep
+ * subagent, which runs its own grep/read loop in a separate context window
+ * (~3k tps apply model under the hood) and returns relevant code in a few
+ * seconds with no index. We map its {file, content, lines} contexts straight
+ * into the existing `modelScout` channel via attachRepoExplorerScout, so the
+ * results flow into the LLM context exactly like the LLM scout. Degrades
+ * non-fatally (sets failed/failureReason) when the key/SDK/ripgrep is missing.
+ */
+async function runRepoExplorerWarpGrep(
+  input: ChatInput,
+  deterministicReport: ExplorerReport,
+): Promise<RepoExplorerScoutState> {
+  const startedAt = Date.now();
+  const budget = repoExplorerScoutBudget();
+  const state: RepoExplorerScoutState = { enabled: true, ran: true, elapsedMs: 0, failed: false };
+  const fail = (reason: string): RepoExplorerScoutState => {
+    state.elapsedMs = Date.now() - startedAt;
+    state.failed = true;
+    state.failureReason = reason;
+    markRepoExplorerScoutState(deterministicReport, state);
+    return state;
+  };
+  try {
+    await loadOpenFunctionEnv();
+    const apiKey = process.env.MORPH_API_KEY;
+    if (!apiKey) return fail('MORPH_API_KEY not set (use /key morph <key>)');
+    let MorphClientCtor: new (config: { apiKey: string }) => {
+      warpGrep: { execute: (input: { searchTerm: string; repoRoot: string }) => Promise<WarpGrepResultLike> };
+    };
+    try {
+      ({ MorphClient: MorphClientCtor } = (await import('@morphllm/morphsdk')) as never);
+    } catch (err) {
+      return fail(`@morphllm/morphsdk unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    const morph = new MorphClientCtor({ apiKey });
+    const repoRoot = getWorkspaceRoot() || getSessionCwd();
+    // warp-grep is a remote subagent (its own grep/read loop), not a local
+    // token stream, so the per-scout token budget doesn't govern it. Real runs
+    // land ~6-15s; floor the timeout at 20s so the mode isn't silently broken
+    // under medium/quick budgets, while deep can still push it higher.
+    const warpTimeoutMs = Math.max(budget.maxElapsedMs, 20_000);
+    const result = await withTimeout(
+      morph.warpGrep.execute({ searchTerm: chatInputText(input), repoRoot }),
+      warpTimeoutMs,
+    );
+    const contexts = Array.isArray(result?.contexts) ? result.contexts : [];
+    const seen = new Set<string>();
+    const recommendedReads: RepoExplorerScoutReport['recommendedReads'] = [];
+    for (const ctx of contexts) {
+      const path = typeof ctx?.file === 'string' ? ctx.file.trim() : '';
+      if (!path || seen.has(path)) continue;
+      seen.add(path);
+      const range = Array.isArray(ctx?.lines) ? ctx.lines[0] : undefined;
+      recommendedReads.push({
+        path,
+        reason: 'warp-grep match',
+        ...(Array.isArray(range) && typeof range[0] === 'number' ? { startLine: range[0] } : {}),
+        ...(Array.isArray(range) && typeof range[1] === 'number' ? { endLine: range[1] } : {}),
+      });
+      if (recommendedReads.length >= 12) break;
+    }
+    if (!result?.success && !recommendedReads.length) {
+      return fail(`warp-grep failed: ${result?.error || 'no contexts returned'}`);
+    }
+    const scoutReport: RepoExplorerScoutReport = {
+      confidence: recommendedReads.length ? 0.6 : 0.1,
+      missingLikelyFiles: [],
+      recommendedReads,
+      warnings: result?.success ? [] : ['warp-grep returned success=false'],
+    };
+    state.elapsedMs = Date.now() - startedAt;
+    attachRepoExplorerScout(deterministicReport, scoutReport, state);
+    return state;
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : String(err));
+  }
+}
+
 async function runRepoExplorerFanout(
   input: ChatInput,
   deterministicReport: ExplorerReport,
@@ -1785,7 +1978,20 @@ export async function openfunctionAsk(
     onEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer', detail: 'read-only preflight' } });
     try {
       const report = await buildExplorerReport(input);
-      if (report.mode !== 'skipped' && explorerFanoutEnabled()) {
+      if (report.mode !== 'skipped' && explorerWarpgrepEnabled()) {
+        onEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer_warpgrep', detail: 'Morph warp-grep code search' } });
+        const warpState = await runRepoExplorerWarpGrep(input, report);
+        onEvent({
+          type: 'tool_result',
+          toolResult: {
+            name: 'repo_explorer_warpgrep',
+            success: !warpState.failed,
+            output: warpState.failed
+              ? `failed non-fatally: ${warpState.failureReason ?? 'unknown error'}`
+              : `${report.modelScout?.recommendedReads.length ?? 0} warp-grep match(es); ${warpState.elapsedMs}ms`,
+          },
+        });
+      } else if (report.mode !== 'skipped' && explorerFanoutEnabled()) {
         onEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer_fanout', detail: 'read-only parallel scouts' } });
         const fanoutState = await runRepoExplorerFanout(input, report);
         onEvent({

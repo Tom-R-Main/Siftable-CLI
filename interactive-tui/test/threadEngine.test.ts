@@ -193,6 +193,24 @@ describe("planCompaction (Zig planner bridge)", () => {
     expect(plan.summarizeRange).toEqual([0, 4]);
   });
 
+  it("forces a within-budget thread to compact when force=true (manual /compact)", () => {
+    const msgs: PlanMessage[] = [
+      { role: "user", text: A },
+      { role: "assistant", text: A }, // turn 0
+      { role: "user", text: A },
+      { role: "assistant", text: A }, // turn 1
+      { role: "user", text: A },
+      { role: "assistant", text: A }, // turn 2
+    ];
+    // Well under the 900-token usable budget: auto would no-op.
+    expect(planCompaction(msgs, cfg)!.needsCompaction).toBe(false);
+    // force=1 summarizes the older turns, keeping tailTurns=1 verbatim.
+    const forced = planCompaction(msgs, { ...cfg, tailTurns: 1, force: true })!;
+    expect(forced.needsCompaction).toBe(true);
+    expect(forced.tailStartIndex).toBe(4);
+    expect(forced.summarizeRange).toEqual([0, 4]);
+  });
+
   it("protects flagged tool output from pruning", () => {
     const msgs: PlanMessage[] = [
       { role: "user", text: A },
