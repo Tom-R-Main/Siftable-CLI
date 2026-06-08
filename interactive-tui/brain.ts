@@ -39,6 +39,7 @@ import {
   chatInputText,
   classifyExplorerPrompt,
   clearRepoExplorerCache,
+  compileExplorerQueries,
   createRepoExplorerActivityView,
   createRepoExplorerEffectiveness,
   formatRepoExplorerEffectiveness,
@@ -52,6 +53,7 @@ import {
   observeRepoExplorerToolCall,
   parseRepoExplorerScoutReportDetailed,
   resolveExplorerRuntimeMode,
+  type ExplorerQueryDistill,
   type ExplorerReport,
   type ExplorerScoutRole,
   type RepoExplorerFanoutBranch,
@@ -1510,6 +1512,105 @@ function buildRepoExplorerScoutTools(
   return [inspectWorkspace, globLocalFiles, grepLocalFiles, searchLocalFiles, readFileRegion, readManyRegions];
 }
 
+// --- Explorer query distillation -------------------------------------------
+// A scout/warp-grep backend only needs a focused *search query*, not the raw
+// transcript. When the user pastes huge context the flattened input can blow a
+// backend's window — warp-grep hard-fails (HTTP 400) once its searchTerm
+// exceeds Morph's ~85k-token window. So above a size gate we distill the input
+// into a compact brief BEFORE handing it to any scout. We gate on chars, not an
+// estimated token count: dense pasted content runs ~1.7 chars/token (far below
+// the usual ~4), so a token estimate under-counts and would still overflow.
+const EXPLORER_QUERY_DISTILL_CHARS = (() => {
+  const raw = Number(process.env.SIFT_EXPLORER_QUERY_DISTILL_CHARS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 24_000;
+})();
+const EXPLORER_QUERY_DISTILL_TIMEOUT_MS = 12_000;
+
+// Pasted blobs arrive wrapped in <pasted_text id chars lines>…</pasted_text>
+// (see buildChatInput in index.tsx). Splitting on that boundary lets us keep the
+// user's typed prose (their actual question) distinct from the pasted bulk.
+const PASTED_TEXT_RE = /<pasted_text\b[^>]*>([\s\S]*?)<\/pasted_text>/g;
+
+export function splitPastedBlobs(text: string): { prose: string; blobs: string[] } {
+  const blobs: string[] = [];
+  const prose = text.replace(PASTED_TEXT_RE, (_match, body: string) => {
+    blobs.push(typeof body === 'string' ? body : '');
+    return ' ';
+  });
+  return { prose: prose.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim(), blobs };
+}
+
+// Deterministic, instant, zero-network fallback: keep the user's typed prose
+// verbatim and replace each giant blob with the salient terms compiled from it
+// (quoted strings, paths, identifiers).
+export function deterministicExplorerQuery(prose: string, blobs: string[]): string {
+  const parts: string[] = [];
+  if (prose) parts.push(prose);
+  for (const blob of blobs) {
+    const queries = compileExplorerQueries(blob, 12);
+    if (queries.length) parts.push(`Search terms from pasted context: ${queries.join(', ')}`);
+  }
+  return parts.join('\n').trim();
+}
+
+// Zero-degradation path: hand the FULL input to the main model (the big-window
+// model the user already authorized this session) and ask for a focused
+// code-search brief. Single-shot, memory:false → its messages never touch the
+// main agent's transcript, so the main model's own context is unchanged. The
+// model read everything and decided what matters, so the explorer still acts on
+// the full intent of the paste.
+async function distillExplorerQueryWithMainModel(of: OfModule, raw: string): Promise<string> {
+  const provider = currentProvider === CODEX_PROVIDER ? 'openrouter' : currentProvider;
+  const model = currentProvider === CODEX_PROVIDER ? DEFAULT_OPENFUNCTION_MODEL : currentModel;
+  const agent = await of.createChatAgent({
+    name: 'siftable-explorer-query-distill',
+    provider,
+    model,
+    providers: ['siftable'],
+    tools: [],
+    memory: false,
+    prompt:
+      'You compress a user request (which includes large pasted context) into a focused brief for a code-search ' +
+      'agent that will grep THIS repository. Output only the brief (no preamble), <=180 words: the concrete things ' +
+      'to look for in the repo — feature/symbol/file names, concepts, and what the user is trying to learn or ' +
+      'change. The pasted context is usually external (logs, docs, API dumps), not repo source, so translate it ' +
+      'into what to find in the codebase rather than quoting it back.',
+  });
+  const collected = await collectScoutText(
+    agent.chat(`User request and pasted context:\n${raw}\n\nReturn only the search brief.`, { stream: true }),
+    { maxReturnedChars: 4_000, maxToolCalls: 0 },
+  );
+  return collected.text.trim();
+}
+
+// Resolve the search query for any scout backend. Under the gate → verbatim
+// (normal use is untouched). Over the gate → main-model distill (primary), with
+// the deterministic prose+terms compaction as the backup if the model call
+// errors or times out.
+async function buildExplorerQuery(of: OfModule, input: ChatInput): Promise<{ text: string; distill: ExplorerQueryDistill }> {
+  const raw = chatInputText(input);
+  if (raw.length <= EXPLORER_QUERY_DISTILL_CHARS) {
+    return { text: raw, distill: { method: 'verbatim', originalChars: raw.length, finalChars: raw.length } };
+  }
+  const { prose, blobs } = splitPastedBlobs(raw);
+  try {
+    const brief = await withTimeout(distillExplorerQueryWithMainModel(of, raw), EXPLORER_QUERY_DISTILL_TIMEOUT_MS);
+    if (brief) {
+      return { text: brief, distill: { method: 'main-model', originalChars: raw.length, finalChars: brief.length } };
+    }
+  } catch {
+    // fall through to the deterministic backup
+  }
+  const det = deterministicExplorerQuery(prose, blobs) || raw.slice(0, EXPLORER_QUERY_DISTILL_CHARS);
+  return { text: det, distill: { method: 'deterministic', originalChars: raw.length, finalChars: det.length } };
+}
+
+function formatExplorerQueryDistill(distill: ExplorerQueryDistill | undefined): string {
+  if (!distill || distill.method === 'verbatim') return '';
+  const k = (n: number) => (n >= 1000 ? `${Math.round(n / 100) / 10}k` : `${n}`);
+  return `distilled ${k(distill.originalChars)}→${k(distill.finalChars)} chars · ${distill.method}`;
+}
+
 async function runRepoExplorerScout(
   input: ChatInput,
   deterministicReport: ExplorerReport,
@@ -1534,11 +1635,13 @@ async function runRepoExplorerScout(
       memory: false,
       prompt: SCOUT_PROMPT,
     });
+    const query = await buildExplorerQuery(of, input);
+    state.queryDistill = query.distill;
     const scoutInput = [
       formatExplorerReport(deterministicReport),
       '',
       'User request:',
-      chatInputText(input),
+      query.text,
       '',
       'Return JSON only.',
     ].join('\n');
@@ -1606,7 +1709,7 @@ async function runRepoExplorerWarpGrep(
   try {
     await loadOpenFunctionEnv();
     const apiKey = process.env.MORPH_API_KEY;
-    if (!apiKey) return fail('MORPH_API_KEY not set (use /key morph <key>)');
+    if (!apiKey) return fail('MORPH_API_KEY not set (use /key vault morph to load it from vault, or /key morph <key>)');
     let MorphClientCtor: new (config: { apiKey: string }) => {
       warpGrep: { execute: (input: { searchTerm: string; repoRoot: string }) => Promise<WarpGrepResultLike> };
     };
@@ -1617,13 +1720,19 @@ async function runRepoExplorerWarpGrep(
     }
     const morph = new MorphClientCtor({ apiKey });
     const repoRoot = getWorkspaceRoot() || getSessionCwd();
+    // Distill the query before it goes over the wire: warp-grep 400s once its
+    // searchTerm exceeds Morph's ~85k-token window, which a giant pasted context
+    // blows through. buildExplorerQuery is a no-op under the size gate.
+    const of = await loadOpenFunctionModule();
+    const query = await buildExplorerQuery(of, input);
+    state.queryDistill = query.distill;
     // warp-grep is a remote subagent (its own grep/read loop), not a local
     // token stream, so the per-scout token budget doesn't govern it. Real runs
     // land ~6-15s; floor the timeout at 20s so the mode isn't silently broken
     // under medium/quick budgets, while deep can still push it higher.
     const warpTimeoutMs = Math.max(budget.maxElapsedMs, 20_000);
     const result = await withTimeout(
-      morph.warpGrep.execute({ searchTerm: chatInputText(input), repoRoot }),
+      morph.warpGrep.execute({ searchTerm: query.text, repoRoot }),
       warpTimeoutMs,
     );
     const contexts = Array.isArray(result?.contexts) ? result.contexts : [];
@@ -1681,6 +1790,11 @@ async function runRepoExplorerFanout(
     assignedRoles: branches.map((branch) => branch.role.id),
     promptClass: assignment.promptClass,
   };
+  // Distill ONCE here (not per-branch): a string is a valid ChatInput, so each
+  // branch's chatInputText() returns the resolved query verbatim — no N model calls.
+  const of = await loadOpenFunctionModule();
+  const query = await buildExplorerQuery(of, input);
+  state.queryDistill = query.distill;
   const fanoutRun = await runCollabBranches({
     root: deterministicReport.root,
     cwd: getSessionCwd(),
@@ -1695,7 +1809,7 @@ async function runRepoExplorerFanout(
       maxToolCalls: Math.min(branch.role.budget.maxToolCalls, fanoutBudget.maxScoutToolCalls),
       maxElapsedMs: Math.min(branch.role.budget.maxElapsedMs, fanoutBudget.maxElapsedMs),
     }),
-    runBranch: (context) => runRepoExplorerFanoutBranch(input, deterministicReport, fanoutBudget, context),
+    runBranch: (context) => runRepoExplorerFanoutBranch(query.text, deterministicReport, fanoutBudget, context),
     finalizeBranch: (result) => result.branch.status === 'failed'
       ? { status: 'failed', error: result.branch.failureReason ?? 'branch failed' }
       : {
@@ -1988,7 +2102,7 @@ export async function openfunctionAsk(
             success: !warpState.failed,
             output: warpState.failed
               ? `failed non-fatally: ${warpState.failureReason ?? 'unknown error'}`
-              : `${report.modelScout?.recommendedReads.length ?? 0} warp-grep match(es); ${warpState.elapsedMs}ms`,
+              : [`${report.modelScout?.recommendedReads.length ?? 0} warp-grep match(es); ${warpState.elapsedMs}ms`, formatExplorerQueryDistill(warpState.queryDistill)].filter(Boolean).join(' · '),
           },
         });
       } else if (report.mode !== 'skipped' && explorerFanoutEnabled()) {
@@ -1999,7 +2113,7 @@ export async function openfunctionAsk(
           toolResult: {
             name: 'repo_explorer_fanout',
             success: true,
-            output: `${fanoutState.branchCount} branch(es); ${fanoutState.suggestedFiles.length} suggested file(s); ${fanoutState.failedBranches} failed branch(es); ${fanoutState.elapsedMs}ms`,
+            output: [`${fanoutState.branchCount} branch(es); ${fanoutState.suggestedFiles.length} suggested file(s); ${fanoutState.failedBranches} failed branch(es); ${fanoutState.elapsedMs}ms`, formatExplorerQueryDistill(fanoutState.queryDistill)].filter(Boolean).join(' · '),
           },
         });
       } else if (report.mode !== 'skipped' && explorerScoutEnabled()) {
@@ -2012,7 +2126,7 @@ export async function openfunctionAsk(
             success: !scoutState.failed,
             output: scoutState.failed
               ? `failed non-fatally: ${scoutState.failureReason ?? 'unknown error'}`
-              : `${report.modelScout?.recommendedReads.length ?? 0} scout read(s); ${report.modelScout?.missingLikelyFiles.length ?? 0} missing file(s); ${scoutState.elapsedMs}ms`,
+              : [`${report.modelScout?.recommendedReads.length ?? 0} scout read(s); ${report.modelScout?.missingLikelyFiles.length ?? 0} missing file(s); ${scoutState.elapsedMs}ms`, formatExplorerQueryDistill(scoutState.queryDistill)].filter(Boolean).join(' · '),
           },
         });
       }

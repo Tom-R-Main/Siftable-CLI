@@ -279,6 +279,16 @@ export interface ExplorerRetrievalParseResult {
   clampedItems: number;
 }
 
+/** How a scout/warp-grep query was derived from the raw chat input. When the
+ *  input is large (giant pasted context) the raw text is distilled before it is
+ *  handed to a backend so it fits the backend's window; this records which path
+ *  was taken so the dispatch layer can surface it instead of degrading silently. */
+export interface ExplorerQueryDistill {
+  method: 'verbatim' | 'main-model' | 'deterministic';
+  originalChars: number;
+  finalChars: number;
+}
+
 export interface RepoExplorerScoutState {
   enabled: boolean;
   ran: boolean;
@@ -289,6 +299,7 @@ export interface RepoExplorerScoutState {
   schemaErrors?: string[];
   clampedItems?: number;
   truncated?: boolean;
+  queryDistill?: ExplorerQueryDistill;
 }
 
 export interface RepoExplorerFanoutBranch {
@@ -329,6 +340,7 @@ export interface RepoExplorerFanoutState {
   suggestedFiles: string[];
   assignedRoles?: ExplorerScoutRoleId[];
   promptClass?: ExplorerPromptClass;
+  queryDistill?: ExplorerQueryDistill;
 }
 
 export interface RepoExplorerActivityBranch {

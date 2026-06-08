@@ -20,7 +20,13 @@ import {
   parseRepoExplorerScoutReportDetailed,
   prepareExplorerInput,
 } from '../../interactive-tui/explorer';
-import {openfunctionAsk, setBrainModel, type BrainEvent} from '../../interactive-tui/brain';
+import {
+  openfunctionAsk,
+  setBrainModel,
+  splitPastedBlobs,
+  deterministicExplorerQuery,
+  type BrainEvent,
+} from '../../interactive-tui/brain';
 import {resetCollabEngineForTests, snapshotCollabSession} from '../../interactive-tui/collabEngine';
 
 describe('interactive repo explorer preflight', () => {
@@ -1464,5 +1470,44 @@ describe('interactive repo explorer preflight', () => {
       delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
       errorSpy.mockRestore();
     }
+  });
+});
+
+describe('explorer query distillation', () => {
+  it('separates typed prose from pasted blobs', () => {
+    const input =
+      'How does PostHog work here?\n' +
+      '<pasted_text id="1" chars="20" lines="2">SDK installation\nAPI key check</pasted_text>\n' +
+      'thanks';
+    const {prose, blobs} = splitPastedBlobs(input);
+    expect(blobs).toEqual(['SDK installation\nAPI key check']);
+    expect(prose).toContain('How does PostHog work here?');
+    expect(prose).toContain('thanks');
+    // The blob body must NOT remain in the prose channel.
+    expect(prose).not.toContain('SDK installation');
+  });
+
+  it('handles input with no pasted blobs (verbatim prose, empty blobs)', () => {
+    const {prose, blobs} = splitPastedBlobs('just a plain question');
+    expect(blobs).toEqual([]);
+    expect(prose).toBe('just a plain question');
+  });
+
+  it('keeps multiple blobs distinct', () => {
+    const input =
+      'q <pasted_text id="1">alpha</pasted_text> mid <pasted_text id="2">beta</pasted_text> end';
+    const {blobs} = splitPastedBlobs(input);
+    expect(blobs).toEqual(['alpha', 'beta']);
+  });
+
+  it('deterministic query keeps prose verbatim and compiles terms from blobs', () => {
+    const prose = 'How does the calendar sync flow work?';
+    const blob =
+      'The error came from "calendarSyncService.ts" calling syncCalendarEvents() in src/services/calendarSync.ts';
+    const out = deterministicExplorerQuery(prose, [blob]);
+    expect(out).toContain(prose);
+    expect(out).toContain('Search terms from pasted context:');
+    // A salient quoted/path token from the blob should survive compaction.
+    expect(out.toLowerCase()).toContain('calendarsyncservice');
   });
 });
