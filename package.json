@@ -163,6 +163,7 @@
   "files": [
     "dist",
     "bin",
+    "LICENSE",
     "oclif.manifest.json",
     "interactive-tui/*.ts",
     "interactive-tui/*.tsx",
