@@ -232,7 +232,9 @@ Legacy `EXF_TOKEN`, `EXF_API_URL`, `EXF_WORKSPACE_ID`, and `exf_pat_` tokens rem
 
 ## Docs
 
-- [**Siftable docs**](https://siftable.io/docs.html) — install, authentication, and usage
+- [**CLI reference**](./docs/cli.md) — every command and flag, with conventions and scripting
+- [**Interactive copilot**](./docs/interactive.md) — the `sift interactive` TUI in full
+- [**Siftable docs**](https://siftable.io/docs.html) — the same docs, published online
 - [**Siftable MCP server**](https://www.npmjs.com/package/@siftable/mcp-server) — editor and agent integration
 - [**Issues & source**](https://github.com/Tom-R-Main/Siftable-CLI)
 

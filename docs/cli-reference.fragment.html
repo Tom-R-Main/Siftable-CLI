@@ -1,0 +1,2086 @@
+        <!-- BEGIN generated CLI command reference (gen-cli-docs.mjs) -->
+            <h2 id="cli-general" data-i18n="docs.cli.general.title">General</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.general.intro">Top-level commands and diagnostics.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.general.count">6 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift capabilities</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.general.capabilities.desc">Show Siftable CLI capabilities and readiness status</p>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift codebase</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.general.codebase.desc">Index a codebase (scan and upload files)</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> — Repository ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--exclude &lt;value&gt;</code> — Comma-separated exclude glob patterns</dd>
+                  <dd><code>--include &lt;value&gt;</code> — Comma-separated include glob patterns</dd>
+                  <dd><code>--incremental</code> — Git-aware incremental index (changed files only)</dd>
+                  <dd><code>--path &lt;value&gt;</code> — Absolute path to repository root</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift commands</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.general.commands.desc">Show agent-friendly command topics and workflow entry points</p>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift doctor</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.general.doctor.desc">Diagnose local Siftable CLI configuration without printing secrets</p>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift interactive</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.general.interactive.desc">Launch the Siftable terminal copilot (sift interactive) — an in-process AI assistant over your tasks, work, calendar, projects, and people.</p>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift mermaid</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.general.mermaid.desc">Render a Mermaid diagram to the terminal (flowchart, sequence, state, class, ER, C4, architecture, mindmap). Reads a .mmd file or stdin.</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>file</code> — Path to a .mmd file (omit to read stdin)</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--ascii</code> — Use ASCII glyphs instead of Unicode box drawing</dd>
+                  <dd><code>--color &lt;none|truecolor&gt;</code> <span class="flag-meta">default: "truecolor"</span> — Color mode</dd>
+                  <dd><code>--height &lt;value&gt;</code> — Fit into an exact N-row pane (pads/clips)</dd>
+                  <dd><code>--max-height &lt;value&gt;</code> — Bound the diagram to N rows (no padding)</dd>
+                  <dd><code>--max-width &lt;value&gt;</code> — Bound the diagram to N columns (no padding)</dd>
+                  <dd><code>--overflow &lt;allow|clip|error&gt;</code> <span class="flag-meta">default: "clip"</span> — What to do when the diagram exceeds the bounds</dd>
+                  <dd><code>--unicode</code> — Use Unicode box drawing (default)</dd>
+                  <dd><code>--width &lt;value&gt;</code> — Fit into an exact N-column pane (pads/clips)</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-agents" data-i18n="docs.cli.agents.title">Agents</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.agents.intro">Agent aliases.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.agents.count">6 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift agents create</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.agents.create.desc">Create an agent alias</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--alias &lt;value&gt;</code> <span class="flag-meta">required</span> — Stable alias slug, e.g. codex</dd>
+                  <dd><code>--capabilities &lt;value&gt;</code> — Capabilities JSON object</dd>
+                  <dd><code>--hidden</code> — Hide from normal user-visible lists</dd>
+                  <dd><code>--name &lt;value&gt;</code> — Display name</dd>
+                  <dd><code>--operator &lt;value&gt;</code> — Linked daemon/operator ID</dd>
+                  <dd><code>--permissions &lt;value&gt;</code> — Default permissions JSON object</dd>
+                  <dd><code>--type &lt;value&gt;</code> <span class="flag-meta">default: "custom"</span> — Agent type</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift agents disable</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.agents.disable.desc">Disable an agent alias</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>alias</code> <span class="req">required</span> — Agent alias or ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift agents get</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.agents.get.desc">Get an agent alias</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>alias</code> <span class="req">required</span> — Agent alias or ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift agents list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.agents.list.desc">List agent aliases</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--include-disabled</code> — Include disabled aliases</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift agents update</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.agents.update.desc">Update an agent alias</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>alias</code> <span class="req">required</span> — Agent alias or ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--capabilities &lt;value&gt;</code> — Capabilities JSON object</dd>
+                  <dd><code>--hidden</code> — Hide from normal user-visible lists</dd>
+                  <dd><code>--name &lt;value&gt;</code> — Display name</dd>
+                  <dd><code>--operator &lt;value&gt;</code> — Linked daemon/operator ID</dd>
+                  <dd><code>--permissions &lt;value&gt;</code> — Default permissions JSON object</dd>
+                  <dd><code>--status &lt;active|disabled&gt;</code> — Alias status</dd>
+                  <dd><code>--type &lt;value&gt;</code> — Agent type</dd>
+                  <dd><code>--visible</code> — Show in normal user-visible lists</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift agents work</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.agents.work.desc">List work assigned to an agent alias</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>alias</code> <span class="req">required</span> — Agent alias or ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--limit &lt;value&gt;</code> — Maximum results</dd>
+                  <dd><code>--status &lt;value&gt;</code> — Work item status</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-auth" data-i18n="docs.cli.auth.title">Auth</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.auth.intro">Authentication commands.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.auth.count">3 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift auth login</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.auth.login.desc">Authenticate with Siftable</p>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift auth logout</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.auth.logout.desc">Remove stored authentication</p>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift auth status</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.auth.status.desc">Show authentication status</p>
+              </div>
+            </details>
+            <h2 id="cli-calendar" data-i18n="docs.cli.calendar.title">Calendar</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.calendar.intro">Calendar events.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.calendar.count">4 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift calendar create</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.calendar.create.desc">Create a calendar event</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--description &lt;value&gt;</code> — Event description</dd>
+                  <dd><code>--end &lt;value&gt;</code> <span class="flag-meta">required</span> — End time (ISO 8601)</dd>
+                  <dd><code>--location &lt;value&gt;</code> — Event location</dd>
+                  <dd><code>--start &lt;value&gt;</code> <span class="flag-meta">required</span> — Start time (ISO 8601)</dd>
+                  <dd><code>--title &lt;value&gt;</code> <span class="flag-meta">required</span> — Event title</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift calendar delete</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.calendar.delete.desc">Delete a calendar event</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Event ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>-y, --yes</code> — Skip confirmation</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift calendar list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.calendar.list.desc">List calendar events</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--end &lt;value&gt;</code> — End date (ISO 8601)</dd>
+                  <dd><code>--limit &lt;value&gt;</code> — Maximum number of results</dd>
+                  <dd><code>--start &lt;value&gt;</code> — Start date (ISO 8601)</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift calendar update</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.calendar.update.desc">Update a calendar event</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Event ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--description &lt;value&gt;</code> — Event description</dd>
+                  <dd><code>--end &lt;value&gt;</code> — End time (ISO 8601)</dd>
+                  <dd><code>--location &lt;value&gt;</code> — Event location</dd>
+                  <dd><code>--start &lt;value&gt;</code> — Start time (ISO 8601)</dd>
+                  <dd><code>--title &lt;value&gt;</code> — Event title</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-code" data-i18n="docs.cli.code.title">Code</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.code.intro">Code tools.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.code.count">9 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift code blame</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.code.blame.desc">Git blame for a file</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>file</code> <span class="req">required</span> — Relative file path</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--root &lt;value&gt;</code> <span class="flag-meta">default: "."</span> — Repository root path</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift code expertise</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.code.expertise.desc">Refresh developer expertise index for a repository</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>repo</code> <span class="req">required</span> — Repository ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift code history</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.code.history.desc">Get commit history for a repository</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>repo</code> <span class="req">required</span> — Repository ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--limit &lt;value&gt;</code> — Maximum number of results</dd>
+                  <dd><code>--path &lt;value&gt;</code> — Filter by file path</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift code link</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.code.link.desc">Link a task to code (file, commit, or repository)</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>task-id</code> <span class="req">required</span> — Task ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--commit &lt;value&gt;</code> — Commit SHA</dd>
+                  <dd><code>--file &lt;value&gt;</code> — File path</dd>
+                  <dd><code>--notes &lt;value&gt;</code> — Notes about the link</dd>
+                  <dd><code>--repo &lt;value&gt;</code> <span class="flag-meta">required</span> — Repository ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift code memory delete</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.code.memory-delete.desc">Delete a stored codebase fact</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Memory ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>-y, --yes</code> — Skip confirmation</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift code memory list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.code.memory-list.desc">List stored codebase facts</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--limit &lt;value&gt;</code> — Maximum number of results</dd>
+                  <dd><code>--repo &lt;value&gt;</code> — Repository ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift code memory search</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.code.memory-search.desc">Search stored codebase facts</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>query</code> <span class="req">required</span> — Search query</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--category &lt;architecture|integration|convention|entrypoint|gotcha|ownership&gt;</code> — Filter by category</dd>
+                  <dd><code>--limit &lt;value&gt;</code> — Maximum number of results</dd>
+                  <dd><code>--repo &lt;value&gt;</code> — Repository ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift code memory store</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.code.memory-store.desc">Store a codebase fact</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--category &lt;architecture|integration|convention|entrypoint|gotcha|ownership&gt;</code> <span class="flag-meta">required</span> — Fact category</dd>
+                  <dd><code>--fact &lt;value&gt;</code> <span class="flag-meta">required</span> — Fact to store (1-2 sentences)</dd>
+                  <dd><code>--file &lt;value&gt;</code> — Related file path</dd>
+                  <dd><code>--repo &lt;value&gt;</code> — Repository ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift code who-knows</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.code.who-knows.desc">Find experts for a code area</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>repo</code> <span class="req">required</span> — Repository ID</dd>
+                  <dd><code>area</code> <span class="req">required</span> — Path, glob, or symbol</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--limit &lt;value&gt;</code> — Maximum number of results</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-codebase" data-i18n="docs.cli.codebase.title">Codebase</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.codebase.intro">Code indexing and search.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.codebase.count">7 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift codebase delete</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.delete.desc">Delete a repository and all indexed data</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Repository ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>-y, --yes</code> — Skip confirmation</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift codebase incremental</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.incremental.desc">Incrementally index a codebase using git-aware changed files</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Repository ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--exclude &lt;value&gt;</code> — Comma-separated exclude glob patterns</dd>
+                  <dd><code>--include &lt;value&gt;</code> — Comma-separated include glob patterns</dd>
+                  <dd><code>--path &lt;value&gt;</code> <span class="flag-meta">required</span> — Absolute path to repository root</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift codebase list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.list.desc">List indexed repositories</p>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift codebase register</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.register.desc">Register a codebase for indexing</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--auto-index</code> — Enable automatic indexing</dd>
+                  <dd><code>--name &lt;value&gt;</code> <span class="flag-meta">required</span> — Repository name</dd>
+                  <dd><code>--path &lt;value&gt;</code> <span class="flag-meta">required</span> — Absolute path to repository root</dd>
+                  <dd><code>--project &lt;value&gt;</code> — Project ID to associate</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift codebase search</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.search.desc">Semantic code search</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>query</code> <span class="req">required</span> — Search query</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--language &lt;value&gt;</code> — Filter by language</dd>
+                  <dd><code>--limit &lt;value&gt;</code> — Maximum number of results</dd>
+                  <dd><code>--project &lt;value&gt;</code> — Project ID</dd>
+                  <dd><code>--repo &lt;value&gt;</code> — Repository ID</dd>
+                  <dd><code>--symbol-type &lt;function|class|interface|type|export|impl&gt;</code> — Filter by symbol type</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift codebase snapshot</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.snapshot.desc">Get latest index snapshot for a repository</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Repository ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--branch &lt;value&gt;</code> — Filter by branch</dd>
+                  <dd><code>--materialize</code> — Generate a download URL for the snapshot</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift codebase status</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.status.desc">Check indexing status for a repository</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Repository ID</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-codex" data-i18n="docs.cli.codex.title">Codex</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.codex.intro">Codex automation helpers.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.codex.count">1 command</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift codex daily-review collect</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.codex.daily-review-collect.desc">Collect read-only Siftable and local git context for Codex daily work reviews</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--calendar-days &lt;value&gt;</code> <span class="flag-meta">default: 7</span> — Calendar lookahead days</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 20</span> — Maximum records per source</dd>
+                  <dd><code>--skip-git</code> — Skip local git summary</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-datasets" data-i18n="docs.cli.datasets.title">Datasets</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.datasets.intro">Structured datasets.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.datasets.count">41 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets add</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.add.desc">Add records to a dataset</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--record &lt;value&gt;</code> <span class="flag-meta">repeatable</span> — Record as JSON object, e.g. '{"name":"Alice","age":"30"}'</dd>
+                  <dd><code>--records &lt;value&gt;</code> — Multiple records as JSON array</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets aggregate</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.aggregate.desc">Aggregate dataset records with grouped metrics (count, avg, sum, min, max, median, stddev, percentile, ratio)</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--filters &lt;value&gt;</code> — JSON array of filters</dd>
+                  <dd><code>--group-by &lt;value&gt;</code> — Comma-separated field names to group by</dd>
+                  <dd><code>--having &lt;value&gt;</code> — JSON array of having clauses [{metric, operator, value}]</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 100</span> — Max rows</dd>
+                  <dd><code>--metrics &lt;value&gt;</code> — JSON array of metrics [{operation, field, as}]</dd>
+                  <dd><code>--sorts &lt;value&gt;</code> — JSON array of sorts</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets analyze</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.analyze.desc">Generate grounded natural-language insights for a dataset</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--filters &lt;value&gt;</code> — JSON array of filters</dd>
+                  <dd><code>--focus-fields &lt;value&gt;</code> — Comma-separated field names to focus analysis on</dd>
+                  <dd><code>--max-insights &lt;value&gt;</code> <span class="flag-meta">default: 5</span> — Max insights to generate</dd>
+                  <dd><code>--mode &lt;descriptive|operational&gt;</code> — Analysis mode</dd>
+                  <dd><code>--signal-limit &lt;value&gt;</code> — Max decision signals to return</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets apply-diff</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.apply-diff.desc">Apply a saved dataset diff plan</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>plan</code> <span class="req">required</span> — Path to a local diff plan or persisted diff plan ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--yes</code> — Confirm applying the saved diff plan without prompting</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets archive</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.archive.desc">Archive a dataset without dropping its physical table</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>-y, --yes</code> — Confirm dataset archival without prompting</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets bucket</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.bucket.desc">Bucket a numeric or date field into ranges with aggregate metrics per bucket</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--boundaries &lt;value&gt;</code> — Comma-separated boundary values (omit for auto-bucketing)</dd>
+                  <dd><code>--bucket-count &lt;value&gt;</code> — Number of auto-buckets (default: 5)</dd>
+                  <dd><code>--field &lt;value&gt;</code> <span class="flag-meta">required</span> — Field to bucket</dd>
+                  <dd><code>--filters &lt;value&gt;</code> — JSON array of filters</dd>
+                  <dd><code>--metrics &lt;value&gt;</code> — JSON array of metrics</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets cleanup</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.cleanup.desc">Plan or apply cleanup for lifecycle-tagged scratch datasets</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--dry-run</code> — Return a deterministic cleanup plan without deleting datasets</dd>
+                  <dd><code>--lifecycle &lt;value&gt;</code> — Lifecycle kind to clean, e.g. scratch, benchmark, research-run</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 100</span> — Maximum lifecycle datasets to inspect</dd>
+                  <dd><code>--now &lt;value&gt;</code> — Deterministic timestamp for tests and scheduled cleanup</dd>
+                  <dd><code>--older-than &lt;value&gt;</code> — Only include datasets older than this duration, e.g. 12h, 7d</dd>
+                  <dd><code>--orphaned</code> — Include stale dataset notes that no longer have a backing dataset row</dd>
+                  <dd><code>--tag &lt;value&gt;</code> — Lifecycle tag to clean, e.g. benchmark</dd>
+                  <dd><code>-y, --yes</code> — Confirm deletion when applying cleanup with --no-dry-run</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets compare</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.compare.desc">Compare metrics across segments of a categorical field side-by-side</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--filters &lt;value&gt;</code> — JSON array of filters</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 10</span> — Max segment values to compare</dd>
+                  <dd><code>--metrics &lt;value&gt;</code> — JSON array of metrics</dd>
+                  <dd><code>--segment-field &lt;value&gt;</code> <span class="flag-meta">required</span> — Categorical field to segment by</dd>
+                  <dd><code>--segment-values &lt;value&gt;</code> — Comma-separated segment values (auto-discovers if omitted)</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets compute</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.compute.desc">Compute derived fields from a dataset or prior derived result</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--computed-fields &lt;value&gt;</code> <span class="flag-meta">required</span> — JSON array of computed fields, e.g. '[{"as":"spread","expression":"right.Close-left.Close"}]'</dd>
+                  <dd><code>--filters &lt;value&gt;</code> — JSON array of filters</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 50</span> — Maximum rows</dd>
+                  <dd><code>--order-by &lt;value&gt;</code> — JSON array of order clauses</dd>
+                  <dd><code>--select &lt;value&gt;</code> — Comma-separated fields to include</dd>
+                  <dd><code>--sorts &lt;value&gt;</code> — JSON array of output sorts</dd>
+                  <dd><code>--source-result &lt;value&gt;</code> — Inline JSON for a prior derived result</dd>
+                  <dd><code>--source-result-file &lt;value&gt;</code> — Path to a JSON file containing a prior derived result</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets contract</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.contract.desc">Show an agent-readable dataset schema and capabilities contract</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--resolve &lt;value&gt;</code> — Comma-separated semantic field references to resolve</dd>
+                  <dd><code>--template &lt;value&gt;</code> — Validate contract against a built-in template</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets create</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.create.desc">Create a dataset</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--description &lt;value&gt;</code> — Dataset description</dd>
+                  <dd><code>--fields &lt;value&gt;</code> — Field definitions as JSON array, e.g. '[{"name":"age","type":"number"}]'</dd>
+                  <dd><code>--lifecycle &lt;value&gt;</code> — Lifecycle kind for generated datasets, e.g. scratch, benchmark, research-run</dd>
+                  <dd><code>--metadata &lt;value&gt;</code> — Dataset metadata as JSON object</dd>
+                  <dd><code>--note-id &lt;value&gt;</code> — Link to an existing note</dd>
+                  <dd><code>--run-id &lt;value&gt;</code> — Lifecycle run identifier</dd>
+                  <dd><code>--scratch</code> — Shortcut for --lifecycle scratch --tags scratch</dd>
+                  <dd><code>--tags &lt;value&gt;</code> — Comma-separated lifecycle tags</dd>
+                  <dd><code>--title &lt;value&gt;</code> <span class="flag-meta">required</span> — Dataset title</dd>
+                  <dd><code>--ttl &lt;value&gt;</code> — Lifecycle TTL duration, e.g. 12h, 7d, 30d</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets dedupe</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.dedupe.desc">Find duplicate dataset records by key without mutating data</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--key &lt;value&gt;</code> <span class="flag-meta">required</span> — Field name used to group duplicates</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 500</span> — Maximum records to scan in one bounded pass</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets delete</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.delete.desc">Permanently delete a dataset and drop its physical table</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>-y, --yes</code> — Confirm dataset deletion without prompting</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets delete-record</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.delete-record.desc">Delete a record from a dataset</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dd><code>record-id</code> <span class="req">required</span> — Record ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>-y, --yes</code> — Skip confirmation</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets diff</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.diff.desc">Preview dataset row changes from a CSV, JSON, or JSONL file</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--batch-size &lt;value&gt;</code> <span class="flag-meta">default: 100</span> — Records per backend batch</dd>
+                  <dd><code>--from-file &lt;value&gt;</code> <span class="flag-meta">required</span> — Path to CSV, JSON, or JSONL rows to compare</dd>
+                  <dd><code>--persist</code> — Persist the diff plan in Siftable for later review/apply</dd>
+                  <dd><code>--save-plan &lt;value&gt;</code> — Write an applyable diff plan JSON file</dd>
+                  <dd><code>--template &lt;sources|people|events|claims|evidence_sources|evidence_source_fragments|evidence_claims|evidence_people|evidence_organizations|evidence_places|evidence_artifacts|evidence_events|evidence_relationships|evidence_contradictions&gt;</code> — Built-in template name</dd>
+                  <dd><code>--upsert-by &lt;value&gt;</code> — Field name used to match existing rows</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets diff-plans list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.diff-plans-list.desc">List persisted dataset diff plans</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--dataset-id &lt;value&gt;</code> — Filter by dataset ID</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 50</span> — Maximum plans to return</dd>
+                  <dd><code>--status &lt;draft|validated|applied|rejected|expired&gt;</code> — Filter by plan status</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets diff-plans show</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.diff-plans-show.desc">Show a persisted dataset diff plan</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Diff plan ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets export</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.export.desc">Export bounded dataset records as CSV, JSON, JSONL, or Markdown</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--filters &lt;value&gt;</code> — JSON array of filters</dd>
+                  <dd><code>--format &lt;csv|json|jsonl|markdown&gt;</code> <span class="flag-meta">default: "csv"</span> — Export format</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 500</span> — Max rows to export</dd>
+                  <dd><code>-o, --output &lt;value&gt;</code> — Output file path (writes to stdout if omitted)</dd>
+                  <dd><code>--sorts &lt;value&gt;</code> — JSON array of sorts</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets facets</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.facets.desc">Show bounded facet summaries for dataset fields</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--fields &lt;value&gt;</code> — Comma-separated field names to facet</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 20</span> — Maximum values per facet</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets formula-plan</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.formula-plan.desc">Compute formula fields and preview reviewable dataset updates</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--computed-fields &lt;value&gt;</code> <span class="flag-meta">required</span> — JSON array of computed fields, e.g. '[{"as":"score","expression":"confidence * reliability"}]'</dd>
+                  <dd><code>--filters &lt;value&gt;</code> — JSON array of filters for compute source</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 100</span> — Maximum rows to compute and plan</dd>
+                  <dd><code>--order-by &lt;value&gt;</code> — JSON array of order clauses</dd>
+                  <dd><code>--save-plan &lt;value&gt;</code> — Write an applyable diff plan JSON file</dd>
+                  <dd><code>--select &lt;value&gt;</code> — Comma-separated fields to include in compute source</dd>
+                  <dd><code>--sorts &lt;value&gt;</code> — JSON array of output sorts</dd>
+                  <dd><code>--target-fields &lt;value&gt;</code> — Comma-separated computed field names to write; defaults to every computed field alias</dd>
+                  <dd><code>--template &lt;sources|people|events|claims&gt;</code> — Built-in template name for validation</dd>
+                  <dd><code>--upsert-by &lt;value&gt;</code> <span class="flag-meta">required</span> — Field used to match rows for update</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets get</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.get.desc">Get dataset details and schema</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets impact</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.impact.desc">Explain dataset formula, graph, view, quality, and materialization impact</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--from-plan &lt;value&gt;</code> — Persisted diff plan ID to inspect</dd>
+                  <dd><code>--operation &lt;value&gt;</code> — Committed dataset operation ID to inspect</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets import</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.import.desc">Import CSV, JSON, or JSONL rows into a new or existing dataset</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>file</code> <span class="req">required</span> — Path to CSV, JSON, or JSONL file</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--batch-size &lt;value&gt;</code> <span class="flag-meta">default: 100</span> — Records per backend batch</dd>
+                  <dd><code>--dataset-id &lt;value&gt;</code> — Import into existing dataset instead of creating a new one</dd>
+                  <dd><code>--description &lt;value&gt;</code> — Dataset description</dd>
+                  <dd><code>--dry-run</code> — Validate and plan the import without writing</dd>
+                  <dd><code>--lifecycle &lt;value&gt;</code> — Lifecycle kind for generated datasets, e.g. scratch, benchmark, research-run</dd>
+                  <dd><code>--metadata &lt;value&gt;</code> — Dataset metadata as JSON object when creating a new dataset</dd>
+                  <dd><code>--run-id &lt;value&gt;</code> — Lifecycle run identifier</dd>
+                  <dd><code>--scratch</code> — Shortcut for --lifecycle scratch --tags scratch</dd>
+                  <dd><code>--tags &lt;value&gt;</code> — Comma-separated lifecycle tags</dd>
+                  <dd><code>--template &lt;sources|people|events|claims|evidence_sources|evidence_source_fragments|evidence_claims|evidence_people|evidence_organizations|evidence_places|evidence_artifacts|evidence_events|evidence_relationships|evidence_contradictions&gt;</code> — Built-in template name</dd>
+                  <dd><code>--title &lt;value&gt;</code> — Dataset title (defaults to filename)</dd>
+                  <dd><code>--ttl &lt;value&gt;</code> — Lifecycle TTL duration, e.g. 12h, 7d, 30d</dd>
+                  <dd><code>--upsert-by &lt;value&gt;</code> — Field name used to update matching rows instead of creating duplicates</dd>
+                  <dd><code>--yes</code> — Confirm mutating imports without prompting</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets join</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.join.desc">Join a dataset to itself using alias-scoped fields such as left.Close and right.Close</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--join-keys &lt;value&gt;</code> <span class="flag-meta">required</span> — JSON array of join keys, e.g. '[{"leftField":"Date","rightField":"Date"}]'</dd>
+                  <dd><code>--join-type &lt;inner|left|right&gt;</code> <span class="flag-meta">default: "inner"</span> — Join type</dd>
+                  <dd><code>--left-alias &lt;value&gt;</code> <span class="flag-meta">default: "left"</span> — Left alias</dd>
+                  <dd><code>--left-filters &lt;value&gt;</code> — JSON array of left-side filters</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 50</span> — Maximum joined rows</dd>
+                  <dd><code>--right-alias &lt;value&gt;</code> <span class="flag-meta">default: "right"</span> — Right alias</dd>
+                  <dd><code>--right-filters &lt;value&gt;</code> — JSON array of right-side filters</dd>
+                  <dd><code>--select &lt;value&gt;</code> — Comma-separated alias-scoped fields to return</dd>
+                  <dd><code>--sorts &lt;value&gt;</code> — JSON array of sorts</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.list.desc">List datasets</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 50</span> — Maximum number of results</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets lookup</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.lookup.desc">Lookup dataset records by an exact key/value match</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--key &lt;value&gt;</code> <span class="flag-meta">required</span> — Field name to match</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 25</span> — Maximum matching records</dd>
+                  <dd><code>--value &lt;value&gt;</code> <span class="flag-meta">required</span> — Exact value to match</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets materialize</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.materialize.desc">Materialize a derived result into a new scratch dataset</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--description &lt;value&gt;</code> — Dataset description</dd>
+                  <dd><code>--source-result &lt;value&gt;</code> — Inline JSON for a derived result</dd>
+                  <dd><code>--source-result-file &lt;value&gt;</code> — Path to a JSON file containing a derived result</dd>
+                  <dd><code>--title &lt;value&gt;</code> <span class="flag-meta">required</span> — Title of the new dataset</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets pivot</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.pivot.desc">Create a pivot-style summary from grouped dataset metrics</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--cols &lt;value&gt;</code> <span class="flag-meta">required</span> — Column field</dd>
+                  <dd><code>--filters &lt;value&gt;</code> — JSON array of filters</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 500</span> — Maximum grouped cells to request</dd>
+                  <dd><code>--metrics &lt;value&gt;</code> — JSON metrics array; defaults to count</dd>
+                  <dd><code>--rows &lt;value&gt;</code> <span class="flag-meta">required</span> — Row field</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets plot</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.plot.desc">Validate and normalize a lightweight plot payload from a derived result</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--chart-type &lt;line|bar|scatter&gt;</code> <span class="flag-meta">required</span> — Chart type</dd>
+                  <dd><code>--series-field &lt;value&gt;</code> — Optional series field</dd>
+                  <dd><code>--source-result &lt;value&gt;</code> — Inline JSON for a derived result</dd>
+                  <dd><code>--source-result-file &lt;value&gt;</code> — Path to a JSON file containing a derived result</dd>
+                  <dd><code>--x-field &lt;value&gt;</code> <span class="flag-meta">required</span> — X-axis field</dd>
+                  <dd><code>--y-fields &lt;value&gt;</code> <span class="flag-meta">required</span> — Comma-separated Y-axis fields</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets profile</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.profile.desc">Show bounded profile information for a dataset</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--sample-limit &lt;value&gt;</code> <span class="flag-meta">default: 10</span> — Number of sample rows to include</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets query</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.query.desc">Query records from a dataset</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--cursor &lt;value&gt;</code> — Pagination cursor from previous query</dd>
+                  <dd><code>--filters &lt;value&gt;</code> — Filter conditions as JSON array, e.g. '[{"field":"status","value":"active"}]'</dd>
+                  <dd><code>--include-deleted</code> — Include soft-deleted records</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 25</span> — Maximum number of records</dd>
+                  <dd><code>--sorts &lt;value&gt;</code> — Sort spec as JSON array, e.g. '[{"field":"name","direction":"asc"}]'</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets rank</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.rank.desc">Rank dataset records by sorts or a weighted numeric formula</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--filters &lt;value&gt;</code> — JSON array of filters</dd>
+                  <dd><code>--formula &lt;value&gt;</code> — JSON formula object {weights: [{field, weight}]}</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 25</span> — Max rows</dd>
+                  <dd><code>--sorts &lt;value&gt;</code> — JSON array of sorts</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets reconcile</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.reconcile.desc">Compare two datasets by key without mutating either dataset</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>left</code> <span class="req">required</span> — Left dataset ID</dd>
+                  <dd><code>right</code> <span class="req">required</span> — Right dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--left-key &lt;value&gt;</code> <span class="flag-meta">required</span> — Left dataset key field</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 500</span> — Maximum rows to scan from each dataset</dd>
+                  <dd><code>--right-key &lt;value&gt;</code> — Right dataset key field; defaults to --left-key</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets schema</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.schema.desc">Modify dataset schema (add, update, or delete fields)</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--field &lt;value&gt;</code> — Field definition as JSON, e.g. '{"name":"email","type":"text"}'</dd>
+                  <dd><code>--field-id &lt;value&gt;</code> — Field ID (required for update/delete)</dd>
+                  <dd><code>--operation &lt;add_field|update_field|delete_field&gt;</code> <span class="flag-meta">required</span> — Schema operation</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets search</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.search.desc">Search dataset records across selected text-like fields</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dd><code>query</code> <span class="req">required</span> — Search text</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--fields &lt;value&gt;</code> — Comma-separated fields to search; defaults to profile columns</dd>
+                  <dd><code>--filters &lt;value&gt;</code> — JSON array of base filters applied to every field search</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 25</span> — Maximum merged records</dd>
+                  <dd><code>--per-field-limit &lt;value&gt;</code> <span class="flag-meta">default: 25</span> — Maximum records to request per searched field</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets summarize</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.summarize.desc">Get a summary of a dataset (row count, fields, sample rows)</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets templates list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.templates-list.desc">List built-in dataset templates</p>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets templates show</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.templates-show.desc">Show a built-in dataset template schema</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>template</code> <span class="req">required</span> — Template name</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets timeseries</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.timeseries.desc">Analyze dataset time series with lag, pct_change, rolling windows, drawdown, volatility, and correlation</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--date-field &lt;value&gt;</code> <span class="flag-meta">required</span> — Date field name</dd>
+                  <dd><code>--filters &lt;value&gt;</code> — JSON array of filters</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 100</span> — Maximum output rows</dd>
+                  <dd><code>--metrics &lt;value&gt;</code> — JSON array of metric definitions</dd>
+                  <dd><code>--order-direction &lt;asc|desc&gt;</code> <span class="flag-meta">default: "asc"</span> — Time ordering</dd>
+                  <dd><code>--pivot</code> — Emit explicit pivoted output</dd>
+                  <dd><code>--segment-field &lt;value&gt;</code> — Optional segment field</dd>
+                  <dd><code>--segment-values &lt;value&gt;</code> — Comma-separated segment values</dd>
+                  <dd><code>--transforms &lt;value&gt;</code> — JSON array of transform definitions</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets update-record</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.update-record.desc">Update a record in a dataset</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dd><code>record-id</code> <span class="req">required</span> — Record ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--fields &lt;value&gt;</code> <span class="flag-meta">required</span> — Field updates as JSON object, e.g. '{"status":"done"}'</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift datasets validate</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.validate.desc">Validate a dataset against a built-in template</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--template &lt;sources|people|events|claims|evidence_sources|evidence_source_fragments|evidence_claims|evidence_people|evidence_organizations|evidence_places|evidence_artifacts|evidence_events|evidence_relationships|evidence_contradictions&gt;</code> <span class="flag-meta">required</span> — Built-in template name</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-documents" data-i18n="docs.cli.documents.title">Documents</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.documents.intro">Document upload.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.documents.count">1 command</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift documents upload</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.documents.upload.desc">Upload a document (PDF, Markdown, or text) as a note</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>file</code> <span class="req">required</span> — Path to file</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--project &lt;value&gt;</code> — Project ID</dd>
+                  <dd><code>--title &lt;value&gt;</code> — Note title (defaults to filename)</dd>
+                  <dd><code>--type &lt;note|concept|meeting|reference|daily|dataset&gt;</code> — Note type</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-events" data-i18n="docs.cli.events.title">Events</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.events.intro">Research events backed by timeline facts.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.events.count">3 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift events attach-person</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.events.attach-person.desc">Attach a person participant to an existing research event</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>event</code> <span class="req">required</span> — Existing temporal fact ID</dd>
+                  <dd><code>person</code> <span class="req">required</span> — Person UUID to attach</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--role &lt;value&gt;</code> <span class="flag-meta">default: "subject"</span> — Participant role</dd>
+                  <dd><code>--yes</code> — Confirm participant attachment without prompting</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift events create</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.events.create.desc">Create a research event timeline fact with participants</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--body &lt;value&gt;</code> — Event notes/body</dd>
+                  <dd><code>--confidence &lt;low|medium|high&gt;</code> — Confidence level</dd>
+                  <dd><code>--entity &lt;value&gt;</code> <span class="flag-meta">repeatable</span> — Participant/entity as type:uuid or type:uuid:role; repeatable</dd>
+                  <dd><code>--org &lt;value&gt;</code> <span class="flag-meta">repeatable</span> — Organization UUID participant; repeatable</dd>
+                  <dd><code>--person &lt;value&gt;</code> <span class="flag-meta">repeatable</span> — Person UUID participant; repeatable</dd>
+                  <dd><code>--precision &lt;millisecond|minute|hour|day|month|year|decade|century|millennium|mega_year|era&gt;</code> <span class="flag-meta">default: "year"</span> — Temporal precision</dd>
+                  <dd><code>--source &lt;value&gt;</code> <span class="flag-meta">repeatable</span> — Source entity as type:uuid or type:uuid:role; repeatable</dd>
+                  <dd><code>--source-label &lt;value&gt;</code> — Source/provenance label</dd>
+                  <dd><code>--source-note &lt;value&gt;</code> — Source/provenance note</dd>
+                  <dd><code>--source-url &lt;value&gt;</code> — Source/provenance URL</dd>
+                  <dd><code>--timestamp &lt;value&gt;</code> — ISO timestamp</dd>
+                  <dd><code>--title &lt;value&gt;</code> <span class="flag-meta">required</span> — Event title</dd>
+                  <dd><code>--visibility &lt;org_public|private|restricted&gt;</code> — Timeline visibility</dd>
+                  <dd><code>--year &lt;value&gt;</code> — Historical year CE</dd>
+                  <dd><code>--year-end &lt;value&gt;</code> — Historical end year CE</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift events list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.events.list.desc">List research event timeline facts</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--cursor &lt;value&gt;</code> — Pagination cursor</dd>
+                  <dd><code>--end &lt;value&gt;</code> — End boundary</dd>
+                  <dd><code>--entity &lt;value&gt;</code> — Filter by entity ref type:uuid</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 50</span> — Maximum events</dd>
+                  <dd><code>--order &lt;asc|desc&gt;</code> <span class="flag-meta">default: "asc"</span> — Sort order</dd>
+                  <dd><code>--person &lt;value&gt;</code> — Filter by person UUID</dd>
+                  <dd><code>--q &lt;value&gt;</code> — Text search query</dd>
+                  <dd><code>--start &lt;value&gt;</code> — Start boundary</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-evidence" data-i18n="docs.cli.evidence.title">Evidence</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.evidence.intro">Evidence Graph setup and proof workflow orchestration.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.evidence.count">11 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift evidence diff apply</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.evidence.diff-apply.desc">Apply a reviewed Evidence Graph diff plan</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Persisted diff plan ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--yes</code> — Confirm applying the reviewed diff plan without prompting</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift evidence diff impact</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.evidence.diff-impact.desc">Explain Evidence Graph consequences for a persisted diff plan</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Persisted diff plan ID, or local when using --from-file</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--from-file &lt;value&gt;</code> — Local diff plan JSON file to explain without API access</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift evidence diff list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.evidence.diff-list.desc">List persisted Evidence Graph diff plans</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--dataset-id &lt;value&gt;</code> — Filter by evidence dataset ID</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 50</span> — Maximum plans to return</dd>
+                  <dd><code>--project &lt;value&gt;</code> — Filter locally by Evidence Graph project ID when present on plans</dd>
+                  <dd><code>--status &lt;draft|validated|applied|rejected|expired&gt;</code> — Filter by plan status</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift evidence diff show</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.evidence.diff-show.desc">Show an Evidence Graph diff plan with domain-aware summary</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Persisted diff plan ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift evidence extract</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.evidence.extract.desc">Create no-apply agent work for Evidence Graph candidate extraction</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--agent &lt;value&gt;</code> <span class="flag-meta">default: "researcher"</span> — Assigned agent alias</dd>
+                  <dd><code>--context &lt;value&gt;</code> — Additional input context JSON object</dd>
+                  <dd><code>--context-file &lt;value&gt;</code> — Additional input context JSON file</dd>
+                  <dd><code>--dry-run</code> — Preview work item payload without writing</dd>
+                  <dd><code>--no-apply</code> — Keep extraction in proposed/diff-first mode</dd>
+                  <dd><code>--pack &lt;company-origin|family-history|investigation|compliance-evidence|account-history|codebase-history&gt;</code> <span class="flag-meta">default: "company-origin"</span> — Evidence workflow pack</dd>
+                  <dd><code>--project &lt;value&gt;</code> — Project ID</dd>
+                  <dd><code>--source-dataset &lt;value&gt;</code> <span class="flag-meta">required</span> — Evidence sources dataset ID</dd>
+                  <dd><code>--targets &lt;value&gt;</code> — Comma-separated extraction targets</dd>
+                  <dd><code>--yes</code> — Confirm work item creation without prompting</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift evidence init</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.evidence.init.desc">Create an Evidence Graph project and dataset-backed working tables</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>name</code> <span class="req">required</span> — Evidence Graph project name</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--dry-run</code> — Preview project/dataset creation without writing</dd>
+                  <dd><code>--pack &lt;company-origin|family-history|investigation|compliance-evidence|account-history|codebase-history&gt;</code> <span class="flag-meta">default: "company-origin"</span> — Evidence workflow pack</dd>
+                  <dd><code>--yes</code> — Confirm creation without prompting</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift evidence plan</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.evidence.plan.desc">Plan an Evidence Graph workflow before writing trusted state</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>goal</code> <span class="req">required</span> — Evidence Graph goal</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--pack &lt;company-origin|family-history|investigation|compliance-evidence|account-history|codebase-history&gt;</code> <span class="flag-meta">default: "company-origin"</span> — Evidence workflow pack</dd>
+                  <dd><code>--project &lt;value&gt;</code> — Existing project ID</dd>
+                  <dd><code>--source-dataset &lt;value&gt;</code> — Existing evidence sources dataset ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift evidence project</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.evidence.project.desc">Dry-run Evidence Graph timeline and relationship projection</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--dry-run</code> — Preview projection without writing</dd>
+                  <dd><code>--from-file &lt;value&gt;</code> — Local diff plan JSON file to project from without API access</dd>
+                  <dd><code>--from-plan &lt;value&gt;</code> — Persisted diff plan ID to project from</dd>
+                  <dd><code>--pack &lt;company-origin|family-history|investigation|compliance-evidence|account-history|codebase-history&gt;</code> <span class="flag-meta">default: "company-origin"</span> — Evidence workflow pack</dd>
+                  <dd><code>--project &lt;value&gt;</code> — Evidence Graph project ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift evidence proof report</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.evidence.proof-report.desc">Generate an Evidence Graph proof report from a dataset-backed evidence packet</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--format &lt;json|markdown&gt;</code> <span class="flag-meta">default: "markdown"</span> — Report format</dd>
+                  <dd><code>--from-file &lt;value&gt;</code> <span class="flag-meta">required</span> — Evidence packet JSON file to report on</dd>
+                  <dd><code>--project &lt;value&gt;</code> — Evidence Graph project ID for report metadata</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift evidence sources import</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.evidence.sources-import.desc">Import Evidence Graph source ledger rows into a dataset-backed source table</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>file</code> <span class="req">required</span> — Path to CSV, JSON, or JSONL source ledger rows</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--batch-size &lt;value&gt;</code> <span class="flag-meta">default: 100</span> — Records per backend batch</dd>
+                  <dd><code>--dataset-id &lt;value&gt;</code> — Evidence sources dataset ID</dd>
+                  <dd><code>--dry-run</code> — Validate and plan source import without writing</dd>
+                  <dd><code>--upsert-by &lt;value&gt;</code> <span class="flag-meta">default: "source_id"</span> — Field name used to update matching source rows</dd>
+                  <dd><code>--yes</code> — Confirm mutating imports without prompting</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift evidence verify</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.evidence.verify.desc">Verify Evidence Graph provenance, review, projection, and citation invariants</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--from-file &lt;value&gt;</code> <span class="flag-meta">required</span> — Evidence packet JSON file to verify</dd>
+                  <dd><code>--project &lt;value&gt;</code> — Evidence Graph project ID for report metadata</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-graph" data-i18n="docs.cli.graph.title">Graph</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.graph.intro">Entity graph search and neighborhoods.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.graph.count">5 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift graph between</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.graph.between.desc">Explain a bounded graph path between two entities</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>source</code> <span class="req">required</span> — Source entity reference as type:uuid</dd>
+                  <dd><code>target</code> <span class="req">required</span> — Target entity reference as type:uuid</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--depth &lt;value&gt;</code> <span class="flag-meta">default: 4</span> — Maximum path depth, backend clamps to 1-5</dd>
+                  <dd><code>--frontier-limit &lt;value&gt;</code> <span class="flag-meta">default: 500</span> — Maximum links to inspect per path expansion, backend clamps to 1-1000</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift graph explain</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.graph.explain.desc">Explain a bounded graph path between two entities</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>source</code> <span class="req">required</span> — Source entity reference as type:uuid</dd>
+                  <dd><code>target</code> <span class="req">required</span> — Target entity reference as type:uuid</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--depth &lt;value&gt;</code> <span class="flag-meta">default: 4</span> — Maximum path depth, backend clamps to 1-5</dd>
+                  <dd><code>--frontier-limit &lt;value&gt;</code> <span class="flag-meta">default: 500</span> — Maximum links to inspect per path expansion, backend clamps to 1-1000</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift graph neighbors</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.graph.neighbors.desc">Show local graph neighbors for an entity</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>entity</code> <span class="req">required</span> — Entity reference as type:uuid</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--depth &lt;value&gt;</code> <span class="flag-meta">default: 1</span> — Graph depth, backend clamps to 1-3</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 80</span> — Maximum graph items, backend clamps to 1-200</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift graph preview</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.graph.preview.desc">Preview one graph entity</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>entity</code> <span class="req">required</span> — Entity reference as type:uuid</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift graph search</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.graph.search.desc">Search linkable entities for graph work</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>query</code> <span class="req">required</span> — Search query</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 20</span> — Maximum results</dd>
+                  <dd><code>--types &lt;value&gt;</code> — Comma-separated entity types</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-notes" data-i18n="docs.cli.notes.title">Notes</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.notes.intro">Knowledge notes.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.notes.count">7 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift notes bulk-delete</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.notes.bulk-delete.desc">Preview or bulk-delete notes</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--archived</code> — Filter by archived state</dd>
+                  <dd><code>--confirm</code> — Execute deletion instead of preview</dd>
+                  <dd><code>--ids &lt;value&gt;</code> — Comma-separated note IDs</dd>
+                  <dd><code>--title-contains &lt;value&gt;</code> — Title substring filter</dd>
+                  <dd><code>--title-equals &lt;value&gt;</code> — Exact title filter</dd>
+                  <dd><code>--title-starts-with &lt;value&gt;</code> — Title prefix filter</dd>
+                  <dd><code>--type &lt;note|concept|meeting|reference|daily|dataset&gt;</code></dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift notes create</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.notes.create.desc">Create a note</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--content &lt;value&gt;</code> — Note content (markdown)</dd>
+                  <dd><code>--metadata &lt;value&gt;</code> — Note metadata as JSON</dd>
+                  <dd><code>--metadata-file &lt;value&gt;</code> — Read note metadata JSON from a file</dd>
+                  <dd><code>--project &lt;value&gt;</code> — Project ID</dd>
+                  <dd><code>--title &lt;value&gt;</code> <span class="flag-meta">required</span> — Note title</dd>
+                  <dd><code>--type &lt;note|concept|meeting|reference|daily|dataset&gt;</code> — Note type</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift notes delete</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.notes.delete.desc">Delete a note</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Note ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>-y, --yes</code> — Skip confirmation</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift notes get</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.notes.get.desc">Get a note with full content</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Note ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift notes list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.notes.list.desc">List notes</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--archived</code> — Filter by archived state</dd>
+                  <dd><code>--limit &lt;value&gt;</code> — Maximum number of results</dd>
+                  <dd><code>--project &lt;value&gt;</code> — Filter by project ID</dd>
+                  <dd><code>--title-contains &lt;value&gt;</code> — Title substring filter</dd>
+                  <dd><code>--title-equals &lt;value&gt;</code> — Exact title filter</dd>
+                  <dd><code>--title-starts-with &lt;value&gt;</code> — Title prefix filter</dd>
+                  <dd><code>--type &lt;note|concept|meeting|reference|daily|dataset&gt;</code> — Filter by note type</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift notes search</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.notes.search.desc">Search notes</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>query</code> <span class="req">required</span> — Search query</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--limit &lt;value&gt;</code> — Maximum number of results</dd>
+                  <dd><code>--project &lt;value&gt;</code> — Filter by project ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift notes update</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.notes.update.desc">Update a note</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Note ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--content &lt;value&gt;</code> — Note content (markdown)</dd>
+                  <dd><code>--metadata &lt;value&gt;</code> — Replace note metadata with this JSON object</dd>
+                  <dd><code>--metadata-file &lt;value&gt;</code> — Read replacement note metadata JSON from a file</dd>
+                  <dd><code>--title &lt;value&gt;</code> — Note title</dd>
+                  <dd><code>--type &lt;note|concept|meeting|reference|daily|dataset&gt;</code> — Note type</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-organizations" data-i18n="docs.cli.organizations.title">Organizations</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.organizations.intro">Organizations and companies.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.organizations.count">5 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift organizations bulk-delete</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.organizations.bulk-delete.desc">Preview or bulk-delete organizations</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--confirm</code> — Execute deletion instead of preview</dd>
+                  <dd><code>--contains &lt;value&gt;</code> — Name substring filter</dd>
+                  <dd><code>--equals &lt;value&gt;</code> — Exact name filter</dd>
+                  <dd><code>--ids &lt;value&gt;</code> — Comma-separated organization IDs</dd>
+                  <dd><code>--relationship &lt;value&gt;</code> — Filter by relationship status</dd>
+                  <dd><code>--starts-with &lt;value&gt;</code> — Name prefix filter</dd>
+                  <dd><code>--type &lt;value&gt;</code> — Filter by organization type</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift organizations create</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.organizations.create.desc">Create an organization</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--domain &lt;value&gt;</code> — Domain (e.g. acme.com)</dd>
+                  <dd><code>--industry &lt;value&gt;</code> — Industry</dd>
+                  <dd><code>--linkedin-url &lt;value&gt;</code> — LinkedIn page URL</dd>
+                  <dd><code>--location &lt;value&gt;</code> — Location</dd>
+                  <dd><code>--name &lt;value&gt;</code> <span class="flag-meta">required</span> — Organization name</dd>
+                  <dd><code>--notes &lt;value&gt;</code> — Notes</dd>
+                  <dd><code>--relationship-status &lt;value&gt;</code> — Relationship status (e.g. prospect, customer, partner, vendor)</dd>
+                  <dd><code>--type &lt;value&gt;</code> — Organization type (e.g. company, nonprofit, government, school)</dd>
+                  <dd><code>--website &lt;value&gt;</code> — Website URL</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift organizations delete</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.organizations.delete.desc">Delete an organization</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Organization ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>-y, --yes</code> — Skip confirmation</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift organizations search</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.organizations.search.desc">Search organizations</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>query</code> — Optional fuzzy search query</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--contains &lt;value&gt;</code> — Name substring filter</dd>
+                  <dd><code>--equals &lt;value&gt;</code> — Exact name filter</dd>
+                  <dd><code>--limit &lt;value&gt;</code> — Maximum number of results</dd>
+                  <dd><code>--relationship &lt;value&gt;</code> — Filter by relationship status</dd>
+                  <dd><code>--starts-with &lt;value&gt;</code> — Name prefix filter</dd>
+                  <dd><code>--type &lt;value&gt;</code> — Filter by organization type</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift organizations update</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.organizations.update.desc">Update an organization</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Organization ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--domain &lt;value&gt;</code> — Domain (e.g. acme.com)</dd>
+                  <dd><code>--industry &lt;value&gt;</code> — Industry</dd>
+                  <dd><code>--linkedin-url &lt;value&gt;</code> — LinkedIn page URL</dd>
+                  <dd><code>--location &lt;value&gt;</code> — Location</dd>
+                  <dd><code>--name &lt;value&gt;</code> — Organization name</dd>
+                  <dd><code>--notes &lt;value&gt;</code> — Notes</dd>
+                  <dd><code>--relationship-status &lt;value&gt;</code> — Relationship status</dd>
+                  <dd><code>--type &lt;value&gt;</code> — Organization type</dd>
+                  <dd><code>--website &lt;value&gt;</code> — Website URL</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-people" data-i18n="docs.cli.people.title">People</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.people.intro">People and contacts.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.people.count">11 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift people bulk-delete</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.people.bulk-delete.desc">Preview or bulk-delete contacts</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--confirm</code> — Execute deletion instead of preview</dd>
+                  <dd><code>--contains &lt;value&gt;</code> — Name substring filter</dd>
+                  <dd><code>--equals &lt;value&gt;</code> — Exact name filter</dd>
+                  <dd><code>--has-no-email</code> — Only contacts without an email</dd>
+                  <dd><code>--ids &lt;value&gt;</code> — Comma-separated person IDs</dd>
+                  <dd><code>--relationship &lt;value&gt;</code> — Filter by relationshipToUser</dd>
+                  <dd><code>--starts-with &lt;value&gt;</code> — Name prefix filter</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift people create</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.people.create.desc">Create a contact</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--birth-year &lt;value&gt;</code> — Birth year</dd>
+                  <dd><code>--birthday &lt;value&gt;</code> — Birthday (YYYY-MM-DD)</dd>
+                  <dd><code>--company &lt;value&gt;</code> — Company name (auto-links to organization if exists)</dd>
+                  <dd><code>--email &lt;value&gt;</code> — Email address</dd>
+                  <dd><code>--estimated-age &lt;value&gt;</code> — Estimated age</dd>
+                  <dd><code>--job-title &lt;value&gt;</code> — Job title</dd>
+                  <dd><code>--linkedin-url &lt;value&gt;</code> — LinkedIn profile URL</dd>
+                  <dd><code>--location &lt;value&gt;</code> — Location</dd>
+                  <dd><code>--mbti &lt;value&gt;</code> — MBTI type (e.g. INTJ, ENFP)</dd>
+                  <dd><code>--name &lt;value&gt;</code> <span class="flag-meta">required</span> — Full name</dd>
+                  <dd><code>--notes &lt;value&gt;</code> — Notes about this person</dd>
+                  <dd><code>--phone &lt;value&gt;</code> — Phone number</dd>
+                  <dd><code>--relationship &lt;value&gt;</code> — Relationship to user (e.g. friend, colleague, client, mentor)</dd>
+                  <dd><code>--website &lt;value&gt;</code> — Personal website</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift people delete</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.people.delete.desc">Delete a contact</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Person ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>-y, --yes</code> — Skip confirmation</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift people get</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.people.get.desc">Get a person profile with traits and relationships</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Person ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift people graph</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.people.graph.desc">Show a person-centered relationship graph</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Person ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--depth &lt;value&gt;</code> <span class="flag-meta">default: 2</span> — Relationship graph depth</dd>
+                  <dd><code>--include-inactive</code> — Include inactive relationship edges</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift people kinship</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.people.kinship.desc">Explain kinship or relationship distance between two people</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>egoPersonId</code> <span class="req">required</span> — Ego/source person ID</dd>
+                  <dd><code>targetPersonId</code> <span class="req">required</span> — Target person ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--max-depth &lt;value&gt;</code> <span class="flag-meta">default: 6</span> — Maximum relationship depth</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift people list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.people.list.desc">List contacts</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--contains &lt;value&gt;</code> — Name substring filter</dd>
+                  <dd><code>--equals &lt;value&gt;</code> — Exact name filter</dd>
+                  <dd><code>--has-no-email</code> — Only contacts without an email</dd>
+                  <dd><code>--limit &lt;value&gt;</code> — Maximum number of results</dd>
+                  <dd><code>--relationship &lt;value&gt;</code> — Filter by relationshipToUser</dd>
+                  <dd><code>--starts-with &lt;value&gt;</code> — Name prefix filter</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift people relate</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.people.relate.desc">Create or update a relationship between two people</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>personAId</code> <span class="req">required</span> — First person ID</dd>
+                  <dd><code>personBId</code> <span class="req">required</span> — Second person ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--dry-run</code> — Preview the relationship payload without writing</dd>
+                  <dd><code>--notes &lt;value&gt;</code> — Relationship notes</dd>
+                  <dd><code>--type &lt;value&gt;</code> <span class="flag-meta">required</span> — Relationship type, e.g. colleague, sibling, spouse, collaborator</dd>
+                  <dd><code>-y, --yes</code> — Apply without prompting</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift people search</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.people.search.desc">Search contacts</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>query</code> <span class="req">required</span> — Search query</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--contains &lt;value&gt;</code> — Name substring filter</dd>
+                  <dd><code>--equals &lt;value&gt;</code> — Exact name filter</dd>
+                  <dd><code>--has-no-email</code> — Only contacts without an email</dd>
+                  <dd><code>--limit &lt;value&gt;</code> — Maximum number of results</dd>
+                  <dd><code>--relationship &lt;value&gt;</code> — Filter by relationshipToUser</dd>
+                  <dd><code>--starts-with &lt;value&gt;</code> — Name prefix filter</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift people timeline</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.people.timeline.desc">List timeline facts connected to a person</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Person ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 50</span> — Maximum facts to return</dd>
+                  <dd><code>--order &lt;asc|desc&gt;</code> <span class="flag-meta">default: "asc"</span> — Sort order</dd>
+                  <dd><code>--role &lt;value&gt;</code> — Filter by entity role, comma-separated</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift people update</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.people.update.desc">Update a contact</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Person ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--birth-year &lt;value&gt;</code> — Birth year</dd>
+                  <dd><code>--birthday &lt;value&gt;</code> — Birthday (YYYY-MM-DD)</dd>
+                  <dd><code>--company &lt;value&gt;</code> — Company name</dd>
+                  <dd><code>--email &lt;value&gt;</code> — Email address</dd>
+                  <dd><code>--estimated-age &lt;value&gt;</code> — Estimated age</dd>
+                  <dd><code>--job-title &lt;value&gt;</code> — Job title</dd>
+                  <dd><code>--linkedin-url &lt;value&gt;</code> — LinkedIn profile URL</dd>
+                  <dd><code>--location &lt;value&gt;</code> — Location</dd>
+                  <dd><code>--mbti &lt;value&gt;</code> — MBTI type (e.g. INTJ, ENFP)</dd>
+                  <dd><code>--name &lt;value&gt;</code> — Full name</dd>
+                  <dd><code>--notes &lt;value&gt;</code> — Notes about this person</dd>
+                  <dd><code>--phone &lt;value&gt;</code> — Phone number</dd>
+                  <dd><code>--relationship &lt;value&gt;</code> — Relationship to user</dd>
+                  <dd><code>--website &lt;value&gt;</code> — Personal website</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-projects" data-i18n="docs.cli.projects.title">Projects</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.projects.intro">Project management.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.projects.count">7 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift projects archive</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.projects.archive.desc">Archive a project</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Project ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>-y, --yes</code> — Skip confirmation</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift projects context</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.projects.context.desc">Get project context (tasks, notes, signals)</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Project ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift projects create</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.projects.create.desc">Create a project</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--emoji &lt;value&gt;</code> — Single emoji</dd>
+                  <dd><code>--name &lt;value&gt;</code> <span class="flag-meta">required</span> — Project name</dd>
+                  <dd><code>--status &lt;planning|active|on_hold|blocked|completed&gt;</code> — Project status</dd>
+                  <dd><code>--summary &lt;value&gt;</code> — Project summary</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift projects list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.projects.list.desc">List projects</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--include-archived</code> — Include archived projects</dd>
+                  <dd><code>--status &lt;planning|active|on_hold|blocked|completed&gt;</code> — Filter by status</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift projects planning</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.projects.planning.desc">Get the canonical CSN planning snapshot for a project</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Project ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift projects planning-recompute</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.projects.planning-recompute.desc">Recompute the canonical CSN planning snapshot for a project</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Project ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift projects update</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.projects.update.desc">Update a project</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Project ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--emoji &lt;value&gt;</code> — Single emoji</dd>
+                  <dd><code>--name &lt;value&gt;</code> — Project name</dd>
+                  <dd><code>--status &lt;planning|active|on_hold|blocked|completed&gt;</code> — Project status</dd>
+                  <dd><code>--summary &lt;value&gt;</code> — Project summary</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-recipes" data-i18n="docs.cli.recipes.title">Recipes</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.recipes.intro">Built-in research workflow recipes.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.recipes.count">2 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift recipes list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.recipes.list.desc">List built-in research workflow recipes</p>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift recipes show</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.recipes.show.desc">Show a built-in research workflow recipe</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Recipe ID</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-research" data-i18n="docs.cli.research.title">Research</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.research.intro">Research workflow planning and orchestration.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.research.count">4 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift research init</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.research.init.desc">Create a research project and standard datasets</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>name</code> <span class="req">required</span> — Research project name</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--dry-run</code> — Preview project/dataset creation without writing</dd>
+                  <dd><code>--template &lt;historical-research&gt;</code> <span class="flag-meta">default: "historical-research"</span> — Research template</dd>
+                  <dd><code>--yes</code> — Confirm creation without prompting</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift research plan</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.research.plan.desc">Plan a deterministic research workflow before writing data</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>goal</code> <span class="req">required</span> — Research goal</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--project &lt;value&gt;</code> — Existing project ID</dd>
+                  <dd><code>--source-dataset &lt;value&gt;</code> — Existing sources dataset ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift research run</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.research.run.desc">Create deterministic agent work for a research recipe</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>recipe</code> <span class="req">required</span> — Research run recipe</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--agent &lt;value&gt;</code> <span class="flag-meta">default: "researcher"</span> — Assigned agent alias</dd>
+                  <dd><code>--context &lt;value&gt;</code> — Additional input context JSON object</dd>
+                  <dd><code>--context-file &lt;value&gt;</code> — Additional input context JSON file</dd>
+                  <dd><code>--dry-run</code> — Preview work item payload without writing</dd>
+                  <dd><code>--project &lt;value&gt;</code> — Project ID</dd>
+                  <dd><code>--source-dataset &lt;value&gt;</code> — Source dataset ID</dd>
+                  <dd><code>--yes</code> — Confirm work item creation without prompting</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift research status</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.research.status.desc">Inspect research project context and CLI readiness</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>project</code> — Project ID</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-skills" data-i18n="docs.cli.skills.title">Skills</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.skills.intro">Installable Siftable skillpacks.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.skills.count">2 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift skills install</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.skills.install.desc">Install a Siftable skillpack into a local skills directory</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Skillpack ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--force</code> — Replace an existing installed skill</dd>
+                  <dd><code>--target &lt;value&gt;</code> <span class="flag-meta">default: "skills"</span> — Installed skills directory</dd>
+                  <dd><code>-y, --yes</code> — Confirm replacing an existing skill</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift skills list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.skills.list.desc">List installable Siftable skillpacks</p>
+              </div>
+            </details>
+            <h2 id="cli-tasks" data-i18n="docs.cli.tasks.title">Tasks</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.tasks.intro">Human planning tasks.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.tasks.count">11 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift tasks bulk-delete</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.tasks.bulk-delete.desc">Preview or bulk-delete tasks</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--confirm</code> — Execute deletion instead of preview</dd>
+                  <dd><code>--done</code> — Filter by completed state</dd>
+                  <dd><code>--ids &lt;value&gt;</code> — Comma-separated task IDs</dd>
+                  <dd><code>--phase &lt;draft|open|in_flight|review|blocked|done|cancelled&gt;</code></dd>
+                  <dd><code>--title-contains &lt;value&gt;</code> — Title substring filter</dd>
+                  <dd><code>--title-equals &lt;value&gt;</code> — Exact title filter</dd>
+                  <dd><code>--title-starts-with &lt;value&gt;</code> — Title prefix filter</dd>
+                  <dd><code>--when &lt;now|today|soon|later&gt;</code></dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift tasks complete</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.tasks.complete.desc">Mark a task as complete</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Task ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift tasks coupling-create</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.tasks.coupling-create.desc">Create a CSN coupling edge between tasks in the same project</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Source task ID</dd>
+                  <dd><code>target</code> <span class="req">required</span> — Target task ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--note &lt;value&gt;</code> — Optional note</dd>
+                  <dd><code>--strength &lt;value&gt;</code> — Coupling strength (0-1)</dd>
+                  <dd><code>--type &lt;info|resource&gt;</code> <span class="flag-meta">required</span> — Coupling type</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift tasks coupling-delete</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.tasks.coupling-delete.desc">Delete a CSN coupling edge from a task</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Task ID</dd>
+                  <dd><code>edgeId</code> <span class="req">required</span> — Coupling edge ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>-y, --yes</code> — Skip confirmation</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift tasks coupling-list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.tasks.coupling-list.desc">List CSN coupling edges for a task</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Task ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift tasks create</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.tasks.create.desc">Create a human planning task</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--acceptance-criteria &lt;value&gt;</code> — Acceptance criteria (semicolon-separated text, e.g. "tests pass; docs updated")</dd>
+                  <dd><code>--description &lt;value&gt;</code> — Task description</dd>
+                  <dd><code>--due &lt;value&gt;</code> — Due date (ISO 8601)</dd>
+                  <dd><code>--effort &lt;trivial|small|medium|large|epic|unknown&gt;</code> — Effort estimate</dd>
+                  <dd><code>--phase &lt;draft|open|in_flight|review|blocked|done|cancelled&gt;</code> — Lifecycle phase</dd>
+                  <dd><code>--priority &lt;do_now|schedule|delegate|someday&gt;</code> — Priority level</dd>
+                  <dd><code>--project &lt;value&gt;</code> — Project ID</dd>
+                  <dd><code>--scope &lt;value&gt;</code> — Scope boundaries (JSON object with include/exclude arrays)</dd>
+                  <dd><code>--title &lt;value&gt;</code> <span class="flag-meta">required</span> — Task title</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift tasks delete</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.tasks.delete.desc">Delete a task</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Task ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>-y, --yes</code> — Skip confirmation</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift tasks get</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.tasks.get.desc">Get human planning task details</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Task ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift tasks list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.tasks.list.desc">List human planning tasks</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--effort &lt;trivial|small|medium|large|epic|unknown&gt;</code> — Filter by effort</dd>
+                  <dd><code>--limit &lt;value&gt;</code> — Maximum number of results</dd>
+                  <dd><code>--phase &lt;draft|open|in_flight|review|blocked|done|cancelled&gt;</code> — Filter by phase</dd>
+                  <dd><code>--project &lt;value&gt;</code> — Filter by project ID</dd>
+                  <dd><code>--status &lt;inbox|next_action|in_progress|waiting_for|completed|archived&gt;</code> — Filter by status</dd>
+                  <dd><code>--title-contains &lt;value&gt;</code> — Title substring filter</dd>
+                  <dd><code>--title-equals &lt;value&gt;</code> — Exact title filter</dd>
+                  <dd><code>--title-starts-with &lt;value&gt;</code> — Title prefix filter</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift tasks planning-update</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.tasks.planning-update.desc">Update CSN planning fields for a task</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Task ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--cynefin-confidence &lt;value&gt;</code> — Cynefin confidence (0-1)</dd>
+                  <dd><code>--cynefin-domain &lt;clear|complicated|complex|chaotic|aporetic&gt;</code> — Cynefin domain</dd>
+                  <dd><code>--cynefin-rationale &lt;value&gt;</code> — Why this domain fits</dd>
+                  <dd><code>--cynefin-source &lt;user|assistant|classifier&gt;</code> — Source of the planning classification</dd>
+                  <dd><code>--duration-model &lt;value&gt;</code> — Duration model JSON, e.g. {"kind":"point","days":2}</dd>
+                  <dd><code>--reversibility &lt;value&gt;</code> — Reversibility score (0-1)</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift tasks update</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.tasks.update.desc">Update a human planning task</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Task ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--acceptance-criteria &lt;value&gt;</code> — Acceptance criteria (semicolon-separated text, e.g. "tests pass; docs updated")</dd>
+                  <dd><code>--blocked-reason &lt;value&gt;</code> — Reason task is blocked</dd>
+                  <dd><code>--description &lt;value&gt;</code> — Task description</dd>
+                  <dd><code>--due &lt;value&gt;</code> — Due date (ISO 8601)</dd>
+                  <dd><code>--effort &lt;trivial|small|medium|large|epic|unknown&gt;</code> — Effort estimate</dd>
+                  <dd><code>--phase &lt;draft|open|in_flight|review|blocked|done|cancelled&gt;</code> — Lifecycle phase</dd>
+                  <dd><code>--priority &lt;do_now|schedule|delegate|someday&gt;</code> — Priority level</dd>
+                  <dd><code>--project &lt;value&gt;</code> — Project ID</dd>
+                  <dd><code>--scope &lt;value&gt;</code> — Scope boundaries (JSON object with include/exclude arrays)</dd>
+                  <dd><code>--status &lt;inbox|next_action|in_progress|waiting_for|completed|archived&gt;</code> — Task status</dd>
+                  <dd><code>--title &lt;value&gt;</code> — Task title</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-timeline" data-i18n="docs.cli.timeline.title">Timeline</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.timeline.intro">Timeline facts and narratives.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.timeline.count">4 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift timeline create</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.timeline.create.desc">Create a user-authored timeline fact</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--body &lt;value&gt;</code> — Fact body or notes</dd>
+                  <dd><code>--confidence &lt;low|medium|high&gt;</code> — Confidence level</dd>
+                  <dd><code>--entity &lt;value&gt;</code> <span class="flag-meta">repeatable</span> — Participant/entity as type:uuid or type:uuid:role; repeatable</dd>
+                  <dd><code>--fact-type &lt;value&gt;</code> <span class="flag-meta">default: "event"</span> — Fact type</dd>
+                  <dd><code>--precision &lt;millisecond|minute|hour|day|month|year|decade|century|millennium|mega_year|era&gt;</code> <span class="flag-meta">default: "year"</span> — Temporal precision</dd>
+                  <dd><code>--source-label &lt;value&gt;</code> — Source/provenance label</dd>
+                  <dd><code>--source-note &lt;value&gt;</code> — Source/provenance note</dd>
+                  <dd><code>--source-url &lt;value&gt;</code> — Source/provenance URL</dd>
+                  <dd><code>--timestamp &lt;value&gt;</code> — ISO timestamp</dd>
+                  <dd><code>--title &lt;value&gt;</code> <span class="flag-meta">required</span> — Fact title</dd>
+                  <dd><code>--visibility &lt;org_public|private|restricted&gt;</code> — Timeline visibility</dd>
+                  <dd><code>--year &lt;value&gt;</code> — Historical year CE</dd>
+                  <dd><code>--year-end &lt;value&gt;</code> — Historical end year CE</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift timeline delete</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.timeline.delete.desc">Retract a timeline fact</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Timeline fact ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--yes</code> — Confirm retraction without prompting</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift timeline list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.timeline.list.desc">List timeline facts with bounded filters</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--cursor &lt;value&gt;</code> — Pagination cursor</dd>
+                  <dd><code>--end &lt;value&gt;</code> — End boundary, ISO timestamp or supported historical boundary</dd>
+                  <dd><code>--entity &lt;value&gt;</code> — Entity filter as type:uuid</dd>
+                  <dd><code>--entity-role &lt;value&gt;</code> — Comma-separated entity roles</dd>
+                  <dd><code>--fact-types &lt;value&gt;</code> — Comma-separated fact types</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 50</span> — Maximum items to return</dd>
+                  <dd><code>--order &lt;asc|desc&gt;</code> <span class="flag-meta">default: "asc"</span> — Sort order</dd>
+                  <dd><code>--q &lt;value&gt;</code> — Text search query</dd>
+                  <dd><code>--source-types &lt;value&gt;</code> — Comma-separated source types</dd>
+                  <dd><code>--start &lt;value&gt;</code> — Start boundary, ISO timestamp or supported historical boundary</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift timeline narrative</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.timeline.narrative.desc">Generate a narrative summary or explanation for timeline facts</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--action &lt;summarize|changed_since|led_to|what_next|cross_object&gt;</code> <span class="flag-meta">default: "summarize"</span> — Narrative action</dd>
+                  <dd><code>--entity &lt;value&gt;</code> — Entity scope as type:uuid</dd>
+                  <dd><code>--entity-roles &lt;value&gt;</code> — Comma-separated entity roles</dd>
+                  <dd><code>--fact-type &lt;value&gt;</code> — Fact type filter</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 60</span> — Maximum timeline facts to include</dd>
+                  <dd><code>--participant &lt;value&gt;</code> — Participant filter as type:uuid</dd>
+                  <dd><code>--prompt &lt;value&gt;</code> — Question or custom narrative prompt</dd>
+                  <dd><code>--q &lt;value&gt;</code> — Text query filter</dd>
+                  <dd><code>--related-entity &lt;value&gt;</code> — Related entity as type:uuid</dd>
+                  <dd><code>--source-type &lt;value&gt;</code> — Source type filter</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-vault" data-i18n="docs.cli.vault.title">Vault</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.vault.intro">Secrets vault.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.vault.count">5 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift vault create</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.create.desc">Store a new encrypted secret</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--category &lt;value&gt;</code> — Category</dd>
+                  <dd><code>--description &lt;value&gt;</code> — Description</dd>
+                  <dd><code>--name &lt;value&gt;</code> <span class="flag-meta">required</span> — Secret name</dd>
+                  <dd><code>--payload &lt;value&gt;</code> <span class="flag-meta">required</span> — JSON payload to encrypt</dd>
+                  <dd><code>--slug &lt;value&gt;</code> — Machine-friendly identifier</dd>
+                  <dd><code>--tags &lt;value&gt;</code> — Comma-separated tags</dd>
+                  <dd><code>--type &lt;env_var|credential|oauth_token|ssh_key|certificate|note&gt;</code> — Entry type</dd>
+                  <dd><code>--url &lt;value&gt;</code> — Associated URL</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift vault list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.list.desc">List vault entries (metadata only)</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--category &lt;value&gt;</code> — Filter by category</dd>
+                  <dd><code>--limit &lt;value&gt;</code> — Maximum number of results</dd>
+                  <dd><code>--type &lt;env_var|credential|oauth_token|ssh_key|certificate|note&gt;</code> — Filter by entry type</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift vault read</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.read.desc">Decrypt and read a vault secret (audit-logged)</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Vault entry ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift vault search</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.search.desc">Search vault entries</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>query</code> <span class="req">required</span> — Search query</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--limit &lt;value&gt;</code> — Maximum number of results</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift vault update</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.update.desc">Update vault entry metadata</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Vault entry ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--category &lt;value&gt;</code> — Category</dd>
+                  <dd><code>--description &lt;value&gt;</code> — Description</dd>
+                  <dd><code>--name &lt;value&gt;</code> — Entry name</dd>
+                  <dd><code>--tags &lt;value&gt;</code> — Comma-separated tags</dd>
+                  <dd><code>--url &lt;value&gt;</code> — Associated URL</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-work" data-i18n="docs.cli.work.title">Work</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.work.intro">Executable agent work queue.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.work.count">12 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work block</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.block.desc">Mark a work item as blocked</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--artifacts &lt;value&gt;</code> — Artifact refs JSON array</dd>
+                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim</dd>
+                  <dd><code>--lease &lt;value&gt;</code> — Lease seconds</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity</dd>
+                  <dd><code>--reason &lt;value&gt;</code> — Block or failure reason</dd>
+                  <dd><code>--summary &lt;value&gt;</code> — Result summary</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work cancel</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.cancel.desc">Cancel a work item</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--artifacts &lt;value&gt;</code> — Artifact refs JSON array</dd>
+                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim</dd>
+                  <dd><code>--lease &lt;value&gt;</code> — Lease seconds</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity</dd>
+                  <dd><code>--reason &lt;value&gt;</code> — Block or failure reason</dd>
+                  <dd><code>--summary &lt;value&gt;</code> — Result summary</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work claim</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.claim.desc">Claim the next available executable agent work item</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> — Optional specific work item ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--agent &lt;value&gt;</code> — Agent alias to claim for</dd>
+                  <dd><code>--lease &lt;value&gt;</code> <span class="flag-meta">default: 1800</span> — Lease seconds</dd>
+                  <dd><code>--owner &lt;value&gt;</code> <span class="flag-meta">required</span> — Claim owner identity</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work complete</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.complete.desc">Approve and complete an executable agent work item</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--artifacts &lt;value&gt;</code> — Artifact refs JSON array</dd>
+                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim</dd>
+                  <dd><code>--lease &lt;value&gt;</code> — Lease seconds</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity</dd>
+                  <dd><code>--reason &lt;value&gt;</code> — Block or failure reason</dd>
+                  <dd><code>--summary &lt;value&gt;</code> — Result summary</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work create</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.create.desc">Create an executable agent work item</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--acceptance-criteria &lt;value&gt;</code> — Acceptance criteria JSON array or semicolon-separated text</dd>
+                  <dd><code>--agent &lt;value&gt;</code> — Assigned agent alias</dd>
+                  <dd><code>--allowed-actions &lt;value&gt;</code> — Allowed actions JSON object</dd>
+                  <dd><code>--context &lt;value&gt;</code> — Input context JSON object</dd>
+                  <dd><code>--project &lt;value&gt;</code> — Linked project ID</dd>
+                  <dd><code>--prompt &lt;value&gt;</code> — Agent prompt or instructions</dd>
+                  <dd><code>--rank &lt;value&gt;</code> <span class="flag-meta">default: 0</span> — Queue rank</dd>
+                  <dd><code>--task &lt;value&gt;</code> — Parent human planning task ID</dd>
+                  <dd><code>--title &lt;value&gt;</code> <span class="flag-meta">required</span> — Executable work item title</dd>
+                  <dd><code>--verify &lt;value&gt;</code> — Verification commands separated by semicolons</dd>
+                  <dd><code>--write-scope &lt;value&gt;</code> — Write scope JSON object</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work fail</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.fail.desc">Mark a work item as failed</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--artifacts &lt;value&gt;</code> — Artifact refs JSON array</dd>
+                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim</dd>
+                  <dd><code>--lease &lt;value&gt;</code> — Lease seconds</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity</dd>
+                  <dd><code>--reason &lt;value&gt;</code> — Block or failure reason</dd>
+                  <dd><code>--summary &lt;value&gt;</code> — Result summary</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work get</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.get.desc">Get executable agent work item details</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work heartbeat</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.heartbeat.desc">Extend a work item lease</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--artifacts &lt;value&gt;</code> — Artifact refs JSON array</dd>
+                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim</dd>
+                  <dd><code>--lease &lt;value&gt;</code> — Lease seconds</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity</dd>
+                  <dd><code>--reason &lt;value&gt;</code> — Block or failure reason</dd>
+                  <dd><code>--summary &lt;value&gt;</code> — Result summary</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.list.desc">List executable agent work items</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--agent &lt;value&gt;</code> — Filter by assigned agent alias</dd>
+                  <dd><code>--limit &lt;value&gt;</code> — Maximum results</dd>
+                  <dd><code>--project &lt;value&gt;</code> — Filter by project ID</dd>
+                  <dd><code>--status &lt;value&gt;</code> — Filter by status</dd>
+                  <dd><code>--task &lt;value&gt;</code> — Filter by parent human planning task ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work release</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.release.desc">Release a claimed work item back to the queue</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--artifacts &lt;value&gt;</code> — Artifact refs JSON array</dd>
+                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim</dd>
+                  <dd><code>--lease &lt;value&gt;</code> — Lease seconds</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity</dd>
+                  <dd><code>--reason &lt;value&gt;</code> — Block or failure reason</dd>
+                  <dd><code>--summary &lt;value&gt;</code> — Result summary</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work review</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.review.desc">Mark executable agent work as needing human review</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--artifacts &lt;value&gt;</code> — Artifact refs JSON array</dd>
+                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim</dd>
+                  <dd><code>--lease &lt;value&gt;</code> — Lease seconds</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity</dd>
+                  <dd><code>--reason &lt;value&gt;</code> — Block or failure reason</dd>
+                  <dd><code>--summary &lt;value&gt;</code> — Result summary</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work start</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.start.desc">Mark a work item as running</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--artifacts &lt;value&gt;</code> — Artifact refs JSON array</dd>
+                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim</dd>
+                  <dd><code>--lease &lt;value&gt;</code> — Lease seconds</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity</dd>
+                  <dd><code>--reason &lt;value&gt;</code> — Block or failure reason</dd>
+                  <dd><code>--summary &lt;value&gt;</code> — Result summary</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-worker" data-i18n="docs.cli.worker.title">Worker</h2>
+            <p class="cli-topic__intro" data-i18n="docs.cli.worker.intro">Local executable work runners.</p>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.worker.count">1 command</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift worker run</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.worker.run.desc">Claim executable work, run a local worker command, and report needs-review artifacts</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--agent &lt;value&gt;</code> <span class="flag-meta">required</span> — Agent alias to claim work for</dd>
+                  <dd><code>--command &lt;value&gt;</code> <span class="flag-meta">required</span> — Local command to run for the claimed work item</dd>
+                  <dd><code>--cwd &lt;value&gt;</code> — Fallback working directory for the local command</dd>
+                  <dd><code>--lease &lt;value&gt;</code> <span class="flag-meta">default: 1800</span> — Lease seconds</dd>
+                  <dd><code>--owner &lt;value&gt;</code> <span class="flag-meta">required</span> — Worker owner fingerprint</dd>
+                </dl>
+              </div>
+            </details>
+        <!-- END generated CLI command reference -->
