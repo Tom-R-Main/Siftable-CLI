@@ -20,8 +20,9 @@
     "test": "jest",
     "test:vitest": "vitest run --config vitest.config.ts",
     "native:release": "cd interactive-tui && bash scripts/build-native-release.sh",
+    "verify:package": "node scripts/verify-package-imports.mjs",
     "prepublishOnly": "npm run build",
-    "prepack": "npm run build && npx oclif manifest && npm run native:release"
+    "prepack": "npm run build && npx oclif manifest && npm run native:release && npm run verify:package"
   },
   "oclif": {
     "bin": "sift",
