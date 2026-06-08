@@ -4,6 +4,8 @@ import {
   DEFAULT_EXPLORER_SETTINGS,
   explorerModelChoices,
   modeUsesScoutModel,
+  ensureExplorerProviderKey,
+  interactiveCommands,
   findModelChoice,
   runInteractiveCommand,
   commandSuggestions,
@@ -30,20 +32,24 @@ describe('interactive command registry', () => {
     resetBypass();
   });
 
-  it('exposes command suggestions from registry metadata', () => {
-    expect(commandSuggestions().map((command) => command.name)).toEqual(expect.arrayContaining([
+  it('exposes command suggestions from registry metadata (visible commands only)', () => {
+    const names = commandSuggestions().map((command) => command.name);
+    // Spans the grouped hierarchy; only non-hidden commands surface here.
+    expect(names).toEqual(expect.arrayContaining([
       'help',
       'status',
       'copy',
+      'model',
       'explorer',
-      'queue',
+      'branches',
       'handoff',
-      'focus',
+      'plan',
       'proof',
       'remember',
-      'ship',
-      'recap',
     ]));
+    // Hidden commands (e.g. those folded into the /work hub) must not leak in.
+    const hidden = interactiveCommands.filter((command) => command.hidden).map((command) => command.name);
+    for (const name of hidden) expect(names).not.toContain(name);
   });
 
   it('applies explorer settings to runtime environment without touching the main model', () => {
@@ -125,6 +131,31 @@ describe('interactive command registry', () => {
     expect(modeUsesScoutModel('off')).toBe(false);
     expect(modeUsesScoutModel('auto')).toBe(false);
     expect(modeUsesScoutModel(undefined)).toBe(false);
+  });
+
+  it('only attempts vault key recovery for warp-grep mode with a missing MORPH_API_KEY', async () => {
+    const prevWg = process.env.SIFT_EXPLORER_WARPGREP;
+    const prevKey = process.env.MORPH_API_KEY;
+    try {
+      // Not warp-grep mode → no-op even with no key.
+      process.env.SIFT_EXPLORER_WARPGREP = '0';
+      delete process.env.MORPH_API_KEY;
+      expect(await ensureExplorerProviderKey({} as never)).toBeNull();
+
+      // Warp-grep mode but key already present → no-op (no prompt).
+      process.env.SIFT_EXPLORER_WARPGREP = '1';
+      process.env.MORPH_API_KEY = 'sk-test';
+      expect(await ensureExplorerProviderKey({} as never)).toBeNull();
+
+      // Warp-grep mode + missing key → tries vault; surfaces a message when
+      // vault is unavailable in the session.
+      delete process.env.MORPH_API_KEY;
+      const msg = await ensureExplorerProviderKey({ apiClient: {} } as never);
+      expect(msg).toMatch(/vault is unavailable/i);
+    } finally {
+      restoreEnv('SIFT_EXPLORER_WARPGREP', prevWg);
+      restoreEnv('MORPH_API_KEY', prevKey);
+    }
   });
 
   it('runs core commands through a context object', async () => {
@@ -260,6 +291,42 @@ describe('interactive command registry', () => {
     expect(messages.at(-1)?.text).toContain('Using Sift Vault entry "OpenRouter API key"');
     expect(messages.at(-1)?.text).not.toContain('sk-or-secret');
     restoreEnv('OPENROUTER_API_KEY', previous);
+  });
+
+  it('loads a Morph key from vault into env without switching the model brain', async () => {
+    const previous = process.env.MORPH_API_KEY;
+    delete process.env.MORPH_API_KEY;
+    let confirm: ConfirmRequest | null = null;
+    setConfirmListener((req) => {
+      confirm = req;
+    });
+    const config = jest.fn(async (input) => ({provider: input.provider ?? 'codex', model: input.model ?? 'x'}));
+    const {ctx, messages, apiClient} = buildContext({
+      client: {
+        state: jest.fn(),
+        config,
+        login: jest.fn(),
+        send: jest.fn(),
+      },
+    });
+    apiClient.listVaultEntries.mockResolvedValue(response({
+      entries: [{id: 'vault-morph', name: 'Morph API Key', tags: ['MORPH_API_KEY', 'warp-grep']}],
+    }));
+    apiClient.readVaultSecret.mockResolvedValue(response({payload: {MORPH_API_KEY: 'sk-morph-secret'}}));
+
+    const pending = runInteractiveCommand(ctx, '/key vault morph');
+    await flushPromises();
+    resolveApproval(confirm!.id, 'allow');
+    await pending;
+
+    expect(apiClient.readVaultSecret).toHaveBeenCalledWith('vault-morph');
+    // morph is search-only (warp-grep), not a brain provider — never reconfigure
+    // the brain, just set the env var the SDK reads.
+    expect(config).not.toHaveBeenCalled();
+    expect(process.env.MORPH_API_KEY).toBe('sk-morph-secret');
+    expect(messages.at(-1)?.text).toContain('Using Sift Vault entry "Morph API Key"');
+    expect(messages.at(-1)?.text).not.toContain('sk-morph-secret');
+    restoreEnv('MORPH_API_KEY', previous);
   });
 
   it('reports the real read/write boundary in /status', async () => {

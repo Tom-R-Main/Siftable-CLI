@@ -49,8 +49,13 @@ import {
   EXPLORER_MODE_CHOICES,
   explorerModelChoices,
   modeUsesScoutModel,
+  ensureExplorerProviderKey,
+  restoreSavedModel,
   explorerSettingsSummary,
   runInteractiveCommand,
+  loadWorkBoard,
+  workItemEvidence,
+  createHandoffWorkItem,
   INTERACTIVE_MODEL_CHOICES,
   type CommandMessage,
   type ExplorerSettings,
@@ -78,8 +83,16 @@ import { getSessionCwd, getWorkspaceRoot, setSessionCwd } from "./navigation";
 import { createChildSessionController } from "./childSessionController";
 import { setSessionController } from "./brain";
 import { reduceBranchesKey, initialBranchesState, draftToSpawnInput, type BranchesState } from "./branchesOverlay";
+import {
+  reduceWorkKey,
+  initialWorkState,
+  draftToHandoffInput,
+  type WorkState,
+  type WorkBoardData,
+} from "./workHubOverlay";
 import type { ParentMergeView } from "./mergeView";
 import { createSessionContext } from "./sessionContext";
+import { loadPrefs } from "./prefs";
 import { formatChildBar, formatChildBarLine, type ChildBarEntry } from "./childBar";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, extname } from "node:path";
@@ -264,6 +277,12 @@ function App() {
   // branchesOverlay reducer; here we hold its state + the readiness snapshot.
   const [branchesPicker, setBranchesPicker] = createSignal<
     { state: BranchesState; view: ParentMergeView; status?: string } | null
+  >(null);
+  // /work hub: the agent work-queue board. State machine lives in the pure
+  // workHubOverlay reducer; here we hold its state, the board snapshot, an
+  // optional status line, and (for the `v` action) an inline evidence panel.
+  const [workPicker, setWorkPicker] = createSignal<
+    { state: WorkState; data: WorkBoardData; status?: string; evidence?: string } | null
   >(null);
   const [transcriptSelected, setTranscriptSelected] = createSignal(false);
   // A1 write/edit approval: set by the confirm gate while a mutation waits.
@@ -626,6 +645,15 @@ function App() {
 
   async function submitOne(input: ChatInput, displayText = typeof input === "string" ? input : input.map((p) => (p.type === "text" ? p.text : "[image]")).join("")) {
     push({ role: "you", text: displayText });
+    // If the active explorer mode needs a provider key that isn't loaded (e.g.
+    // warp-grep → MORPH_API_KEY), pause and offer to apply it from vault before
+    // running the turn, rather than dead-ending on "key not set".
+    try {
+      const keyMsg = await ensureExplorerProviderKey(commandCtx());
+      if (keyMsg) push({ role: "system", text: keyMsg });
+    } catch (err) {
+      push({ role: "system", text: `vault key check failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
     playSound("confirm");
     setBusy(true);
     setStatus("thinking… (Esc to stop)");
@@ -965,6 +993,44 @@ function App() {
     setBranchesPicker({ state: { ...bp.state, rowIdx, confirmAbandon: false }, view, status });
   }
 
+  // /work: fetch the agent queue board and open the hub overlay. Async (it reads
+  // the API) — unlike the other openers, so handleSlash awaits it.
+  async function openWorkPicker() {
+    setText("");
+    setPicker(null);
+    setExplorerPicker(null);
+    setCrewPicker(null);
+    setThemePicker(null);
+    setBranchesPicker(null);
+    try {
+      const data = await loadWorkBoard(commandCtx());
+      setWorkPicker({ state: initialWorkState(), data });
+      playSound("panelOpen");
+    } catch (err) {
+      push({ role: "system", text: `/work: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  }
+
+  // Re-fetch the board after a mutating action (handoff) and clamp the cursor.
+  // Only the board stage carries a cursor; if the handoff form is open, refresh
+  // the snapshot without touching the draft.
+  async function refreshWorkBoard(status?: string) {
+    const wp = workPicker();
+    if (!wp) return;
+    let data = wp.data;
+    try {
+      data = await loadWorkBoard(commandCtx());
+    } catch {
+      // keep the prior snapshot; the status line still reports the action result.
+    }
+    if (wp.state.stage !== "board") {
+      setWorkPicker({ ...wp, data, status, evidence: undefined });
+      return;
+    }
+    const rowIdx = Math.max(0, Math.min(Math.max(data.items.length - 1, 0), wp.state.rowIdx));
+    setWorkPicker({ state: { ...wp.state, rowIdx, detailOpen: false }, data, status, evidence: undefined });
+  }
+
   // Live-preview the scheme at `idx` (recolors the whole UI immediately).
   function previewThemeAt(idx: number) {
     const next = SCHEMES[Math.max(0, Math.min(SCHEMES.length - 1, idx))];
@@ -1108,6 +1174,10 @@ function App() {
     }
     if (bare === "branches" || bare === "b") {
       openBranchesPicker();
+      return;
+    }
+    if (bare === "work" || bare === "w") {
+      await openWorkPicker();
       return;
     }
     if (bare === "sounds" || bare === "sound" || bare.startsWith("sounds ") || bare.startsWith("sound ")) {
@@ -1416,6 +1486,55 @@ function App() {
         return;
       }
 
+      // /work hub: pure reducer decides the transition. The report verbs (`run`)
+      // are dispatched modal-SAFE — close the overlay first, THEN run the command
+      // so its transcript output never lands behind the modal. `evidence` and
+      // `handoff` stay inline.
+      const wp = workPicker();
+      if (wp) {
+        key.preventDefault?.();
+        key.stopPropagation?.();
+        const action = reduceWorkKey(wp.state, key, wp.data.items);
+        if (action.kind === "none") {
+          // Any state change also clears a stale evidence panel (it described a
+          // prior selection); skip the re-render when the state object is the same.
+          if (action.state !== wp.state) setWorkPicker({ ...wp, state: action.state, evidence: undefined });
+        } else if (action.kind === "close") {
+          setWorkPicker(null);
+        } else if (action.kind === "run") {
+          // Close-then-run: the modal-safe contract for transcript-writing verbs.
+          setWorkPicker(null);
+          void handleSlash(action.command);
+        } else if (action.kind === "evidence") {
+          const item = wp.data.items[action.rowIdx];
+          if (item) {
+            setWorkPicker({ ...wp, status: `searching evidence for "${item.title}"…`, evidence: undefined });
+            void workItemEvidence(commandCtx(), item)
+              .then((text) => {
+                const cur = workPicker();
+                if (cur) setWorkPicker({ ...cur, status: undefined, evidence: text });
+              })
+              .catch((err) => {
+                const cur = workPicker();
+                if (cur) setWorkPicker({ ...cur, status: `evidence: ${err instanceof Error ? err.message : String(err)}` });
+              });
+          }
+        } else if (action.kind === "handoff") {
+          const mapped = draftToHandoffInput(action.draft);
+          if (!mapped.ok) {
+            setWorkPicker({ ...wp, status: `handoff: ${mapped.error}` }); // stay in the form
+          } else {
+            void createHandoffWorkItem(commandCtx(), mapped.input)
+              .then((msg) => void refreshWorkBoard(msg))
+              .catch((err) => {
+                const cur = workPicker();
+                if (cur) setWorkPicker({ ...cur, status: `handoff: ${err instanceof Error ? err.message : String(err)}` });
+              });
+          }
+        }
+        return;
+      }
+
       const isCmd = Boolean(key.meta || (key as KeyEvent & { super?: boolean }).super);
       const hasSelection = transcriptSelected() || Boolean(renderer.getSelection()?.getSelectedText().trim());
 
@@ -1588,6 +1707,15 @@ function App() {
     // Restore the saved sound preference (off by default); loads the kit if on.
     void initSounds();
     onCleanup(() => disposeSounds());
+    // Restore durable preferences (~/.siftable/prefs.json): Explorer settings
+    // synchronously, then the saved brain model quietly (codex is skipped — it's
+    // the default and signs in interactively).
+    const prefs = loadPrefs();
+    if (prefs.explorer) {
+      const applied = applyExplorerSettings(prefs.explorer as ExplorerSettings);
+      if (applied.ok) setExplorerSettings(prefs.explorer as ExplorerSettings);
+    }
+    void restoreSavedModel(commandCtx()).then(() => void refreshState());
     void refreshState();
     // Route brain write/edit approval requests into the confirm overlay.
     setConfirmListener((req) => {
@@ -2208,7 +2336,109 @@ function App() {
         }}
       </Show>
 
-      <Show when={!picker() && !explorerPicker() && !crewPicker() && !themePicker() && !branchesPicker() && slashMatches().length > 0}>
+      <Show when={workPicker()}>
+        {(wp) => {
+          const data = () => wp().data;
+          const items = () => data().items;
+          const sel = () => { const s = wp().state; return s.stage === "board" ? s.rowIdx : 0; };
+          const detailOpen = () => { const s = wp().state; return s.stage === "board" && s.detailOpen; };
+          const draft = () => { const s = wp().state; return s.stage === "handoffForm" ? s.draft : null; };
+          const countOf = (status: string) => items().filter((it) => it.status === status).length;
+          const header = () => {
+            if (draft()) return "Hand off work    type · ↑/↓ fields · Enter next/create · Esc back";
+            const agents = data().agents.map((a) => `${a.alias}·${a.status}`).join("  ");
+            return `Work    ${items().length} item(s) · ${countOf("running") + countOf("claimed")} running · ${countOf("needs_review")} needs-review · ${countOf("queued")} queued${agents ? `    (${agents})` : ""}`;
+          };
+          return (
+            <box
+              flexDirection="column"
+              flexShrink={0}
+              borderStyle="single"
+              borderColor={theme.accent}
+              backgroundColor={theme.bgMuted}
+              paddingLeft={1}
+              paddingRight={1}
+            >
+              <text fg={theme.accentStrong} selectable={false}>{header()}</text>
+
+              <Show when={!draft()}>
+                <Show when={items().length === 0}>
+                  <text fg={theme.muted} selectable={false}>No work items — press h to hand one off. Esc to close.</text>
+                </Show>
+                <For each={items()}>
+                  {(it, i) => {
+                    const selected = () => i() === sel();
+                    const mark =
+                      it.status === "needs_review" ? "◆" : it.status === "running" || it.status === "claimed" ? "▶" : it.status === "blocked" ? "⧖" : "·";
+                    const sid = it.id ? it.id.slice(0, 6) : "??????";
+                    const owner = it.owner ? `  ${it.owner}` : "";
+                    const blocked = it.blockers.length ? `  ⚠ ${it.blockers.length} blocker(s)` : "";
+                    const head = `${selected() ? "› " : "  "}${mark} #${sid}  ${it.title}    ${it.status}  [${it.agent}]${owner}${blocked}`;
+                    const detailLines = () => {
+                      const lines: string[] = [];
+                      if (it.prompt) lines.push(`prompt: ${it.prompt.replace(/\s+/g, " ").slice(0, 160)}`);
+                      if (it.writeScope.length) lines.push(`scope: ${it.writeScope.join(", ")}`);
+                      if (it.acceptance.length) lines.push(`acceptance: ${it.acceptance.join("; ")}`);
+                      if (it.verification.length) lines.push(`verify: ${it.verification.join(" · ")}`);
+                      it.blockers.forEach((b) => lines.push(`blocked: ${b}`));
+                      return lines;
+                    };
+                    return (
+                      <box flexDirection="column" width="100%" backgroundColor={selected() ? theme.border : theme.bgMuted}>
+                        <text fg={selected() ? theme.accentStrong : theme.muted} selectable={false}>{head}</text>
+                        <Show when={selected() && detailOpen()}>
+                          <For each={detailLines()}>
+                            {(line) => <text fg={theme.muted} selectable={false}>{`      ${line}`}</text>}
+                          </For>
+                        </Show>
+                      </box>
+                    );
+                  }}
+                </For>
+                <Show when={wp().evidence}>
+                  {(ev) => (
+                    <box flexDirection="column" width="100%" paddingLeft={1}>
+                      <For each={ev().split("\n")}>
+                        {(line) => <text fg={theme.muted} selectable={false}>{line}</text>}
+                      </For>
+                    </box>
+                  )}
+                </Show>
+                <text fg={theme.muted} selectable={false}>↑/↓ select · ↵ detail · v proof · h handoff · p plan · f focus · r recap · s ship · esc close</text>
+              </Show>
+
+              <Show when={draft()}>
+                {(d) => {
+                  const fields = () => [
+                    {label: "Title", value: d().title || "(type a title)"},
+                    {label: "Agent", value: d().agent || "codex"},
+                    {label: "Files", value: d().files || "(comma/space globs, optional)"},
+                    {label: "Accept", value: d().acceptance || "(semicolon-separated, optional)"},
+                    {label: "Create", value: "↵ to create the work item"},
+                  ];
+                  return (
+                    <For each={fields()}>
+                      {(f, i) => (
+                        <box width="100%" height={1} backgroundColor={i() === d().fieldIdx ? theme.border : theme.bgMuted} flexDirection="row">
+                          <text fg={i() === d().fieldIdx ? theme.accentStrong : theme.muted} selectable={false}>
+                            {`${i() === d().fieldIdx ? "› " : "  "}${f.label.padEnd(8)}${f.value}`}
+                          </text>
+                        </box>
+                      )}
+                    </For>
+                  );
+                }}
+              </Show>
+
+              <Show when={wp().status}>
+                <text fg={theme.muted} selectable={false}>{wp().status}</text>
+              </Show>
+            </box>
+          );
+        }}
+      </Show>
+
+      <Show when={!picker() && !explorerPicker() && !crewPicker() && !themePicker() && !branchesPicker() && !workPicker() && slashMatches().length > 0}>
         <box
           flexDirection="column"
           flexShrink={0}

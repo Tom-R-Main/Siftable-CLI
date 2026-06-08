@@ -27,11 +27,17 @@ pub fn build(b: *std.Build) !void {
     const native_step = b.step("native", "Build Bun-loadable native dynamic libraries");
     const test_step = b.step("test", "Run native Zig tests");
 
+    // Strip debug info from release native libraries so the shipped .dylib/.so
+    // stay small in the npm tarball (unstripped linux .so are ~3.2MB each).
+    // Tests stay on Debug and are unaffected.
+    const strip_native = optimize != .Debug;
+
     for (native_sources) |source| {
         const root_module = b.createModule(.{
             .root_source_file = b.path(source.path),
             .target = target,
             .optimize = optimize,
+            .strip = strip_native,
         });
         const lib = b.addLibrary(.{
             .name = source.name,

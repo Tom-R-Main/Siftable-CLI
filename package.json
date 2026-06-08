@@ -19,8 +19,9 @@
     "explorer:eval": "tsx scripts/eval-repo-explorer.ts",
     "test": "jest",
     "test:vitest": "vitest run --config vitest.config.ts",
+    "native:release": "cd interactive-tui && bash scripts/build-native-release.sh",
     "prepublishOnly": "npm run build",
-    "prepack": "npm run build && oclif manifest"
+    "prepack": "npm run build && npx oclif manifest && npm run native:release"
   },
   "oclif": {
     "bin": "sift",
@@ -151,6 +152,14 @@
   ],
   "author": "Siftable",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Tom-R-Main/Siftable-CLI.git"
+  },
+  "homepage": "https://github.com/Tom-R-Main/Siftable-CLI#readme",
+  "bugs": {
+    "url": "https://github.com/Tom-R-Main/Siftable-CLI/issues"
+  },
   "files": [
     "dist",
     "bin",
@@ -161,7 +170,12 @@
     "interactive-tui/build.zig",
     "interactive-tui/native/*.ts",
     "interactive-tui/native/*.zig",
+    "interactive-tui/native/lib*.dylib",
+    "interactive-tui/native/lib*.so",
+    "interactive-tui/native/lib*.dll",
+    "interactive-tui/native/cell-render",
     "interactive-tui/scripts/build-native.sh",
+    "interactive-tui/scripts/build-native-release.sh",
     "interactive-tui/skills/**/*",
     "interactive-tui/openfunction/**/*"
   ],

@@ -7,6 +7,7 @@ import {SiftClient} from "@siftable/mcp-server/dist/exfClient.js";
 import {doneFallbackText, eventTextDelta, type CompactionReport, type ControlTransport, type RunningAgent} from "./controlClient";
 import {collectDailyReviewContext, collectGitRecapSummary, collectLocalGitSummary, type DailyReviewContext} from "../dist/lib/daily-review-context.js";
 import {requestApproval} from "./confirmGate";
+import {loadPrefs, savePrefs} from "./prefs";
 import {listCollabSessions, type CollabBranchSnapshot, type CollabSessionSnapshot} from "./collabEngine";
 import {runSiftCrew} from "./crewAdapter";
 import {
@@ -42,6 +43,7 @@ import type {
 } from "./childSessionController";
 import type {MergePacket} from "./mergeGate";
 import type {ParentMergeView} from "./mergeView";
+import type {WorkBoardItem, WorkBoardData} from "./workHubOverlay";
 
 export type CommandMessage = { role: "you" | "assistant" | "system" | "shell" | "tool"; text: string };
 
@@ -163,7 +165,12 @@ export interface ExplorerBudgetChoice {
 const GPT5_EFFORTS = ["low", "medium", "high", "xhigh"];
 const CLAUDE_EFFORTS = ["low", "medium", "high"];
 
+// Ordered by tier, not by when each was added: flagship brains first (best for
+// the main chat loop), then fast/scout models (Explorer defaults live here),
+// then specialized models that aren't general chat brains. Pickers iterate this
+// array directly and resolve by id/alias, so order is presentation-only.
 export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
+  // ── Flagship brains (reasoning-first) ──
   {
     id: "codex/gpt-5.5",
     provider: "codex",
@@ -176,16 +183,44 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     defaultEffort: "medium",
   },
   {
-    id: "openrouter/google/gemini-3.1-flash-lite",
+    // Door A: Opus via OpenRouter — rides the OpenRouter `reasoning` wiring.
+    id: "openrouter/anthropic/claude-opus-4.8",
     provider: "openrouter",
-    model: "google/gemini-3.1-flash-lite",
-    label: "Gemini 3.1 Flash-Lite",
-    description: "OpenRouter · cheap scout",
-    aliases: ["flash-lite", "gemini-lite", "gemini-3.1-flash-lite", "google/gemini-3.1-flash-lite"],
+    model: "anthropic/claude-opus-4.8",
+    label: "Claude Opus 4.8",
+    description: "OpenRouter · 💸 premium",
+    aliases: ["opus", "claude-opus", "claude-opus-4.8"],
     auth: "api-key",
     reasoningEfforts: CLAUDE_EFFORTS,
-    defaultEffort: "low",
+    defaultEffort: "high",
   },
+  {
+    // Door B: Opus via the direct Anthropic API (extended thinking, no
+    // OpenRouter margin). Requires ANTHROPIC_API_KEY.
+    id: "anthropic/claude-opus-4-8",
+    provider: "anthropic",
+    model: "claude-opus-4-8",
+    label: "Claude Opus 4.8 (Anthropic)",
+    description: "direct Anthropic API · thinking · 💸💸",
+    aliases: ["opus-direct", "claude-api", "anthropic-opus"],
+    auth: "anthropic",
+    requiredEnv: "ANTHROPIC_API_KEY",
+    keyHint: "/key anthropic <key>",
+    reasoningEfforts: CLAUDE_EFFORTS,
+    defaultEffort: "high",
+  },
+  {
+    id: "openrouter/anthropic/claude-sonnet-4.6",
+    provider: "openrouter",
+    model: "anthropic/claude-sonnet-4.6",
+    label: "Claude Sonnet 4.6",
+    description: "OpenRouter",
+    aliases: ["claude", "sonnet", "claude-sonnet-4.6"],
+    auth: "api-key",
+    reasoningEfforts: CLAUDE_EFFORTS,
+    defaultEffort: "medium",
+  },
+  // ── Fast / scout models (cheap, low-latency; Explorer defaults live here) ──
   {
     id: "openrouter/google/gemini-3.5-flash",
     provider: "openrouter",
@@ -196,6 +231,17 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     auth: "api-key",
     reasoningEfforts: CLAUDE_EFFORTS,
     defaultEffort: "medium",
+  },
+  {
+    id: "openrouter/google/gemini-3.1-flash-lite",
+    provider: "openrouter",
+    model: "google/gemini-3.1-flash-lite",
+    label: "Gemini 3.1 Flash-Lite",
+    description: "OpenRouter · cheap scout",
+    aliases: ["flash-lite", "gemini-lite", "gemini-3.1-flash-lite", "google/gemini-3.1-flash-lite"],
+    auth: "api-key",
+    reasoningEfforts: CLAUDE_EFFORTS,
+    defaultEffort: "low",
   },
   {
     id: "gemini/gemini-3.1-flash-lite",
@@ -235,17 +281,6 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     defaultEffort: "low",
   },
   {
-    id: "openrouter/anthropic/claude-sonnet-4.6",
-    provider: "openrouter",
-    model: "anthropic/claude-sonnet-4.6",
-    label: "Claude Sonnet 4.6",
-    description: "OpenRouter",
-    aliases: ["claude", "sonnet", "claude-sonnet-4.6"],
-    auth: "api-key",
-    reasoningEfforts: CLAUDE_EFFORTS,
-    defaultEffort: "medium",
-  },
-  {
     id: "openrouter/openai/gpt-5.4-mini",
     provider: "openrouter",
     model: "openai/gpt-5.4-mini",
@@ -255,31 +290,6 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     auth: "api-key",
     reasoningEfforts: GPT5_EFFORTS,
     defaultEffort: "low",
-  },
-  {
-    id: "openrouter/openai/gpt-5.4-nano",
-    provider: "openrouter",
-    model: "openai/gpt-5.4-nano",
-    label: "GPT-5.4 Nano",
-    description: "OpenRouter · ultra cheap scout",
-    aliases: ["gpt-5.4-nano", "nano", "openai/gpt-5.4-nano"],
-    auth: "api-key",
-    reasoningEfforts: GPT5_EFFORTS,
-    defaultEffort: "low",
-  },
-  {
-    id: "openrouter/morph/morph-v3-large",
-    provider: "openrouter",
-    model: "morph/morph-v3-large",
-    label: "Morph v3 Large",
-    description: "OpenRouter · ⚡ apply-only (~700 tps, single-turn)",
-    aliases: ["morph", "morph-v3-large", "morph/morph-v3-large"],
-    auth: "api-key",
-    // Fast-apply model — no reasoning axis (picker confirms on Enter). NOTE:
-    // Morph's endpoint rejects system prompts / multi-turn ("Multi-turn
-    // conversations are not supported", HTTP 400) and has no tool-calling, so it
-    // is NOT usable as a chat brain or Explorer scout. It belongs on the
-    // edit_file apply path. For Morph-powered code search use warp-grep, not this.
   },
   {
     id: "openai/gpt-5.4-mini",
@@ -295,42 +305,30 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     defaultEffort: "low",
   },
   {
-    id: "openrouter/openai/gpt-5.2",
+    id: "openrouter/openai/gpt-5.4-nano",
     provider: "openrouter",
-    model: "openai/gpt-5.2",
-    label: "GPT-5.2",
-    description: "OpenRouter API key",
-    aliases: ["gpt-5.2", "openai/gpt-5.2"],
+    model: "openai/gpt-5.4-nano",
+    label: "GPT-5.4 Nano",
+    description: "OpenRouter · ultra cheap scout",
+    aliases: ["gpt-5.4-nano", "nano", "openai/gpt-5.4-nano"],
     auth: "api-key",
     reasoningEfforts: GPT5_EFFORTS,
-    defaultEffort: "medium",
+    defaultEffort: "low",
   },
+  // ── Specialized (not general chat brains) ──
   {
-    // Door A: Opus via OpenRouter — rides the OpenRouter `reasoning` wiring.
-    id: "openrouter/anthropic/claude-opus-4.8",
+    id: "openrouter/morph/morph-v3-large",
     provider: "openrouter",
-    model: "anthropic/claude-opus-4.8",
-    label: "Claude Opus 4.8",
-    description: "OpenRouter · 💸 premium",
-    aliases: ["opus", "claude-opus", "claude-opus-4.8"],
+    model: "morph/morph-v3-large",
+    label: "Morph v3 Large",
+    description: "OpenRouter · ⚡ apply-only (~700 tps, single-turn)",
+    aliases: ["morph", "morph-v3-large", "morph/morph-v3-large"],
     auth: "api-key",
-    reasoningEfforts: CLAUDE_EFFORTS,
-    defaultEffort: "high",
-  },
-  {
-    // Door B: Opus via the direct Anthropic API (extended thinking, no
-    // OpenRouter margin). Requires ANTHROPIC_API_KEY.
-    id: "anthropic/claude-opus-4-8",
-    provider: "anthropic",
-    model: "claude-opus-4-8",
-    label: "Claude Opus 4.8 (Anthropic)",
-    description: "direct Anthropic API · thinking · 💸💸",
-    aliases: ["opus-direct", "claude-api", "anthropic-opus"],
-    auth: "anthropic",
-    requiredEnv: "ANTHROPIC_API_KEY",
-    keyHint: "/key anthropic <key>",
-    reasoningEfforts: CLAUDE_EFFORTS,
-    defaultEffort: "high",
+    // Fast-apply model — no reasoning axis (picker confirms on Enter). NOTE:
+    // Morph's endpoint rejects system prompts / multi-turn ("Multi-turn
+    // conversations are not supported", HTTP 400) and has no tool-calling, so it
+    // is NOT usable as a chat brain or Explorer scout. It belongs on the
+    // edit_file apply path. For Morph-powered code search use warp-grep, not this.
   },
 ];
 
@@ -506,6 +504,15 @@ function choiceKeyEnv(choice: InteractiveModelChoice): string | null {
   return choice.requiredEnv ?? providerKeyEnv(choice.provider);
 }
 
+/**
+ * Whether a provider string is one the model brain actually serves (i.e. appears
+ * as a `.provider` in the catalog). Used to avoid switching the active brain to a
+ * search-only provider like "morph" when we merely load its key for warp-grep.
+ */
+function isBrainProvider(provider: string): boolean {
+  return INTERACTIVE_MODEL_CHOICES.some((choice) => choice.provider === provider);
+}
+
 function vaultEntryLabel(entry: Record<string, unknown>): string {
   return String(entry.name || entry.slug || entry.id || "vault entry");
 }
@@ -601,7 +608,7 @@ function secretFromPayload(payload: Record<string, unknown>, provider: string, e
   return null;
 }
 
-async function hydrateProviderKeyFromVault(
+export async function hydrateProviderKeyFromVault(
   ctx: InteractiveCommandContext,
   provider: string,
   envVar = providerKeyEnv(provider),
@@ -638,11 +645,33 @@ async function hydrateProviderKeyFromVault(
     const secret = secretFromPayload(payload, provider, envVar);
     if (!secret) return {ok: false, message: `Vault entry "${label}" did not contain a usable ${envVar} value.`};
     process.env[envVar] = secret;
-    await ctx.client.config({provider, apiKey: secret});
+    // Only register with the model brain for providers it actually serves.
+    // A non-brain provider like "morph" (warp-grep only, read straight from
+    // MORPH_API_KEY above) would otherwise switch the active brain provider to
+    // an unknown one and break the next turn.
+    if (isBrainProvider(provider)) {
+      await ctx.client.config({provider, apiKey: secret});
+    }
     return {ok: true, message: `Using Sift Vault entry "${label}" for ${envVar} this session.`};
   } catch (err) {
     return {ok: false, message: `Could not read Sift Vault entry "${label}": ${err instanceof Error ? err.message : String(err)}`};
   }
+}
+
+/**
+ * Before running an explorer turn, make sure the provider key the active mode
+ * needs is loaded — recovering it from Sift Vault (with an approval prompt) when
+ * it's missing, instead of letting the turn dead-end on "key not set". Only
+ * warp-grep mode has an out-of-band key (MORPH_API_KEY); scout/fanout key checks
+ * already happen at apply time. Returns a user-facing message worth surfacing,
+ * or null when nothing actionable happened (key already present).
+ */
+export async function ensureExplorerProviderKey(ctx: InteractiveCommandContext): Promise<string | null> {
+  if (process.env.SIFT_EXPLORER_WARPGREP === "1" && !process.env.MORPH_API_KEY) {
+    const res = await hydrateProviderKeyFromVault(ctx, "morph", "MORPH_API_KEY");
+    return /already set/i.test(res.message) ? null : res.message;
+  }
+  return null;
 }
 
 export function applyExplorerSettings(settings: ExplorerSettings): {ok: boolean; message: string} {
@@ -687,7 +716,13 @@ export function applyExplorerSettings(settings: ExplorerSettings): {ok: boolean;
     process.env.SIFT_EXPLORER_FANOUT = "0";
   }
 
+  savePrefs({explorer: {mode: settings.mode, modelId: settings.modelId, budget: settings.budget}});
   return {ok: true, message: `Explorer -> ${explorerSettingsSummary(settings)}`};
+}
+
+/** Persist the selected brain model so it survives a restart. */
+function persistModelChoice(choice: InteractiveModelChoice, effort?: string): void {
+  savePrefs({model: {id: choice.id, ...(effort ? {effort} : {})}});
 }
 
 async function selectCodexModel(ctx: InteractiveCommandContext, choice: InteractiveModelChoice, effort?: string): Promise<void> {
@@ -704,6 +739,7 @@ async function selectCodexModel(ctx: InteractiveCommandContext, choice: Interact
 
   const result = await ctx.client.config({provider: choice.provider, model: choice.model, ...(effort ? {effort} : {})});
   ctx.setModel(result.model);
+  persistModelChoice(choice, effort);
 
   if (status.account) {
     ctx.push({
@@ -740,6 +776,7 @@ export async function applyModelChoice(
   ctx: InteractiveCommandContext,
   choice: InteractiveModelChoice,
   effort?: string,
+  opts: {quiet?: boolean} = {},
 ): Promise<void> {
   if (choice.provider === "codex") {
     await selectCodexModel(ctx, choice, effort);
@@ -768,9 +805,35 @@ export async function applyModelChoice(
   try {
     const result = await ctx.client.config({provider: choice.provider, model: choice.model, ...(effort ? {effort} : {})});
     ctx.setModel(result.model);
-    ctx.push({role: "system", text: `model -> ${result.provider}/${result.model}${effortSuffix(effort)}`});
+    persistModelChoice(choice, effort);
+    if (!opts.quiet) ctx.push({role: "system", text: `model -> ${result.provider}/${result.model}${effortSuffix(effort)}`});
   } catch (err) {
     ctx.push({role: "system", text: `/model failed: ${err instanceof Error ? err.message : String(err)}`});
+  }
+}
+
+/**
+ * Restore the model saved by a prior session (see persistModelChoice) at
+ * startup, so the user's pick survives a restart even before they send a
+ * message. This restores the *selection* only — it sets the brain to the saved
+ * model/effort directly (including Codex) without triggering Codex sign-in or
+ * vault key prompts at launch. Missing auth/keys surface in the status line and
+ * on first use, exactly as they would for the default model.
+ */
+export async function restoreSavedModel(ctx: InteractiveCommandContext): Promise<void> {
+  const saved = loadPrefs().model;
+  if (!saved?.id) return;
+  const choice = resolveModelChoice(saved.id);
+  if (!choice) return;
+  try {
+    const result = await ctx.client.config({
+      provider: choice.provider,
+      model: choice.model,
+      ...(saved.effort ? {effort: saved.effort} : {}),
+    });
+    ctx.setModel(result.model);
+  } catch {
+    /* best-effort — leave the brain default in place */
   }
 }
 
@@ -852,6 +915,145 @@ function groupByStatus(items: Record<string, unknown>[]): string {
     lines.push(...group.map(formatWorkLine));
   }
   return lines.length ? lines.join("\n") : "No queued or active work items.";
+}
+
+/** Pull a list-of-strings off a work-item row, tolerating snake/camel + {text} shapes. */
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => (typeof entry === "string" ? entry : (entry as Record<string, unknown>)?.text))
+    .map((entry) => String(entry ?? "").trim())
+    .filter(Boolean);
+}
+
+/** Flatten a writeScope ({include:[…]} or a raw glob array) into its globs. */
+function scopeGlobs(value: unknown): string[] {
+  if (Array.isArray(value)) return stringList(value);
+  if (value && typeof value === "object") {
+    const include = (value as Record<string, unknown>).include;
+    if (Array.isArray(include)) return stringList(include);
+  }
+  return [];
+}
+
+/** Normalize one API work-item row into the board's display shape. */
+function normalizeWorkItem(row: Record<string, unknown>): WorkBoardItem {
+  const blockers = stringList(row.blockers);
+  const blockedReason = row.blockedReason ?? row.blocked_reason;
+  if (!blockers.length && typeof blockedReason === "string" && blockedReason.trim()) blockers.push(blockedReason.trim());
+  return {
+    id: String(row.id ?? ""),
+    title: String(row.title ?? "(untitled)"),
+    status: String(row.status ?? "unknown"),
+    agent: formatAgent(row.assignedAlias ?? row.assigned_alias),
+    owner: row.claimOwner ? String(row.claimOwner) : row.claim_owner ? String(row.claim_owner) : null,
+    prompt: (row.prompt ?? null) as string | null,
+    writeScope: scopeGlobs(row.writeScope ?? row.write_scope),
+    verification: stringList(row.verificationCommands ?? row.verification_commands),
+    acceptance: stringList(row.acceptanceCriteria ?? row.acceptance_criteria),
+    blockers,
+  };
+}
+
+/**
+ * Fetch the agent queue board in one place — agents (header fold) + work items
+ * (rows), normalized for the overlay. Shared by `/queue` and the `/work` hub so
+ * both read the same data (the extraction that keeps the hub modal-safe: it
+ * renders these rows in-overlay instead of shelling out to a command).
+ */
+export async function loadWorkBoard(ctx: InteractiveCommandContext): Promise<WorkBoardData> {
+  const [agentsResp, workResp] = await Promise.all([
+    ctx.apiClient.listAgents({includeDisabled: true}),
+    ctx.apiClient.listWorkItems({limit: 50}),
+  ]);
+  const agents = listFrom(agentsResp, "agents").map((agent) => ({
+    alias: String(agent.alias ?? agent.displayName ?? agent.id ?? "agent"),
+    status: String(agent.status ?? "unknown"),
+  }));
+  const items = listFrom(workResp, "workItems").map(normalizeWorkItem);
+  return {agents, items};
+}
+
+/**
+ * Code/test evidence for a free-text query against the repo covering the cwd.
+ * Shared by `/proof` and the `/work` hub's per-item evidence view.
+ */
+async function searchCodeEvidence(
+  ctx: InteractiveCommandContext,
+  query: string,
+  limit = 6,
+): Promise<{results: Record<string, unknown>[]; testHints: Record<string, unknown>[]}> {
+  const repos = listFrom(await ctx.apiClient.listCodeRepositories(), "repositories");
+  const repo =
+    repos.find((candidate) => typeof candidate.rootPath === "string" && ctx.cwd().startsWith(candidate.rootPath as string)) ??
+    repos[0];
+  const results = listFrom(
+    await ctx.apiClient.searchCode({query, repositoryId: repo?.id as string | undefined, limit}),
+    "results",
+  );
+  const testHints = results.filter((result) => String(result.filePath ?? "").match(/\.(test|spec|vitest)\./));
+  return {results, testHints};
+}
+
+function formatEvidence(heading: string, results: Record<string, unknown>[], testHints: Record<string, unknown>[]): string {
+  return [
+    heading,
+    results.length
+      ? results.map((result) => `- ${result.filePath}:${result.startLine ?? "?"} ${result.symbolName ?? ""}`.trimEnd()).join("\n")
+      : "No code search results.",
+    testHints.length
+      ? "\nTest evidence:\n" + testHints.map((result) => `- ${result.filePath}`).join("\n")
+      : "\nTest evidence: not found in top results.",
+  ].join("\n");
+}
+
+/**
+ * Evidence for a *work item* (the hub's `v` action). Builds a better query than
+ * a bare title by folding in the item's acceptance criteria and a prompt snippet,
+ * so the search reflects what the item is actually meant to do.
+ */
+export async function workItemEvidence(ctx: InteractiveCommandContext, item: WorkBoardItem): Promise<string> {
+  const query = [item.title, ...item.acceptance, (item.prompt ?? "").slice(0, 200)]
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(". ");
+  const {results, testHints} = await searchCodeEvidence(ctx, query, 6);
+  return formatEvidence(`Evidence: ${item.title}`, results, testHints);
+}
+
+/** Structured input for a handoff work item — shared by /handoff and the /work hub. */
+export interface HandoffWorkItemInput {
+  title: string;
+  agent: string;
+  files: string[];
+  acceptance: string[];
+  verify?: string[];
+}
+
+/**
+ * Create a work item from the live interactive context — the single payload
+ * builder behind both the `/handoff` command and the `/work` hub's handoff form,
+ * so neither drifts from the backend's expected shape (acceptanceCriteria as
+ * `{text, met}` objects, idempotency key, transcript tail). Returns the
+ * user-facing confirmation line.
+ */
+export async function createHandoffWorkItem(ctx: InteractiveCommandContext, input: HandoffWorkItemInput): Promise<string> {
+  const payload = {
+    title: input.title,
+    prompt: `Handoff from sift interactive.\n\n${ctx.conversationText().slice(-4000)}`,
+    assignedAlias: input.agent || "codex",
+    inputContext: {
+      cwd: ctx.cwd(),
+      files: input.files,
+      gitStatus: collectLocalGitSummary({cwd: ctx.cwd()}).status,
+      transcriptTail: ctx.conversationText().slice(-4000),
+    },
+    acceptanceCriteria: input.acceptance.map((text) => ({text, met: false})),
+    verificationCommands: input.verify ?? [],
+  };
+  const response = await ctx.apiClient.createWorkItem(payload, `interactive-${Date.now()}-${randomUUID()}`);
+  const workItem = getData(response).workItem as Record<string, unknown> | undefined;
+  return `Work item created: ${workItem?.id ?? "(unknown id)"} · ${input.title}`;
 }
 
 async function collectContext(ctx: InteractiveCommandContext, limit = 20): Promise<DailyReviewContext> {
@@ -1630,12 +1832,14 @@ export const interactiveCommands: InteractiveCommand[] = [
     name: "help",
     description: "show commands",
     run: (ctx) => {
-      const lines = interactiveCommands
-        .filter((cmd) => !cmd.hidden)
-        .map((cmd) => `/${cmd.name}${cmd.usage ? ` ${cmd.usage}` : ""} · ${cmd.description}`);
+      const sections = commandGroups().map((group) => {
+        const lines = group.commands
+          .map((cmd) => `  /${cmd.name}${cmd.usage ? ` ${cmd.usage}` : ""} · ${cmd.description}`);
+        return `${group.title}:\n${lines.join("\n")}`;
+      });
       ctx.push({
         role: "system",
-        text: `Commands:\n${lines.join("\n")}\n\nAlso: !<cmd> runs a shell command · Enter while busy queues a message.`,
+        text: `Commands:\n\n${sections.join("\n\n")}\n\nAlso: !<cmd> runs a shell command · Enter while busy queues a message.`,
       });
     },
   },
@@ -1833,7 +2037,7 @@ export const interactiveCommands: InteractiveCommand[] = [
     description: "pick model + reasoning effort",
     usage: "[id] [effort]",
     run: async (ctx, args) => {
-      // Allow a trailing effort token: `/model gpt-5.2 high`.
+      // Allow a trailing effort token: `/model gpt-5.4-mini high`.
       const KNOWN_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
       let effort: string | undefined;
       let parts = [...args];
@@ -1907,8 +2111,18 @@ export const interactiveCommands: InteractiveCommand[] = [
         return;
       }
       try {
-        await ctx.client.config({provider: args[0], apiKey: args.slice(1).join(" ")});
-        ctx.push({role: "system", text: `stored ${args[0]} API key for the model brain.`});
+        const provider = args[0];
+        const secret = args.slice(1).join(" ");
+        if (isBrainProvider(provider)) {
+          await ctx.client.config({provider, apiKey: secret});
+          ctx.push({role: "system", text: `stored ${provider} API key for the model brain.`});
+        } else {
+          // Search-only providers (e.g. morph for warp-grep) aren't served by the
+          // brain — set the env var directly instead of switching the brain to an
+          // unknown provider.
+          process.env[providerKeyEnv(provider)] = secret;
+          ctx.push({role: "system", text: `stored ${provider} key as ${providerKeyEnv(provider)} for this session.`});
+        }
       } catch (err) {
         ctx.push({role: "system", text: `/key failed: ${err instanceof Error ? err.message : String(err)}`});
       }
@@ -2109,7 +2323,36 @@ export const interactiveCommands: InteractiveCommand[] = [
     },
   },
   {
+    name: "work",
+    aliases: ["w"],
+    description: "the agent work-queue hub — board, plan, focus, proof, handoff",
+    run: async (ctx) => {
+      // Text fallback. The TUI intercepts bare /work (index.tsx) to open the
+      // arrow-navigable hub overlay; this body serves non-overlay contexts
+      // (scripts, pipes) by printing the board the overlay would show.
+      const {agents, items} = await loadWorkBoard(ctx);
+      const statuses = ["running", "claimed", "queued", "blocked", "needs_review"];
+      const lines: string[] = [
+        "Work",
+        agents.length ? agents.map((a) => `  ${a.alias} (${a.status})`).join("\n") : "  agents: none",
+        "",
+      ];
+      let any = false;
+      for (const status of statuses) {
+        const group = items.filter((item) => item.status === status);
+        if (!group.length) continue;
+        any = true;
+        lines.push(status, ...group.map((item) => `  - ${item.title} [${item.agent}]${item.owner ? ` · ${item.owner}` : ""}`));
+      }
+      if (!any) lines.push("No queued or active work items.");
+      ctx.push({role: "system", text: lines.join("\n")});
+    },
+  },
+  {
+    // Folded into the /work hub board; kept as a typeable + scriptable alias
+    // (hidden from /help + the slash palette). Same for /focus, /ship, /recap.
     name: "queue",
+    hidden: true,
     description: "show agent queue board",
     run: async (ctx) => {
       const [agents, workItems] = await Promise.all([
@@ -2139,33 +2382,19 @@ export const interactiveCommands: InteractiveCommand[] = [
         ctx.push({role: "system", text: "usage: /handoff <title> [--agent codex] [--files a,b] [--acceptance a;b]"});
         return;
       }
-      const files = splitList(flagValue(args, "--files") ?? "");
-      const acceptance = (flagValue(args, "--acceptance") ?? "")
-        .split(";")
-        .map((text) => text.trim())
-        .filter(Boolean)
-        .map((text) => ({text, met: false}));
-      const gitStatus = collectLocalGitSummary({cwd: ctx.cwd()}).status;
-      const payload = {
+      const msg = await createHandoffWorkItem(ctx, {
         title,
-        prompt: `Handoff from sift interactive.\n\n${ctx.conversationText().slice(-4000)}`,
-        assignedAlias: flagValue(args, "--agent") ?? "codex",
-        inputContext: {
-          cwd: ctx.cwd(),
-          files,
-          gitStatus,
-          transcriptTail: ctx.conversationText().slice(-4000),
-        },
-        acceptanceCriteria: acceptance,
-        verificationCommands: splitList(flagValue(args, "--verify") ?? ""),
-      };
-      const response = await ctx.apiClient.createWorkItem(payload, `interactive-${Date.now()}-${randomUUID()}`);
-      const workItem = getData(response).workItem as Record<string, unknown> | undefined;
-      ctx.push({role: "system", text: `Work item created: ${workItem?.id ?? "(unknown id)"} · ${title}`});
+        agent: flagValue(args, "--agent") ?? "codex",
+        files: splitList(flagValue(args, "--files") ?? ""),
+        acceptance: (flagValue(args, "--acceptance") ?? "").split(";").map((text) => text.trim()).filter(Boolean),
+        verify: splitList(flagValue(args, "--verify") ?? ""),
+      });
+      ctx.push({role: "system", text: msg});
     },
   },
   {
     name: "focus",
+    hidden: true,
     description: "show 3-5 priority actions",
     run: async (ctx) => {
       const context = await collectContext(ctx);
@@ -2182,18 +2411,8 @@ export const interactiveCommands: InteractiveCommand[] = [
         ctx.push({role: "system", text: "usage: /proof <claim>"});
         return;
       }
-      const repos = listFrom(await ctx.apiClient.listCodeRepositories(), "repositories");
-      const repo = repos.find((candidate) => typeof candidate.rootPath === "string" && ctx.cwd().startsWith(candidate.rootPath as string)) ?? repos[0];
-      const results = listFrom(await ctx.apiClient.searchCode({query: claim, repositoryId: repo?.id as string | undefined, limit: 6}), "results");
-      const testHints = results.filter((result) => String(result.filePath ?? "").match(/\.(test|spec|vitest)\./));
-      ctx.push({
-        role: "system",
-        text: [
-          `Proof: ${claim}`,
-          results.length ? results.map((result) => `- ${result.filePath}:${result.startLine ?? "?"} ${result.symbolName ?? ""}`).join("\n") : "No code search results.",
-          testHints.length ? "\nTest evidence:\n" + testHints.map((result) => `- ${result.filePath}`).join("\n") : "\nTest evidence: not found in top results.",
-        ].join("\n"),
-      });
+      const {results, testHints} = await searchCodeEvidence(ctx, claim, 6);
+      ctx.push({role: "system", text: formatEvidence(`Proof: ${claim}`, results, testHints)});
     },
   },
   {
@@ -2212,8 +2431,8 @@ export const interactiveCommands: InteractiveCommand[] = [
       ctx.push({role: "system", text: `Remembered: ${data.id ?? "stored"} (${category})`});
     },
   },
-  {name: "ship", description: "summarize diff and suggested tests", run: (ctx) => ctx.push({role: "system", text: summarizeShip(ctx)})},
-  {name: "recap", description: "cluster recent work into proof-backed themes", usage: "[90d]", run: (ctx, args) => ctx.push({role: "system", text: recap(ctx, args[0] ?? "90d")})},
+  {name: "ship", hidden: true, description: "summarize diff and suggested tests", run: (ctx) => ctx.push({role: "system", text: summarizeShip(ctx)})},
+  {name: "recap", hidden: true, description: "cluster recent work into proof-backed themes", usage: "[90d]", run: (ctx, args) => ctx.push({role: "system", text: recap(ctx, args[0] ?? "90d")})},
   {
     name: "crew",
     aliases: ["crews"],
@@ -2246,10 +2465,41 @@ export const interactiveCommands: InteractiveCommand[] = [
   },
 ];
 
+/**
+ * Display hierarchy for /help and the command palette — grouped by purpose
+ * instead of definition order. Commands not listed here still appear (appended
+ * under "Other"), so nothing is hidden by omission.
+ */
+const COMMAND_GROUPS: Array<{title: string; names: string[]}> = [
+  {title: "Session", names: ["help", "hotkeys", "status", "cwd", "copy", "clear", "compact", "threads", "quit"]},
+  {title: "Model & Explorer", names: ["model", "codex", "explorer", "key", "login"]},
+  {title: "Agents & branches", names: ["branches", "spawn", "merge", "rebase", "sendback", "reject", "queue", "handoff", "crew", "collab"]},
+  {title: "Planning & work", names: ["plan", "focus", "proof", "remember", "ship", "recap"]},
+  {title: "Tools & appearance", names: ["skills", "mermaid", "view", "theme", "sounds"]},
+];
+
+/** Visible commands in hierarchy order, grouped. Ungrouped ones land in "Other". */
+export function commandGroups(): Array<{title: string; commands: InteractiveCommand[]}> {
+  const byName = new Map(interactiveCommands.filter((command) => !command.hidden).map((command) => [command.name, command] as const));
+  const used = new Set<string>();
+  const groups = COMMAND_GROUPS
+    .map((group) => {
+      const commands = group.names
+        .map((name) => byName.get(name))
+        .filter((command): command is InteractiveCommand => Boolean(command));
+      commands.forEach((command) => used.add(command.name));
+      return {title: group.title, commands};
+    })
+    .filter((group) => group.commands.length > 0);
+  const leftovers = [...byName.values()].filter((command) => !used.has(command.name));
+  if (leftovers.length) groups.push({title: "Other", commands: leftovers});
+  return groups;
+}
+
 export function commandSuggestions(): Array<{name: string; desc: string}> {
-  return interactiveCommands
-    .filter((command) => !command.hidden)
-    .map((command) => ({name: command.name, desc: command.description}));
+  return commandGroups().flatMap((group) =>
+    group.commands.map((command) => ({name: command.name, desc: command.description})),
+  );
 }
 
 export async function runInteractiveCommand(ctx: InteractiveCommandContext, input: string): Promise<void> {

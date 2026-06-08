@@ -294,9 +294,9 @@ describe('model catalog + reasoning effort', () => {
       effort: input.effort,
     }));
     const {ctx, messages} = buildCtx({config});
-    const gpt52 = findModelChoice('gpt-5.2')!;
-    await applyModelChoice(ctx, gpt52, 'high');
-    expect(config).toHaveBeenCalledWith({provider: 'openrouter', model: 'openai/gpt-5.2', effort: 'high'});
+    const gptMini = findModelChoice('gpt-5.4-mini')!;
+    await applyModelChoice(ctx, gptMini, 'high');
+    expect(config).toHaveBeenCalledWith({provider: 'openrouter', model: 'openai/gpt-5.4-mini', effort: 'high'});
     expect(messages.at(-1)?.text).toContain('reasoning high');
   });
 

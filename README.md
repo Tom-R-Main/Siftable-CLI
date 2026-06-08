@@ -2,15 +2,23 @@
 
 Command-line interface for [Siftable](https://siftable.io) — an automation harness for human planning tasks, executable agent work queues, calendar, knowledge, code indexing, and CRM.
 
+Source: [github.com/Tom-R-Main/Siftable-CLI](https://github.com/Tom-R-Main/Siftable-CLI)
+
 ## Installation
 
+There's one package on the npm registry — install it with whatever you use:
+
 ```bash
-# Run directly
+# Run directly, no install
 npx @siftable/cli <command>
 
-# Or install globally
-npm install -g @siftable/cli
+# Install globally
+npm install  -g @siftable/cli     # npm
+bun  install -g @siftable/cli     # bun
+pnpm add     -g @siftable/cli     # pnpm
 ```
+
+This gives you the `sift` command (plus `siftable` and the `exf` compatibility alias).
 
 ## Quick Start
 
@@ -42,6 +50,23 @@ Users plan commitments with `sift tasks`. Agents execute bounded queue items wit
 `sift tasks` is for human planning: outcomes, priority, acceptance criteria, project linkage, and human approval. `sift work` is for executable agent packets: claim leases, assigned aliases, write scope, verification commands, artifacts, and review state. Link them with `sift work create --task <task-id>` instead of assigning an executor directly to a task.
 
 `sift` is the primary command. `siftable` is an explicit product alias, and `exf` remains as a compatibility alias for older automations.
+
+## Interactive Copilot (`sift interactive`)
+
+```bash
+sift interactive
+```
+
+A terminal copilot that acts on your filesystem and the Siftable work graph. It
+requires [Bun](https://bun.sh) (`curl -fsSL https://bun.sh/install | bash`); the
+command will tell you if Bun isn't installed.
+
+Performance-critical paths (context compaction, long-thread memory, filesystem
+scanning, merge orchestration) run through native [Zig](https://ziglang.org)
+modules loaded via Bun FFI. The published package ships prebuilt libraries for
+**macOS (Apple Silicon)** and **Linux (x64)** — those platforms get the fast
+native path by default. Every native module has a lockstep TypeScript fallback,
+so other platforms still work, just without the native acceleration.
 
 ## Command Reference
 
