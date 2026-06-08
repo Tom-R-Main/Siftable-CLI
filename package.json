@@ -1,6 +1,6 @@
 {
   "name": "@siftable/cli",
-  "version": "0.5.25",
+  "version": "0.5.26",
   "description": "Siftable CLI — human planning tasks, executable agent work queues, knowledge, and automation tools",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -177,6 +177,8 @@
     "interactive-tui/native/cell-render",
     "interactive-tui/scripts/build-native.sh",
     "interactive-tui/scripts/build-native-release.sh",
+    "interactive-tui/planning/**/*",
+    "interactive-tui/assets/**/*",
     "interactive-tui/skills/**/*",
     "interactive-tui/openfunction/**/*"
   ],
