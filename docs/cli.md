@@ -112,7 +112,7 @@ Top-level commands and diagnostics.
 Show Siftable CLI capabilities and readiness status
 
 #### `sift codebase`
-*Alias: `sift codebase index`*  
+*Alias: `sift codebase index`*
 Index a codebase (scan and upload files)
 
 **Arguments**
@@ -407,7 +407,7 @@ Delete a repository and all indexed data
 - `-y, --yes` — Skip confirmation
 
 #### `sift codebase incremental`
-*Alias: `sift codebase incremental-index`, `sift codebase index-incremental`*  
+*Alias: `sift codebase incremental-index`, `sift codebase index-incremental`*
 Incrementally index a codebase using git-aware changed files
 
 **Arguments**
