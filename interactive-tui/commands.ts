@@ -18,6 +18,7 @@ import {
   type MermaidRenderOptions,
 } from "./cellRender";
 import {discoverSkills, formatSkillsList, loadSkill} from "./skillsEngine";
+import {renderSkillPreflight} from "./skillPreflight";
 import {planAgentWork, buildAgentWorkGraph, resolveWorkItemRef, type RawWorkItem} from "./planning/agentWork";
 import {loadPlanOverlay, addDeclaredEdges, type DeclaredEdge} from "./planning/planStore";
 import {
@@ -1455,6 +1456,26 @@ const interactiveCommandsBase: InteractiveCommand[] = [
     },
   },
   {
+    name: "preflight",
+    description: "preview skill context for a prompt",
+    usage: "<prompt>",
+    run: async (ctx, args) => {
+      const prompt = textArg(args);
+      if (!prompt) {
+        ctx.push({role: "system", text: "usage: /preflight <prompt>"});
+        return;
+      }
+      const rendered = await renderSkillPreflight({
+        userText: prompt,
+        cwd: ctx.cwd(),
+        workspaceRoot: ctx.workspaceRoot(),
+        skills: discoverSkills({projectRoot: ctx.workspaceRoot() || undefined, cwd: ctx.cwd()}),
+        apiClient: ctx.apiClient,
+      });
+      ctx.push({role: "system", text: rendered.text ? `${rendered.summary}\n\n${rendered.text}` : rendered.summary});
+    },
+  },
+  {
     name: "mermaid",
     aliases: ["diagram"],
     description: "diagram something — ask the agent to draw it, or render a file / .mmd source",
@@ -2475,7 +2496,7 @@ const COMMAND_GROUPS: Array<{title: string; names: string[]}> = [
   {title: "Model & Explorer", names: ["model", "codex", "explorer", "key", "login"]},
   {title: "Agents & branches", names: ["branches", "spawn", "merge", "rebase", "sendback", "reject", "queue", "handoff", "crew", "collab"]},
   {title: "Planning & work", names: ["plan", "focus", "proof", "remember", "ship", "recap"]},
-  {title: "Tools & appearance", names: ["skills", "mermaid", "view", "theme", "sounds"]},
+  {title: "Tools & appearance", names: ["skills", "preflight", "mermaid", "view", "theme", "sounds"]},
 ];
 
 /** Visible commands in hierarchy order, grouped. Ungrouped ones land in "Other". */

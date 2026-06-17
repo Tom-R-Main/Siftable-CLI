@@ -20,10 +20,24 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export type SkillSource = "project" | "user" | "builtin";
+export type SkillPreflightProvider =
+  | "git_status"
+  | "repo_map"
+  | "sift_work"
+  | "recent_notes"
+  | "code_search_hints"
+  | "env_schema_names";
+
+export interface SkillPreflightSpec {
+  providers: SkillPreflightProvider[];
+  query?: string;
+  maxChars?: number;
+}
 
 export interface SkillInfo {
   name: string;
   description: string;
+  preflight?: SkillPreflightSpec;
   /** Absolute path to the SKILL.md file. */
   path: string;
   /** Absolute path to the skill directory (where bundled resources live). */
@@ -232,7 +246,7 @@ function parseSkillFile(skillMdPath: string, source: SkillSource): SkillInfo | n
   const meta = readSkillMeta(raw);
   if (!meta) return null;
   const dir = skillMdPath.slice(0, skillMdPath.length - (SKILL_FILE.length + 1));
-  return { name: meta.name, description: meta.description, path: skillMdPath, dir, source };
+  return { name: meta.name, description: meta.description, preflight: meta.preflight, path: skillMdPath, dir, source };
 }
 
 // --- Native frontmatter parser (Zig skill_meta) with a pure-TS fallback ------
@@ -286,7 +300,13 @@ const skillMetaEncoder = new TextEncoder();
 const skillMetaDecoder = new TextDecoder();
 
 /** Run the native parser; null when the dylib is unavailable OR it's not a skill. */
-function parseMetaNative(raw: string): { name: string; description: string } | null {
+interface ParsedSkillMeta {
+  name: string;
+  description: string;
+  preflight?: SkillPreflightSpec;
+}
+
+function parseMetaNative(raw: string): { name: string; description: string; preflight?: string; preflightQuery?: string; preflightMaxChars?: string } | null {
   const syms = skillMetaNative();
   if (!syms) return null;
   const content = skillMetaEncoder.encode(raw);
@@ -301,6 +321,9 @@ function parseMetaNative(raw: string): { name: string; description: string } | n
       return JSON.parse(skillMetaDecoder.decode(out.subarray(0, written[0]))) as {
         name: string;
         description: string;
+        preflight?: string;
+        preflightQuery?: string;
+        preflightMaxChars?: string;
       };
     }
     cap = Math.max(needed[0], cap * 2); // output too small — grow once and retry
@@ -309,16 +332,57 @@ function parseMetaNative(raw: string): { name: string; description: string } | n
 }
 
 /** Skill name/description: native (Zig) when the dylib is loaded, else the TS fallback. */
-function readSkillMeta(raw: string): { name: string; description: string } | null {
+function readSkillMeta(raw: string): ParsedSkillMeta | null {
+  const fm = parseFrontmatter(raw);
   const native = parseMetaNative(raw);
-  if (native) return native;
+  if (native) {
+    const name = (native.name || "").trim();
+    if (!name) return null;
+    return {
+      name,
+      description: (native.description || "").trim(),
+      preflight: parsePreflightSpec({
+        preflight: native.preflight ?? fm.preflight,
+        preflight_query: native.preflightQuery ?? fm.preflight_query,
+        preflight_max_chars: native.preflightMaxChars ?? fm.preflight_max_chars,
+      }),
+    };
+  }
   // A null from the native path is authoritative ONLY when the dylib actually
   // ran; if it's unavailable (node/jest), parse with the TS fallback instead.
   if (skillMetaNative()) return null;
-  const fm = parseFrontmatter(raw);
   const name = (fm.name || "").trim();
   if (!name) return null;
-  return { name, description: (fm.description || "").trim() };
+  return {
+    name,
+    description: (fm.description || "").trim(),
+    preflight: parsePreflightSpec(fm),
+  };
+}
+
+function parsePreflightSpec(values: Record<string, string | undefined>): SkillPreflightSpec | undefined {
+  const raw = values.preflight?.trim();
+  if (!raw) return undefined;
+  const allowed = new Set<SkillPreflightProvider>([
+    "git_status",
+    "repo_map",
+    "sift_work",
+    "recent_notes",
+    "code_search_hints",
+    "env_schema_names",
+  ]);
+  const providers = raw
+    .split(/[,\s]+/)
+    .map((value) => value.trim())
+    .filter((value): value is SkillPreflightProvider => allowed.has(value as SkillPreflightProvider));
+  if (providers.length === 0) return undefined;
+  const maxCharsRaw = values.preflight_max_chars;
+  const maxChars = maxCharsRaw && /^\d+$/.test(maxCharsRaw) ? Math.max(500, Math.min(12000, Number(maxCharsRaw))) : undefined;
+  return {
+    providers: [...new Set(providers)],
+    ...(values.preflight_query?.trim() ? { query: values.preflight_query.trim() } : {}),
+    ...(maxChars ? { maxChars } : {}),
+  };
 }
 
 /**

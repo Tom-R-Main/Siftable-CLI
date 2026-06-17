@@ -71,6 +71,28 @@ describe("discoverSkills", () => {
     expect(skills[0].description).toBe("OpenAI Codex CLI wrapper — three modes. (gstack)");
   });
 
+  it("parses scalar preflight metadata for dynamic context rendering", () => {
+    const project = tempRoot();
+    makeSkill(
+      project,
+      ".codex",
+      "zig",
+      [
+        "name: zig",
+        "description: Zig native work",
+        "preflight: git_status,repo_map,code_search_hints",
+        "preflight_query: zig native tui ffi",
+        "preflight_max_chars: 5000",
+      ].join("\n"),
+    );
+    const skills = discoverSkills({ projectRoot: project, cwd: project, home: tempRoot(), builtinDir: join(tempRoot(), "none") });
+    expect(skills[0].preflight).toEqual({
+      providers: ["git_status", "repo_map", "code_search_hints"],
+      query: "zig native tui ffi",
+      maxChars: 5000,
+    });
+  });
+
   it("lets project skills override user skills of the same name", () => {
     const project = tempRoot();
     const home = tempRoot();

@@ -68,6 +68,8 @@ import { estimateTokens } from "./threadEngine";
 import { setConfirmListener, resolveApproval, type ConfirmRequest, type ApprovalDecision } from "./confirmGate";
 import { normalizeImageForModel } from "./imageEngine";
 import { extractMermaidBlocks, renderMermaidSource, resolveCellRenderBin } from "./cellRender";
+import { discoverSkills } from "./skillsEngine";
+import { appendSkillPreflightContext, renderSkillPreflight } from "./skillPreflight";
 import {
   asExplorerActivityView,
   explorerToolCallText,
@@ -149,6 +151,7 @@ const COMPACTION_ENABLED = process.env.SIFT_CONTEXT_COMPACTION !== "0";
 type Msg = {
   role: "you" | "assistant" | "system" | "shell" | "tool";
   text: string;
+  streaming?: boolean;
   out?: string;
   explorer?: boolean;
 };
@@ -183,6 +186,7 @@ const WORD = /\w/;
 const MAX_COMPOSER_LINES = 12;
 const THEME_WINDOW = 7; // visible rows in the appearance picker (keeps it short)
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
+const STREAMING_TEXT_FLUSH_MS = 33;
 
 function appendTextPart(parts: ChatInputPart[], text: string) {
   if (!text) return;
@@ -654,6 +658,24 @@ function App() {
     } catch (err) {
       push({ role: "system", text: `vault key check failed: ${err instanceof Error ? err.message : String(err)}` });
     }
+    let sendInput = input;
+    try {
+      const preflight = await renderSkillPreflight({
+        userText: displayText,
+        cwd: commandCtx().cwd(),
+        workspaceRoot: commandCtx().workspaceRoot(),
+        skills: discoverSkills({ projectRoot: commandCtx().workspaceRoot(), cwd: commandCtx().cwd() }),
+        apiClient,
+      });
+      if (preflight.text) {
+        sendInput = appendSkillPreflightContext(input, preflight.text);
+        if (process.env.SIFT_SKILL_PREFLIGHT_DEBUG === "1") push({ role: "system", text: preflight.summary });
+      }
+    } catch (err) {
+      if (process.env.SIFT_SKILL_PREFLIGHT_DEBUG === "1") {
+        push({ role: "system", text: `skill preflight unavailable: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
     playSound("confirm");
     setBusy(true);
     setStatus("thinking… (Esc to stop)");
@@ -666,25 +688,59 @@ function App() {
     let assistantIdx: number | null = null;
     let lastToolIdx: number | null = null;
     const toolIndexes = new Map<string, number[]>();
+    let pendingAssistantIdx: number | null = null;
+    const pendingTextDeltas: string[] = [];
+    let textFlushTimer: ReturnType<typeof setTimeout> | null = null;
     let got = false;
     let done: SseEvent | null = null;
     const ensureAssistant = () => {
       if (assistantIdx === null) {
         assistantIdx = messages.length;
-        push({ role: "assistant", text: "" });
+        push({ role: "assistant", text: "", streaming: true });
       }
       return assistantIdx;
     };
+    const flushStreamingText = () => {
+      if (textFlushTimer) {
+        clearTimeout(textFlushTimer);
+        textFlushTimer = null;
+      }
+      if (pendingAssistantIdx === null || pendingTextDeltas.length === 0) return;
+      const idx = pendingAssistantIdx;
+      const text = pendingTextDeltas.join("");
+      pendingTextDeltas.length = 0;
+      pendingAssistantIdx = null;
+      setMessages(idx, "text", (t) => t + text);
+    };
+    const queueStreamingText = (idx: number, delta: string) => {
+      if (pendingAssistantIdx !== null && pendingAssistantIdx !== idx) {
+        flushStreamingText();
+      }
+      pendingAssistantIdx = idx;
+      pendingTextDeltas.push(delta);
+      if (!textFlushTimer) {
+        textFlushTimer = setTimeout(flushStreamingText, STREAMING_TEXT_FLUSH_MS);
+      }
+    };
+    const finalizeAssistantMarkdown = () => {
+      flushStreamingText();
+      for (let i = turnStart; i < messages.length; i += 1) {
+        if (messages[i]?.role === "assistant" && messages[i]?.streaming) {
+          setMessages(i, "streaming", false);
+        }
+      }
+    };
     try {
       await client.send(
-        input,
+        sendInput,
         (e) => {
           const delta = eventTextDelta(e);
           if (delta) {
             if (!got) setStatus("responding… (Esc to stop)");
             got = true;
-            setMessages(ensureAssistant(), "text", (t) => t + delta);
+            queueStreamingText(ensureAssistant(), delta);
           } else if (e.type === "tool_call" && e.toolCall) {
+            flushStreamingText();
             const label = toolCallLabel(e.toolCall.detail, e.toolCall.args);
             const text = isExplorerToolName(e.toolCall.name)
               ? explorerToolCallText(e.toolCall.name, e.toolCall.detail)
@@ -723,22 +779,27 @@ function App() {
             }
             setStatus("working… (Esc to stop)");
           } else if (e.type === "error") {
+            flushStreamingText();
             got = true;
             playSound("block");
             setMessages(ensureAssistant(), "text", (t) => `${t}\n\n[error: ${e.error ?? "unknown"}]`);
           } else if (e.type === "done") {
+            flushStreamingText();
             done = e;
           }
         },
         abortController.signal
       );
+      flushStreamingText();
       if (!got) {
         const fallback = done ? doneFallbackText(done) : "";
         setMessages(ensureAssistant(), "text", fallback || "(no response)");
       }
+      finalizeAssistantMarkdown();
       playSound("notify"); // turn complete
       autoRenderMermaid(turnStart);
     } catch (err) {
+      flushStreamingText();
       const aborted = err instanceof Error && err.name === "AbortError";
       playSound(aborted ? "panelClose" : "block");
       setMessages(ensureAssistant(), "text", (t) =>
@@ -746,7 +807,12 @@ function App() {
           ? `${t}${t ? "  " : ""}⏸ paused`
           : `[error: ${err instanceof Error ? err.message : String(err)}]`
       );
+      finalizeAssistantMarkdown();
     } finally {
+      if (textFlushTimer) {
+        clearTimeout(textFlushTimer);
+        textFlushTimer = null;
+      }
       abortController = null;
       setBusy(false);
       setStatus("ready");
@@ -1889,14 +1955,19 @@ function App() {
                 </Match>
                 <Match when={m.role === "assistant"}>
                   <text fg={theme.accentStrong}>siftable</text>
-                  <markdown
-                    content={m.text || "…"}
-                    streaming={true}
-                    syntaxStyle={syntaxStyle()}
-                    internalBlockMode="top-level"
-                    fg={theme.text}
-                    bg={theme.bg}
-                  />
+                  <Show
+                    when={!m.streaming}
+                    fallback={<text fg={theme.text}>{m.text || "…"}</text>}
+                  >
+                    <markdown
+                      content={m.text || "…"}
+                      streaming={false}
+                      syntaxStyle={syntaxStyle()}
+                      internalBlockMode="top-level"
+                      fg={theme.text}
+                      bg={theme.bg}
+                    />
+                  </Show>
                 </Match>
               </Switch>
               </box>

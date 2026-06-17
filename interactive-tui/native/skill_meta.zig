@@ -15,7 +15,8 @@
 //!     list) lines; take top-level `key: value` scalars only;
 //!   - a key with an empty value (e.g. `triggers:` introducing a list) is skipped;
 //!   - one leading and one trailing quote (`"` or `'`) are stripped from a value;
-//!   - `name` is required and non-empty; `description` is optional.
+//!   - `name` is required and non-empty; `description` is optional;
+//!   - optional preflight scalar metadata is preserved for the TypeScript host.
 
 const std = @import("std");
 
@@ -23,6 +24,9 @@ pub const Meta = struct {
     /// Slices borrow from the input content; valid for its lifetime.
     name: []const u8,
     description: []const u8,
+    preflight: []const u8,
+    preflight_query: []const u8,
+    preflight_max_chars: []const u8,
 };
 
 const BOM = "\xEF\xBB\xBF";
@@ -52,13 +56,16 @@ fn stripQuotes(v: []const u8) []const u8 {
     return out;
 }
 
-/// Parse `name`/`description` from SKILL.md content. Returns null when there is
+/// Parse scalar metadata from SKILL.md content. Returns null when there is
 /// no frontmatter or no non-empty `name` — the same "not a skill" signal the
 /// host treats as "skip this file".
 pub fn parseMeta(raw: []const u8) ?Meta {
     const block = frontmatterBlock(raw) orelse return null;
     var name: []const u8 = "";
     var description: []const u8 = "";
+    var preflight: []const u8 = "";
+    var preflight_query: []const u8 = "";
+    var preflight_max_chars: []const u8 = "";
 
     var lines = std.mem.splitScalar(u8, block, '\n');
     while (lines.next()) |raw_line| {
@@ -84,16 +91,28 @@ pub fn parseMeta(raw: []const u8) ?Meta {
             name = value;
         } else if (std.mem.eql(u8, key, "description")) {
             description = value;
+        } else if (std.mem.eql(u8, key, "preflight")) {
+            preflight = value;
+        } else if (std.mem.eql(u8, key, "preflight_query")) {
+            preflight_query = value;
+        } else if (std.mem.eql(u8, key, "preflight_max_chars")) {
+            preflight_max_chars = value;
         }
     }
 
     const trimmed_name = std.mem.trim(u8, name, " \t");
     if (trimmed_name.len == 0) return null;
-    return .{ .name = trimmed_name, .description = std.mem.trim(u8, description, " \t") };
+    return .{
+        .name = trimmed_name,
+        .description = std.mem.trim(u8, description, " \t"),
+        .preflight = std.mem.trim(u8, preflight, " \t"),
+        .preflight_query = std.mem.trim(u8, preflight_query, " \t"),
+        .preflight_max_chars = std.mem.trim(u8, preflight_max_chars, " \t"),
+    };
 }
 
 // ---------------------------------------------------------------------------
-// C-ABI export — writes `{"name":...,"description":...}` into a caller buffer.
+// C-ABI export — writes scalar metadata JSON into a caller buffer.
 // Status: 0 ok · 1 not-a-skill (no frontmatter / no name) · 2 output too small.
 // ---------------------------------------------------------------------------
 
@@ -175,6 +194,12 @@ pub export fn sift_skill_parse(
     w.appendJsonString(meta.name);
     w.append(",\"description\":");
     w.appendJsonString(meta.description);
+    w.append(",\"preflight\":");
+    w.appendJsonString(meta.preflight);
+    w.append(",\"preflightQuery\":");
+    w.appendJsonString(meta.preflight_query);
+    w.append(",\"preflightMaxChars\":");
+    w.appendJsonString(meta.preflight_max_chars);
     w.appendByte('}');
     needed_out.* = @intCast(w.needed);
     if (w.overflow) {
@@ -236,6 +261,22 @@ test "description is optional" {
     try testing.expectEqualStrings("", meta.description);
 }
 
+test "preserves optional preflight scalar metadata" {
+    const meta = parseMeta(
+        "---\n" ++
+            "name: zig\n" ++
+            "description: native work\n" ++
+            "preflight: git_status,repo_map,code_search_hints\n" ++
+            "preflight_query: zig native tui ffi\n" ++
+            "preflight_max_chars: 5000\n" ++
+            "---\n",
+    ).?;
+    try testing.expectEqualStrings("zig", meta.name);
+    try testing.expectEqualStrings("git_status,repo_map,code_search_hints", meta.preflight);
+    try testing.expectEqualStrings("zig native tui ffi", meta.preflight_query);
+    try testing.expectEqualStrings("5000", meta.preflight_max_chars);
+}
+
 test "tolerates a leading BOM" {
     const meta = parseMeta(BOM ++ "---\nname: bom\ndescription: d\n---\n").?;
     try testing.expectEqualStrings("bom", meta.name);
@@ -267,7 +308,7 @@ test "export writes escaped JSON and reports status" {
     const status = sift_skill_parse(src.ptr, @intCast(src.len), &out, out.len, &written, &needed);
     try testing.expectEqual(STATUS_OK, status);
     try testing.expectEqualStrings(
-        "{\"name\":\"demo\",\"description\":\"has \\\"quotes\\\" + \\\\ slash\"}",
+        "{\"name\":\"demo\",\"description\":\"has \\\"quotes\\\" + \\\\ slash\",\"preflight\":\"\",\"preflightQuery\":\"\",\"preflightMaxChars\":\"\"}",
         out[0..written],
     );
 }

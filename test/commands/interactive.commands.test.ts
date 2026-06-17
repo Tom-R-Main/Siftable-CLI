@@ -44,6 +44,7 @@ describe('interactive command registry', () => {
       'branches',
       'handoff',
       'plan',
+      'preflight',
       'proof',
       'remember',
     ]));
