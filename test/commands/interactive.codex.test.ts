@@ -314,6 +314,12 @@ describe('model catalog + reasoning effort', () => {
 
     await runInteractiveCommand(ctx, '/model openrouter/moonshotai/kimi-k2');
     expect(config).toHaveBeenLastCalledWith({provider: 'openrouter', model: 'moonshotai/kimi-k2'});
+
+    await runInteractiveCommand(ctx, '/model openrouter/z-ai/glm-5');
+    expect(config).toHaveBeenLastCalledWith({provider: 'openrouter', model: 'z-ai/glm-5.2'});
+
+    await runInteractiveCommand(ctx, '/model glm-5');
+    expect(config).toHaveBeenLastCalledWith({provider: 'openrouter', model: 'z-ai/glm-5.2'});
   });
 
   it('gates the direct-Anthropic door behind an API key instead of failing a turn', async () => {

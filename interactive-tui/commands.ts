@@ -165,6 +165,7 @@ export interface ExplorerBudgetChoice {
 // expose low/med/high (mapped to thinking budgets on the Anthropic path).
 const GPT5_EFFORTS = ["low", "medium", "high", "xhigh"];
 const CLAUDE_EFFORTS = ["low", "medium", "high"];
+const GLM_EFFORTS = ["high", "xhigh"];
 
 // Ordered by tier, not by when each was added: flagship brains first (best for
 // the main chat loop), then fast/scout models (Explorer defaults live here),
@@ -220,6 +221,26 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     auth: "api-key",
     reasoningEfforts: CLAUDE_EFFORTS,
     defaultEffort: "medium",
+  },
+  {
+    id: "openrouter/moonshotai/kimi-k2.7-code",
+    provider: "openrouter",
+    model: "moonshotai/kimi-k2.7-code",
+    label: "Kimi K2.7 Code",
+    description: "OpenRouter · coding-focused",
+    aliases: ["kimi-code", "kimi-k2.7-code", "k2.7-code", "moonshotai/kimi-k2.7-code"],
+    auth: "api-key",
+  },
+  {
+    id: "openrouter/z-ai/glm-5.2",
+    provider: "openrouter",
+    model: "z-ai/glm-5.2",
+    label: "GLM 5.2",
+    description: "OpenRouter · 1M-context coding/reasoning",
+    aliases: ["glm", "glm-5.2", "glm-5", "glm-5.1", "glm-5-turbo", "z-ai/glm-5.2"],
+    auth: "api-key",
+    reasoningEfforts: GLM_EFFORTS,
+    defaultEffort: "high",
   },
   // ── Fast / scout models (cheap, low-latency; Explorer defaults live here) ──
   {
@@ -855,13 +876,30 @@ async function selectModel(ctx: InteractiveCommandContext, raw: string, effort?:
   }
 }
 
+function normalizeAdHocOpenRouterModel(model: string): string {
+  const lower = model.trim().toLowerCase();
+  const glmLike =
+    lower === "glm"
+    || /^glm[-_.]/.test(lower)
+    || lower.includes("z-ai/glm")
+    || lower.includes("z.ai/glm")
+    || lower.includes("/glm-")
+    || lower.includes("/glm_")
+    || lower.includes(":glm-")
+    || lower.includes(":glm_");
+  if (glmLike) return "z-ai/glm-5.2";
+  return model;
+}
+
 function parseAdHocModel(raw: string): {provider?: string; model: string} {
   const id = raw.trim();
-  if (id.startsWith("openrouter/")) return {provider: "openrouter", model: id.slice("openrouter/".length)};
+  if (id.startsWith("openrouter/")) return {provider: "openrouter", model: normalizeAdHocOpenRouterModel(id.slice("openrouter/".length))};
   if (id.startsWith("openai/")) return {provider: "openai", model: id.slice("openai/".length)};
   if (id.startsWith("gemini/")) return {provider: "gemini", model: id.slice("gemini/".length)};
   if (id.startsWith("anthropic/") && !id.includes(".")) return {provider: "anthropic", model: id.slice("anthropic/".length)};
-  if (/^[a-z0-9_.-]+\/[a-z0-9_.:-]+$/i.test(id)) return {provider: "openrouter", model: id};
+  if (/^[a-z0-9_.-]+\/[a-z0-9_.:-]+$/i.test(id)) return {provider: "openrouter", model: normalizeAdHocOpenRouterModel(id)};
+  const normalized = normalizeAdHocOpenRouterModel(id);
+  if (normalized !== id) return {provider: "openrouter", model: normalized};
   return {model: id};
 }
 
