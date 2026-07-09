@@ -14,6 +14,9 @@ export abstract class WorkActionCommand extends BaseCommand {
     summary: Flags.string({description: 'Result summary'}),
     artifacts: Flags.string({description: 'Artifact refs JSON array'}),
     reason: Flags.string({description: 'Block or failure reason'}),
+    'verification-results': Flags.string({
+      description: 'Verification evidence JSON array: [{"command","exitCode","output"?}]',
+    }),
   };
 
   protected async runWorkAction(command: typeof WorkActionCommand, action: string, extra: Record<string, unknown> = {}): Promise<unknown> {
@@ -25,6 +28,7 @@ export abstract class WorkActionCommand extends BaseCommand {
       leaseSeconds: flags.lease,
       resultSummary: flags.summary,
       artifactRefs: this.parseJsonFlag<unknown[]>(flags.artifacts, 'artifacts'),
+      verificationResults: this.parseJsonFlag<unknown[]>(flags['verification-results'], 'verification-results'),
       blockedReason: flags.reason,
       failureReason: flags.reason,
       ...extra,

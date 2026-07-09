@@ -384,6 +384,135 @@ describe('work commands', () => {
     expect(json.workItem.status).toBe('done');
     expect(json.workItem.resultSummary).toBe('Tests passed');
   });
+
+  it('submits verification command evidence on completion', async () => {
+    mockFetch()
+      .on('POST', '/api/v1/work-items/work-001/complete')
+      .body((body) => {
+        const input = body as any;
+        return Array.isArray(input.verificationResults)
+          && input.verificationResults[0]?.command === 'npm test'
+          && input.verificationResults[0]?.exitCode === 0;
+      })
+      .reply(200, {
+        workItem: {
+          id: 'work-001',
+          title: 'Run verification',
+          status: 'done',
+          verificationState: 'commands_passed',
+        },
+      })
+      .install();
+
+    const result = await runCommand([
+      'work',
+      'complete',
+      'work-001',
+      '--verification-results',
+      '[{"command":"npm test","exitCode":0}]',
+      '--token',
+      'sift_pat_test',
+      '--json',
+    ]);
+    const json = JSON.parse(result.stdout);
+    expect(json.workItem.verificationState).toBe('commands_passed');
+  });
+
+  it('runs verification with an explicit hosted model override', async () => {
+    mockFetch()
+      .on('POST', '/api/v1/work-items/work-001/verify')
+      .body((body) => (body as any).repetitions === 2 && (body as any).model === 'provider/verifier-model')
+      .reply(200, {
+        run: {
+          id: 'run-001',
+          verdict: 'verified',
+          aggregateScore: 0.91,
+          verifierModel: 'provider/verifier-model',
+          repetitions: 2,
+          rationale: 'All criteria passed.',
+          criterionScores: [
+            {criterionText: 'Tests pass', score: 0.94, uncertainty: 0.01, passed: true},
+          ],
+        },
+      })
+      .install();
+
+    const result = await runCommand([
+      'work',
+      'verify',
+      'work-001',
+      '--reps',
+      '2',
+      '--model',
+      'provider/verifier-model',
+      '--token',
+      'sift_pat_test',
+      '--json',
+    ]);
+    const json = JSON.parse(result.stdout);
+    expect(json.verdict).toBe('verified');
+    expect(json.criterionScores[0].criterionText).toBe('Tests pass');
+  });
+
+  it('defers model selection to server policy when no override is provided', async () => {
+    mockFetch()
+      .on('POST', '/api/v1/work-items/work-001/verify')
+      .body((body) => !Object.prototype.hasOwnProperty.call(body, 'model'))
+      .reply(200, {
+        run: {
+          id: 'run-002',
+          verdict: 'needs_review',
+          aggregateScore: 0.65,
+          verifierModel: 'server-policy-model',
+          repetitions: 3,
+          criterionScores: [],
+        },
+      })
+      .install();
+
+    const result = await runCommand([
+      'work',
+      'verify',
+      'work-001',
+      '--token',
+      'sift_pat_test',
+      '--json',
+    ]);
+    const json = JSON.parse(result.stdout);
+    expect(json.verifierModel).toBe('server-policy-model');
+  });
+
+  it('lists verifier run history for a work item', async () => {
+    mockFetch()
+      .on('GET', '/api/v1/work-items/work-001/verifier-runs')
+      .reply(200, {
+        runs: [
+          {
+            id: 'run-001',
+            createdAt: '2026-07-08T12:00:00.000Z',
+            verdict: 'needs_review',
+            aggregateScore: 0.63,
+            verifierModel: 'server-policy-model',
+            repetitions: 3,
+            criterionScores: [],
+          },
+        ],
+      })
+      .install();
+
+    const result = await runCommand([
+      'work',
+      'verify',
+      'work-001',
+      '--history',
+      '--token',
+      'sift_pat_test',
+      '--json',
+    ]);
+    const json = JSON.parse(result.stdout);
+    expect(json).toHaveLength(1);
+    expect(json[0].verdict).toBe('needs_review');
+  });
 });
 
 describe('codex daily-review collect', () => {
