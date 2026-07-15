@@ -161,8 +161,10 @@ export interface ExplorerBudgetChoice {
   description: string;
 }
 
-// gpt-5.x (Codex + OpenRouter) expose low/med/high/xhigh. Anthropic and Gemini
-// expose low/med/high (mapped to thinking budgets on the Anthropic path).
+// GPT-5.6 Codex models add `max`; older gpt-5.x OpenRouter models expose
+// low/med/high/xhigh. Anthropic and Gemini expose low/med/high (mapped to
+// thinking budgets on the Anthropic path).
+const GPT56_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const GPT5_EFFORTS = ["low", "medium", "high", "xhigh"];
 const CLAUDE_EFFORTS = ["low", "medium", "high"];
 const GLM_EFFORTS = ["high", "xhigh"];
@@ -174,14 +176,36 @@ const GLM_EFFORTS = ["high", "xhigh"];
 export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
   // ── Flagship brains (reasoning-first) ──
   {
-    id: "codex/gpt-5.5",
+    id: "codex/gpt-5.6-sol",
     provider: "codex",
-    model: "gpt-5.5",
-    label: "GPT-5.5 Codex",
-    description: "ChatGPT/Codex account",
-    aliases: ["codex", "gpt", "gpt-5.5", "chatgpt"],
+    model: "gpt-5.6-sol",
+    label: "GPT-5.6 Sol",
+    description: "ChatGPT/Codex account · flagship for complex work",
+    aliases: ["gpt-5.6", "sol", "gpt-5.6-sol", "codex", "gpt", "chatgpt"],
     auth: "codex",
-    reasoningEfforts: GPT5_EFFORTS,
+    reasoningEfforts: GPT56_EFFORTS,
+    defaultEffort: "medium",
+  },
+  {
+    id: "codex/gpt-5.6-terra",
+    provider: "codex",
+    model: "gpt-5.6-terra",
+    label: "GPT-5.6 Terra",
+    description: "ChatGPT/Codex account · balanced for everyday work",
+    aliases: ["terra", "gpt-5.6-terra"],
+    auth: "codex",
+    reasoningEfforts: GPT56_EFFORTS,
+    defaultEffort: "medium",
+  },
+  {
+    id: "codex/gpt-5.6-luna",
+    provider: "codex",
+    model: "gpt-5.6-luna",
+    label: "GPT-5.6 Luna",
+    description: "ChatGPT/Codex account · fast, low-cost, high-volume",
+    aliases: ["luna", "gpt-5.6-luna"],
+    auth: "codex",
+    reasoningEfforts: GPT56_EFFORTS,
     defaultEffort: "medium",
   },
   {
@@ -218,6 +242,26 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     label: "Claude Sonnet 4.6",
     description: "OpenRouter",
     aliases: ["claude", "sonnet", "claude-sonnet-4.6"],
+    auth: "api-key",
+    reasoningEfforts: CLAUDE_EFFORTS,
+    defaultEffort: "medium",
+  },
+  {
+    id: "openrouter/x-ai/grok-4.5",
+    provider: "openrouter",
+    model: "x-ai/grok-4.5",
+    label: "Grok 4.5",
+    description: "OpenRouter · balanced agentic coding",
+    aliases: [
+      "grok",
+      "grok-4.5",
+      "grok-4-5",
+      "grok-45",
+      "x-ai/grok-4.5",
+      "x-ai/grok-4-5",
+      "openrouter:x-ai/grok-4.5",
+      "openrouter:x-ai/grok-4-5",
+    ],
     auth: "api-key",
     reasoningEfforts: CLAUDE_EFFORTS,
     defaultEffort: "medium",
@@ -2097,7 +2141,7 @@ export const interactiveCommands: InteractiveCommand[] = [
     usage: "[id] [effort]",
     run: async (ctx, args) => {
       // Allow a trailing effort token: `/model gpt-5.4-mini high`.
-      const KNOWN_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+      const KNOWN_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
       let effort: string | undefined;
       let parts = [...args];
       if (parts.length >= 2 && KNOWN_EFFORTS.has(parts[parts.length - 1].toLowerCase())) {
@@ -2228,7 +2272,7 @@ export const interactiveCommands: InteractiveCommand[] = [
       }
 
       if (sub === "on" || sub === "use") {
-        await selectModel(ctx, "codex/gpt-5.5");
+        await selectModel(ctx, "codex/gpt-5.6-sol");
         return;
       }
 
@@ -2263,7 +2307,7 @@ export const interactiveCommands: InteractiveCommand[] = [
         text:
           `Codex (ChatGPT engine)\n` +
           `account: ${acct}\n` +
-          `engine:  ${status.active ? `active · ${status.model}` : "not selected — run /model codex/gpt-5.5"}`,
+          `engine:  ${status.active ? `active · ${status.model}` : "not selected — run /model codex/gpt-5.6-sol"}`,
       });
     },
   },

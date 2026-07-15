@@ -21,12 +21,9 @@ export function createOpenAIAdapter(config?: Partial<AdapterConfig>): AIAdapter 
     );
   }
 
-  // Default to gpt-5.5 (released 2026-04-23). Per OpenAI's "Using GPT-5.5"
-  // guide, treat it as a new model family — defaults to medium reasoning
-  // effort and tends to produce more concise, efficient output. Override
-  // via config.model (e.g. "gpt-5.5-2026-04-23" for a pinned version, or
-  // an earlier model like "gpt-5.4" for back-compat).
-  const model = config?.model ?? "gpt-5.5";
+  // GPT-5.6 Sol is the current expert default. Override via config.model when
+  // a caller deliberately needs another GPT-5.6 tier or a retained mini model.
+  const model = config?.model ?? "gpt-5.6-sol";
   const systemPrompt = config?.systemPrompt ?? "You are a helpful assistant with access to tools. Use tools when they're relevant.";
   let previousResponseId: string | undefined;
 

@@ -102,7 +102,7 @@ The model picker (`/model`) is a two-stage overlay: choose a **model** (↑/↓)
 
 The catalog includes:
 
-- **GPT-5.5 Codex** (`codex/gpt-5.5`) — runs through your ChatGPT plan via the Codex engine (see below). Efforts: low/medium/high/xhigh.
+- **GPT-5.6 Sol, Terra, and Luna** — run through your ChatGPT plan via the Codex engine (see below). `/codex login` and `/codex on` select Sol by default. Efforts: low/medium/high/xhigh/max.
 - **Claude Opus 4.8** — two routes: **Door A** via OpenRouter (`openrouter/anthropic/claude-opus-4.8`), and **Door B** direct to the Anthropic API (`anthropic/claude-opus-4-8`, needs `ANTHROPIC_API_KEY`; alias `claude-api`). Efforts: low/medium/high.
 - **Claude Sonnet 4.6**, **Claude Haiku 4.5**, **Gemini 3.x Flash / Flash-Lite**, **GPT-5.4 mini / nano** — available via OpenRouter or first-party keys; the Flash/Haiku/mini/nano models are used as Explorer scouts.
 - **Morph v3 Large** — apply-only (fast edit application); not a conversational brain.

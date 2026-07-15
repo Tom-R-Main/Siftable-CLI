@@ -2,6 +2,8 @@ import {
   mapCodexNotification,
   codexApprovalResponse,
   buildApprovalRequest,
+  isCodexReasoningEffort,
+  resolveCodexBin,
 } from '../../interactive-tui/codexEngine';
 import {LocalControlClient} from '../../interactive-tui/localControlClient';
 import {
@@ -13,6 +15,22 @@ import {
   type InteractiveCommandContext,
 } from '../../interactive-tui/commands';
 import type {ControlTransport} from '../../interactive-tui/controlClient';
+
+describe('Codex binary resolution', () => {
+  it('prefers an explicit CODEX_BIN override', () => {
+    expect(resolveCodexBin({CODEX_BIN: '/custom/codex'}, 'darwin', () => true))
+      .toBe('/custom/codex');
+  });
+
+  it('uses the ChatGPT app runtime on macOS when available', () => {
+    expect(resolveCodexBin({}, 'darwin', () => true))
+      .toBe('/Applications/ChatGPT.app/Contents/Resources/codex');
+  });
+
+  it('falls back to PATH on other platforms', () => {
+    expect(resolveCodexBin({}, 'linux', () => false)).toBe('codex');
+  });
+});
 
 describe('mapCodexNotification (Codex app-server → BrainEvent)', () => {
   it('maps an agent message delta to a streamed token', () => {
@@ -122,7 +140,7 @@ describe('codex approval mapping (4-way decision → JSON-RPC)', () => {
 describe('LocalControlClient — Codex engine', () => {
   it('gates auth on the Codex account when Codex is the active engine', async () => {
     const authed = new LocalControlClient({
-      getModel: () => ({provider: 'codex', model: 'gpt-5.5'}),
+      getModel: () => ({provider: 'codex', model: 'gpt-5.6-sol'}),
       getCodexAccount: async () => ({type: 'chatgpt', email: 'tom@execufunction.com', planType: 'plus'}),
       getToken: () => undefined, // no Siftable token, but Codex is signed in
     });
@@ -132,7 +150,7 @@ describe('LocalControlClient — Codex engine', () => {
     expect(s.model?.provider).toBe('codex');
 
     const loggedOut = new LocalControlClient({
-      getModel: () => ({provider: 'codex', model: 'gpt-5.5'}),
+      getModel: () => ({provider: 'codex', model: 'gpt-5.6-sol'}),
       getCodexAccount: async () => null,
       getToken: () => 'sift_pat_x', // Siftable token present but Codex is not
     });
@@ -152,13 +170,13 @@ describe('LocalControlClient — Codex engine', () => {
 
   it('reports codexStatus with account and active flag', async () => {
     const client = new LocalControlClient({
-      getModel: () => ({provider: 'codex', model: 'gpt-5.5'}),
+      getModel: () => ({provider: 'codex', model: 'gpt-5.6-sol'}),
       getCodexAccount: async () => ({type: 'chatgpt', email: 'tom@execufunction.com', planType: 'plus'}),
     });
     const status = await client.codexStatus();
     expect(status.active).toBe(true);
     expect(status.account?.email).toBe('tom@execufunction.com');
-    expect(status.model).toBe('gpt-5.5');
+    expect(status.model).toBe('gpt-5.6-sol');
   });
 
   it('codexSetActive switches the brain provider on and off', async () => {
@@ -169,7 +187,7 @@ describe('LocalControlClient — Codex engine', () => {
     const client = new LocalControlClient({setModel});
 
     const on = await client.codexSetActive(true);
-    expect(setModel).toHaveBeenCalledWith({provider: 'codex', model: 'gpt-5.5'});
+    expect(setModel).toHaveBeenCalledWith({provider: 'codex', model: 'gpt-5.6-sol'});
     expect(on.provider).toBe('codex');
 
     const off = await client.codexSetActive(false);
@@ -184,7 +202,7 @@ describe('/codex command', () => {
       client: client as ControlTransport,
       apiClient: {} as any,
       baseUrl: 'in-process (test)',
-      model: () => 'gpt-5.5',
+      model: () => 'gpt-5.6-sol',
       setModel: jest.fn(),
       agents: () => [],
       queuedCount: () => 0,
@@ -202,7 +220,7 @@ describe('/codex command', () => {
 
   it('shows status with the signed-in account', async () => {
     const {ctx, messages} = buildCtx({
-      codexStatus: async () => ({installed: true, account: {type: 'chatgpt', email: 'tom@x.io', planType: 'plus'}, active: true, model: 'gpt-5.5'}),
+      codexStatus: async () => ({installed: true, account: {type: 'chatgpt', email: 'tom@x.io', planType: 'plus'}, active: true, model: 'gpt-5.6-sol'}),
       codexLogin: async () => ({verificationUri: 'u', userCode: 'c'}),
     });
     await runInteractiveCommand(ctx, '/codex status');
@@ -212,15 +230,36 @@ describe('/codex command', () => {
 
   it('activates the engine via the unified model-selection path on /codex on', async () => {
     const {ctx, messages} = buildCtx({
-      codexStatus: async () => ({installed: true, account: {type: 'chatgpt', email: 'tom@x.io'}, active: false, model: 'gpt-5.5'}),
+      codexStatus: async () => ({installed: true, account: {type: 'chatgpt', email: 'tom@x.io'}, active: false, model: 'gpt-5.6-sol'}),
       codexLogin: async () => ({verificationUri: 'u', userCode: 'c'}),
-      config: async (input) => ({provider: input.provider ?? 'codex', model: input.model ?? 'gpt-5.5'}),
+      config: async (input) => ({provider: input.provider ?? 'codex', model: input.model ?? 'gpt-5.6-sol'}),
     });
     await runInteractiveCommand(ctx, '/codex on');
     // Goes through applyModelChoice → client.config, same as picking it in /model.
-    expect(ctx.setModel).toHaveBeenCalledWith('gpt-5.5');
-    expect(messages.at(-1)?.text).toContain('codex/gpt-5.5');
+    expect(ctx.setModel).toHaveBeenCalledWith('gpt-5.6-sol');
+    expect(messages.at(-1)?.text).toContain('codex/gpt-5.6-sol');
     expect(messages.at(-1)?.text).toContain('signed in as tom@x.io');
+  });
+
+  it('activates GPT-5.6 Sol after a successful Codex login', async () => {
+    let finishLogin!: (value: {success: boolean; email?: string}) => void;
+    const completion = new Promise<{success: boolean; email?: string}>((resolve) => {
+      finishLogin = resolve;
+    });
+    const codexSetActive = jest.fn(async () => ({provider: 'codex', model: 'gpt-5.6-sol'}));
+    const {ctx, messages} = buildCtx({
+      codexStatus: async () => ({installed: true, account: null, active: false, model: 'gpt-5.6-sol'}),
+      codexLogin: async () => ({verificationUri: 'u', userCode: 'c', completion}),
+      codexSetActive,
+    });
+
+    await runInteractiveCommand(ctx, '/codex login');
+    finishLogin({success: true, email: 'tom@x.io'});
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(codexSetActive).toHaveBeenCalledWith(true);
+    expect(ctx.setModel).toHaveBeenCalledWith('gpt-5.6-sol');
+    expect(messages.at(-1)?.text).toContain('Codex is now your engine');
   });
 
   it('falls back gracefully when Codex ops are unavailable (daemon mode)', async () => {
@@ -237,7 +276,7 @@ describe('model catalog + reasoning effort', () => {
       client: client as ControlTransport,
       apiClient: {} as any,
       baseUrl: 'in-process (test)',
-      model: () => 'gpt-5.5',
+      model: () => 'gpt-5.6-sol',
       setModel: jest.fn(),
       agents: () => [],
       queuedCount: () => 0,
@@ -277,6 +316,47 @@ describe('model catalog + reasoning effort', () => {
     expect(direct?.auth).toBe('anthropic');
   });
 
+  it('catalogues GPT-5.6 Sol, Terra, and Luna through Codex with max reasoning', async () => {
+    const config = jest.fn(async (input: {provider?: string; model?: string; effort?: string}) => ({
+      provider: input.provider ?? 'codex',
+      model: input.model ?? 'gpt-5.6-sol',
+      effort: input.effort,
+    }));
+    const {ctx, messages} = buildCtx({
+      config,
+      codexStatus: async () => ({
+        installed: true,
+        account: {type: 'chatgpt', email: 'tom@x.io'},
+        active: true,
+        model: 'gpt-5.6-sol',
+      }),
+      codexLogin: jest.fn(),
+    });
+
+    expect(findModelChoice('gpt-5.6')).toMatchObject({provider: 'codex', model: 'gpt-5.6-sol'});
+    expect(findModelChoice('codex')).toMatchObject({provider: 'codex', model: 'gpt-5.6-sol'});
+    expect(findModelChoice('sol')?.model).toBe('gpt-5.6-sol');
+    expect(findModelChoice('terra')?.model).toBe('gpt-5.6-terra');
+    expect(findModelChoice('luna')?.model).toBe('gpt-5.6-luna');
+    for (const alias of ['sol', 'terra', 'luna']) {
+      expect(findModelChoice(alias)?.reasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+      expect(findModelChoice(alias)?.defaultEffort).toBe('medium');
+    }
+    expect(isCodexReasoningEffort('max')).toBe(true);
+
+    await runInteractiveCommand(ctx, '/model gpt-5.6-terra max');
+    expect(config).toHaveBeenCalledWith({provider: 'codex', model: 'gpt-5.6-terra', effort: 'max'});
+    expect(messages.at(-1)?.text).toContain('codex/gpt-5.6-terra · reasoning max');
+  });
+
+  it('retires legacy full-size GPT models while retaining GPT-5.4 Mini', () => {
+    const models = INTERACTIVE_MODEL_CHOICES.map((choice) => choice.model);
+    expect(models).not.toContain('gpt-5.5');
+    expect(models).not.toContain('gpt-5.4');
+    expect(models).not.toContain('gpt-5.3-codex-spark');
+    expect(models).toContain('openai/gpt-5.4-mini');
+  });
+
   it('catalogues cheap scout models across OpenRouter and first-party providers', () => {
     expect(findModelChoice('haiku')?.model).toBe('anthropic/claude-haiku-4.5');
     expect(findModelChoice('haiku-direct')?.provider).toBe('anthropic');
@@ -285,6 +365,27 @@ describe('model catalog + reasoning effort', () => {
     expect(findModelChoice('gpt-5.4-mini')?.model).toBe('openai/gpt-5.4-mini');
     expect(findModelChoice('openai-mini')?.provider).toBe('openai');
     expect(findModelChoice('nano')?.model).toBe('openai/gpt-5.4-nano');
+  });
+
+  it('catalogues Grok 4.5 and resolves catalogue-compatible aliases through OpenRouter', async () => {
+    const config = jest.fn(async (input: {provider?: string; model?: string; effort?: string}) => ({
+      provider: input.provider ?? 'openrouter',
+      model: input.model ?? 'x',
+      effort: input.effort,
+    }));
+    const {ctx, messages} = buildCtx({config});
+
+    expect(findModelChoice('grok')).toMatchObject({
+      id: 'openrouter/x-ai/grok-4.5',
+      provider: 'openrouter',
+      model: 'x-ai/grok-4.5',
+    });
+    expect(findModelChoice('grok-4-5')?.model).toBe('x-ai/grok-4.5');
+    expect(findModelChoice('openrouter:x-ai/grok-4.5')?.model).toBe('x-ai/grok-4.5');
+
+    await runInteractiveCommand(ctx, '/model grok-45 high');
+    expect(config).toHaveBeenCalledWith({provider: 'openrouter', model: 'x-ai/grok-4.5', effort: 'high'});
+    expect(messages.at(-1)?.text).toContain('openrouter/x-ai/grok-4.5');
   });
 
   it('forwards the chosen reasoning effort to config and reports it', async () => {

@@ -24,6 +24,7 @@
  * every approval DENIES — codex never acts unattended.
  */
 import { spawn, execSync, type ChildProcessByStdio } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import type { Readable, Writable } from 'node:stream';
 import type { BrainEvent, BrainAskResult, ChatInput } from './brain';
 import { requestApproval, isBypassing, type ApprovalDecision } from './confirmGate';
@@ -48,7 +49,7 @@ function defaultCodexSpawn(): CodexProc {
 }
 
 /** Default Codex model surfaced when the user switches the engine on. */
-export const CODEX_DEFAULT_MODEL = 'gpt-5.5';
+export const CODEX_DEFAULT_MODEL = 'gpt-5.6-sol';
 export const CODEX_PROVIDER = 'codex';
 
 export interface CodexAccount {
@@ -75,8 +76,22 @@ interface Pending {
   reject: (err: Error) => void;
 }
 
+const CHATGPT_APP_CODEX_BIN = '/Applications/ChatGPT.app/Contents/Resources/codex';
+
+export function resolveCodexBin(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  pathExists: (path: string) => boolean = existsSync,
+): string {
+  if (env.CODEX_BIN) return env.CODEX_BIN;
+  if (platform === 'darwin' && pathExists(CHATGPT_APP_CODEX_BIN)) {
+    return CHATGPT_APP_CODEX_BIN;
+  }
+  return 'codex';
+}
+
 function codexBin(): string {
-  return process.env.CODEX_BIN || 'codex';
+  return resolveCodexBin();
 }
 
 function openBrowser(url: string): void {
@@ -642,8 +657,12 @@ export async function ensureThread(c: CodexClient, model?: string): Promise<stri
  * back as {error} so the TUI renders a degraded state). The thread is reused
  * across calls so the conversation keeps context within the session.
  */
-/** Reasoning efforts Codex (gpt-5.x) accepts on a turn. `none`/`minimal` map to omitting it. */
-const CODEX_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
+/** Reasoning efforts Codex accepts on a turn. GPT-5.6 adds `max`; `none`/`minimal` map to omitting it. */
+const CODEX_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+
+export function isCodexReasoningEffort(effort: string | undefined): effort is string {
+  return typeof effort === 'string' && CODEX_EFFORTS.has(effort);
+}
 
 export async function codexAsk(
   input: ChatInput,
@@ -731,7 +750,7 @@ export async function codexAsk(
         excludeSlashTmp: false,
       },
       ...(opts.model ? { model: opts.model } : {}),
-      ...(opts.effort && CODEX_EFFORTS.has(opts.effort) ? { effort: opts.effort } : {}),
+      ...(isCodexReasoningEffort(opts.effort) ? { effort: opts.effort } : {}),
     })
       .then((ack) => {
         const turn = ack.turn as Record<string, JsonValue> | undefined;
