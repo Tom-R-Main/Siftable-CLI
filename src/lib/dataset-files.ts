@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import {parseTabularText} from '@siftable/tabular-import';
 
 export interface ParsedDatasetRows {
   headers: string[];
@@ -18,7 +19,7 @@ export function parseDatasetRows(filePath: string): ParsedDatasetRows {
     return parseJSON(text);
   }
 
-  return parseCSV(text);
+  return parseCSV(text, path.basename(filePath), extension === '.tsv' ? '\t' : ',');
 }
 
 export function collectHeaders(rows: Array<{fields: Record<string, unknown>}>): string[] {
@@ -111,64 +112,19 @@ function normalizeJsonRow(item: unknown, rowNumber: number): {fields: Record<str
   return {fields: candidate};
 }
 
-function parseCSV(text: string): ParsedDatasetRows {
-  text = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  const table: string[][] = [];
-  let i = 0;
-
-  while (i < text.length) {
-    const row: string[] = [];
-    while (i < text.length) {
-      if (text[i] === '"') {
-        i++;
-        let field = '';
-        while (i < text.length) {
-          if (text[i] === '"') {
-            if (text[i + 1] === '"') {
-              field += '"';
-              i += 2;
-            } else {
-              i++;
-              break;
-            }
-          } else {
-            field += text[i];
-            i++;
-          }
-        }
-        row.push(field);
-        if (text[i] === ',') i++;
-        else if (text[i] === '\n' || i >= text.length) {
-          i++;
-          break;
-        }
-      } else {
-        let field = '';
-        while (i < text.length && text[i] !== ',' && text[i] !== '\n') {
-          field += text[i];
-          i++;
-        }
-        row.push(field);
-        if (text[i] === ',') i++;
-        else {
-          i++;
-          break;
-        }
-      }
-    }
-    if (row.length > 0 && !(row.length === 1 && row[0] === '')) {
-      table.push(row);
-    }
+function parseCSV(text: string, filename: string, delimiter: ',' | '\t'): ParsedDatasetRows {
+  const parsed = parseTabularText(text, {filename, delimiter});
+  if (parsed.errors.length > 0) {
+    throw new Error(parsed.errors[0]?.message ?? 'Invalid delimited import file.');
   }
-
-  const headers = (table[0] ?? []).map((h) => h.trim());
-  const rows = table.slice(1).map((row) => {
+  const sheet = parsed.sheets[0];
+  const headers = sheet?.headers ?? [];
+  const rows = (sheet?.rows ?? []).map((row) => {
     const fields: Record<string, unknown> = {};
     headers.forEach((header, index) => {
-      fields[header] = row[index] ?? '';
+      fields[header] = row.cells[index] ?? '';
     });
     return {fields};
   });
-
   return {headers, rows};
 }
