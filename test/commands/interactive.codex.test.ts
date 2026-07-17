@@ -388,6 +388,32 @@ describe('model catalog + reasoning effort', () => {
     expect(messages.at(-1)?.text).toContain('openrouter/x-ai/grok-4.5');
   });
 
+  it('offers Kimi K3 and K2.6 while migrating retired K2 aliases to K2.6', async () => {
+    const config = jest.fn(async (input: {provider?: string; model?: string; effort?: string}) => ({
+      provider: input.provider ?? 'openrouter',
+      model: input.model ?? 'x',
+      effort: input.effort,
+    }));
+    const {ctx, messages} = buildCtx({config});
+
+    expect(findModelChoice('kimi')).toMatchObject({
+      provider: 'openrouter',
+      model: 'moonshotai/kimi-k3',
+      reasoningEfforts: ['max'],
+      defaultEffort: 'max',
+    });
+    expect(findModelChoice('kimi-k2.6')?.model).toBe('moonshotai/kimi-k2.6');
+    expect(findModelChoice('kimi-k2.7-code')?.model).toBe('moonshotai/kimi-k2.6');
+    const kimiModels = INTERACTIVE_MODEL_CHOICES
+      .map((choice) => choice.model)
+      .filter((model) => model.includes('kimi'));
+    expect(kimiModels).toEqual(['moonshotai/kimi-k3', 'moonshotai/kimi-k2.6']);
+
+    await runInteractiveCommand(ctx, '/model kimi');
+    expect(config).toHaveBeenCalledWith({provider: 'openrouter', model: 'moonshotai/kimi-k3'});
+    expect(messages.at(-1)?.text).toContain('openrouter/moonshotai/kimi-k3');
+  });
+
   it('forwards the chosen reasoning effort to config and reports it', async () => {
     const config = jest.fn(async (input: {provider?: string; model?: string; effort?: string}) => ({
       provider: input.provider ?? 'openrouter',
@@ -414,7 +440,7 @@ describe('model catalog + reasoning effort', () => {
     expect(messages.at(-1)?.text).toContain('openrouter/google/gemini-3.1-flash-lite');
 
     await runInteractiveCommand(ctx, '/model openrouter/moonshotai/kimi-k2');
-    expect(config).toHaveBeenLastCalledWith({provider: 'openrouter', model: 'moonshotai/kimi-k2'});
+    expect(config).toHaveBeenLastCalledWith({provider: 'openrouter', model: 'moonshotai/kimi-k2.6'});
 
     await runInteractiveCommand(ctx, '/model openrouter/z-ai/glm-5');
     expect(config).toHaveBeenLastCalledWith({provider: 'openrouter', model: 'z-ai/glm-5.2'});
