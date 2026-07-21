@@ -99,7 +99,7 @@ Link work to a planning task with `sift work create --task <task-id>` rather tha
 
 ## Command reference
 
-All 168 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
+All 169 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
 
 **Topics:** [General](#general) · [Agents](#agents) · [Auth](#auth) · [Calendar](#calendar) · [Code](#code) · [Codebase](#codebase) · [Codex](#codex) · [Datasets](#datasets) · [Documents](#documents) · [Events](#events) · [Evidence](#evidence) · [Graph](#graph) · [Notes](#notes) · [Organizations](#organizations) · [People](#people) · [Projects](#projects) · [Recipes](#recipes) · [Research](#research) · [Skills](#skills) · [Tasks](#tasks) · [Timeline](#timeline) · [Vault](#vault) · [Work](#work) · [Worker](#worker)
 
@@ -2054,6 +2054,7 @@ Mark a work item as blocked
 - `--owner <value>` — Claim owner identity
 - `--reason <value>` — Block or failure reason
 - `--summary <value>` — Result summary
+- `--verification-results <value>` — Verification evidence JSON array: [{"command","exitCode","output"?}]
 
 #### `sift work cancel`
 Cancel a work item
@@ -2070,6 +2071,7 @@ Cancel a work item
 - `--owner <value>` — Claim owner identity
 - `--reason <value>` — Block or failure reason
 - `--summary <value>` — Result summary
+- `--verification-results <value>` — Verification evidence JSON array: [{"command","exitCode","output"?}]
 
 #### `sift work claim`
 Claim the next available executable agent work item
@@ -2099,6 +2101,7 @@ Approve and complete an executable agent work item
 - `--owner <value>` — Claim owner identity
 - `--reason <value>` — Block or failure reason
 - `--summary <value>` — Result summary
+- `--verification-results <value>` — Verification evidence JSON array: [{"command","exitCode","output"?}]
 
 #### `sift work create`
 Create an executable agent work item
@@ -2132,6 +2135,7 @@ Mark a work item as failed
 - `--owner <value>` — Claim owner identity
 - `--reason <value>` — Block or failure reason
 - `--summary <value>` — Result summary
+- `--verification-results <value>` — Verification evidence JSON array: [{"command","exitCode","output"?}]
 
 #### `sift work get`
 Get executable agent work item details
@@ -2155,6 +2159,7 @@ Extend a work item lease
 - `--owner <value>` — Claim owner identity
 - `--reason <value>` — Block or failure reason
 - `--summary <value>` — Result summary
+- `--verification-results <value>` — Verification evidence JSON array: [{"command","exitCode","output"?}]
 
 #### `sift work list`
 List executable agent work items
@@ -2182,6 +2187,7 @@ Release a claimed work item back to the queue
 - `--owner <value>` — Claim owner identity
 - `--reason <value>` — Block or failure reason
 - `--summary <value>` — Result summary
+- `--verification-results <value>` — Verification evidence JSON array: [{"command","exitCode","output"?}]
 
 #### `sift work review`
 Mark executable agent work as needing human review
@@ -2198,6 +2204,7 @@ Mark executable agent work as needing human review
 - `--owner <value>` — Claim owner identity
 - `--reason <value>` — Block or failure reason
 - `--summary <value>` — Result summary
+- `--verification-results <value>` — Verification evidence JSON array: [{"command","exitCode","output"?}]
 
 #### `sift work start`
 Mark a work item as running
@@ -2214,6 +2221,20 @@ Mark a work item as running
 - `--owner <value>` — Claim owner identity
 - `--reason <value>` — Block or failure reason
 - `--summary <value>` — Result summary
+- `--verification-results <value>` — Verification evidence JSON array: [{"command","exitCode","output"?}]
+
+#### `sift work verify`
+Run the LLM verifier against a work item's acceptance criteria and record a verifier run. Promotion to verified requires passing verification-command evidence plus a verified verdict.
+
+**Arguments**
+
+- `id` *(required)* — Work item ID
+
+**Flags**
+
+- `--history` — List prior verifier runs instead of running a new one
+- `--model <value>` — Verifier model override
+- `--reps <value>` — Repeated evaluations per criterion (1-8, default 3)
 
 
 ### Worker
