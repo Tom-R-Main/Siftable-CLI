@@ -1,18 +1,19 @@
 /**
  * agentWork — adapter from the Siftable agent-work queue to planning-core.
  *
- * Work items don't carry an explicit `dependsOn`, so this module *derives* the
- * graph:
- *   - hard edges  — consecutive lane letters within a lane family
- *                   ("mergeMaster lane B" → "lane C" …), and queueRank order
- *                   among siblings under the same parent task.
+ * Work items carry authoritative dependency records from the queue. This
+ * adapter uses those records as the primary hard graph, then adds planning-only
+ * ordering hints:
+ *   - inferred edges — consecutive lane letters within a lane family
+ *                      ("mergeMaster lane B" → "lane C" …), and queueRank order
+ *                      among siblings under the same parent task.
  *   - soft edges  — resource coupling from overlapping write scope, shared lane
  *                   family, or shared parent task (the "these edit the same
  *                   files, serialize them" signal).
  *
- * The output feeds `computePlan`. Nothing here is persisted; the graph is
- * rebuilt on each `/plan work`. See planning/core.ts for the math and the
- * merge-master lanes for where claim-time enforcement consumes the clusters.
+ * The output feeds `computePlan`. Only the API's dependency records govern
+ * claimability; inferred and repo-local overlay edges are planning aids and are
+ * never presented as queue enforcement.
  */
 import {
   computePlan,
@@ -35,6 +36,24 @@ export interface RawWorkItem {
   queueRank?: number | null;
   writeScope?: Record<string, unknown> | null;
   verificationCommands?: string[] | null;
+  dependencies?: WorkItemDependency[] | null;
+  claimability?: WorkItemClaimability | null;
+}
+
+export type WorkDependencyGate = "done" | "commands_passed" | "verified";
+
+export interface WorkItemDependency {
+  predecessorId: string;
+  title?: string | null;
+  status?: string | null;
+  verificationState?: string | null;
+  requiredGate: WorkDependencyGate;
+  satisfied: boolean;
+}
+
+export interface WorkItemClaimability {
+  state: "ready" | "waiting" | "dependency_failed";
+  blockedBy: WorkItemDependency[];
 }
 
 const ACTIVE_STATUSES = new Set(["queued", "claimed", "running", "needs_review", "blocked", "ready"]);
@@ -120,10 +139,14 @@ interface BuiltGraph {
   included: RawWorkItem[];
   /** Hard edges the adapter derived this run (lane chains + sibling rank) — what `--apply` persists. */
   derivedHardEdges: HardDependency[];
+  /** Server-authoritative dependency edges that govern queue claimability. */
+  authoritativeHardEdges: HardDependency[];
+  /** Inferred and overlay edges used only to improve the rendered plan. */
+  planningOnlyHardEdges: HardDependency[];
 }
 
 export interface BuildOptions {
-  /** Durable precedence edges (from the plan overlay) to merge as hard edges. */
+  /** Planning-only precedence from the repo-local overlay. Never claim-enforced. */
   declaredEdges?: Array<{ source: string; target: string }>;
 }
 
@@ -144,11 +167,31 @@ export function buildAgentWorkGraph(items: RawWorkItem[], opts: BuildOptions = {
     };
   });
 
-  const byId = new Map(active.map((item) => [item.id, item]));
   const hardEdges: HardDependency[] = [];
+  const authoritativeHardEdges: HardDependency[] = [];
   const softEdges: SoftCoupling[] = [];
 
-  // 1. Lane chains → hard precedence (B before C before D …) per family.
+  // 1. API dependencies are authoritative: predecessor must clear requiredGate
+  // before this work item is claimable. Only active endpoints belong in the
+  // planning DAG; satisfied terminal predecessors remain visible in rendering.
+  const activeIds = new Set(active.map((item) => item.id));
+  const hardKeySet = new Set<string>();
+  for (const item of active) {
+    for (const dependency of item.dependencies ?? []) {
+      if (!activeIds.has(dependency.predecessorId)) continue;
+      const edge = {source: dependency.predecessorId, target: item.id};
+      const key = `${edge.source}->${edge.target}`;
+      if (hardKeySet.has(key)) continue;
+      hardKeySet.add(key);
+      hardEdges.push(edge);
+      authoritativeHardEdges.push(edge);
+    }
+  }
+  const wouldCreateCycle = (edge: HardDependency): boolean =>
+    transitiveReachability(active.map((item) => item.id), hardEdges)
+      .get(edge.target)?.has(edge.source) ?? false;
+
+  // 2. Lane chains → planning-only precedence (B before C before D …).
   const laneFamilies = new Map<string, Array<{ id: string; letter: string }>>();
   for (const item of active) {
     const lane = laneOf(String(item.title ?? ""));
@@ -160,11 +203,16 @@ export function buildAgentWorkGraph(items: RawWorkItem[], opts: BuildOptions = {
   for (const list of laneFamilies.values()) {
     list.sort((a, b) => LANE_LETTERS.indexOf(a.letter) - LANE_LETTERS.indexOf(b.letter));
     for (let i = 1; i < list.length; i += 1) {
-      hardEdges.push({ source: list[i - 1].id, target: list[i].id });
+      const edge = { source: list[i - 1].id, target: list[i].id };
+      const key = `${edge.source}->${edge.target}`;
+      if (!hardKeySet.has(key) && !wouldCreateCycle(edge)) {
+        hardKeySet.add(key);
+        hardEdges.push(edge);
+      }
     }
   }
 
-  // 2. Sibling work items under the same human task → queueRank precedence.
+  // 3. Sibling work items under the same human task → planning-only queueRank precedence.
   const byTask = new Map<string, RawWorkItem[]>();
   for (const item of active) {
     if (!item.taskId) continue;
@@ -178,27 +226,37 @@ export function buildAgentWorkGraph(items: RawWorkItem[], opts: BuildOptions = {
       .filter((item) => typeof item.queueRank === "number")
       .sort((a, b) => (a.queueRank as number) - (b.queueRank as number));
     for (let i = 1; i < ranked.length; i += 1) {
-      hardEdges.push({ source: ranked[i - 1].id, target: ranked[i].id });
+      const edge = { source: ranked[i - 1].id, target: ranked[i].id };
+      const key = `${edge.source}->${edge.target}`;
+      if (!hardKeySet.has(key) && !wouldCreateCycle(edge)) {
+        hardKeySet.add(key);
+        hardEdges.push(edge);
+      }
     }
   }
 
   // Snapshot what we derived (lane chains + sibling rank) before folding in the
   // durable overlay — `--apply` persists exactly these.
-  const derivedHardEdges = hardEdges.map((e) => ({ ...e }));
+  const authoritativeKeys = new Set(authoritativeHardEdges.map((edge) => `${edge.source}->${edge.target}`));
+  const derivedHardEdges = hardEdges
+    .filter((edge) => !authoritativeKeys.has(`${edge.source}->${edge.target}`))
+    .map((edge) => ({ ...edge }));
 
   // 2b. Declared precedence from the overlay → hard edges (active endpoints only,
   // deduped against derived edges). These are what `--apply`/`--after` recorded.
-  const activeIds = new Set(active.map((i) => i.id));
-  const hardKeySet = new Set(hardEdges.map((e) => `${e.source}->${e.target}`));
   for (const edge of opts.declaredEdges ?? []) {
     if (!activeIds.has(edge.source) || !activeIds.has(edge.target)) continue;
     const key = `${edge.source}->${edge.target}`;
-    if (hardKeySet.has(key)) continue;
+    if (hardKeySet.has(key) || wouldCreateCycle(edge)) continue;
     hardKeySet.add(key);
     hardEdges.push({ source: edge.source, target: edge.target });
   }
 
-  // 3. Soft resource couplings: shared scope / lane family / parent task.
+  const planningOnlyHardEdges = hardEdges
+    .filter((edge) => !authoritativeKeys.has(`${edge.source}->${edge.target}`))
+    .map((edge) => ({...edge}));
+
+  // 4. Soft resource couplings: shared scope / lane family / parent task.
   //
   // A resource coupling is *symmetric* ("these edit the same thing, serialize
   // them") — it has no inherent direction. We therefore (a) skip pairs already
@@ -244,7 +302,13 @@ export function buildAgentWorkGraph(items: RawWorkItem[], opts: BuildOptions = {
     }
   }
 
-  return { input: { tasks, hardEdges, softEdges }, included: active, derivedHardEdges };
+  return {
+    input: { tasks, hardEdges, softEdges },
+    included: active,
+    derivedHardEdges,
+    authoritativeHardEdges,
+    planningOnlyHardEdges,
+  };
 }
 
 /**
@@ -382,12 +446,35 @@ export function planToMermaid(snapshot: PlanSnapshot, hardEdges: HardDependency[
 }
 
 export function planAgentWork(items: RawWorkItem[], opts: BuildOptions = {}): RenderedPlan {
-  const { input, included } = buildAgentWorkGraph(items, opts);
+  const { input, included, planningOnlyHardEdges } = buildAgentWorkGraph(items, opts);
   const snapshot = computePlan(input);
   const titleOf = (id: string) => included.find((i) => i.id === id)?.title ?? id;
 
   const lines: string[] = [];
   lines.push(`Plan · agent work queue (${included.length} active item${included.length === 1 ? "" : "s"})`);
+
+  const itemsWithQueueGates = included.filter((item) =>
+    (item.dependencies?.length ?? 0) > 0 || (item.claimability && item.claimability.state !== "ready")
+  );
+  if (itemsWithQueueGates.length > 0) {
+    lines.push("");
+    lines.push("Authoritative queue gates (enforced by claim):");
+    for (const item of itemsWithQueueGates) {
+      const state = item.claimability?.state ?? "ready";
+      const dependencies = (item.dependencies ?? []).map((dependency) =>
+        `${dependency.title ?? dependency.predecessorId} [${dependency.requiredGate}${dependency.satisfied ? " ✓" : ""}]`
+      );
+      lines.push(`  - ${titleOf(item.id)} — ${state}${dependencies.length ? `; after ${dependencies.join(", ")}` : ""}`);
+    }
+  }
+
+  if (planningOnlyHardEdges.length > 0) {
+    lines.push("");
+    lines.push(
+      `Planning-only precedence: ${planningOnlyHardEdges.length} inferred/overlay edge(s); ` +
+      "these shape this plan but do not affect queue claimability."
+    );
+  }
 
   if (snapshot.status === "blocked") {
     lines.push("");

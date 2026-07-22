@@ -2247,9 +2247,12 @@ export const interactiveCommands: InteractiveCommand[] = [
         queueRank: (row.queueRank ?? row.queue_rank ?? null) as number | null,
         writeScope: (row.writeScope ?? row.write_scope ?? null) as Record<string, unknown> | null,
         verificationCommands: (row.verificationCommands ?? row.verification_commands ?? null) as string[] | null,
+        dependencies: (row.dependencies ?? null) as RawWorkItem["dependencies"],
+        claimability: (row.claimability ?? null) as RawWorkItem["claimability"],
       }));
 
-      // Durable precedence overlay lives in the repo (.siftable/plans/overlay.json).
+      // Planning-only precedence overlay lives in the repo. Authoritative queue
+      // dependencies arrive above from the API and are never written here.
       const root = ctx.workspaceRoot() || ctx.cwd();
       const overlay = loadPlanOverlay(root);
       const declaredEdges = overlay.declaredEdges.map((e) => ({source: e.source, target: e.target}));
@@ -2281,7 +2284,7 @@ export const interactiveCommands: InteractiveCommand[] = [
         } else {
           const {added} = addDeclaredEdges(root, taught);
           declaredEdges.push(...added.map((e) => ({source: e.source, target: e.target})));
-          notices.push(`Recorded ${added.length} precedence edge(s) from --after.`);
+          notices.push(`Recorded ${added.length} planning-only precedence edge(s) from --after.`);
         }
       }
 
@@ -2299,7 +2302,7 @@ export const interactiveCommands: InteractiveCommand[] = [
             ? `Applied: persisted ${added.length} derived precedence edge(s) to ${root}/.siftable/plans/overlay.json`
             : "Applied: no new derived edges to persist (already recorded).",
         );
-        notices.push("Note: work-item queue rank is not writable via the API; precedence is enforced at spawn time by Gate A and reflected in the order below.");
+        notices.push("Note: overlay edges shape the plan only; only API work-item dependencies affect claimability.");
       }
 
       const {text, mermaid} = planAgentWork(items, {declaredEdges});

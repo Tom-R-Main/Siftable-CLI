@@ -66,6 +66,7 @@ describe('agents commands', () => {
 
 describe('work commands', () => {
   it('creates executable work linked to a human planning task', async () => {
+    const predecessorId = '11111111-1111-4111-8111-111111111111';
     mockFetch()
       .on('POST', '/api/v1/work-items')
       .body((body) => {
@@ -74,7 +75,9 @@ describe('work commands', () => {
           && input.taskId === 'task-001'
           && input.assignedAlias === 'codex'
           && Array.isArray(input.verificationCommands)
-          && input.verificationCommands[0] === 'npm run build';
+          && input.verificationCommands[0] === 'npm run build'
+          && input.dependsOn?.[0]?.workItemId === predecessorId
+          && input.dependsOn?.[0]?.requiredGate === 'verified';
       })
       .reply(201, {
         workItem: {
@@ -98,6 +101,8 @@ describe('work commands', () => {
       'codex',
       '--verify',
       'npm run build;npm test',
+      '--depends-on',
+      `[{"workItemId":"${predecessorId}","requiredGate":"verified"}]`,
       '--token',
       'sift_pat_test',
       '--json',
@@ -106,6 +111,24 @@ describe('work commands', () => {
     const json = JSON.parse(result.stdout);
     expect(json.workItem.id).toBe('work-new');
     expect(json.workItem.taskId).toBe('task-001');
+  });
+
+  it('rejects non-UUID dependency references before calling the API', async () => {
+    mockFetch().install();
+    const result = await runCommand([
+      'work',
+      'create',
+      '--title',
+      'Unsafe dependency',
+      '--depends-on',
+      '[{"workItemId":"QUEUE-DEP-01"}]',
+      '--token',
+      'sift_pat_test',
+      '--json',
+    ]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain('workItemId must be a UUID');
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('sends workspace context when creating executable work', async () => {
@@ -223,6 +246,12 @@ describe('work commands', () => {
           title: 'Run verification',
           status: 'running',
           claimToken: 'should-not-render',
+          dependencies: [{
+            predecessorId: '11111111-1111-4111-8111-111111111111',
+            requiredGate: 'commands_passed',
+            satisfied: false,
+          }],
+          claimability: {state: 'waiting', blockedBy: []},
         },
       })
       .install();
@@ -230,7 +259,71 @@ describe('work commands', () => {
     const result = await runCommand(['work', 'get', 'work-001', '--token', 'sift_pat_test', '--json']);
     const json = JSON.parse(result.stdout);
     expect(json.claimToken).toBeUndefined();
+    expect(json.dependencies[0].requiredGate).toBe('commands_passed');
+    expect(json.claimability.state).toBe('waiting');
     expect(result.stdout).not.toContain('should-not-render');
+  });
+
+  it('reads authoritative dependencies and claimability', async () => {
+    mockFetch()
+      .on('GET', '/api/v1/work-items/22222222-2222-4222-8222-222222222222')
+      .reply(200, {
+        workItem: {
+          id: '22222222-2222-4222-8222-222222222222',
+          dependencies: [{
+            predecessorId: '11111111-1111-4111-8111-111111111111',
+            requiredGate: 'verified',
+            satisfied: false,
+          }],
+          claimability: {state: 'waiting', blockedBy: []},
+        },
+      })
+      .install();
+    const result = await runCommand([
+      'work', 'dependencies', 'get', '22222222-2222-4222-8222-222222222222',
+      '--token', 'sift_pat_test', '--json',
+    ]);
+    const json = JSON.parse(result.stdout);
+    expect(json.workItemId).toBe('22222222-2222-4222-8222-222222222222');
+    expect(json.dependencies[0].requiredGate).toBe('verified');
+    expect(json.claimability.state).toBe('waiting');
+  });
+
+  it('atomically replaces authoritative dependencies', async () => {
+    const predecessorId = '11111111-1111-4111-8111-111111111111';
+    mockFetch()
+      .on('PUT', '/api/v1/work-items/22222222-2222-4222-8222-222222222222/dependencies')
+      .body((body) => (body as any).dependsOn?.[0]?.workItemId === predecessorId
+        && (body as any).dependsOn?.[0]?.requiredGate === 'done')
+      .reply(200, {workItem: {id: '22222222-2222-4222-8222-222222222222'}})
+      .install();
+    const result = await runCommand([
+      'work', 'dependencies', 'set', '22222222-2222-4222-8222-222222222222',
+      '--depends-on', `[{"workItemId":"${predecessorId}","requiredGate":"done"}]`,
+      '--token', 'sift_pat_test', '--json',
+    ]);
+    expect(JSON.parse(result.stdout).workItem.id).toBe('22222222-2222-4222-8222-222222222222');
+  });
+
+  it('gets and updates the project dependency policy', async () => {
+    const projectId = '33333333-3333-4333-8333-333333333333';
+    mockFetch()
+      .on('GET', `/api/v1/projects/${projectId}/work-dependency-policy`)
+      .reply(200, {defaultRequiredGate: 'commands_passed'})
+      .on('PUT', `/api/v1/projects/${projectId}/work-dependency-policy`)
+      .body((body) => (body as any).defaultRequiredGate === 'verified')
+      .reply(200, {defaultRequiredGate: 'verified'})
+      .install();
+    const read = await runCommand([
+      'work', 'dependency-policy', 'get', '--project', projectId,
+      '--token', 'sift_pat_test', '--json',
+    ]);
+    expect(JSON.parse(read.stdout).defaultRequiredGate).toBe('commands_passed');
+    const update = await runCommand([
+      'work', 'dependency-policy', 'set', '--project', projectId, '--gate', 'verified',
+      '--token', 'sift_pat_test', '--json',
+    ]);
+    expect(JSON.parse(update.stdout).defaultRequiredGate).toBe('verified');
   });
 
   it('claims work with an owner lease', async () => {

@@ -1,6 +1,7 @@
 import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
 import {renderTable} from '../../lib/output.js';
+import {formatClaimability, formatDependencies} from '../../lib/work-dependencies.js';
 
 function redactClaimToken(workItem: Record<string, unknown>): Record<string, unknown> {
   const {claimToken: _claimToken, ...safeWorkItem} = workItem;
@@ -43,6 +44,8 @@ export default class WorkList extends BaseCommand {
         }},
         {key: 'queueRank', header: 'Rank'},
         {key: 'claimOwner', header: 'Owner', get: (r) => (r.claimOwner as string) || '-'},
+        {key: 'dependencies', header: 'Depends on', get: (r) => formatDependencies(r.dependencies)},
+        {key: 'claimability', header: 'Claimability', get: (r) => formatClaimability(r.claimability)},
       ]);
     }
     return workItems;

@@ -12284,14 +12284,14 @@
           "type": "option"
         },
         "owner": {
-          "description": "Claim owner identity",
+          "description": "Claim owner identity (required for lease-owned transitions)",
           "name": "owner",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
         "claim-token": {
-          "description": "Claim token returned by work claim",
+          "description": "Claim token returned by work claim (required for lease-owned transitions)",
           "name": "claim-token",
           "hasDynamicHelp": false,
           "multiple": false,
@@ -12371,13 +12371,13 @@
           "type": "option"
         },
         "owner": {
-          "description": "Claim owner identity",
+          "description": "Claim owner identity (required for lease-owned transitions)",
           "input": [],
           "multiple": false,
           "type": "option"
         },
         "claim-token": {
-          "description": "Claim token returned by work claim",
+          "description": "Claim token returned by work claim (required for lease-owned transitions)",
           "input": [],
           "multiple": false,
           "type": "option"
@@ -12472,14 +12472,14 @@
           "type": "option"
         },
         "owner": {
-          "description": "Claim owner identity",
+          "description": "Claim owner identity (required for lease-owned transitions)",
           "name": "owner",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
         "claim-token": {
-          "description": "Claim token returned by work claim",
+          "description": "Claim token returned by work claim (required for lease-owned transitions)",
           "name": "claim-token",
           "hasDynamicHelp": false,
           "multiple": false,
@@ -12559,13 +12559,13 @@
           "type": "option"
         },
         "owner": {
-          "description": "Claim owner identity",
+          "description": "Claim owner identity (required for lease-owned transitions)",
           "input": [],
           "multiple": false,
           "type": "option"
         },
         "claim-token": {
-          "description": "Claim token returned by work claim",
+          "description": "Claim token returned by work claim (required for lease-owned transitions)",
           "input": [],
           "multiple": false,
           "type": "option"
@@ -12750,14 +12750,14 @@
           "type": "option"
         },
         "owner": {
-          "description": "Claim owner identity",
+          "description": "Claim owner identity (required for lease-owned transitions)",
           "name": "owner",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
         "claim-token": {
-          "description": "Claim token returned by work claim",
+          "description": "Claim token returned by work claim (required for lease-owned transitions)",
           "name": "claim-token",
           "hasDynamicHelp": false,
           "multiple": false,
@@ -12837,13 +12837,13 @@
           "type": "option"
         },
         "owner": {
-          "description": "Claim owner identity",
+          "description": "Claim owner identity (required for lease-owned transitions)",
           "input": [],
           "multiple": false,
           "type": "option"
         },
         "claim-token": {
-          "description": "Claim token returned by work claim",
+          "description": "Claim token returned by work claim (required for lease-owned transitions)",
           "input": [],
           "multiple": false,
           "type": "option"
@@ -13009,6 +13009,13 @@
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
+        },
+        "depends-on": {
+          "description": "Dependency JSON array: [{\"workItemId\":\"<uuid>\",\"requiredGate\"?:\"done\"|\"commands_passed\"|\"verified\"}]",
+          "name": "depends-on",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
         }
       },
       "hasDynamicHelp": false,
@@ -13025,6 +13032,303 @@
         "commands",
         "work",
         "create.js"
+      ]
+    },
+    "work:dependencies:get": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Work item UUID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Get authoritative dependencies and claimability for a work item",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:dependencies:get",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "dependencies",
+        "get.js"
+      ]
+    },
+    "work:dependencies:set": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Work item UUID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Atomically replace the authoritative dependencies for a work item",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "depends-on": {
+          "description": "Dependency JSON array; pass [] to clear dependencies",
+          "name": "depends-on",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:dependencies:set",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "dependencies",
+        "set.js"
+      ]
+    },
+    "work:dependency-policy:get": {
+      "aliases": [],
+      "args": {},
+      "description": "Get a project default work-dependency gate",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "project": {
+          "description": "Project UUID",
+          "name": "project",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:dependency-policy:get",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "dependency-policy",
+        "get.js"
+      ]
+    },
+    "work:dependency-policy:set": {
+      "aliases": [],
+      "args": {},
+      "description": "Set a project default work-dependency gate",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "project": {
+          "description": "Project UUID",
+          "name": "project",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "gate": {
+          "description": "Default gate for dependencies that omit requiredGate",
+          "name": "gate",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "done",
+            "commands_passed",
+            "verified"
+          ],
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:dependency-policy:set",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "dependency-policy",
+        "set.js"
       ]
     },
     "work:fail": {
@@ -13078,14 +13382,14 @@
           "type": "option"
         },
         "owner": {
-          "description": "Claim owner identity",
+          "description": "Claim owner identity (required for lease-owned transitions)",
           "name": "owner",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
         "claim-token": {
-          "description": "Claim token returned by work claim",
+          "description": "Claim token returned by work claim (required for lease-owned transitions)",
           "name": "claim-token",
           "hasDynamicHelp": false,
           "multiple": false,
@@ -13165,13 +13469,13 @@
           "type": "option"
         },
         "owner": {
-          "description": "Claim owner identity",
+          "description": "Claim owner identity (required for lease-owned transitions)",
           "input": [],
           "multiple": false,
           "type": "option"
         },
         "claim-token": {
-          "description": "Claim token returned by work claim",
+          "description": "Claim token returned by work claim (required for lease-owned transitions)",
           "input": [],
           "multiple": false,
           "type": "option"
@@ -13333,14 +13637,14 @@
           "type": "option"
         },
         "owner": {
-          "description": "Claim owner identity",
+          "description": "Claim owner identity (required for lease-owned transitions)",
           "name": "owner",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
         "claim-token": {
-          "description": "Claim token returned by work claim",
+          "description": "Claim token returned by work claim (required for lease-owned transitions)",
           "name": "claim-token",
           "hasDynamicHelp": false,
           "multiple": false,
@@ -13420,13 +13724,13 @@
           "type": "option"
         },
         "owner": {
-          "description": "Claim owner identity",
+          "description": "Claim owner identity (required for lease-owned transitions)",
           "input": [],
           "multiple": false,
           "type": "option"
         },
         "claim-token": {
-          "description": "Claim token returned by work claim",
+          "description": "Claim token returned by work claim (required for lease-owned transitions)",
           "input": [],
           "multiple": false,
           "type": "option"
@@ -13617,14 +13921,14 @@
           "type": "option"
         },
         "owner": {
-          "description": "Claim owner identity",
+          "description": "Claim owner identity (required for lease-owned transitions)",
           "name": "owner",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
         "claim-token": {
-          "description": "Claim token returned by work claim",
+          "description": "Claim token returned by work claim (required for lease-owned transitions)",
           "name": "claim-token",
           "hasDynamicHelp": false,
           "multiple": false,
@@ -13704,13 +14008,13 @@
           "type": "option"
         },
         "owner": {
-          "description": "Claim owner identity",
+          "description": "Claim owner identity (required for lease-owned transitions)",
           "input": [],
           "multiple": false,
           "type": "option"
         },
         "claim-token": {
-          "description": "Claim token returned by work claim",
+          "description": "Claim token returned by work claim (required for lease-owned transitions)",
           "input": [],
           "multiple": false,
           "type": "option"
@@ -13805,14 +14109,14 @@
           "type": "option"
         },
         "owner": {
-          "description": "Claim owner identity",
+          "description": "Claim owner identity (required for lease-owned transitions)",
           "name": "owner",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
         "claim-token": {
-          "description": "Claim token returned by work claim",
+          "description": "Claim token returned by work claim (required for lease-owned transitions)",
           "name": "claim-token",
           "hasDynamicHelp": false,
           "multiple": false,
@@ -13892,13 +14196,13 @@
           "type": "option"
         },
         "owner": {
-          "description": "Claim owner identity",
+          "description": "Claim owner identity (required for lease-owned transitions)",
           "input": [],
           "multiple": false,
           "type": "option"
         },
         "claim-token": {
-          "description": "Claim token returned by work claim",
+          "description": "Claim token returned by work claim (required for lease-owned transitions)",
           "input": [],
           "multiple": false,
           "type": "option"
@@ -13993,14 +14297,14 @@
           "type": "option"
         },
         "owner": {
-          "description": "Claim owner identity",
+          "description": "Claim owner identity (required for lease-owned transitions)",
           "name": "owner",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
         },
         "claim-token": {
-          "description": "Claim token returned by work claim",
+          "description": "Claim token returned by work claim (required for lease-owned transitions)",
           "name": "claim-token",
           "hasDynamicHelp": false,
           "multiple": false,
@@ -14080,13 +14384,13 @@
           "type": "option"
         },
         "owner": {
-          "description": "Claim owner identity",
+          "description": "Claim owner identity (required for lease-owned transitions)",
           "input": [],
           "multiple": false,
           "type": "option"
         },
         "claim-token": {
-          "description": "Claim token returned by work claim",
+          "description": "Claim token returned by work claim (required for lease-owned transitions)",
           "input": [],
           "multiple": false,
           "type": "option"

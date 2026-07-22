@@ -47,6 +47,75 @@ describe("buildAgentWorkGraph", () => {
       expect(hard.has(key) || hard.has(rev)).toBe(false);
     }
   });
+
+  it("uses authoritative API dependencies as hard edges with their gate metadata intact", () => {
+    const queue: RawWorkItem[] = [
+      {id: "predecessor", title: "Build substrate", status: "running"},
+      {
+        id: "successor",
+        title: "Ship consumer",
+        status: "queued",
+        dependencies: [{
+          predecessorId: "predecessor",
+          title: "Build substrate",
+          status: "running",
+          verificationState: "unverified",
+          requiredGate: "verified",
+          satisfied: false,
+        }],
+        claimability: {
+          state: "waiting",
+          blockedBy: [{
+            predecessorId: "predecessor",
+            title: "Build substrate",
+            status: "running",
+            verificationState: "unverified",
+            requiredGate: "verified",
+            satisfied: false,
+          }],
+        },
+      },
+    ];
+    const graph = buildAgentWorkGraph(queue);
+    expect(graph.authoritativeHardEdges).toEqual([{source: "predecessor", target: "successor"}]);
+    expect(graph.planningOnlyHardEdges).toEqual([]);
+    expect(graph.input.hardEdges).toContainEqual({source: "predecessor", target: "successor"});
+  });
+
+  it("never lets an inferred lane edge reverse an authoritative dependency", () => {
+    const queue: RawWorkItem[] = [
+      {
+        id: "b",
+        title: "mergeMaster lane B: second",
+        status: "queued",
+        dependencies: [{
+          predecessorId: "c",
+          requiredGate: "commands_passed",
+          satisfied: false,
+        }],
+      },
+      {id: "c", title: "mergeMaster lane C: first", status: "running"},
+    ];
+    const graph = buildAgentWorkGraph(queue);
+    expect(graph.input.hardEdges).toEqual([{source: "c", target: "b"}]);
+    expect(computePlan(graph.input).status).toBe("ready");
+  });
+
+  it("drops a planning-only edge that would close a cycle through authoritative precedence", () => {
+    const queue: RawWorkItem[] = [
+      {id: "a", title: "mergeMaster lane A: first hint", status: "queued"},
+      {id: "b", title: "mergeMaster lane B: second hint", status: "queued"},
+      {
+        id: "c",
+        title: "mergeMaster lane C: authoritative first",
+        status: "running",
+        dependencies: [{predecessorId: "a", requiredGate: "done", satisfied: false}],
+      },
+    ];
+    const graph = buildAgentWorkGraph(queue, {declaredEdges: [{source: "c", target: "a"}]});
+    expect(computePlan(graph.input).status).toBe("ready");
+    expect(graph.input.hardEdges).not.toContainEqual({source: "c", target: "a"});
+  });
 });
 
 describe("computePlan on the mergeMaster lanes", () => {
@@ -94,6 +163,25 @@ describe("planAgentWork rendering", () => {
   it("handles an empty queue without throwing", () => {
     const { text } = planAgentWork([]);
     expect(text).toContain("0 active items");
+  });
+
+  it("separates enforced queue gates from planning-only precedence", () => {
+    const queue: RawWorkItem[] = [
+      {id: "a", title: "lane A substrate", status: "running"},
+      {
+        id: "b",
+        title: "lane B consumer",
+        status: "queued",
+        dependencies: [{predecessorId: "a", title: "lane A substrate", requiredGate: "verified", satisfied: false}],
+        claimability: {state: "waiting", blockedBy: []},
+      },
+      {id: "c", title: "lane C follow-up", status: "queued"},
+    ];
+    const {text} = planAgentWork(queue, {declaredEdges: [{source: "b", target: "c"}]});
+    expect(text).toContain("Authoritative queue gates (enforced by claim)");
+    expect(text).toContain("lane B consumer — waiting; after lane A substrate [verified]");
+    expect(text).toContain("Planning-only precedence:");
+    expect(text).toContain("do not affect queue claimability");
   });
 });
 

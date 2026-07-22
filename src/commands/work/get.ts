@@ -1,5 +1,6 @@
 import {Args} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {formatClaimability, formatDependencies} from '../../lib/work-dependencies.js';
 
 function redactClaimToken(workItem: Record<string, unknown>): Record<string, unknown> {
   const {claimToken: _claimToken, ...safeWorkItem} = workItem;
@@ -29,6 +30,8 @@ export default class WorkGet extends BaseCommand {
       if (workItem.taskId) this.log(`Parent task: ${workItem.taskId}`);
       if (workItem.assignedAlias) this.log(`Agent: ${(workItem.assignedAlias as any).alias}`);
       if (workItem.claimOwner) this.log(`Claim owner: ${workItem.claimOwner}`);
+      this.log(`Depends on: ${formatDependencies(workItem.dependencies)}`);
+      this.log(`Claimability: ${formatClaimability(workItem.claimability)}`);
     }
     return workItem;
   }

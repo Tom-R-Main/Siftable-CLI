@@ -1,5 +1,6 @@
 import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {parseWorkDependencies} from '../../lib/work-dependencies.js';
 
 export default class WorkCreate extends BaseCommand {
   static description = 'Create an executable agent work item';
@@ -17,6 +18,9 @@ export default class WorkCreate extends BaseCommand {
     'allowed-actions': Flags.string({description: 'Allowed actions JSON object'}),
     'write-scope': Flags.string({description: 'Write scope JSON object'}),
     verify: Flags.string({description: 'Verification commands separated by semicolons'}),
+    'depends-on': Flags.string({
+      description: 'Dependency JSON array: [{"workItemId":"<uuid>","requiredGate"?:"done"|"commands_passed"|"verified"}]',
+    }),
   };
 
   async run(): Promise<unknown> {
@@ -25,6 +29,12 @@ export default class WorkCreate extends BaseCommand {
     const acceptanceCriteria = flags['acceptance-criteria']?.trim().startsWith('[')
       ? this.parseJsonFlag<unknown[]>(flags['acceptance-criteria'], 'acceptance criteria')
       : flags['acceptance-criteria']?.split(';').map((text) => text.trim()).filter(Boolean).map((text) => ({text, met: false}));
+    let dependsOn;
+    try {
+      dependsOn = parseWorkDependencies(flags['depends-on']);
+    } catch (error) {
+      this.error(error instanceof Error ? error.message : 'Invalid dependencies.');
+    }
     const response = await client.createWorkItem({
       title: flags.title,
       prompt: flags.prompt,
@@ -37,6 +47,7 @@ export default class WorkCreate extends BaseCommand {
       allowedActions: this.parseJsonFlag<Record<string, unknown>>(flags['allowed-actions'], 'allowed actions'),
       writeScope: this.parseJsonFlag<Record<string, unknown>>(flags['write-scope'], 'write scope'),
       verificationCommands: flags.verify?.split(';').map((cmd) => cmd.trim()).filter(Boolean),
+      dependsOn,
     }, this.idempotencyKey());
     this.handleApiError(response);
     const workItem = this.unwrapOne(response, 'workItem');

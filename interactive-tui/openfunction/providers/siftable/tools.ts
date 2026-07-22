@@ -454,6 +454,53 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
 
   return [
     defineTool<{
+      title: string;
+      prompt?: string;
+      assignedAlias?: string;
+      projectId?: string;
+      taskId?: string;
+      dependsOn?: Array<{workItemId: string; requiredGate?: "done" | "commands_passed" | "verified"}>;
+    }>({
+      name: "exf_work_item_create",
+      description:
+        "Create executable agent work. dependsOn is authoritative and accepts only work-item UUIDs; " +
+        "requiredGate defaults to the project's work-dependency policy.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          title: {type: "string", description: "Executable work-item title"},
+          prompt: {type: "string", description: "Agent instructions"},
+          assignedAlias: {type: "string", description: "Optional assigned agent alias"},
+          projectId: {type: "string", description: "Optional project UUID"},
+          taskId: {type: "string", description: "Optional parent human task UUID"},
+          dependsOn: {
+            type: "array",
+            description: "Authoritative prerequisite work-item UUIDs and their required gates",
+            items: {
+              type: "object",
+              properties: {
+                workItemId: {type: "string", description: "Prerequisite work-item UUID"},
+                requiredGate: {
+                  type: "string",
+                  enum: ["done", "commands_passed", "verified"],
+                  description: "Optional gate override",
+                },
+              },
+              required: ["workItemId"],
+            },
+          },
+        },
+        required: ["title"],
+      },
+      tags: ["work_items"],
+      handler: async (input) => {
+        const res = await sift.createWorkItem(input);
+        if (res.error || !res.data) return err(`createWorkItem failed (${res.statusCode}): ${res.error}`);
+        return ok(res.data, `Created work item: ${input.title}`);
+      },
+    }),
+
+    defineTool<{
       status?: string;
       assignedAlias?: string;
       projectId?: string;
@@ -507,16 +554,22 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
         if (res.error || !res.data) {
           return err(`getWorkItem failed (${res.statusCode}): ${res.error}`);
         }
-        return ok(res.data);
+        const data = res.data as {workItem: Record<string, unknown>};
+        const {claimToken: _claimToken, ...workItem} = data.workItem;
+        return ok({workItem});
       },
     }),
 
-    defineTool<{ alias: string; preferredTaskId?: string }>({
+    defineTool<{
+      alias?: string;
+      claimOwner: string;
+      workItemId?: string;
+      leaseSeconds?: number;
+    }>({
       name: "exf_work_item_claim",
       description:
-        "Claim the next available work item for an agent alias. Optionally " +
-        "prefer a specific task. Returns the claimed work item, or empty if " +
-        "none are available.",
+        "Atomically claim the next dependency-ready work item. Optionally target a specific work item. " +
+        "Returns a claim token required by lease-owned transitions.",
       inputSchema: {
         type: "object",
         properties: {
@@ -524,52 +577,136 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
             type: "string",
             description: "Agent alias claiming the work (e.g. 'claude-code')",
           },
-          preferredTaskId: {
-            type: "string",
-            description: "Optional preferred task ID to look for first",
-          },
+          claimOwner: {type: "string", description: "Unique owner identity for this worker/session"},
+          workItemId: {type: "string", description: "Optional specific work-item UUID"},
+          leaseSeconds: {type: "integer", description: "Claim lease duration in seconds"},
         },
-        required: ["alias"],
+        required: ["claimOwner"],
       },
       tags: ["work_items"],
-      handler: async ({ alias, preferredTaskId }) => {
-        const input: Record<string, unknown> = { alias };
-        if (preferredTaskId) input.preferredTaskId = preferredTaskId;
+      handler: async ({ alias, claimOwner, workItemId, leaseSeconds }) => {
+        const input = {
+          claimOwner,
+          ...(alias ? {assignedAlias: alias} : {}),
+          ...(workItemId ? {workItemId} : {}),
+          ...(leaseSeconds ? {leaseSeconds} : {}),
+        };
         const res = await sift.claimWorkItem(input);
         if (res.error || !res.data) {
           return err(`claimWorkItem failed (${res.statusCode}): ${res.error}`);
         }
-        return ok(res.data, `Claimed work item for ${alias}`);
+        return ok(res.data, `Claimed work item for ${alias ?? claimOwner}`);
       },
     }),
 
-    defineTool<{ workItemId: string; action: string; notes?: string }>({
+    defineTool<{
+      workItemId: string;
+      action: "start" | "heartbeat" | "release" | "review" | "complete" | "block" | "fail" | "cancel";
+      claimOwner?: string;
+      claimToken?: string;
+      leaseSeconds?: number;
+      resultSummary?: string;
+      reason?: string;
+    }>({
       name: "exf_work_item_transition",
       description:
-        "Transition a work item to a new state. Common actions: 'start', " +
-        "'complete', 'block', 'fail'. Pass optional notes to record progress " +
-        "or the reason for blocking/failing.",
+        "Transition a work item. start/heartbeat/block/review/fail require claimOwner and claimToken; " +
+        "release requires claimToken. complete may omit lease credentials only for human resolution from needs_review.",
       inputSchema: {
         type: "object",
         properties: {
           workItemId: { type: "string", description: "Work item ID" },
           action: {
             type: "string",
-            description: "State transition action: start, complete, block, fail",
+            enum: ["start", "heartbeat", "release", "review", "complete", "block", "fail", "cancel"],
+            description: "Lifecycle transition action",
           },
-          notes: { type: "string", description: "Optional notes about the transition" },
+          claimOwner: {type: "string", description: "Owner identity returned with the claim"},
+          claimToken: {type: "string", description: "Opaque token returned with the claim"},
+          leaseSeconds: {type: "integer", description: "Heartbeat/start lease duration"},
+          resultSummary: {type: "string", description: "Review/completion summary"},
+          reason: {type: "string", description: "Block or failure reason"},
         },
         required: ["workItemId", "action"],
       },
       tags: ["work_items"],
-      handler: async ({ workItemId, action, notes }) => {
+      handler: async ({workItemId, action, claimOwner, claimToken, leaseSeconds, resultSummary, reason}) => {
+        const ownerBound = new Set(["start", "heartbeat", "block", "review", "fail"]);
+        if (ownerBound.has(action) && (!claimOwner || !claimToken)) {
+          return err(`${action} requires claimOwner and claimToken from the active claim`);
+        }
+        if (action === "release" && !claimToken) return err("release requires claimToken from the active claim");
         const input: Record<string, unknown> = {};
-        if (notes) input.notes = notes;
+        if (claimOwner) input.claimOwner = claimOwner;
+        if (claimToken) input.claimToken = claimToken;
+        if (leaseSeconds) input.leaseSeconds = leaseSeconds;
+        if (resultSummary) input.resultSummary = resultSummary;
+        if (reason) {
+          input.blockedReason = reason;
+          input.failureReason = reason;
+        }
         const res = await sift.transitionWorkItem(workItemId, action, input);
         if (res.error || !res.data) {
           return err(`transitionWorkItem failed (${res.statusCode}): ${res.error}`);
         }
         return ok(res.data, `Work item transitioned: ${action}`);
+      },
+    }),
+
+    defineTool<{
+      workItemId: string;
+      dependsOn: Array<{workItemId: string; requiredGate?: "done" | "commands_passed" | "verified"}>;
+    }>({
+      name: "exf_work_item_dependencies_replace",
+      description: "Atomically replace authoritative work-item dependencies. Pass an empty array to clear them.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          workItemId: {type: "string", description: "Successor work-item UUID"},
+          dependsOn: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                workItemId: {type: "string", description: "Prerequisite work-item UUID"},
+                requiredGate: {type: "string", enum: ["done", "commands_passed", "verified"]},
+              },
+              required: ["workItemId"],
+            },
+          },
+        },
+        required: ["workItemId", "dependsOn"],
+      },
+      tags: ["work_items"],
+      handler: async ({workItemId, dependsOn}) => {
+        const res = await sift.replaceWorkItemDependencies(workItemId, dependsOn);
+        if (res.error || !res.data) return err(`replaceWorkItemDependencies failed (${res.statusCode}): ${res.error}`);
+        return ok(res.data, "Replaced authoritative work-item dependencies");
+      },
+    }),
+
+    defineTool<{projectId: string; defaultRequiredGate?: "done" | "commands_passed" | "verified"}>({
+      name: "exf_work_dependency_policy",
+      description: "Get or update the project's default gate for work dependencies that omit requiredGate.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          projectId: {type: "string", description: "Project UUID"},
+          defaultRequiredGate: {
+            type: "string",
+            enum: ["done", "commands_passed", "verified"],
+            description: "When omitted, read the current policy; when present, update it",
+          },
+        },
+        required: ["projectId"],
+      },
+      tags: ["work_items"],
+      handler: async ({projectId, defaultRequiredGate}) => {
+        const res = defaultRequiredGate
+          ? await sift.updateWorkDependencyPolicy(projectId, {defaultRequiredGate})
+          : await sift.getWorkDependencyPolicy(projectId);
+        if (res.error || !res.data) return err(`workDependencyPolicy failed (${res.statusCode}): ${res.error}`);
+        return ok(res.data);
       },
     }),
   ];
