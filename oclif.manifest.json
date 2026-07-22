@@ -11899,7 +11899,7 @@
           "required": true
         }
       },
-      "description": "Decrypt and read a vault secret (audit-logged)",
+      "description": "Retired: Vault plaintext reveal is unavailable from the CLI",
       "flags": {
         "json": {
           "description": "Format output as json.",

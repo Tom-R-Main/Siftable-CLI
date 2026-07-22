@@ -55,7 +55,7 @@ Every command accepts these:
 - **IDs.** Resources are referenced by UUID. Some commands (e.g. `sift work get`) also accept a unique ID prefix.
 - **Destructive commands** require an explicit confirmation flag — typically `--confirm` (bulk deletes, which otherwise preview) or `-y, --yes` (single deletes). Without it they no-op or print a preview.
 - **Workspace scoping.** Pass `--workspace`/`SIFT_WORKSPACE_ID` to operate inside a specific workspace org; otherwise commands run against your personal scope.
-- **Vault reads are audit-logged.** `sift vault read` decrypts a secret and records the access — treat it accordingly.
+- **Raw Vault reads are retired.** `sift vault read` returns migration guidance without requesting plaintext. Use the first-party web Vault until governed replacements ship.
 
 ## Diagnostics
 
@@ -2002,7 +2002,7 @@ List vault entries (metadata only)
 - `--type <env_var|credential|oauth_token|ssh_key|certificate|note>` — Filter by entry type
 
 #### `sift vault read`
-Decrypt and read a vault secret (audit-logged)
+Retired: Vault plaintext reveal is unavailable from the CLI
 
 **Arguments**
 

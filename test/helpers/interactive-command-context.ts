@@ -29,7 +29,6 @@ export function buildCommandContext(overrides: Partial<InteractiveCommandContext
     listCodeMemories: jest.fn(() => response({memories: [{id: 'mem-1', content: 'Use work queue'}]})),
     listCalendarEvents: jest.fn(() => response({events: [{id: 'event-1', title: 'Demo'}]})),
     listVaultEntries: jest.fn(() => response({entries: []})),
-    readVaultSecret: jest.fn(() => response({payload: {key: 'sk-test'}})),
     createWorkItem: jest.fn((payload: unknown) => {
       createdWork.push(payload);
       return response({workItem: {id: 'work-new', title: (payload as Record<string, unknown>).title}});

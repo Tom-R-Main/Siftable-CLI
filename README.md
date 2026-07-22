@@ -174,7 +174,7 @@ The most-used surface, grouped by domain. Run `sift --help` or `sift <topic> --h
 |---------|-------------|
 | `sift vault list` | List vault entries (metadata only) |
 | `sift vault create` | Store an encrypted secret |
-| `sift vault read <id>` | Decrypt and read a secret |
+| `sift vault read <id>` | Retired; use first-party web reveal until brokered use and approved materialization ship |
 | `sift vault search <query>` | Search vault entries |
 | `sift vault update <id>` | Update entry metadata |
 

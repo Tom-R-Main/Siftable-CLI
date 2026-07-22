@@ -589,8 +589,7 @@ export function createVaultTools(client: ExfClient): ToolDefinition<any, any>[] 
       name: "exf_vault_list",
       description:
         "List Siftable vault entries (metadata only — does not return secret " +
-        "payloads). Filter by entry type, category, or search string. Use " +
-        "exf_vault_read_secret to fetch the actual secret payload.",
+        "payloads). Filter by entry type, category, or search string.",
       inputSchema: {
         type: "object",
         properties: {
@@ -614,7 +613,7 @@ export function createVaultTools(client: ExfClient): ToolDefinition<any, any>[] 
       name: "exf_vault_search",
       description:
         "Search vault entries by query string (metadata only — does not return " +
-        "secret payloads). Use exf_vault_read_secret to fetch the actual secret.",
+        "secret payloads).",
       inputSchema: {
         type: "object",
         properties: {
@@ -630,30 +629,6 @@ export function createVaultTools(client: ExfClient): ToolDefinition<any, any>[] 
           return err(`searchVaultEntries failed (${res.statusCode}): ${res.error}`);
         }
         return ok(res.data, `Found ${res.data.entries.length} match(es)`);
-      },
-    }),
-
-    defineTool<{ entryId: string }>({
-      name: "exf_vault_read_secret",
-      description:
-        "Read the decrypted secret payload of a vault entry. " +
-        "WARNING: this call is audit-logged on the Siftable side. Only " +
-        "invoke when the user explicitly asks for a secret value, and " +
-        "never echo the payload back into a model-visible context.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          entryId: { type: "string", description: "Vault entry ID" },
-        },
-        required: ["entryId"],
-      },
-      tags: ["vault", "audit_logged"],
-      handler: async ({ entryId }) => {
-        const res = await sift.readVaultSecret(entryId);
-        if (res.error || !res.data) {
-          return err(`readVaultSecret failed (${res.statusCode}): ${res.error}`);
-        }
-        return ok(res.data, "Secret read (audit-logged)");
       },
     }),
 

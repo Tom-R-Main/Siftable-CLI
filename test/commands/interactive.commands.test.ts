@@ -13,16 +13,12 @@ import {
   type InteractiveCommandContext,
 } from '../../interactive-tui/commands';
 import {collectDailyReviewContext} from '../../src/lib/daily-review-context';
-import {rejectAllConfirms, resetBypass, resolveApproval, setConfirmListener, type ConfirmRequest} from '../../interactive-tui/confirmGate';
-import {buildCommandContext as buildContext, response} from '../helpers/interactive-command-context';
+import {rejectAllConfirms, resetBypass, setConfirmListener} from '../../interactive-tui/confirmGate';
+import {buildCommandContext as buildContext} from '../helpers/interactive-command-context';
 
 function restoreEnv(key: string, value: string | undefined): void {
   if (value === undefined) delete process.env[key];
   else process.env[key] = value;
-}
-
-async function flushPromises(): Promise<void> {
-  for (let i = 0; i < 10; i += 1) await Promise.resolve();
 }
 
 describe('interactive command registry', () => {
@@ -152,7 +148,7 @@ describe('interactive command registry', () => {
       // vault is unavailable in the session.
       delete process.env.MORPH_API_KEY;
       const msg = await ensureExplorerProviderKey({ apiClient: {} } as never);
-      expect(msg).toMatch(/vault is unavailable/i);
+      expect(msg).toMatch(/vault plaintext hydration .* is retired/i);
     } finally {
       restoreEnv('SIFT_EXPLORER_WARPGREP', prevWg);
       restoreEnv('MORPH_API_KEY', prevKey);
@@ -220,13 +216,9 @@ describe('interactive command registry', () => {
     expect(messages.at(-1)?.text).toBe(`copied ${'explorer report body'.length} chars.`);
   });
 
-  it('hydrates missing direct-provider keys from Sift Vault after approval', async () => {
+  it('does not hydrate missing direct-provider keys from Sift Vault', async () => {
     const previous = process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
-    let confirm: ConfirmRequest | null = null;
-    setConfirmListener((req) => {
-      confirm = req;
-    });
     const config = jest.fn(async (input) => ({provider: input.provider ?? 'anthropic', model: input.model ?? 'x'}));
     const {ctx, messages, apiClient} = buildContext({
       client: {
@@ -236,38 +228,17 @@ describe('interactive command registry', () => {
         send: jest.fn(),
       },
     });
-    apiClient.listVaultEntries.mockResolvedValue(response({
-      entries: [{id: 'vault-anthropic', name: 'ANTHROPIC_API_KEY', entryType: 'credential'}],
-    }));
-    apiClient.readVaultSecret.mockResolvedValue(response({payload: {api_key: 'sk-ant-secret'}}));
+    await applyModelChoice(ctx, findModelChoice('claude-api')!, 'high');
 
-    const pending = applyModelChoice(ctx, findModelChoice('claude-api')!, 'high');
-    await flushPromises();
-    expect(confirm).toMatchObject({
-      kind: 'command',
-      path: 'vault read ANTHROPIC_API_KEY',
-      allowAlways: false,
-      allowBypass: false,
-    });
-    resolveApproval(confirm!.id, 'allow');
-    await pending;
-
-    expect(apiClient.listVaultEntries).toHaveBeenCalledWith({search: 'ANTHROPIC_API_KEY', limit: 10});
-    expect(apiClient.readVaultSecret).toHaveBeenCalledWith('vault-anthropic');
-    expect(config).toHaveBeenCalledWith({provider: 'anthropic', apiKey: 'sk-ant-secret'});
-    expect(config).toHaveBeenLastCalledWith({provider: 'anthropic', model: 'claude-opus-4-8', effort: 'high'});
-    expect(messages.map((message) => message.text).join('\n')).toContain('Using Sift Vault entry "ANTHROPIC_API_KEY"');
-    expect(messages.map((message) => message.text).join('\n')).not.toContain('sk-ant-secret');
+    expect(apiClient.listVaultEntries).not.toHaveBeenCalled();
+    expect(config).not.toHaveBeenCalled();
+    expect(messages.map((message) => message.text).join('\n')).toContain('Vault plaintext hydration for ANTHROPIC_API_KEY is retired');
     restoreEnv('ANTHROPIC_API_KEY', previous);
   });
 
-  it('loads an OpenRouter key explicitly via /key vault without printing the secret', async () => {
+  it('retires /key vault before any Vault API call', async () => {
     const previous = process.env.OPENROUTER_API_KEY;
     delete process.env.OPENROUTER_API_KEY;
-    let confirm: ConfirmRequest | null = null;
-    setConfirmListener((req) => {
-      confirm = req;
-    });
     const config = jest.fn(async (input) => ({provider: input.provider ?? 'openrouter', model: input.model ?? 'x'}));
     const {ctx, messages, apiClient} = buildContext({
       client: {
@@ -277,57 +248,12 @@ describe('interactive command registry', () => {
         send: jest.fn(),
       },
     });
-    apiClient.listVaultEntries.mockResolvedValue(response({
-      entries: [{id: 'vault-openrouter', name: 'OpenRouter API key', tags: ['OPENROUTER_API_KEY']}],
-    }));
-    apiClient.readVaultSecret.mockResolvedValue(response({payload: {OPENROUTER_API_KEY: 'sk-or-secret'}}));
+    await runInteractiveCommand(ctx, '/key vault openrouter');
 
-    const pending = runInteractiveCommand(ctx, '/key vault openrouter');
-    await flushPromises();
-    resolveApproval(confirm!.id, 'allow');
-    await pending;
-
-    expect(apiClient.readVaultSecret).toHaveBeenCalledWith('vault-openrouter');
-    expect(config).toHaveBeenCalledWith({provider: 'openrouter', apiKey: 'sk-or-secret'});
-    expect(messages.at(-1)?.text).toContain('Using Sift Vault entry "OpenRouter API key"');
-    expect(messages.at(-1)?.text).not.toContain('sk-or-secret');
-    restoreEnv('OPENROUTER_API_KEY', previous);
-  });
-
-  it('loads a Morph key from vault into env without switching the model brain', async () => {
-    const previous = process.env.MORPH_API_KEY;
-    delete process.env.MORPH_API_KEY;
-    let confirm: ConfirmRequest | null = null;
-    setConfirmListener((req) => {
-      confirm = req;
-    });
-    const config = jest.fn(async (input) => ({provider: input.provider ?? 'codex', model: input.model ?? 'x'}));
-    const {ctx, messages, apiClient} = buildContext({
-      client: {
-        state: jest.fn(),
-        config,
-        login: jest.fn(),
-        send: jest.fn(),
-      },
-    });
-    apiClient.listVaultEntries.mockResolvedValue(response({
-      entries: [{id: 'vault-morph', name: 'Morph API Key', tags: ['MORPH_API_KEY', 'warp-grep']}],
-    }));
-    apiClient.readVaultSecret.mockResolvedValue(response({payload: {MORPH_API_KEY: 'sk-morph-secret'}}));
-
-    const pending = runInteractiveCommand(ctx, '/key vault morph');
-    await flushPromises();
-    resolveApproval(confirm!.id, 'allow');
-    await pending;
-
-    expect(apiClient.readVaultSecret).toHaveBeenCalledWith('vault-morph');
-    // morph is search-only (warp-grep), not a brain provider — never reconfigure
-    // the brain, just set the env var the SDK reads.
+    expect(apiClient.listVaultEntries).not.toHaveBeenCalled();
     expect(config).not.toHaveBeenCalled();
-    expect(process.env.MORPH_API_KEY).toBe('sk-morph-secret');
-    expect(messages.at(-1)?.text).toContain('Using Sift Vault entry "Morph API Key"');
-    expect(messages.at(-1)?.text).not.toContain('sk-morph-secret');
-    restoreEnv('MORPH_API_KEY', previous);
+    expect(messages.at(-1)?.text).toContain('Vault plaintext hydration for OPENROUTER_API_KEY is retired');
+    restoreEnv('OPENROUTER_API_KEY', previous);
   });
 
   it('reports the real read/write boundary in /status', async () => {

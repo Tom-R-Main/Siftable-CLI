@@ -222,4 +222,4 @@ All under `~/.siftable/` unless noted:
 - The approval gate is a single four-way control: **allow once** / **always allow** / **bypass-all** / **deny**. With no UI listening, requests **deny**.
 - `EXECUTERM_AUTO_APPROVE` is always scrubbed at launch — there is no way to pre-authorize everything via env.
 - `/status` reports the real read/write boundary, never a fictional one.
-- Vault key reads require explicit approval and never write the secret to disk.
+- Raw Vault key reads are retired. Use the first-party web Vault until brokered capabilities and approved materialization ship.
