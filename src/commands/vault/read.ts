@@ -1,9 +1,8 @@
 import {Args} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
-import {renderDetail} from '../../lib/output.js';
 
 export default class VaultRead extends BaseCommand {
-  static description = 'Decrypt and read a vault secret (audit-logged)';
+  static description = 'Retired: Vault plaintext reveal is unavailable from the CLI';
 
   static args = {
     id: Args.string({description: 'Vault entry ID', required: true}),
@@ -13,23 +12,11 @@ export default class VaultRead extends BaseCommand {
     ...BaseCommand.baseFlags,
   };
 
-  async run(): Promise<unknown> {
-    const {args, flags} = await this.parse(VaultRead);
-    const client = await this.client(flags);
-    const response = await client.readVaultSecret(args.id);
-    this.handleApiError(response);
-
-    const secret = response.data as Record<string, unknown>;
-
-    if (!this.jsonEnabled()) {
-      const payload = secret.payload as Record<string, unknown> | undefined;
-      if (payload) {
-        renderDetail(Object.entries(payload).map(([k, v]) => [k, v]));
-      } else {
-        this.log(JSON.stringify(secret, null, 2));
-      }
-    }
-
-    return response.data;
+  async run(): Promise<never> {
+    await this.parse(VaultRead);
+    this.error(
+      'Vault plaintext output is retired for CLI and MCP clients. Reveal the entry in the first-party Siftable web Vault. Brokered capabilities and approved materialization will replace agent-facing decrypt workflows.',
+      {exit: 1},
+    );
   }
 }
