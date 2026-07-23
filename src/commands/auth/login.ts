@@ -13,6 +13,7 @@ interface DeviceResponse {
   verification_uri_complete: string;
   expires_in: number;
   interval: number;
+  scopes: string[];
 }
 
 interface TokenResponse {
@@ -49,6 +50,8 @@ export default class AuthLogin extends BaseCommand {
 
   static examples = [
     '<%= config.bin %> auth login',
+    '<%= config.bin %> auth login --scope vault:metadata:read',
+    '<%= config.bin %> auth login --scope vault:metadata:read --scope vault:audit:read',
     '<%= config.bin %> auth login --token sift_pat_xxx',
     'SIFT_TOKEN=sift_pat_xxx <%= config.bin %> auth status',
     'EXF_TOKEN=exf_pat_xxx <%= config.bin %> auth status',
@@ -59,14 +62,23 @@ export default class AuthLogin extends BaseCommand {
     token: Flags.string({
       description: 'Personal access token (skips device flow)',
     }),
+    scope: Flags.string({
+      description: 'Incremental Vault scope to request (repeatable; never grants plaintext reveal)',
+      options: ['vault:metadata:read', 'vault:manage', 'vault:audit:read'],
+      multiple: true,
+    }),
   };
 
-  async run(): Promise<{stored: boolean}> {
+  async run(): Promise<{stored: boolean; scopes?: string[]}> {
     const {flags} = await this.parse(AuthLogin);
     const token = flags.token || process.env.SIFT_TOKEN || process.env.EXF_TOKEN;
+    const requestedScopes = flags.scope ?? [];
 
     // Direct token mode: existing behavior
     if (token) {
+      if (requestedScopes.length > 0) {
+        this.error('--scope applies only to device authorization; it cannot change an existing token.');
+      }
       storeToken(token);
       if (!this.jsonEnabled()) {
         this.log(`Token stored in ${getConfigDir()}/auth.json`);
@@ -77,14 +89,19 @@ export default class AuthLogin extends BaseCommand {
 
     // Device flow
     const apiUrl = flags['api-url'] || process.env.SIFT_API_URL || process.env.EXF_API_URL || DEFAULT_API_URL;
-    return this.deviceFlow(apiUrl, flags['no-input'] ?? false);
+    return this.deviceFlow(apiUrl, flags['no-input'] ?? false, requestedScopes);
   }
 
-  private async deviceFlow(apiUrl: string, noInput: boolean): Promise<{stored: boolean}> {
+  private async deviceFlow(
+    apiUrl: string,
+    noInput: boolean,
+    scopes: string[],
+  ): Promise<{stored: boolean; scopes: string[]}> {
     // Step 1: Request device code
     const deviceRes = await fetch(`${apiUrl}/auth/device`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({scopes}),
     });
 
     if (!deviceRes.ok) {
@@ -97,6 +114,10 @@ export default class AuthLogin extends BaseCommand {
     if (!this.jsonEnabled()) {
       this.log('');
       this.log(`  Your verification code: ${device.user_code}`);
+      this.log(`  Requested scopes: ${device.scopes.join(', ')}`);
+      if (scopes.length > 0) {
+        this.log('  Review these incremental scopes in the browser before authorizing.');
+      }
       this.log('');
 
       if (noInput) {
@@ -150,7 +171,7 @@ export default class AuthLogin extends BaseCommand {
           this.log(`  Logged in successfully! Token stored in ${getConfigDir()}/auth.json`);
         }
 
-        return {stored: true};
+        return {stored: true, scopes: device.scopes};
       }
 
       const errorData = parsed as ErrorResponse | undefined;

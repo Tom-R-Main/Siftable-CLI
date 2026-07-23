@@ -51,7 +51,7 @@ Type `/` to open the command menu (↑/↓ to choose, Enter/Tab to fill). Hidden
 |---------|---------|--------------|
 | `/model [id] [effort]` | `models` | Open the model picker, or select a model (and optional reasoning effort) directly |
 | `/codex [login\|on\|use\|off\|logout\|status]` | | Control the Codex (ChatGPT) engine; default subcommand is `status` |
-| `/key <provider> <key>` · `/key vault <provider>` | | Store a provider API key for the brain, or hydrate it from Siftable Vault |
+| `/key <provider> <key>` | | Store a provider API key for the current session; Vault plaintext hydration is retired |
 | `/login` | | Siftable device-code login from inside the TUI |
 | `/explorer` | `explore` | Open the repo Explorer picker (context-gathering backend) |
 
@@ -110,13 +110,13 @@ The catalog includes:
 **Engine routing:**
 
 - **Codex** (`provider = codex`) drives the OpenAI `codex app-server` sidecar over JSON-RPC on stdio. Siftable does **not** own the OAuth — Codex manages ChatGPT sign-in; `/codex login` runs a device-code flow. Turns run in a `workspace-write` sandbox confined to the repo root with on-request approvals routed through the confirmation gate. Override the binary with `CODEX_BIN`.
-- **All other providers** (OpenRouter, Anthropic, Gemini, OpenAI) route through the bundled OpenFunction agent, which reads `<PROVIDER>_API_KEY` from the environment. `/key <provider> <key>` sets it for the session; `/key vault <provider>` hydrates it from Siftable Vault behind an approval prompt (the secret is never printed or written to disk).
+- **All other providers** (OpenRouter, Anthropic, Gemini, OpenAI) route through the bundled OpenFunction agent, which reads `<PROVIDER>_API_KEY` from the environment. `/key <provider> <key>` sets it for the session. Vault plaintext hydration is retired; capability-broker execution replaces that workflow.
 
 First-party provider keys: `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, or `<PROVIDER>_API_KEY` generically.
 
 ## Repo Explorer
 
-`/explorer` configures how the copilot gathers repository context before a turn. Modes: `auto`, `off`, `deterministic`, `scout`, `fanout`, `warpgrep`. You can pick a scout model and a budget (`cheap`/`normal`/`deep`). `warpgrep` uses Morph and needs `MORPH_API_KEY` (auto-hydrated from Vault when available). Settings persist to `prefs.json` and are exported to the brain as `SIFT_EXPLORER_*` environment variables.
+`/explorer` configures how the copilot gathers repository context before a turn. Modes: `auto`, `off`, `deterministic`, `scout`, `fanout`, `warpgrep`. You can pick a scout model and a budget (`cheap`/`normal`/`deep`). `warpgrep` uses Morph and currently needs `MORPH_API_KEY` in the process environment; Vault plaintext hydration is retired. Settings persist to `prefs.json` and are exported to the brain as `SIFT_EXPLORER_*` environment variables.
 
 ## Skills
 

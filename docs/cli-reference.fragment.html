@@ -119,12 +119,41 @@
                 </dl>
               </div>
             </details>
+            <h2 id="cli-approvals" data-i18n="docs.cli.approvals.title">Approvals</h2>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.approvals.count">2 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift approvals request</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.approvals.request.desc">Request a governed action approval; this command cannot approve or consume it</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--action &lt;value&gt;</code> <span class="flag-meta">required</span> — Governed action identifier</dd>
+                  <dd><code>--destination &lt;value&gt;</code> <span class="flag-meta">default: "{}"</span> — Destination binding JSON object</dd>
+                  <dd><code>--expires-in &lt;value&gt;</code> — Approval lifetime in seconds (30-600)</dd>
+                  <dd><code>--operation &lt;value&gt;</code> <span class="flag-meta">required</span> — Operation identifier</dd>
+                  <dd><code>--purpose &lt;value&gt;</code> <span class="flag-meta">required</span> — Human-readable non-secret purpose</dd>
+                  <dd><code>--resource-id &lt;value&gt;</code> <span class="flag-meta">required</span> — Resource identifier</dd>
+                  <dd><code>--resource-type &lt;value&gt;</code> <span class="flag-meta">required</span> — Resource type identifier</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift approvals status</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.approvals.status.desc">Inspect a governed approval requested by this CLI identity</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Approval ID</dd>
+                </dl>
+              </div>
+            </details>
             <h2 id="cli-auth" data-i18n="docs.cli.auth.title">Auth</h2>
             <p class="cli-topic__intro" data-i18n="docs.cli.auth.intro">Authentication commands.</p>
             <details class="cli-topic"><summary><span data-i18n="docs.cli.auth.count">3 commands</span></summary>
               <div class="cli-cmd">
                 <code class="cli-cmd__name">sift auth login</code>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.auth.login.desc">Authenticate with Siftable</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--scope &lt;vault:metadata:read|vault:manage|vault:audit:read&gt;</code> <span class="flag-meta">repeatable</span> — Incremental Vault scope to request (repeatable; never grants plaintext reveal)</dd>
+                </dl>
               </div>
               <div class="cli-cmd">
                 <code class="cli-cmd__name">sift auth logout</code>
@@ -133,6 +162,40 @@
               <div class="cli-cmd">
                 <code class="cli-cmd__name">sift auth status</code>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.auth.status.desc">Show authentication status</p>
+              </div>
+            </details>
+            <h2 id="cli-billing" data-i18n="docs.cli.billing.title">Billing</h2>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.billing.count">4 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift billing fallback decide</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.billing.fallback-decide.desc">Allow, deny, or always allow personal funding for a quoted workspace operation</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--decision &lt;allow|deny|always_allow&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--monthly-cap-micros &lt;value&gt;</code> — Monthly micro-USD cap for always_allow</dd>
+                  <dd><code>--quote &lt;value&gt;</code> <span class="flag-meta">required</span> — Server-issued operation quote ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift billing fallback policy</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.billing.fallback-policy.desc">Read or update the workspace personal-fallback policy</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--disabled</code> — Disable and revoke personal fallback</dd>
+                  <dd><code>--enabled</code> — Enable personal fallback</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift billing fallback revoke</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.billing.fallback-revoke.desc">Revoke one of your active personal-fallback consents</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>consentId</code> <span class="req">required</span></dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift billing fallback status</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.billing.fallback-status.desc">Show your active personal-fallback decisions for a workspace</p>
               </div>
             </details>
             <h2 id="cli-calendar" data-i18n="docs.cli.calendar.title">Calendar</h2>
@@ -182,6 +245,55 @@
                   <dd><code>--location &lt;value&gt;</code> — Event location</dd>
                   <dd><code>--start &lt;value&gt;</code> — Start time (ISO 8601)</dd>
                   <dd><code>--title &lt;value&gt;</code> — Event title</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-capabilities" data-i18n="docs.cli.capabilities.title">Capabilities</h2>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.capabilities.count">5 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift capabilities create</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.capabilities.create.desc">Create a reviewed server-brokered Vault capability</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--adapter &lt;value&gt;</code> <span class="flag-meta">required</span> — Reviewed static adapter ID</dd>
+                  <dd><code>--expires-in &lt;value&gt;</code> — Lifetime in seconds (300-2592000)</dd>
+                  <dd><code>--field &lt;value&gt;</code> <span class="flag-meta">default: "value"</span> — Credential payload field</dd>
+                  <dd><code>--operation &lt;value&gt;</code> <span class="flag-meta">required</span> — Comma-separated allowlisted operations</dd>
+                  <dd><code>--provider &lt;value&gt;</code> <span class="flag-meta">required</span> — Provider ID</dd>
+                  <dd><code>--purpose &lt;value&gt;</code> <span class="flag-meta">required</span> — Non-secret human-readable purpose</dd>
+                  <dd><code>--vault-entry &lt;value&gt;</code> <span class="flag-meta">required</span> — Vault entry UUID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift capabilities describe</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.capabilities.describe.desc">Describe safe metadata for one Vault capability</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Capability metadata ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift capabilities execute</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.capabilities.execute.desc">Execute one typed operation through a Vault capability handle</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--approval &lt;value&gt;</code> — Governed approval UUID when required</dd>
+                  <dd><code>--handle &lt;value&gt;</code> <span class="flag-meta">required</span> — Opaque vcap_ capability handle</dd>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> — Stable 8-128 character key for safe retries</dd>
+                  <dd><code>--input &lt;value&gt;</code> <span class="flag-meta">default: "{}"</span> — Typed operation input JSON object</dd>
+                  <dd><code>--operation &lt;value&gt;</code> <span class="flag-meta">required</span> — Allowlisted operation</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift capabilities list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.capabilities.list.desc">List safe metadata for Vault capability handles</p>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift capabilities revoke</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.capabilities.revoke.desc">Revoke a Vault capability</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Capability metadata ID</dd>
                 </dl>
               </div>
             </details>
@@ -1084,6 +1196,58 @@
                 </dl>
               </div>
             </details>
+            <h2 id="cli-grants" data-i18n="docs.cli.grants.title">Grants</h2>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.grants.count">4 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift grants adapters</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.grants.adapters.desc">List reviewed local execution adapters and honest containment tiers</p>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift grants request</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.grants.request.desc">Request a human-approved grant for a pre-registered trusted local runner</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--adapter &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--audience &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--credential-field &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--cwd &lt;value&gt;</code></dd>
+                  <dd><code>--executable &lt;value&gt;</code> <span class="flag-meta">required</span> — Resolved reviewed executable path</dd>
+                  <dd><code>--executable-digest &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--issuer &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--operation &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--purpose &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--runner-fingerprint &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--runner-public-key &lt;value&gt;</code> <span class="flag-meta">required</span> — PEM public-key file from the trusted local runner</dd>
+                  <dd><code>--scope &lt;value&gt;</code> <span class="flag-meta">required</span> — Provider scope JSON with string values</dd>
+                  <dd><code>--vault-entry &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift grants run</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.grants.run.desc">Request approval, redeem in memory, and run exactly one reviewed child process</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--adapter &lt;github_gh|terraform_apply&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--approval-timeout &lt;value&gt;</code> <span class="flag-meta">default: 600</span></dd>
+                  <dd><code>--audience &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--credential-field &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--cwd &lt;value&gt;</code></dd>
+                  <dd><code>--issuer &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--operation &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--purpose &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--scope &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--vault-entry &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift grants status</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.grants.status.desc">Inspect safe status for an ephemeral local execution grant</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span></dd>
+                </dl>
+              </div>
+            </details>
             <h2 id="cli-graph" data-i18n="docs.cli.graph.title">Graph</h2>
             <p class="cli-topic__intro" data-i18n="docs.cli.graph.intro">Entity graph search and neighborhoods.</p>
             <details class="cli-topic"><summary><span data-i18n="docs.cli.graph.count">5 commands</span></summary>
@@ -1834,10 +1998,18 @@
             </details>
             <h2 id="cli-vault" data-i18n="docs.cli.vault.title">Vault</h2>
             <p class="cli-topic__intro" data-i18n="docs.cli.vault.intro">Secrets vault.</p>
-            <details class="cli-topic"><summary><span data-i18n="docs.cli.vault.count">5 commands</span></summary>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.vault.count">6 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift vault audit</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.audit.desc">List Vault audit events (requires vault:audit:read)</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--limit &lt;value&gt;</code> — Maximum number of results</dd>
+                </dl>
+              </div>
               <div class="cli-cmd">
                 <code class="cli-cmd__name">sift vault create</code>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.create.desc">Store a new encrypted secret</p>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.create.desc">Store a new encrypted secret (requires vault:manage)</p>
                 <dl class="cli-cmd__params">
                   <dt>Flags</dt>
                   <dd><code>--category &lt;value&gt;</code> — Category</dd>
@@ -1852,7 +2024,7 @@
               </div>
               <div class="cli-cmd">
                 <code class="cli-cmd__name">sift vault list</code>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.list.desc">List vault entries (metadata only)</p>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.list.desc">List vault entries (metadata only; requires vault:metadata:read)</p>
                 <dl class="cli-cmd__params">
                   <dt>Flags</dt>
                   <dd><code>--category &lt;value&gt;</code> — Filter by category</dd>
@@ -1870,7 +2042,7 @@
               </div>
               <div class="cli-cmd">
                 <code class="cli-cmd__name">sift vault search</code>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.search.desc">Search vault entries</p>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.search.desc">Search vault entries (metadata only; requires vault:metadata:read)</p>
                 <dl class="cli-cmd__params">
                   <dt>Arguments</dt>
                   <dd><code>query</code> <span class="req">required</span> — Search query</dd>
@@ -1880,7 +2052,7 @@
               </div>
               <div class="cli-cmd">
                 <code class="cli-cmd__name">sift vault update</code>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.update.desc">Update vault entry metadata</p>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.update.desc">Update vault entry metadata (requires vault:manage)</p>
                 <dl class="cli-cmd__params">
                   <dt>Arguments</dt>
                   <dd><code>id</code> <span class="req">required</span> — Vault entry ID</dd>
@@ -1895,7 +2067,7 @@
             </details>
             <h2 id="cli-work" data-i18n="docs.cli.work.title">Work</h2>
             <p class="cli-topic__intro" data-i18n="docs.cli.work.intro">Executable agent work queue.</p>
-            <details class="cli-topic"><summary><span data-i18n="docs.cli.work.count">13 commands</span></summary>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.work.count">18 commands</span></summary>
               <div class="cli-cmd">
                 <code class="cli-cmd__name">sift work block</code>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.work.block.desc">Mark a work item as blocked</p>
@@ -1904,9 +2076,9 @@
                   <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
                   <dt>Flags</dt>
                   <dd><code>--artifacts &lt;value&gt;</code> — Artifact refs JSON array</dd>
-                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim</dd>
+                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim (required for lease-owned transitions)</dd>
                   <dd><code>--lease &lt;value&gt;</code> — Lease seconds</dd>
-                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity (required for lease-owned transitions)</dd>
                   <dd><code>--reason &lt;value&gt;</code> — Block or failure reason</dd>
                   <dd><code>--summary &lt;value&gt;</code> — Result summary</dd>
                   <dd><code>--verification-results &lt;value&gt;</code> — Verification evidence JSON array: [{"command","exitCode","output"?}]</dd>
@@ -1914,15 +2086,15 @@
               </div>
               <div class="cli-cmd">
                 <code class="cli-cmd__name">sift work cancel</code>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.work.cancel.desc">Cancel a work item</p>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.cancel.desc">Cancel queued/blocked work; active work requires --owner and --claim-token</p>
                 <dl class="cli-cmd__params">
                   <dt>Arguments</dt>
                   <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
                   <dt>Flags</dt>
                   <dd><code>--artifacts &lt;value&gt;</code> — Artifact refs JSON array</dd>
-                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim</dd>
+                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim (required for lease-owned transitions)</dd>
                   <dd><code>--lease &lt;value&gt;</code> — Lease seconds</dd>
-                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity (required for lease-owned transitions)</dd>
                   <dd><code>--reason &lt;value&gt;</code> — Block or failure reason</dd>
                   <dd><code>--summary &lt;value&gt;</code> — Result summary</dd>
                   <dd><code>--verification-results &lt;value&gt;</code> — Verification evidence JSON array: [{"command","exitCode","output"?}]</dd>
@@ -1948,9 +2120,9 @@
                   <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
                   <dt>Flags</dt>
                   <dd><code>--artifacts &lt;value&gt;</code> — Artifact refs JSON array</dd>
-                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim</dd>
+                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim (required for lease-owned transitions)</dd>
                   <dd><code>--lease &lt;value&gt;</code> — Lease seconds</dd>
-                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity (required for lease-owned transitions)</dd>
                   <dd><code>--reason &lt;value&gt;</code> — Block or failure reason</dd>
                   <dd><code>--summary &lt;value&gt;</code> — Result summary</dd>
                   <dd><code>--verification-results &lt;value&gt;</code> — Verification evidence JSON array: [{"command","exitCode","output"?}]</dd>
@@ -1965,6 +2137,7 @@
                   <dd><code>--agent &lt;value&gt;</code> — Assigned agent alias</dd>
                   <dd><code>--allowed-actions &lt;value&gt;</code> — Allowed actions JSON object</dd>
                   <dd><code>--context &lt;value&gt;</code> — Input context JSON object</dd>
+                  <dd><code>--depends-on &lt;value&gt;</code> — Dependency JSON array: [{"workItemId":"&lt;uuid&gt;","requiredGate"?:"done"|"commands_passed"|"verified"}]</dd>
                   <dd><code>--project &lt;value&gt;</code> — Linked project ID</dd>
                   <dd><code>--prompt &lt;value&gt;</code> — Agent prompt or instructions</dd>
                   <dd><code>--rank &lt;value&gt;</code> <span class="flag-meta">default: 0</span> — Queue rank</dd>
@@ -1975,6 +2148,41 @@
                 </dl>
               </div>
               <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work dependencies get</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.dependencies-get.desc">Get authoritative dependencies and claimability for a work item</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item UUID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work dependencies set</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.dependencies-set.desc">Atomically replace the authoritative dependencies for a work item</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--depends-on &lt;value&gt;</code> <span class="flag-meta">required</span> — Dependency JSON array; pass [] to clear dependencies</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work dependency-policy get</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.dependency-policy-get.desc">Get a project default work-dependency gate</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--project &lt;value&gt;</code> <span class="flag-meta">required</span> — Project UUID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work dependency-policy set</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.dependency-policy-set.desc">Set a project default work-dependency gate</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--gate &lt;done|commands_passed|verified&gt;</code> <span class="flag-meta">required</span> — Default gate for dependencies that omit requiredGate</dd>
+                  <dd><code>--project &lt;value&gt;</code> <span class="flag-meta">required</span> — Project UUID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
                 <code class="cli-cmd__name">sift work fail</code>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.work.fail.desc">Mark a work item as failed</p>
                 <dl class="cli-cmd__params">
@@ -1982,9 +2190,9 @@
                   <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
                   <dt>Flags</dt>
                   <dd><code>--artifacts &lt;value&gt;</code> — Artifact refs JSON array</dd>
-                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim</dd>
+                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim (required for lease-owned transitions)</dd>
                   <dd><code>--lease &lt;value&gt;</code> — Lease seconds</dd>
-                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity (required for lease-owned transitions)</dd>
                   <dd><code>--reason &lt;value&gt;</code> — Block or failure reason</dd>
                   <dd><code>--summary &lt;value&gt;</code> — Result summary</dd>
                   <dd><code>--verification-results &lt;value&gt;</code> — Verification evidence JSON array: [{"command","exitCode","output"?}]</dd>
@@ -2006,9 +2214,9 @@
                   <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
                   <dt>Flags</dt>
                   <dd><code>--artifacts &lt;value&gt;</code> — Artifact refs JSON array</dd>
-                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim</dd>
+                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim (required for lease-owned transitions)</dd>
                   <dd><code>--lease &lt;value&gt;</code> — Lease seconds</dd>
-                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity (required for lease-owned transitions)</dd>
                   <dd><code>--reason &lt;value&gt;</code> — Block or failure reason</dd>
                   <dd><code>--summary &lt;value&gt;</code> — Result summary</dd>
                   <dd><code>--verification-results &lt;value&gt;</code> — Verification evidence JSON array: [{"command","exitCode","output"?}]</dd>
@@ -2034,9 +2242,25 @@
                   <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
                   <dt>Flags</dt>
                   <dd><code>--artifacts &lt;value&gt;</code> — Artifact refs JSON array</dd>
-                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim</dd>
+                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim (required for lease-owned transitions)</dd>
                   <dd><code>--lease &lt;value&gt;</code> — Lease seconds</dd>
-                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity (required for lease-owned transitions)</dd>
+                  <dd><code>--reason &lt;value&gt;</code> — Block or failure reason</dd>
+                  <dd><code>--summary &lt;value&gt;</code> — Result summary</dd>
+                  <dd><code>--verification-results &lt;value&gt;</code> — Verification evidence JSON array: [{"command","exitCode","output"?}]</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work requeue</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.requeue.desc">Return blocked work to the queue for a fresh claim</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--artifacts &lt;value&gt;</code> — Artifact refs JSON array</dd>
+                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim (required for lease-owned transitions)</dd>
+                  <dd><code>--lease &lt;value&gt;</code> — Lease seconds</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity (required for lease-owned transitions)</dd>
                   <dd><code>--reason &lt;value&gt;</code> — Block or failure reason</dd>
                   <dd><code>--summary &lt;value&gt;</code> — Result summary</dd>
                   <dd><code>--verification-results &lt;value&gt;</code> — Verification evidence JSON array: [{"command","exitCode","output"?}]</dd>
@@ -2050,9 +2274,9 @@
                   <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
                   <dt>Flags</dt>
                   <dd><code>--artifacts &lt;value&gt;</code> — Artifact refs JSON array</dd>
-                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim</dd>
+                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim (required for lease-owned transitions)</dd>
                   <dd><code>--lease &lt;value&gt;</code> — Lease seconds</dd>
-                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity (required for lease-owned transitions)</dd>
                   <dd><code>--reason &lt;value&gt;</code> — Block or failure reason</dd>
                   <dd><code>--summary &lt;value&gt;</code> — Result summary</dd>
                   <dd><code>--verification-results &lt;value&gt;</code> — Verification evidence JSON array: [{"command","exitCode","output"?}]</dd>
@@ -2066,9 +2290,9 @@
                   <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
                   <dt>Flags</dt>
                   <dd><code>--artifacts &lt;value&gt;</code> — Artifact refs JSON array</dd>
-                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim</dd>
+                  <dd><code>--claim-token &lt;value&gt;</code> — Claim token returned by work claim (required for lease-owned transitions)</dd>
                   <dd><code>--lease &lt;value&gt;</code> — Lease seconds</dd>
-                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Claim owner identity (required for lease-owned transitions)</dd>
                   <dd><code>--reason &lt;value&gt;</code> — Block or failure reason</dd>
                   <dd><code>--summary &lt;value&gt;</code> — Result summary</dd>
                   <dd><code>--verification-results &lt;value&gt;</code> — Verification evidence JSON array: [{"command","exitCode","output"?}]</dd>

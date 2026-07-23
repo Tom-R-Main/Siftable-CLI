@@ -114,9 +114,25 @@ export abstract class BaseCommand extends Command {
           'Unset SIFT_WORKSPACE_ID to use the workspace service token default when the command does not need an override.',
         ];
       case 'insufficient_pat_scope':
+        {
+          const requiredScope = typeof payload.extra === 'object'
+            && payload.extra !== null
+            && typeof (payload.extra as Record<string, unknown>).requiredScope === 'string'
+            ? String((payload.extra as Record<string, unknown>).requiredScope)
+            : undefined;
         return [
-          'Create or rotate the workspace service token with the required scope.',
-          'Use tasks:read/tasks:write for task commands and work:read/work:write for work commands.',
+          requiredScope?.startsWith('vault:')
+            ? `Reauthorize explicitly with: sift auth login --scope ${requiredScope}`
+            : 'Create or rotate the workspace service token with the required scope.',
+          requiredScope?.startsWith('vault:')
+            ? 'Vault scopes are incremental and are never inherited from mcp:* or legacy tokens.'
+            : 'Use tasks:read/tasks:write for task commands and work:read/work:write for work commands.',
+        ];
+        }
+      case 'vault_capability_approval_required':
+        return [
+          'Request the exact binding in api.extra.requiredBinding with `sift approvals request`.',
+          'Have a human inspect and approve it at /app/governed-approvals, then retry with --approval and the same --idempotency-key.',
         ];
       default:
         return undefined;

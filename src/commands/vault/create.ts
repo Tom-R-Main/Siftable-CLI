@@ -2,7 +2,9 @@ import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
 
 export default class VaultCreate extends BaseCommand {
-  static description = 'Store a new encrypted secret';
+  static description = 'Store a new encrypted secret (requires vault:manage)';
+
+  static requiredScope = 'vault:manage';
 
   static examples = [
     `<%= config.bin %> vault create --name "API Key" --payload '{"key":"sk-xxx"}'`,

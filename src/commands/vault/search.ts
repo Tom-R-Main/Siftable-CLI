@@ -3,7 +3,9 @@ import {BaseCommand} from '../../lib/base-command.js';
 import {renderTable} from '../../lib/output.js';
 
 export default class VaultSearch extends BaseCommand {
-  static description = 'Search vault entries';
+  static description = 'Search vault entries (metadata only; requires vault:metadata:read)';
+
+  static requiredScope = 'vault:metadata:read';
 
   static args = {
     query: Args.string({description: 'Search query', required: true}),

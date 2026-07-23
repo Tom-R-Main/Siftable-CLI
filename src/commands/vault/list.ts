@@ -3,7 +3,9 @@ import {BaseCommand} from '../../lib/base-command.js';
 import {renderTable} from '../../lib/output.js';
 
 export default class VaultList extends BaseCommand {
-  static description = 'List vault entries (metadata only)';
+  static description = 'List vault entries (metadata only; requires vault:metadata:read)';
+
+  static requiredScope = 'vault:metadata:read';
 
   static flags = {
     ...BaseCommand.baseFlags,

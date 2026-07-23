@@ -2,7 +2,9 @@ import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
 
 export default class VaultUpdate extends BaseCommand {
-  static description = 'Update vault entry metadata';
+  static description = 'Update vault entry metadata (requires vault:manage)';
+
+  static requiredScope = 'vault:manage';
 
   static args = {
     id: Args.string({description: 'Vault entry ID', required: true}),

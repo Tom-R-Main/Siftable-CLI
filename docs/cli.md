@@ -55,7 +55,7 @@ Every command accepts these:
 - **IDs.** Resources are referenced by UUID. Some commands (e.g. `sift work get`) also accept a unique ID prefix.
 - **Destructive commands** require an explicit confirmation flag — typically `--confirm` (bulk deletes, which otherwise preview) or `-y, --yes` (single deletes). Without it they no-op or print a preview.
 - **Workspace scoping.** Pass `--workspace`/`SIFT_WORKSPACE_ID` to operate inside a specific workspace org; otherwise commands run against your personal scope.
-- **Raw Vault reads are retired.** `sift vault read` returns migration guidance without requesting plaintext. Use the first-party web Vault until governed replacements ship.
+- **Raw Vault reads are retired.** `sift vault read` returns migration guidance without requesting plaintext. Vault metadata, management, and audit access require explicit incremental scopes via `sift auth login --scope <scope>`; `mcp:*` grants none of them.
 
 ## Diagnostics
 
@@ -99,9 +99,9 @@ Link work to a planning task with `sift work create --task <task-id>` rather tha
 
 ## Command reference
 
-All 169 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
+All 190 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
 
-**Topics:** [General](#general) · [Agents](#agents) · [Auth](#auth) · [Calendar](#calendar) · [Code](#code) · [Codebase](#codebase) · [Codex](#codex) · [Datasets](#datasets) · [Documents](#documents) · [Events](#events) · [Evidence](#evidence) · [Graph](#graph) · [Notes](#notes) · [Organizations](#organizations) · [People](#people) · [Projects](#projects) · [Recipes](#recipes) · [Research](#research) · [Skills](#skills) · [Tasks](#tasks) · [Timeline](#timeline) · [Vault](#vault) · [Work](#work) · [Worker](#worker)
+**Topics:** [General](#general) · [Agents](#agents) · [Approvals](#approvals) · [Auth](#auth) · [Billing](#billing) · [Calendar](#calendar) · [Capabilities](#capabilities) · [Code](#code) · [Codebase](#codebase) · [Codex](#codex) · [Datasets](#datasets) · [Documents](#documents) · [Events](#events) · [Evidence](#evidence) · [Grants](#grants) · [Graph](#graph) · [Notes](#notes) · [Organizations](#organizations) · [People](#people) · [Projects](#projects) · [Recipes](#recipes) · [Research](#research) · [Skills](#skills) · [Tasks](#tasks) · [Timeline](#timeline) · [Vault](#vault) · [Work](#work) · [Worker](#worker)
 
 
 ### General
@@ -223,6 +223,29 @@ List work assigned to an agent alias
 - `--status <value>` — Work item status
 
 
+### Approvals
+
+#### `sift approvals request`
+Request a governed action approval; this command cannot approve or consume it
+
+**Flags**
+
+- `--action <value>` *(required)* — Governed action identifier
+- `--destination <value>` *(default: "{}")* — Destination binding JSON object
+- `--expires-in <value>` — Approval lifetime in seconds (30-600)
+- `--operation <value>` *(required)* — Operation identifier
+- `--purpose <value>` *(required)* — Human-readable non-secret purpose
+- `--resource-id <value>` *(required)* — Resource identifier
+- `--resource-type <value>` *(required)* — Resource type identifier
+
+#### `sift approvals status`
+Inspect a governed approval requested by this CLI identity
+
+**Arguments**
+
+- `id` *(required)* — Approval ID
+
+
 ### Auth
 
 Authentication commands.
@@ -230,11 +253,45 @@ Authentication commands.
 #### `sift auth login`
 Authenticate with Siftable
 
+**Flags**
+
+- `--scope <vault:metadata:read|vault:manage|vault:audit:read>` *(repeatable)* — Incremental Vault scope to request (repeatable; never grants plaintext reveal)
+
 #### `sift auth logout`
 Remove stored authentication
 
 #### `sift auth status`
 Show authentication status
+
+
+### Billing
+
+#### `sift billing fallback decide`
+Allow, deny, or always allow personal funding for a quoted workspace operation
+
+**Flags**
+
+- `--decision <allow|deny|always_allow>` *(required)*
+- `--monthly-cap-micros <value>` — Monthly micro-USD cap for always_allow
+- `--quote <value>` *(required)* — Server-issued operation quote ID
+
+#### `sift billing fallback policy`
+Read or update the workspace personal-fallback policy
+
+**Flags**
+
+- `--disabled` — Disable and revoke personal fallback
+- `--enabled` — Enable personal fallback
+
+#### `sift billing fallback revoke`
+Revoke one of your active personal-fallback consents
+
+**Arguments**
+
+- `consentId` *(required)*
+
+#### `sift billing fallback status`
+Show your active personal-fallback decisions for a workspace
 
 
 ### Calendar
@@ -286,6 +343,50 @@ Update a calendar event
 - `--location <value>` — Event location
 - `--start <value>` — Start time (ISO 8601)
 - `--title <value>` — Event title
+
+
+### Capabilities
+
+#### `sift capabilities create`
+Create a reviewed server-brokered Vault capability
+
+**Flags**
+
+- `--adapter <value>` *(required)* — Reviewed static adapter ID
+- `--expires-in <value>` — Lifetime in seconds (300-2592000)
+- `--field <value>` *(default: "value")* — Credential payload field
+- `--operation <value>` *(required)* — Comma-separated allowlisted operations
+- `--provider <value>` *(required)* — Provider ID
+- `--purpose <value>` *(required)* — Non-secret human-readable purpose
+- `--vault-entry <value>` *(required)* — Vault entry UUID
+
+#### `sift capabilities describe`
+Describe safe metadata for one Vault capability
+
+**Arguments**
+
+- `id` *(required)* — Capability metadata ID
+
+#### `sift capabilities execute`
+Execute one typed operation through a Vault capability handle
+
+**Flags**
+
+- `--approval <value>` — Governed approval UUID when required
+- `--handle <value>` *(required)* — Opaque vcap_ capability handle
+- `--idempotency-key <value>` — Stable 8-128 character key for safe retries
+- `--input <value>` *(default: "{}")* — Typed operation input JSON object
+- `--operation <value>` *(required)* — Allowlisted operation
+
+#### `sift capabilities list`
+List safe metadata for Vault capability handles
+
+#### `sift capabilities revoke`
+Revoke a Vault capability
+
+**Arguments**
+
+- `id` *(required)* — Capability metadata ID
 
 
 ### Code
@@ -1216,6 +1317,54 @@ Verify Evidence Graph provenance, review, projection, and citation invariants
 - `--project <value>` — Evidence Graph project ID for report metadata
 
 
+### Grants
+
+#### `sift grants adapters`
+List reviewed local execution adapters and honest containment tiers
+
+#### `sift grants request`
+Request a human-approved grant for a pre-registered trusted local runner
+
+**Flags**
+
+- `--adapter <value>` *(required)*
+- `--audience <value>` *(required)*
+- `--credential-field <value>` *(required)*
+- `--cwd <value>`
+- `--executable <value>` *(required)* — Resolved reviewed executable path
+- `--executable-digest <value>` *(required)*
+- `--issuer <value>` *(required)*
+- `--operation <value>` *(required)*
+- `--purpose <value>` *(required)*
+- `--runner-fingerprint <value>` *(required)*
+- `--runner-public-key <value>` *(required)* — PEM public-key file from the trusted local runner
+- `--scope <value>` *(required)* — Provider scope JSON with string values
+- `--vault-entry <value>` *(required)*
+
+#### `sift grants run`
+Request approval, redeem in memory, and run exactly one reviewed child process
+
+**Flags**
+
+- `--adapter <github_gh|terraform_apply>` *(required)*
+- `--approval-timeout <value>` *(default: 600)*
+- `--audience <value>` *(required)*
+- `--credential-field <value>` *(required)*
+- `--cwd <value>`
+- `--issuer <value>` *(required)*
+- `--operation <value>` *(required)*
+- `--purpose <value>` *(required)*
+- `--scope <value>` *(required)*
+- `--vault-entry <value>` *(required)*
+
+#### `sift grants status`
+Inspect safe status for an ephemeral local execution grant
+
+**Arguments**
+
+- `id` *(required)*
+
+
 ### Graph
 
 Entity graph search and neighborhoods.
@@ -1978,8 +2127,15 @@ Generate a narrative summary or explanation for timeline facts
 
 Secrets vault.
 
+#### `sift vault audit`
+List Vault audit events (requires vault:audit:read)
+
+**Flags**
+
+- `--limit <value>` — Maximum number of results
+
 #### `sift vault create`
-Store a new encrypted secret
+Store a new encrypted secret (requires vault:manage)
 
 **Flags**
 
@@ -1993,7 +2149,7 @@ Store a new encrypted secret
 - `--url <value>` — Associated URL
 
 #### `sift vault list`
-List vault entries (metadata only)
+List vault entries (metadata only; requires vault:metadata:read)
 
 **Flags**
 
@@ -2009,7 +2165,7 @@ Retired: Vault plaintext reveal is unavailable from the CLI
 - `id` *(required)* — Vault entry ID
 
 #### `sift vault search`
-Search vault entries
+Search vault entries (metadata only; requires vault:metadata:read)
 
 **Arguments**
 
@@ -2020,7 +2176,7 @@ Search vault entries
 - `--limit <value>` — Maximum number of results
 
 #### `sift vault update`
-Update vault entry metadata
+Update vault entry metadata (requires vault:manage)
 
 **Arguments**
 
@@ -2049,15 +2205,15 @@ Mark a work item as blocked
 **Flags**
 
 - `--artifacts <value>` — Artifact refs JSON array
-- `--claim-token <value>` — Claim token returned by work claim
+- `--claim-token <value>` — Claim token returned by work claim (required for lease-owned transitions)
 - `--lease <value>` — Lease seconds
-- `--owner <value>` — Claim owner identity
+- `--owner <value>` — Claim owner identity (required for lease-owned transitions)
 - `--reason <value>` — Block or failure reason
 - `--summary <value>` — Result summary
 - `--verification-results <value>` — Verification evidence JSON array: [{"command","exitCode","output"?}]
 
 #### `sift work cancel`
-Cancel a work item
+Cancel queued/blocked work; active work requires --owner and --claim-token
 
 **Arguments**
 
@@ -2066,9 +2222,9 @@ Cancel a work item
 **Flags**
 
 - `--artifacts <value>` — Artifact refs JSON array
-- `--claim-token <value>` — Claim token returned by work claim
+- `--claim-token <value>` — Claim token returned by work claim (required for lease-owned transitions)
 - `--lease <value>` — Lease seconds
-- `--owner <value>` — Claim owner identity
+- `--owner <value>` — Claim owner identity (required for lease-owned transitions)
 - `--reason <value>` — Block or failure reason
 - `--summary <value>` — Result summary
 - `--verification-results <value>` — Verification evidence JSON array: [{"command","exitCode","output"?}]
@@ -2096,9 +2252,9 @@ Approve and complete an executable agent work item
 **Flags**
 
 - `--artifacts <value>` — Artifact refs JSON array
-- `--claim-token <value>` — Claim token returned by work claim
+- `--claim-token <value>` — Claim token returned by work claim (required for lease-owned transitions)
 - `--lease <value>` — Lease seconds
-- `--owner <value>` — Claim owner identity
+- `--owner <value>` — Claim owner identity (required for lease-owned transitions)
 - `--reason <value>` — Block or failure reason
 - `--summary <value>` — Result summary
 - `--verification-results <value>` — Verification evidence JSON array: [{"command","exitCode","output"?}]
@@ -2112,6 +2268,7 @@ Create an executable agent work item
 - `--agent <value>` — Assigned agent alias
 - `--allowed-actions <value>` — Allowed actions JSON object
 - `--context <value>` — Input context JSON object
+- `--depends-on <value>` — Dependency JSON array: [{"workItemId":"<uuid>","requiredGate"?:"done"|"commands_passed"|"verified"}]
 - `--project <value>` — Linked project ID
 - `--prompt <value>` — Agent prompt or instructions
 - `--rank <value>` *(default: 0)* — Queue rank
@@ -2119,6 +2276,39 @@ Create an executable agent work item
 - `--title <value>` *(required)* — Executable work item title
 - `--verify <value>` — Verification commands separated by semicolons
 - `--write-scope <value>` — Write scope JSON object
+
+#### `sift work dependencies get`
+Get authoritative dependencies and claimability for a work item
+
+**Arguments**
+
+- `id` *(required)* — Work item UUID
+
+#### `sift work dependencies set`
+Atomically replace the authoritative dependencies for a work item
+
+**Arguments**
+
+- `id` *(required)* — Work item UUID
+
+**Flags**
+
+- `--depends-on <value>` *(required)* — Dependency JSON array; pass [] to clear dependencies
+
+#### `sift work dependency-policy get`
+Get a project default work-dependency gate
+
+**Flags**
+
+- `--project <value>` *(required)* — Project UUID
+
+#### `sift work dependency-policy set`
+Set a project default work-dependency gate
+
+**Flags**
+
+- `--gate <done|commands_passed|verified>` *(required)* — Default gate for dependencies that omit requiredGate
+- `--project <value>` *(required)* — Project UUID
 
 #### `sift work fail`
 Mark a work item as failed
@@ -2130,9 +2320,9 @@ Mark a work item as failed
 **Flags**
 
 - `--artifacts <value>` — Artifact refs JSON array
-- `--claim-token <value>` — Claim token returned by work claim
+- `--claim-token <value>` — Claim token returned by work claim (required for lease-owned transitions)
 - `--lease <value>` — Lease seconds
-- `--owner <value>` — Claim owner identity
+- `--owner <value>` — Claim owner identity (required for lease-owned transitions)
 - `--reason <value>` — Block or failure reason
 - `--summary <value>` — Result summary
 - `--verification-results <value>` — Verification evidence JSON array: [{"command","exitCode","output"?}]
@@ -2154,9 +2344,9 @@ Extend a work item lease
 **Flags**
 
 - `--artifacts <value>` — Artifact refs JSON array
-- `--claim-token <value>` — Claim token returned by work claim
+- `--claim-token <value>` — Claim token returned by work claim (required for lease-owned transitions)
 - `--lease <value>` — Lease seconds
-- `--owner <value>` — Claim owner identity
+- `--owner <value>` — Claim owner identity (required for lease-owned transitions)
 - `--reason <value>` — Block or failure reason
 - `--summary <value>` — Result summary
 - `--verification-results <value>` — Verification evidence JSON array: [{"command","exitCode","output"?}]
@@ -2182,9 +2372,26 @@ Release a claimed work item back to the queue
 **Flags**
 
 - `--artifacts <value>` — Artifact refs JSON array
-- `--claim-token <value>` — Claim token returned by work claim
+- `--claim-token <value>` — Claim token returned by work claim (required for lease-owned transitions)
 - `--lease <value>` — Lease seconds
-- `--owner <value>` — Claim owner identity
+- `--owner <value>` — Claim owner identity (required for lease-owned transitions)
+- `--reason <value>` — Block or failure reason
+- `--summary <value>` — Result summary
+- `--verification-results <value>` — Verification evidence JSON array: [{"command","exitCode","output"?}]
+
+#### `sift work requeue`
+Return blocked work to the queue for a fresh claim
+
+**Arguments**
+
+- `id` *(required)* — Work item ID
+
+**Flags**
+
+- `--artifacts <value>` — Artifact refs JSON array
+- `--claim-token <value>` — Claim token returned by work claim (required for lease-owned transitions)
+- `--lease <value>` — Lease seconds
+- `--owner <value>` — Claim owner identity (required for lease-owned transitions)
 - `--reason <value>` — Block or failure reason
 - `--summary <value>` — Result summary
 - `--verification-results <value>` — Verification evidence JSON array: [{"command","exitCode","output"?}]
@@ -2199,9 +2406,9 @@ Mark executable agent work as needing human review
 **Flags**
 
 - `--artifacts <value>` — Artifact refs JSON array
-- `--claim-token <value>` — Claim token returned by work claim
+- `--claim-token <value>` — Claim token returned by work claim (required for lease-owned transitions)
 - `--lease <value>` — Lease seconds
-- `--owner <value>` — Claim owner identity
+- `--owner <value>` — Claim owner identity (required for lease-owned transitions)
 - `--reason <value>` — Block or failure reason
 - `--summary <value>` — Result summary
 - `--verification-results <value>` — Verification evidence JSON array: [{"command","exitCode","output"?}]
@@ -2216,9 +2423,9 @@ Mark a work item as running
 **Flags**
 
 - `--artifacts <value>` — Artifact refs JSON array
-- `--claim-token <value>` — Claim token returned by work claim
+- `--claim-token <value>` — Claim token returned by work claim (required for lease-owned transitions)
 - `--lease <value>` — Lease seconds
-- `--owner <value>` — Claim owner identity
+- `--owner <value>` — Claim owner identity (required for lease-owned transitions)
 - `--reason <value>` — Block or failure reason
 - `--summary <value>` — Result summary
 - `--verification-results <value>` — Verification evidence JSON array: [{"command","exitCode","output"?}]
