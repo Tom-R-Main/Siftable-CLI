@@ -2277,8 +2277,8 @@ export const interactiveCommands: InteractiveCommand[] = [
 
       // Validate that taught edges don't create a precedence cycle before saving.
       if (taught.length) {
-        const trial = planAgentWork(items, {declaredEdges: [...declaredEdges, ...taught]});
-        if (trial.snapshot.status === "blocked" && trial.snapshot.invalidCycles.length) {
+        const trial = buildAgentWorkGraph(items, {declaredEdges: [...declaredEdges, ...taught]});
+        if (trial.rejectedDeclaredEdges.length > 0) {
           notices.push("Refused to record --after edge(s): would create a precedence cycle.");
           taught.length = 0;
         } else {

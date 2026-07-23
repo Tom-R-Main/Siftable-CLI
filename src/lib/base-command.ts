@@ -171,6 +171,11 @@ export abstract class BaseCommand extends Command {
     }
   }
 
+  protected surfaceApiWarnings(response: {warnings?: string[]}): void {
+    if (this.jsonEnabled()) return;
+    for (const warning of response.warnings ?? []) this.warn(warning);
+  }
+
   protected async confirmAction(
     message: string,
     flags: {yes?: boolean; 'no-input'?: boolean},

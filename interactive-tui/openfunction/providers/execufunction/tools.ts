@@ -22,6 +22,17 @@ const TASK_STATUSES = [
   "archived",
 ] as const;
 const TASK_STATUS_SET = new Set<string>(TASK_STATUSES);
+const WORK_ITEM_STATUSES = [
+  "queued",
+  "claimed",
+  "running",
+  "blocked",
+  "needs_review",
+  "done",
+  "failed",
+  "cancelled",
+] as const;
+type WorkItemStatus = (typeof WORK_ITEM_STATUSES)[number];
 /** Common model-invented synonyms → the real enum. */
 const TASK_STATUS_SYNONYMS: Record<string, string> = {
   pending: "next_action",
@@ -452,6 +463,19 @@ export function createCodebaseTools(client: ExfClient): ToolDefinition<any, any>
 export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>[] {
   const sift = client.raw();
 
+  const redactWorkItemTokens = <T>(data: T): T => {
+    if (!data || typeof data !== "object" || Array.isArray(data)) return data;
+    const record = data as Record<string, unknown>;
+    const redact = (value: unknown): unknown => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+      const {claimToken: _claimToken, ...safe} = value as Record<string, unknown>;
+      return safe;
+    };
+    if (record.workItem) return {...record, workItem: redact(record.workItem)} as T;
+    if (Array.isArray(record.workItems)) return {...record, workItems: record.workItems.map(redact)} as T;
+    return data;
+  };
+
   return [
     defineTool<{
       title: string;
@@ -496,12 +520,13 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
       handler: async (input) => {
         const res = await sift.createWorkItem(input);
         if (res.error || !res.data) return err(`createWorkItem failed (${res.statusCode}): ${res.error}`);
-        return ok(res.data, `Created work item: ${input.title}`);
+        const warning = res.warnings?.length ? ` Warning: ${res.warnings.join("; ")}` : "";
+        return ok(redactWorkItemTokens(res.data), `Created work item: ${input.title}.${warning}`);
       },
     }),
 
     defineTool<{
-      status?: string;
+      status?: WorkItemStatus;
       assignedAlias?: string;
       projectId?: string;
       taskId?: string;
@@ -510,13 +535,17 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
       name: "exf_work_items_list",
       description:
         "List work items from Siftable's executable agent work queue. " +
-        "Filter by status (pending/in_progress/done/blocked/failed), assigned " +
+        "Filter by status (queued/claimed/running/blocked/needs_review/done/failed/cancelled), assigned " +
         "agent alias, project, or task. Returns work-item titles, statuses, " +
         "and current assignees.",
       inputSchema: {
         type: "object",
         properties: {
-          status: { type: "string", description: "Filter by status" },
+          status: {
+            type: "string",
+            enum: [...WORK_ITEM_STATUSES],
+            description: "Filter by the exact backend work-item status",
+          },
           assignedAlias: {
             type: "string",
             description: "Filter by agent alias (e.g. 'claude-code')",
@@ -532,7 +561,7 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
         if (res.error || !res.data) {
           return err(`listWorkItems failed (${res.statusCode}): ${res.error}`);
         }
-        return ok(res.data, `Found ${res.data.workItems.length} work item(s)`);
+        return ok(redactWorkItemTokens(res.data), `Found ${res.data.workItems.length} work item(s)`);
       },
     }),
 
@@ -554,9 +583,7 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
         if (res.error || !res.data) {
           return err(`getWorkItem failed (${res.statusCode}): ${res.error}`);
         }
-        const data = res.data as {workItem: Record<string, unknown>};
-        const {claimToken: _claimToken, ...workItem} = data.workItem;
-        return ok({workItem});
+        return ok(redactWorkItemTokens(res.data));
       },
     }),
 
@@ -601,7 +628,7 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
 
     defineTool<{
       workItemId: string;
-      action: "start" | "heartbeat" | "release" | "review" | "complete" | "block" | "fail" | "cancel";
+      action: "start" | "heartbeat" | "release" | "review" | "complete" | "block" | "fail" | "cancel" | "requeue";
       claimOwner?: string;
       claimToken?: string;
       leaseSeconds?: number;
@@ -611,14 +638,15 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
       name: "exf_work_item_transition",
       description:
         "Transition a work item. start/heartbeat/block/review/fail require claimOwner and claimToken; " +
-        "release requires claimToken. complete may omit lease credentials only for human resolution from needs_review.",
+        "release requires claimOwner and claimToken. Active cancel requires both credentials; queued/blocked cancel omits both. " +
+        "requeue is tokenless human recovery for blocked work. complete may omit lease credentials only for human resolution from needs_review.",
       inputSchema: {
         type: "object",
         properties: {
           workItemId: { type: "string", description: "Work item ID" },
           action: {
             type: "string",
-            enum: ["start", "heartbeat", "release", "review", "complete", "block", "fail", "cancel"],
+            enum: ["start", "heartbeat", "release", "review", "complete", "block", "fail", "cancel", "requeue"],
             description: "Lifecycle transition action",
           },
           claimOwner: {type: "string", description: "Owner identity returned with the claim"},
@@ -635,7 +663,12 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
         if (ownerBound.has(action) && (!claimOwner || !claimToken)) {
           return err(`${action} requires claimOwner and claimToken from the active claim`);
         }
-        if (action === "release" && !claimToken) return err("release requires claimToken from the active claim");
+        if (action === "release" && (!claimOwner || !claimToken)) {
+          return err("release requires claimOwner and claimToken from the active claim");
+        }
+        if (action === "cancel" && Boolean(claimOwner) !== Boolean(claimToken)) {
+          return err("cancel requires claimOwner and claimToken together for active work; omit both only for queued/blocked cancellation");
+        }
         const input: Record<string, unknown> = {};
         if (claimOwner) input.claimOwner = claimOwner;
         if (claimToken) input.claimToken = claimToken;
@@ -649,7 +682,7 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
         if (res.error || !res.data) {
           return err(`transitionWorkItem failed (${res.statusCode}): ${res.error}`);
         }
-        return ok(res.data, `Work item transitioned: ${action}`);
+        return ok(redactWorkItemTokens(res.data), `Work item transitioned: ${action}`);
       },
     }),
 

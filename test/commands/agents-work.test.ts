@@ -395,6 +395,53 @@ describe('work commands', () => {
     expect(json.workItem.status).toBe('running');
   });
 
+  it('requeues blocked work with an optional summary and redacts stale lease tokens', async () => {
+    mockFetch()
+      .on('POST', '/api/v1/work-items/work-001/requeue')
+      .body((body) => (body as any).resultSummary === 'Dependency repaired')
+      .reply(200, {
+        workItem: {
+          id: 'work-001',
+          title: 'Retry work',
+          status: 'queued',
+          claimToken: 'must-not-leak',
+        },
+      })
+      .install();
+
+    const result = await runCommand([
+      'work',
+      'requeue',
+      'work-001',
+      '--summary',
+      'Dependency repaired',
+      '--token',
+      'sift_pat_test',
+      '--json',
+    ]);
+    const json = JSON.parse(result.stdout);
+    expect(json.workItem).toMatchObject({ id: 'work-001', status: 'queued' });
+    expect(json.workItem.claimToken).toBeUndefined();
+  });
+
+  it('requires owner and token together before releasing active work', async () => {
+    mockFetch().install();
+    const result = await runCommand([
+      'work',
+      'release',
+      'work-001',
+      '--claim-token',
+      'claim-token',
+      '--token',
+      'sift_pat_test',
+      '--json',
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain('release requires both --owner and --claim-token');
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   it('blocks work by positional ID with a reason', async () => {
     mockFetch()
       .on('POST', '/api/v1/work-items/work-001/block')

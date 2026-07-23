@@ -50,10 +50,14 @@ export default class WorkCreate extends BaseCommand {
       dependsOn,
     }, this.idempotencyKey());
     this.handleApiError(response);
+    const responseWithWarnings = response as typeof response & {warnings?: string[]};
+    this.surfaceApiWarnings(responseWithWarnings);
     const workItem = this.unwrapOne(response, 'workItem');
     if (!this.jsonEnabled()) {
       this.log(`Work item created: ${workItem.id}`);
     }
-    return response.data;
+    return responseWithWarnings.warnings?.length
+      ? {...(response.data ?? {}), warnings: responseWithWarnings.warnings}
+      : response.data;
   }
 }

@@ -15,6 +15,9 @@ import {
 import {collectDailyReviewContext} from '../../src/lib/daily-review-context';
 import {rejectAllConfirms, resetBypass, setConfirmListener} from '../../interactive-tui/confirmGate';
 import {buildCommandContext as buildContext} from '../helpers/interactive-command-context';
+import {mkdtempSync, readFileSync, rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
 
 function restoreEnv(key: string, value: string | undefined): void {
   if (value === undefined) delete process.env[key];
@@ -164,6 +167,28 @@ describe('interactive command registry', () => {
 
     await runInteractiveCommand(ctx, '/copy all');
     expect(messages.at(-1)?.text).toBe('copied 38 chars.');
+  });
+
+  it('refuses to persist a cyclic /plan work --after edge', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'plan-after-cycle-'));
+    try {
+      const {ctx, messages, apiClient} = buildContext({workspaceRoot: () => root, cwd: () => root});
+      (apiClient.listWorkItems as jest.Mock).mockReturnValue(Promise.resolve({
+        statusCode: 200,
+        data: {workItems: [
+          {id: 'a', title: 'First', status: 'queued'},
+          {id: 'b', title: 'Second', status: 'queued'},
+        ]},
+      }));
+      await runInteractiveCommand(ctx, '/plan work --after a:b');
+      await runInteractiveCommand(ctx, '/plan work --after b:a');
+
+      expect(messages.map((message) => message.text).join('\n')).toContain('Refused to record --after edge(s)');
+      const overlay = JSON.parse(readFileSync(path.join(root, '.siftable/plans/overlay.json'), 'utf8')) as {declaredEdges: unknown[]};
+      expect(overlay.declaredEdges).toHaveLength(1);
+    } finally {
+      rmSync(root, {recursive: true, force: true});
+    }
   });
 
   it('runs /compact and renders the savings report', async () => {

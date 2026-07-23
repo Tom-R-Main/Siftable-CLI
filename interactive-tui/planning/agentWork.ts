@@ -143,6 +143,8 @@ interface BuiltGraph {
   authoritativeHardEdges: HardDependency[];
   /** Inferred and overlay edges used only to improve the rendered plan. */
   planningOnlyHardEdges: HardDependency[];
+  /** Declared edges rejected because they would make precedence cyclic. */
+  rejectedDeclaredEdges: HardDependency[];
 }
 
 export interface BuildOptions {
@@ -169,6 +171,7 @@ export function buildAgentWorkGraph(items: RawWorkItem[], opts: BuildOptions = {
 
   const hardEdges: HardDependency[] = [];
   const authoritativeHardEdges: HardDependency[] = [];
+  const rejectedDeclaredEdges: HardDependency[] = [];
   const softEdges: SoftCoupling[] = [];
 
   // 1. API dependencies are authoritative: predecessor must clear requiredGate
@@ -247,7 +250,11 @@ export function buildAgentWorkGraph(items: RawWorkItem[], opts: BuildOptions = {
   for (const edge of opts.declaredEdges ?? []) {
     if (!activeIds.has(edge.source) || !activeIds.has(edge.target)) continue;
     const key = `${edge.source}->${edge.target}`;
-    if (hardKeySet.has(key) || wouldCreateCycle(edge)) continue;
+    if (hardKeySet.has(key)) continue;
+    if (wouldCreateCycle(edge)) {
+      rejectedDeclaredEdges.push({source: edge.source, target: edge.target});
+      continue;
+    }
     hardKeySet.add(key);
     hardEdges.push({ source: edge.source, target: edge.target });
   }
@@ -308,6 +315,7 @@ export function buildAgentWorkGraph(items: RawWorkItem[], opts: BuildOptions = {
     derivedHardEdges,
     authoritativeHardEdges,
     planningOnlyHardEdges,
+    rejectedDeclaredEdges,
   };
 }
 
@@ -446,12 +454,18 @@ export function planToMermaid(snapshot: PlanSnapshot, hardEdges: HardDependency[
 }
 
 export function planAgentWork(items: RawWorkItem[], opts: BuildOptions = {}): RenderedPlan {
-  const { input, included, planningOnlyHardEdges } = buildAgentWorkGraph(items, opts);
+  const { input, included, planningOnlyHardEdges, rejectedDeclaredEdges } = buildAgentWorkGraph(items, opts);
   const snapshot = computePlan(input);
   const titleOf = (id: string) => included.find((i) => i.id === id)?.title ?? id;
 
   const lines: string[] = [];
   lines.push(`Plan · agent work queue (${included.length} active item${included.length === 1 ? "" : "s"})`);
+
+  if (rejectedDeclaredEdges.length > 0) {
+    lines.push("");
+    lines.push("Rejected planning-only precedence (would create a cycle):");
+    for (const edge of rejectedDeclaredEdges) lines.push(`  - ${titleOf(edge.source)} -> ${titleOf(edge.target)}`);
+  }
 
   const itemsWithQueueGates = included.filter((item) =>
     (item.dependencies?.length ?? 0) > 0 || (item.claimability && item.claimability.state !== "ready")

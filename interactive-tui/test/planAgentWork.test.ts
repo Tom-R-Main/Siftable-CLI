@@ -183,6 +183,20 @@ describe("planAgentWork rendering", () => {
     expect(text).toContain("Planning-only precedence:");
     expect(text).toContain("do not affect queue claimability");
   });
+
+  it("reports a cyclic declared edge instead of silently dropping it", () => {
+    const queue: RawWorkItem[] = [
+      {id: "a", title: "First", status: "queued"},
+      {id: "b", title: "Second", status: "queued"},
+    ];
+    const {text} = planAgentWork(queue, {declaredEdges: [
+      {source: "a", target: "b"},
+      {source: "b", target: "a"},
+    ]});
+
+    expect(text).toContain("Rejected planning-only precedence (would create a cycle)");
+    expect(text).toContain("Second -> First");
+  });
 });
 
 describe("planToMermaid", () => {

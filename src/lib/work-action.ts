@@ -2,6 +2,15 @@ import {Args, Flags} from '@oclif/core';
 import type {TransitionWorkItemInput} from '@siftable/mcp-server/dist/exfClient.js';
 import {BaseCommand} from './base-command.js';
 
+export function redactLifecycleResponse(data: unknown): unknown {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
+  const record = data as Record<string, unknown>;
+  const workItem = record.workItem;
+  if (!workItem || typeof workItem !== 'object' || Array.isArray(workItem)) return data;
+  const {claimToken: _claimToken, ...safeWorkItem} = workItem as Record<string, unknown>;
+  return {...record, workItem: safeWorkItem};
+}
+
 export abstract class WorkActionCommand extends BaseCommand {
   static args = {
     id: Args.string({description: 'Work item ID', required: true}),
@@ -26,8 +35,11 @@ export abstract class WorkActionCommand extends BaseCommand {
     if (ownerBoundActions.has(action) && (!flags.owner || !flags['claim-token'])) {
       this.error(`${action} requires both --owner and --claim-token from the active claim.`);
     }
-    if (action === 'release' && !flags['claim-token']) {
-      this.error('release requires --claim-token from the active claim.');
+    if (action === 'release' && (!flags.owner || !flags['claim-token'])) {
+      this.error('release requires both --owner and --claim-token from the active claim.');
+    }
+    if (action === 'cancel' && Boolean(flags.owner) !== Boolean(flags['claim-token'])) {
+      this.error('cancel requires --owner and --claim-token together for active work; omit both only for queued/blocked cancellation.');
     }
     const client = await this.client(flags);
     const response = await client.transitionWorkItem(args.id, action, {
@@ -49,6 +61,6 @@ export abstract class WorkActionCommand extends BaseCommand {
     if (!this.jsonEnabled()) {
       this.log(`Work item ${action}: ${workItem.id}`);
     }
-    return response.data;
+    return redactLifecycleResponse(response.data);
   }
 }

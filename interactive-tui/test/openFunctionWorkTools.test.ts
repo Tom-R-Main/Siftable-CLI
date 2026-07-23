@@ -8,6 +8,23 @@ function toolsFor(sift: Record<string, unknown>) {
 }
 
 describe("OpenFunction work-item tools", () => {
+  it("uses the exact backend work status vocabulary", () => {
+    const list = toolsFor({}).get("exf_work_items_list")!;
+    expect((list.inputSchema.properties.status as {enum: string[]}).enum).toEqual([
+      "queued", "claimed", "running", "blocked", "needs_review", "done", "failed", "cancelled",
+    ]);
+  });
+
+  it("surfaces legacy dependency warnings from creation", async () => {
+    const createWorkItem = mock(async () => ({
+      statusCode: 201,
+      warnings: ['299 - "inputContext.dependsOn is deprecated"'],
+      data: {workItem: {id: "work-1"}},
+    }));
+    const result = await toolsFor({createWorkItem}).get("exf_work_item_create")!.handler({title: "Legacy"});
+    expect(result.message).toContain("Warning: 299");
+  });
+
   it("maps a claim alias to assignedAlias and carries the owner identity", async () => {
     const claimWorkItem = mock(async () => ({
       statusCode: 200,
@@ -48,6 +65,29 @@ describe("OpenFunction work-item tools", () => {
     });
     expect(result.success).toBe(true);
     expect(transitionWorkItem).toHaveBeenCalledWith("work-1", "complete", {resultSummary: "Reviewed"});
+  });
+
+  it("supports tokenless requeue and paired active-cancel credentials", async () => {
+    const transitionWorkItem = mock(async () => ({statusCode: 200, data: {workItem: {id: "work-1"}}}));
+    const transition = toolsFor({transitionWorkItem}).get("exf_work_item_transition")!;
+
+    expect((await transition.handler({workItemId: "work-1", action: "requeue"})).success).toBe(true);
+    expect((await transition.handler({workItemId: "work-1", action: "cancel", claimToken: "token"})).success).toBe(false);
+    expect((await transition.handler({workItemId: "work-1", action: "release", claimToken: "token"})).success).toBe(false);
+  });
+
+  it("redacts claim tokens from lifecycle results", async () => {
+    const transitionWorkItem = mock(async () => ({
+      statusCode: 200,
+      data: {workItem: {id: "work-1", status: "running", claimToken: "secret"}},
+    }));
+    const result = await toolsFor({transitionWorkItem}).get("exf_work_item_transition")!.handler({
+      workItemId: "work-1",
+      action: "heartbeat",
+      claimOwner: "codex:test",
+      claimToken: "secret",
+    });
+    expect((result.data as any).workItem.claimToken).toBeUndefined();
   });
 
   it("redacts claim tokens from get while preserving dependency state", async () => {

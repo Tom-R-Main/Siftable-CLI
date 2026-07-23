@@ -1,7 +1,7 @@
 import {WorkActionCommand} from '../../lib/work-action.js';
 
 export default class WorkCancel extends WorkActionCommand {
-  static description = 'Cancel a work item';
+  static description = 'Cancel queued/blocked work; active work requires --owner and --claim-token';
   static args = WorkActionCommand.args;
   static flags = WorkActionCommand.baseActionFlags;
 
