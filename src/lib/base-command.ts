@@ -47,6 +47,32 @@ export abstract class BaseCommand extends Command {
     });
   }
 
+  protected async apiRequest<T>(
+    flags: {token?: string; 'api-url'?: string; workspace?: string},
+    path: string,
+    options: {method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; body?: unknown} = {},
+  ): Promise<T> {
+    const token = flags.token || envValue('SIFT_TOKEN', 'EXF_TOKEN') || resolveToken();
+    if (!token) this.error('No authentication token found. Run `sift auth login` or set SIFT_TOKEN.');
+    const apiUrl = flags['api-url'] || envValue('SIFT_API_URL', 'EXF_API_URL') || DEFAULT_API_URL;
+    const response = await fetch(`${apiUrl}${path}`, {
+      method: options.method ?? 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Idempotency-Key': this.idempotencyKey(),
+        ...(flags.workspace ? {'X-Workspace-Id': flags.workspace} : {}),
+      },
+      body: options.body == null ? undefined : JSON.stringify(options.body),
+    });
+    if (!response.ok) {
+      const error = await response.text();
+      this.handleApiError({statusCode: response.status, error});
+    }
+    if (response.status === 204) return undefined as T;
+    return response.json() as Promise<T>;
+  }
+
   protected unwrapList(response: {data?: unknown}, key: string): Record<string, unknown>[] {
     const data = response.data as Record<string, unknown> | undefined;
     return (data?.[key] ?? []) as Record<string, unknown>[];
