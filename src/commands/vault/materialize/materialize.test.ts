@@ -37,7 +37,7 @@ describe('Vault materialization CLI surface', () => {
     (request as any).log = vi.fn();
     const requested = await request.run();
     expect(requestApi).toHaveBeenCalledWith(
-      expect.anything(),
+      expect.not.objectContaining({workspace: '/workspace'}),
       '/api/v1/vault/materializations',
       expect.objectContaining({body: expect.objectContaining({
         surface: 'cli',
