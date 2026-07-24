@@ -99,7 +99,7 @@ Link work to a planning task with `sift work create --task <task-id>` rather tha
 
 ## Command reference
 
-All 190 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
+All 197 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
 
 **Topics:** [General](#general) · [Agents](#agents) · [Approvals](#approvals) · [Auth](#auth) · [Billing](#billing) · [Calendar](#calendar) · [Capabilities](#capabilities) · [Code](#code) · [Codebase](#codebase) · [Codex](#codex) · [Datasets](#datasets) · [Documents](#documents) · [Events](#events) · [Evidence](#evidence) · [Grants](#grants) · [Graph](#graph) · [Notes](#notes) · [Organizations](#organizations) · [People](#people) · [Projects](#projects) · [Recipes](#recipes) · [Research](#research) · [Skills](#skills) · [Tasks](#tasks) · [Timeline](#timeline) · [Vault](#vault) · [Work](#work) · [Worker](#worker)
 
@@ -2157,6 +2157,45 @@ List vault entries (metadata only; requires vault:metadata:read)
 - `--limit <value>` — Maximum number of results
 - `--type <env_var|credential|oauth_token|ssh_key|certificate|note>` — Filter by entry type
 
+#### `sift vault materialize request`
+Request human approval for one destination-bound Vault materialization
+
+**Flags**
+
+- `--destination <value>` *(required)*
+- `--entry <value>` *(required)*
+- `--expected-digest <value>`
+- `--field <value>` *(required)*
+- `--materializer-digest <value>` *(required)*
+- `--mode <0400|0600>` *(default: "0600")*
+- `--nonce <value>` *(required)*
+- `--overwrite`
+- `--purpose <value>` *(required)*
+- `--runner-fingerprint <value>` *(required)*
+- `--runner-public-key <value>` *(required)*
+- `--tracked-exception`
+
+#### `sift vault materialize run`
+Request approval, wait, and materialize one Vault field at the exact approved path
+
+**Flags**
+
+- `--approval-timeout <value>` *(default: 600)*
+- `--destination <value>` *(required)*
+- `--entry <value>` *(required)*
+- `--field <value>` *(required)*
+- `--mode <0400|0600>` *(default: "0600")*
+- `--overwrite`
+- `--purpose <value>` *(required)*
+- `--tracked-exception`
+
+#### `sift vault materialize status`
+Inspect safe status for a destination-bound Vault materialization
+
+**Arguments**
+
+- `id` *(required)*
+
 #### `sift vault read`
 Retired: Vault plaintext reveal is unavailable from the CLI
 
@@ -2429,6 +2468,56 @@ Mark a work item as running
 - `--reason <value>` — Block or failure reason
 - `--summary <value>` — Result summary
 - `--verification-results <value>` — Verification evidence JSON array: [{"command","exitCode","output"?}]
+
+#### `sift work verification evidence`
+Submit externally executed evidence for an exact plan version and step ID
+
+**Arguments**
+
+- `id` *(required)* — Work item ID
+
+**Flags**
+
+- `--artifacts <value>` — Artifact reference JSON array for larger logs
+- `--attempt <value>` *(required)* — Caller-stable attempt identity
+- `--environment <value>` *(required)* — Execution environment label
+- `--exit-code <value>` — Process exit code when applicable
+- `--outcome <passed|failed|error>` *(required)* — Attempt outcome
+- `--output <value>` — Bounded output excerpt; secrets are redacted by the API
+- `--plan-version <value>` *(required)* — Active verification plan version
+- `--provenance <value>` — Evidence provenance JSON object
+- `--ran-at <value>` — RFC3339 execution timestamp
+- `--step <value>` *(required)* — Stable verification step UUID
+
+#### `sift work verification history`
+List immutable verification-plan history and coverage
+
+**Arguments**
+
+- `id` *(required)* — Work item ID
+
+#### `sift work verification plan`
+Show the active versioned verification plan and coverage
+
+**Arguments**
+
+- `id` *(required)* — Work item ID
+
+#### `sift work verification revise`
+Create an audited active verification-plan revision
+
+**Arguments**
+
+- `id` *(required)* — Work item ID
+
+**Flags**
+
+- `--expected-version <value>` *(required)* — Observed active plan version
+- `--provenance <value>` — Revision provenance JSON object
+- `--reason <value>` *(required)* — Audited revision reason
+- `--steps <value>` — Verification step JSON array
+- `--steps-file <value>` — Path to a verification step JSON array
+- `--yes` — Confirm activation without prompting
 
 #### `sift work verify`
 Run the LLM verifier against a work item's acceptance criteria and record a verifier run. Promotion to verified requires passing verification-command evidence plus a verified verdict.

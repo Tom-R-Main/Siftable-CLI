@@ -1998,7 +1998,7 @@
             </details>
             <h2 id="cli-vault" data-i18n="docs.cli.vault.title">Vault</h2>
             <p class="cli-topic__intro" data-i18n="docs.cli.vault.intro">Secrets vault.</p>
-            <details class="cli-topic"><summary><span data-i18n="docs.cli.vault.count">6 commands</span></summary>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.vault.count">9 commands</span></summary>
               <div class="cli-cmd">
                 <code class="cli-cmd__name">sift vault audit</code>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.vault.audit.desc">List Vault audit events (requires vault:audit:read)</p>
@@ -2030,6 +2030,48 @@
                   <dd><code>--category &lt;value&gt;</code> — Filter by category</dd>
                   <dd><code>--limit &lt;value&gt;</code> — Maximum number of results</dd>
                   <dd><code>--type &lt;env_var|credential|oauth_token|ssh_key|certificate|note&gt;</code> — Filter by entry type</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift vault materialize request</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.materialize-request.desc">Request human approval for one destination-bound Vault materialization</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--destination &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--entry &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--expected-digest &lt;value&gt;</code></dd>
+                  <dd><code>--field &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--materializer-digest &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--mode &lt;0400|0600&gt;</code> <span class="flag-meta">default: "0600"</span></dd>
+                  <dd><code>--nonce &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--overwrite</code></dd>
+                  <dd><code>--purpose &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--runner-fingerprint &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--runner-public-key &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--tracked-exception</code></dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift vault materialize run</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.materialize-run.desc">Request approval, wait, and materialize one Vault field at the exact approved path</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--approval-timeout &lt;value&gt;</code> <span class="flag-meta">default: 600</span></dd>
+                  <dd><code>--destination &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--entry &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--field &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--mode &lt;0400|0600&gt;</code> <span class="flag-meta">default: "0600"</span></dd>
+                  <dd><code>--overwrite</code></dd>
+                  <dd><code>--purpose &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--tracked-exception</code></dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift vault materialize status</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.materialize-status.desc">Inspect safe status for a destination-bound Vault materialization</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span></dd>
                 </dl>
               </div>
               <div class="cli-cmd">
@@ -2067,7 +2109,7 @@
             </details>
             <h2 id="cli-work" data-i18n="docs.cli.work.title">Work</h2>
             <p class="cli-topic__intro" data-i18n="docs.cli.work.intro">Executable agent work queue.</p>
-            <details class="cli-topic"><summary><span data-i18n="docs.cli.work.count">18 commands</span></summary>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.work.count">22 commands</span></summary>
               <div class="cli-cmd">
                 <code class="cli-cmd__name">sift work block</code>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.work.block.desc">Mark a work item as blocked</p>
@@ -2296,6 +2338,56 @@
                   <dd><code>--reason &lt;value&gt;</code> — Block or failure reason</dd>
                   <dd><code>--summary &lt;value&gt;</code> — Result summary</dd>
                   <dd><code>--verification-results &lt;value&gt;</code> — Verification evidence JSON array: [{"command","exitCode","output"?}]</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work verification evidence</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.verification-evidence.desc">Submit externally executed evidence for an exact plan version and step ID</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--artifacts &lt;value&gt;</code> — Artifact reference JSON array for larger logs</dd>
+                  <dd><code>--attempt &lt;value&gt;</code> <span class="flag-meta">required</span> — Caller-stable attempt identity</dd>
+                  <dd><code>--environment &lt;value&gt;</code> <span class="flag-meta">required</span> — Execution environment label</dd>
+                  <dd><code>--exit-code &lt;value&gt;</code> — Process exit code when applicable</dd>
+                  <dd><code>--outcome &lt;passed|failed|error&gt;</code> <span class="flag-meta">required</span> — Attempt outcome</dd>
+                  <dd><code>--output &lt;value&gt;</code> — Bounded output excerpt; secrets are redacted by the API</dd>
+                  <dd><code>--plan-version &lt;value&gt;</code> <span class="flag-meta">required</span> — Active verification plan version</dd>
+                  <dd><code>--provenance &lt;value&gt;</code> — Evidence provenance JSON object</dd>
+                  <dd><code>--ran-at &lt;value&gt;</code> — RFC3339 execution timestamp</dd>
+                  <dd><code>--step &lt;value&gt;</code> <span class="flag-meta">required</span> — Stable verification step UUID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work verification history</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.verification-history.desc">List immutable verification-plan history and coverage</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work verification plan</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.verification-plan.desc">Show the active versioned verification plan and coverage</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift work verification revise</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.verification-revise.desc">Create an audited active verification-plan revision</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--expected-version &lt;value&gt;</code> <span class="flag-meta">required</span> — Observed active plan version</dd>
+                  <dd><code>--provenance &lt;value&gt;</code> — Revision provenance JSON object</dd>
+                  <dd><code>--reason &lt;value&gt;</code> <span class="flag-meta">required</span> — Audited revision reason</dd>
+                  <dd><code>--steps &lt;value&gt;</code> — Verification step JSON array</dd>
+                  <dd><code>--steps-file &lt;value&gt;</code> — Path to a verification step JSON array</dd>
+                  <dd><code>--yes</code> — Confirm activation without prompting</dd>
                 </dl>
               </div>
               <div class="cli-cmd">
