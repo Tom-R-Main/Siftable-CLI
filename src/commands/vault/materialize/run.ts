@@ -65,6 +65,13 @@ export default class VaultMaterializeRun extends BaseCommand {
 
   async run(): Promise<unknown> {
     const {flags} = await this.parse(VaultMaterializeRun);
+    // `--workspace` is the local filesystem root for this command, not the
+    // organization UUID used by BaseCommand. Never forward the path as
+    // X-Workspace-Id.
+    const apiFlags = {
+      token: flags.token,
+      'api-url': flags['api-url'],
+    };
     const policyAllowsTrackedException =
       process.env.SIFT_ALLOW_TRACKED_SECRET_MATERIALIZATION === 'true';
     const precondition = await inspectMaterializationDestination({
@@ -98,7 +105,7 @@ export default class VaultMaterializeRun extends BaseCommand {
       artifactEnvelope: ExecutionGrantEnvelope;
       artifactBinding: string;
     }>(
-      flags,
+      apiFlags,
       '/api/v1/vault/materializations',
       {
         method: 'POST',
@@ -152,7 +159,7 @@ export default class VaultMaterializeRun extends BaseCommand {
       let approvalStatus = 'pending';
       while (Date.now() < deadline) {
         const approval = await this.apiRequest<{approval: {status: string}}>(
-          flags,
+          apiFlags,
           `/api/v1/governed-approvals/${encodeURIComponent(requested.materialization.approvalId)}?surface=cli`,
         );
         approvalStatus = approval.approval.status;
@@ -166,7 +173,7 @@ export default class VaultMaterializeRun extends BaseCommand {
         envelope: ExecutionGrantEnvelope;
         binding: string;
       }>(
-        flags,
+        apiFlags,
         '/api/v1/vault/materializations/redeem',
         {
           method: 'POST',
@@ -224,7 +231,7 @@ export default class VaultMaterializeRun extends BaseCommand {
         },
       });
       const completed = await this.apiRequest<{receipt: MaterializationRecord}>(
-        flags,
+        apiFlags,
         `/api/v1/vault/materializations/${encodeURIComponent(requested.materialization.id)}/complete`,
         {
           method: 'POST',
@@ -248,7 +255,7 @@ export default class VaultMaterializeRun extends BaseCommand {
       if (redemptionCompleted) {
         try {
           await this.apiRequest(
-            flags,
+            apiFlags,
             `/api/v1/vault/materializations/${encodeURIComponent(requested.materialization.id)}/fail`,
             {
               method: 'POST',
