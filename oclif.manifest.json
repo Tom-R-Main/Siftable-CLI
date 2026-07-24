@@ -869,6 +869,189 @@
         "work.js"
       ]
     },
+    "approvals:request": {
+      "aliases": [],
+      "args": {},
+      "description": "Request a governed action approval; this command cannot approve or consume it",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "action": {
+          "description": "Governed action identifier",
+          "name": "action",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "purpose": {
+          "description": "Human-readable non-secret purpose",
+          "name": "purpose",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "resource-type": {
+          "description": "Resource type identifier",
+          "name": "resource-type",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "resource-id": {
+          "description": "Resource identifier",
+          "name": "resource-id",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "operation": {
+          "description": "Operation identifier",
+          "name": "operation",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "destination": {
+          "description": "Destination binding JSON object",
+          "name": "destination",
+          "default": "{}",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "expires-in": {
+          "description": "Approval lifetime in seconds (30-600)",
+          "name": "expires-in",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "approvals:request",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "approvals",
+        "request.js"
+      ]
+    },
+    "approvals:status": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Approval ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Inspect a governed approval requested by this CLI identity",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "approvals:status",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "approvals",
+        "status.js"
+      ]
+    },
     "auth:login": {
       "aliases": [],
       "args": {},
@@ -1068,189 +1251,6 @@
         "dist",
         "commands",
         "auth",
-        "status.js"
-      ]
-    },
-    "approvals:request": {
-      "aliases": [],
-      "args": {},
-      "description": "Request a governed action approval; this command cannot approve or consume it",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "action": {
-          "description": "Governed action identifier",
-          "name": "action",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "purpose": {
-          "description": "Human-readable non-secret purpose",
-          "name": "purpose",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "resource-type": {
-          "description": "Resource type identifier",
-          "name": "resource-type",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "resource-id": {
-          "description": "Resource identifier",
-          "name": "resource-id",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "operation": {
-          "description": "Operation identifier",
-          "name": "operation",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "destination": {
-          "description": "Destination binding JSON object",
-          "name": "destination",
-          "default": "{}",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "expires-in": {
-          "description": "Approval lifetime in seconds (30-600)",
-          "name": "expires-in",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "approvals:request",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "approvals",
-        "request.js"
-      ]
-    },
-    "approvals:status": {
-      "aliases": [],
-      "args": {
-        "id": {
-          "description": "Approval ID",
-          "name": "id",
-          "required": true
-        }
-      },
-      "description": "Inspect a governed approval requested by this CLI identity",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "approvals:status",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "approvals",
         "status.js"
       ]
     },
@@ -2024,6 +2024,404 @@
         "revoke.js"
       ]
     },
+    "code:blame": {
+      "aliases": [],
+      "args": {
+        "file": {
+          "description": "Relative file path",
+          "name": "file",
+          "required": true
+        }
+      },
+      "description": "Git blame for a file",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "root": {
+          "description": "Repository root path",
+          "name": "root",
+          "default": ".",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "code:blame",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "code",
+        "blame.js"
+      ]
+    },
+    "code:expertise": {
+      "aliases": [],
+      "args": {
+        "repo": {
+          "description": "Repository ID",
+          "name": "repo",
+          "required": true
+        }
+      },
+      "description": "Refresh developer expertise index for a repository",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "code:expertise",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "code",
+        "expertise.js"
+      ]
+    },
+    "code:history": {
+      "aliases": [],
+      "args": {
+        "repo": {
+          "description": "Repository ID",
+          "name": "repo",
+          "required": true
+        }
+      },
+      "description": "Get commit history for a repository",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "path": {
+          "description": "Filter by file path",
+          "name": "path",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "limit": {
+          "description": "Maximum number of results",
+          "name": "limit",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "code:history",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "code",
+        "history.js"
+      ]
+    },
+    "code:link": {
+      "aliases": [],
+      "args": {
+        "task-id": {
+          "description": "Task ID",
+          "name": "task-id",
+          "required": true
+        }
+      },
+      "description": "Link a task to code (file, commit, or repository)",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "repo": {
+          "description": "Repository ID",
+          "name": "repo",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "file": {
+          "description": "File path",
+          "name": "file",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "commit": {
+          "description": "Commit SHA",
+          "name": "commit",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "notes": {
+          "description": "Notes about the link",
+          "name": "notes",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "code:link",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "code",
+        "link.js"
+      ]
+    },
+    "code:who-knows": {
+      "aliases": [],
+      "args": {
+        "repo": {
+          "description": "Repository ID",
+          "name": "repo",
+          "required": true
+        },
+        "area": {
+          "description": "Path, glob, or symbol",
+          "name": "area",
+          "required": true
+        }
+      },
+      "description": "Find experts for a code area",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "limit": {
+          "description": "Maximum number of results",
+          "name": "limit",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "code:who-knows",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "code",
+        "who-knows.js"
+      ]
+    },
     "codebase:delete": {
       "aliases": [],
       "args": {
@@ -2695,500 +3093,6 @@
         "status.js"
       ]
     },
-    "code:blame": {
-      "aliases": [],
-      "args": {
-        "file": {
-          "description": "Relative file path",
-          "name": "file",
-          "required": true
-        }
-      },
-      "description": "Git blame for a file",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "root": {
-          "description": "Repository root path",
-          "name": "root",
-          "default": ".",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "code:blame",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "code",
-        "blame.js"
-      ]
-    },
-    "code:expertise": {
-      "aliases": [],
-      "args": {
-        "repo": {
-          "description": "Repository ID",
-          "name": "repo",
-          "required": true
-        }
-      },
-      "description": "Refresh developer expertise index for a repository",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "code:expertise",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "code",
-        "expertise.js"
-      ]
-    },
-    "code:history": {
-      "aliases": [],
-      "args": {
-        "repo": {
-          "description": "Repository ID",
-          "name": "repo",
-          "required": true
-        }
-      },
-      "description": "Get commit history for a repository",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "path": {
-          "description": "Filter by file path",
-          "name": "path",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "limit": {
-          "description": "Maximum number of results",
-          "name": "limit",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "code:history",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "code",
-        "history.js"
-      ]
-    },
-    "code:link": {
-      "aliases": [],
-      "args": {
-        "task-id": {
-          "description": "Task ID",
-          "name": "task-id",
-          "required": true
-        }
-      },
-      "description": "Link a task to code (file, commit, or repository)",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "repo": {
-          "description": "Repository ID",
-          "name": "repo",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "file": {
-          "description": "File path",
-          "name": "file",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "commit": {
-          "description": "Commit SHA",
-          "name": "commit",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "notes": {
-          "description": "Notes about the link",
-          "name": "notes",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "code:link",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "code",
-        "link.js"
-      ]
-    },
-    "code:who-knows": {
-      "aliases": [],
-      "args": {
-        "repo": {
-          "description": "Repository ID",
-          "name": "repo",
-          "required": true
-        },
-        "area": {
-          "description": "Path, glob, or symbol",
-          "name": "area",
-          "required": true
-        }
-      },
-      "description": "Find experts for a code area",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "limit": {
-          "description": "Maximum number of results",
-          "name": "limit",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "code:who-knows",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "code",
-        "who-knows.js"
-      ]
-    },
-    "documents:upload": {
-      "aliases": [],
-      "args": {
-        "file": {
-          "description": "Path to file",
-          "name": "file",
-          "required": true
-        }
-      },
-      "description": "Upload a document (PDF, Markdown, or text) as a note",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "title": {
-          "description": "Note title (defaults to filename)",
-          "name": "title",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "type": {
-          "description": "Note type",
-          "name": "type",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "note",
-            "concept",
-            "meeting",
-            "reference",
-            "daily",
-            "dataset"
-          ],
-          "type": "option"
-        },
-        "project": {
-          "description": "Project ID",
-          "name": "project",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "documents:upload",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "documents",
-        "upload.js"
-      ]
-    },
     "events:attach-person": {
       "aliases": [],
       "args": {
@@ -3587,6 +3491,517 @@
         "commands",
         "events",
         "list.js"
+      ]
+    },
+    "documents:upload": {
+      "aliases": [],
+      "args": {
+        "file": {
+          "description": "Path to file",
+          "name": "file",
+          "required": true
+        }
+      },
+      "description": "Upload a document (PDF, Markdown, or text) as a note",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "title": {
+          "description": "Note title (defaults to filename)",
+          "name": "title",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "type": {
+          "description": "Note type",
+          "name": "type",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "note",
+            "concept",
+            "meeting",
+            "reference",
+            "daily",
+            "dataset"
+          ],
+          "type": "option"
+        },
+        "project": {
+          "description": "Project ID",
+          "name": "project",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "documents:upload",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "documents",
+        "upload.js"
+      ]
+    },
+    "grants:adapters": {
+      "aliases": [],
+      "args": {},
+      "description": "List reviewed local execution adapters and honest containment tiers",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "grants:adapters",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "grants",
+        "adapters.js"
+      ]
+    },
+    "grants:request": {
+      "aliases": [],
+      "args": {},
+      "description": "Request a human-approved grant for a pre-registered trusted local runner",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "vault-entry": {
+          "name": "vault-entry",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "credential-field": {
+          "name": "credential-field",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "issuer": {
+          "name": "issuer",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "adapter": {
+          "name": "adapter",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "operation": {
+          "name": "operation",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "audience": {
+          "name": "audience",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "scope": {
+          "description": "Provider scope JSON with string values",
+          "name": "scope",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "purpose": {
+          "name": "purpose",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "runner-public-key": {
+          "description": "PEM public-key file from the trusted local runner",
+          "name": "runner-public-key",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "runner-fingerprint": {
+          "name": "runner-fingerprint",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "executable": {
+          "description": "Resolved reviewed executable path",
+          "name": "executable",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "executable-digest": {
+          "name": "executable-digest",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "cwd": {
+          "name": "cwd",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "grants:request",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "grants",
+        "request.js"
+      ]
+    },
+    "grants:run": {
+      "aliases": [],
+      "args": {},
+      "description": "Request approval, redeem in memory, and run exactly one reviewed child process",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "vault-entry": {
+          "name": "vault-entry",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "credential-field": {
+          "name": "credential-field",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "issuer": {
+          "name": "issuer",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "adapter": {
+          "name": "adapter",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "github_gh",
+            "terraform_apply"
+          ],
+          "type": "option"
+        },
+        "operation": {
+          "name": "operation",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "audience": {
+          "name": "audience",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "scope": {
+          "name": "scope",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "purpose": {
+          "name": "purpose",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "cwd": {
+          "name": "cwd",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "approval-timeout": {
+          "name": "approval-timeout",
+          "default": 600,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "grants:run",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "grants",
+        "run.js"
+      ]
+    },
+    "grants:status": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Inspect safe status for an ephemeral local execution grant",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "grants:status",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "grants",
+        "status.js"
       ]
     },
     "evidence:extract": {
@@ -4098,421 +4513,6 @@
         "commands",
         "evidence",
         "verify.js"
-      ]
-    },
-    "grants:adapters": {
-      "aliases": [],
-      "args": {},
-      "description": "List reviewed local execution adapters and honest containment tiers",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "grants:adapters",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "grants",
-        "adapters.js"
-      ]
-    },
-    "grants:request": {
-      "aliases": [],
-      "args": {},
-      "description": "Request a human-approved grant for a pre-registered trusted local runner",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "vault-entry": {
-          "name": "vault-entry",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "credential-field": {
-          "name": "credential-field",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "issuer": {
-          "name": "issuer",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "adapter": {
-          "name": "adapter",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "operation": {
-          "name": "operation",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "audience": {
-          "name": "audience",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "scope": {
-          "description": "Provider scope JSON with string values",
-          "name": "scope",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "purpose": {
-          "name": "purpose",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "runner-public-key": {
-          "description": "PEM public-key file from the trusted local runner",
-          "name": "runner-public-key",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "runner-fingerprint": {
-          "name": "runner-fingerprint",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "executable": {
-          "description": "Resolved reviewed executable path",
-          "name": "executable",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "executable-digest": {
-          "name": "executable-digest",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "cwd": {
-          "name": "cwd",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "grants:request",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "grants",
-        "request.js"
-      ]
-    },
-    "grants:run": {
-      "aliases": [],
-      "args": {},
-      "description": "Request approval, redeem in memory, and run exactly one reviewed child process",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "vault-entry": {
-          "name": "vault-entry",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "credential-field": {
-          "name": "credential-field",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "issuer": {
-          "name": "issuer",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "adapter": {
-          "name": "adapter",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "github_gh",
-            "terraform_apply"
-          ],
-          "type": "option"
-        },
-        "operation": {
-          "name": "operation",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "audience": {
-          "name": "audience",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "scope": {
-          "name": "scope",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "purpose": {
-          "name": "purpose",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "cwd": {
-          "name": "cwd",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "approval-timeout": {
-          "name": "approval-timeout",
-          "default": 600,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "grants:run",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "grants",
-        "run.js"
-      ]
-    },
-    "grants:status": {
-      "aliases": [],
-      "args": {
-        "id": {
-          "name": "id",
-          "required": true
-        }
-      },
-      "description": "Inspect safe status for an ephemeral local execution grant",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "grants:status",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "grants",
-        "status.js"
       ]
     },
     "graph:between": {
@@ -9831,6 +9831,689 @@
         "validate.js"
       ]
     },
+    "recipes:list": {
+      "aliases": [],
+      "args": {},
+      "description": "List built-in research workflow recipes",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "recipes:list",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "recipes",
+        "list.js"
+      ]
+    },
+    "recipes:show": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Recipe ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Show a built-in research workflow recipe",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "recipes:show",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "recipes",
+        "show.js"
+      ]
+    },
+    "projects:archive": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Project ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Archive a project",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "yes": {
+          "char": "y",
+          "description": "Skip confirmation",
+          "name": "yes",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "projects:archive",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "projects",
+        "archive.js"
+      ]
+    },
+    "projects:context": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Project ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Get project context (tasks, notes, signals)",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "projects:context",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "projects",
+        "context.js"
+      ]
+    },
+    "projects:create": {
+      "aliases": [],
+      "args": {},
+      "description": "Create a project",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "name": {
+          "description": "Project name",
+          "name": "name",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "summary": {
+          "description": "Project summary",
+          "name": "summary",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "status": {
+          "description": "Project status",
+          "name": "status",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "planning",
+            "active",
+            "on_hold",
+            "blocked",
+            "completed"
+          ],
+          "type": "option"
+        },
+        "emoji": {
+          "description": "Single emoji",
+          "name": "emoji",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "projects:create",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "projects",
+        "create.js"
+      ]
+    },
+    "projects:list": {
+      "aliases": [],
+      "args": {},
+      "description": "List projects",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "status": {
+          "description": "Filter by status",
+          "name": "status",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "planning",
+            "active",
+            "on_hold",
+            "blocked",
+            "completed"
+          ],
+          "type": "option"
+        },
+        "include-archived": {
+          "description": "Include archived projects",
+          "name": "include-archived",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "projects:list",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "projects",
+        "list.js"
+      ]
+    },
+    "projects:planning-recompute": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Project ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Recompute the canonical CSN planning snapshot for a project",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "projects:planning-recompute",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "projects",
+        "planning-recompute.js"
+      ]
+    },
+    "projects:planning": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Project ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Get the canonical CSN planning snapshot for a project",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "projects:planning",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "projects",
+        "planning.js"
+      ]
+    },
+    "projects:update": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Project ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Update a project",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "name": {
+          "description": "Project name",
+          "name": "name",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "summary": {
+          "description": "Project summary",
+          "name": "summary",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "status": {
+          "description": "Project status",
+          "name": "status",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "planning",
+            "active",
+            "on_hold",
+            "blocked",
+            "completed"
+          ],
+          "type": "option"
+        },
+        "emoji": {
+          "description": "Single emoji",
+          "name": "emoji",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "projects:update",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "projects",
+        "update.js"
+      ]
+    },
     "people:bulk-delete": {
       "aliases": [],
       "args": {},
@@ -10974,689 +11657,6 @@
         "update.js"
       ]
     },
-    "projects:archive": {
-      "aliases": [],
-      "args": {
-        "id": {
-          "description": "Project ID",
-          "name": "id",
-          "required": true
-        }
-      },
-      "description": "Archive a project",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "yes": {
-          "char": "y",
-          "description": "Skip confirmation",
-          "name": "yes",
-          "allowNo": false,
-          "type": "boolean"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "projects:archive",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "projects",
-        "archive.js"
-      ]
-    },
-    "projects:context": {
-      "aliases": [],
-      "args": {
-        "id": {
-          "description": "Project ID",
-          "name": "id",
-          "required": true
-        }
-      },
-      "description": "Get project context (tasks, notes, signals)",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "projects:context",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "projects",
-        "context.js"
-      ]
-    },
-    "projects:create": {
-      "aliases": [],
-      "args": {},
-      "description": "Create a project",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "name": {
-          "description": "Project name",
-          "name": "name",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "summary": {
-          "description": "Project summary",
-          "name": "summary",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "status": {
-          "description": "Project status",
-          "name": "status",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "planning",
-            "active",
-            "on_hold",
-            "blocked",
-            "completed"
-          ],
-          "type": "option"
-        },
-        "emoji": {
-          "description": "Single emoji",
-          "name": "emoji",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "projects:create",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "projects",
-        "create.js"
-      ]
-    },
-    "projects:list": {
-      "aliases": [],
-      "args": {},
-      "description": "List projects",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "status": {
-          "description": "Filter by status",
-          "name": "status",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "planning",
-            "active",
-            "on_hold",
-            "blocked",
-            "completed"
-          ],
-          "type": "option"
-        },
-        "include-archived": {
-          "description": "Include archived projects",
-          "name": "include-archived",
-          "allowNo": false,
-          "type": "boolean"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "projects:list",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "projects",
-        "list.js"
-      ]
-    },
-    "projects:planning-recompute": {
-      "aliases": [],
-      "args": {
-        "id": {
-          "description": "Project ID",
-          "name": "id",
-          "required": true
-        }
-      },
-      "description": "Recompute the canonical CSN planning snapshot for a project",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "projects:planning-recompute",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "projects",
-        "planning-recompute.js"
-      ]
-    },
-    "projects:planning": {
-      "aliases": [],
-      "args": {
-        "id": {
-          "description": "Project ID",
-          "name": "id",
-          "required": true
-        }
-      },
-      "description": "Get the canonical CSN planning snapshot for a project",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "projects:planning",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "projects",
-        "planning.js"
-      ]
-    },
-    "projects:update": {
-      "aliases": [],
-      "args": {
-        "id": {
-          "description": "Project ID",
-          "name": "id",
-          "required": true
-        }
-      },
-      "description": "Update a project",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "name": {
-          "description": "Project name",
-          "name": "name",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "summary": {
-          "description": "Project summary",
-          "name": "summary",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "status": {
-          "description": "Project status",
-          "name": "status",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "planning",
-            "active",
-            "on_hold",
-            "blocked",
-            "completed"
-          ],
-          "type": "option"
-        },
-        "emoji": {
-          "description": "Single emoji",
-          "name": "emoji",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "projects:update",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "projects",
-        "update.js"
-      ]
-    },
-    "recipes:list": {
-      "aliases": [],
-      "args": {},
-      "description": "List built-in research workflow recipes",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "recipes:list",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "recipes",
-        "list.js"
-      ]
-    },
-    "recipes:show": {
-      "aliases": [],
-      "args": {
-        "id": {
-          "description": "Recipe ID",
-          "name": "id",
-          "required": true
-        }
-      },
-      "description": "Show a built-in research workflow recipe",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "recipes:show",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "recipes",
-        "show.js"
-      ]
-    },
     "skills:install": {
       "aliases": [],
       "args": {
@@ -12162,6 +12162,534 @@
         "commands",
         "research",
         "status.js"
+      ]
+    },
+    "timeline:create": {
+      "aliases": [],
+      "args": {},
+      "description": "Create a user-authored timeline fact",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "title": {
+          "description": "Fact title",
+          "name": "title",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "fact-type": {
+          "description": "Fact type",
+          "name": "fact-type",
+          "default": "event",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "body": {
+          "description": "Fact body or notes",
+          "name": "body",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "timestamp": {
+          "description": "ISO timestamp",
+          "name": "timestamp",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "year": {
+          "description": "Historical year CE",
+          "name": "year",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "year-end": {
+          "description": "Historical end year CE",
+          "name": "year-end",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "precision": {
+          "description": "Temporal precision",
+          "name": "precision",
+          "default": "year",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "millisecond",
+            "minute",
+            "hour",
+            "day",
+            "month",
+            "year",
+            "decade",
+            "century",
+            "millennium",
+            "mega_year",
+            "era"
+          ],
+          "type": "option"
+        },
+        "entity": {
+          "description": "Participant/entity as type:uuid or type:uuid:role; repeatable",
+          "name": "entity",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "confidence": {
+          "description": "Confidence level",
+          "name": "confidence",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "type": "option"
+        },
+        "source-label": {
+          "description": "Source/provenance label",
+          "name": "source-label",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "source-url": {
+          "description": "Source/provenance URL",
+          "name": "source-url",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "source-note": {
+          "description": "Source/provenance note",
+          "name": "source-note",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "visibility": {
+          "description": "Timeline visibility",
+          "name": "visibility",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "org_public",
+            "private",
+            "restricted"
+          ],
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "timeline:create",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "timeline",
+        "create.js"
+      ]
+    },
+    "timeline:delete": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Timeline fact ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Retract a timeline fact",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "yes": {
+          "description": "Confirm retraction without prompting",
+          "name": "yes",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "timeline:delete",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "timeline",
+        "delete.js"
+      ]
+    },
+    "timeline:list": {
+      "aliases": [],
+      "args": {},
+      "description": "List timeline facts with bounded filters",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "start": {
+          "description": "Start boundary, ISO timestamp or supported historical boundary",
+          "name": "start",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "end": {
+          "description": "End boundary, ISO timestamp or supported historical boundary",
+          "name": "end",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "fact-types": {
+          "description": "Comma-separated fact types",
+          "name": "fact-types",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "source-types": {
+          "description": "Comma-separated source types",
+          "name": "source-types",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "entity": {
+          "description": "Entity filter as type:uuid",
+          "name": "entity",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "entity-role": {
+          "description": "Comma-separated entity roles",
+          "name": "entity-role",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "q": {
+          "description": "Text search query",
+          "name": "q",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "order": {
+          "description": "Sort order",
+          "name": "order",
+          "default": "asc",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "asc",
+            "desc"
+          ],
+          "type": "option"
+        },
+        "cursor": {
+          "description": "Pagination cursor",
+          "name": "cursor",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "limit": {
+          "description": "Maximum items to return",
+          "name": "limit",
+          "default": 50,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "timeline:list",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "timeline",
+        "list.js"
+      ]
+    },
+    "timeline:narrative": {
+      "aliases": [],
+      "args": {},
+      "description": "Generate a narrative summary or explanation for timeline facts",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "action": {
+          "description": "Narrative action",
+          "name": "action",
+          "default": "summarize",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "summarize",
+            "changed_since",
+            "led_to",
+            "what_next",
+            "cross_object"
+          ],
+          "type": "option"
+        },
+        "entity": {
+          "description": "Entity scope as type:uuid",
+          "name": "entity",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "participant": {
+          "description": "Participant filter as type:uuid",
+          "name": "participant",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "related-entity": {
+          "description": "Related entity as type:uuid",
+          "name": "related-entity",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "entity-roles": {
+          "description": "Comma-separated entity roles",
+          "name": "entity-roles",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "fact-type": {
+          "description": "Fact type filter",
+          "name": "fact-type",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "source-type": {
+          "description": "Source type filter",
+          "name": "source-type",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "q": {
+          "description": "Text query filter",
+          "name": "q",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "prompt": {
+          "description": "Question or custom narrative prompt",
+          "name": "prompt",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "limit": {
+          "description": "Maximum timeline facts to include",
+          "name": "limit",
+          "default": 60,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "timeline:narrative",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "timeline",
+        "narrative.js"
       ]
     },
     "tasks:bulk-delete": {
@@ -13340,634 +13868,6 @@
         "update.js"
       ]
     },
-    "timeline:create": {
-      "aliases": [],
-      "args": {},
-      "description": "Create a user-authored timeline fact",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "title": {
-          "description": "Fact title",
-          "name": "title",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "fact-type": {
-          "description": "Fact type",
-          "name": "fact-type",
-          "default": "event",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "body": {
-          "description": "Fact body or notes",
-          "name": "body",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "timestamp": {
-          "description": "ISO timestamp",
-          "name": "timestamp",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "year": {
-          "description": "Historical year CE",
-          "name": "year",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "year-end": {
-          "description": "Historical end year CE",
-          "name": "year-end",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "precision": {
-          "description": "Temporal precision",
-          "name": "precision",
-          "default": "year",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "millisecond",
-            "minute",
-            "hour",
-            "day",
-            "month",
-            "year",
-            "decade",
-            "century",
-            "millennium",
-            "mega_year",
-            "era"
-          ],
-          "type": "option"
-        },
-        "entity": {
-          "description": "Participant/entity as type:uuid or type:uuid:role; repeatable",
-          "name": "entity",
-          "hasDynamicHelp": false,
-          "multiple": true,
-          "type": "option"
-        },
-        "confidence": {
-          "description": "Confidence level",
-          "name": "confidence",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "low",
-            "medium",
-            "high"
-          ],
-          "type": "option"
-        },
-        "source-label": {
-          "description": "Source/provenance label",
-          "name": "source-label",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "source-url": {
-          "description": "Source/provenance URL",
-          "name": "source-url",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "source-note": {
-          "description": "Source/provenance note",
-          "name": "source-note",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "visibility": {
-          "description": "Timeline visibility",
-          "name": "visibility",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "org_public",
-            "private",
-            "restricted"
-          ],
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "timeline:create",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "timeline",
-        "create.js"
-      ]
-    },
-    "timeline:delete": {
-      "aliases": [],
-      "args": {
-        "id": {
-          "description": "Timeline fact ID",
-          "name": "id",
-          "required": true
-        }
-      },
-      "description": "Retract a timeline fact",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "yes": {
-          "description": "Confirm retraction without prompting",
-          "name": "yes",
-          "allowNo": false,
-          "type": "boolean"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "timeline:delete",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "timeline",
-        "delete.js"
-      ]
-    },
-    "timeline:list": {
-      "aliases": [],
-      "args": {},
-      "description": "List timeline facts with bounded filters",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "start": {
-          "description": "Start boundary, ISO timestamp or supported historical boundary",
-          "name": "start",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "end": {
-          "description": "End boundary, ISO timestamp or supported historical boundary",
-          "name": "end",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "fact-types": {
-          "description": "Comma-separated fact types",
-          "name": "fact-types",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "source-types": {
-          "description": "Comma-separated source types",
-          "name": "source-types",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "entity": {
-          "description": "Entity filter as type:uuid",
-          "name": "entity",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "entity-role": {
-          "description": "Comma-separated entity roles",
-          "name": "entity-role",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "q": {
-          "description": "Text search query",
-          "name": "q",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "order": {
-          "description": "Sort order",
-          "name": "order",
-          "default": "asc",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "asc",
-            "desc"
-          ],
-          "type": "option"
-        },
-        "cursor": {
-          "description": "Pagination cursor",
-          "name": "cursor",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "limit": {
-          "description": "Maximum items to return",
-          "name": "limit",
-          "default": 50,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "timeline:list",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "timeline",
-        "list.js"
-      ]
-    },
-    "timeline:narrative": {
-      "aliases": [],
-      "args": {},
-      "description": "Generate a narrative summary or explanation for timeline facts",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "action": {
-          "description": "Narrative action",
-          "name": "action",
-          "default": "summarize",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "options": [
-            "summarize",
-            "changed_since",
-            "led_to",
-            "what_next",
-            "cross_object"
-          ],
-          "type": "option"
-        },
-        "entity": {
-          "description": "Entity scope as type:uuid",
-          "name": "entity",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "participant": {
-          "description": "Participant filter as type:uuid",
-          "name": "participant",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "related-entity": {
-          "description": "Related entity as type:uuid",
-          "name": "related-entity",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "entity-roles": {
-          "description": "Comma-separated entity roles",
-          "name": "entity-roles",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "fact-type": {
-          "description": "Fact type filter",
-          "name": "fact-type",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "source-type": {
-          "description": "Source type filter",
-          "name": "source-type",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "q": {
-          "description": "Text query filter",
-          "name": "q",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "prompt": {
-          "description": "Question or custom narrative prompt",
-          "name": "prompt",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "limit": {
-          "description": "Maximum timeline facts to include",
-          "name": "limit",
-          "default": 60,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "timeline:narrative",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "timeline",
-        "narrative.js"
-      ]
-    },
-    "worker:run": {
-      "aliases": [],
-      "args": {},
-      "description": "Claim executable work, run a local worker command, and report needs-review artifacts",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "agent": {
-          "description": "Agent alias to claim work for",
-          "name": "agent",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "owner": {
-          "description": "Worker owner fingerprint",
-          "name": "owner",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "command": {
-          "description": "Local command to run for the claimed work item",
-          "name": "command",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "lease": {
-          "description": "Lease seconds",
-          "name": "lease",
-          "default": 1800,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "cwd": {
-          "description": "Fallback working directory for the local command",
-          "name": "cwd",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "worker:run",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "worker",
-        "run.js"
-      ]
-    },
     "vault:audit": {
       "aliases": [],
       "args": {},
@@ -14502,6 +14402,106 @@
         "commands",
         "vault",
         "update.js"
+      ]
+    },
+    "worker:run": {
+      "aliases": [],
+      "args": {},
+      "description": "Claim executable work, run a local worker command, and report needs-review artifacts",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "agent": {
+          "description": "Agent alias to claim work for",
+          "name": "agent",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "owner": {
+          "description": "Worker owner fingerprint",
+          "name": "owner",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "command": {
+          "description": "Local command to run for the claimed work item",
+          "name": "command",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "lease": {
+          "description": "Lease seconds",
+          "name": "lease",
+          "default": 1800,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "cwd": {
+          "description": "Fallback working directory for the local command",
+          "name": "cwd",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "worker:run",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "worker",
+        "run.js"
       ]
     },
     "work:block": {
@@ -16975,90 +16975,6 @@
         "status.js"
       ]
     },
-    "codex:daily-review:collect": {
-      "aliases": [],
-      "args": {},
-      "description": "Collect read-only Siftable and local git context for Codex daily work reviews",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "limit": {
-          "description": "Maximum records per source",
-          "name": "limit",
-          "default": 20,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "calendar-days": {
-          "description": "Calendar lookahead days",
-          "name": "calendar-days",
-          "default": 7,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "skip-git": {
-          "description": "Skip local git summary",
-          "name": "skip-git",
-          "allowNo": false,
-          "type": "boolean"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "codex:daily-review:collect",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "codex",
-        "daily-review",
-        "collect.js"
-      ]
-    },
     "code:memory:delete": {
       "aliases": [],
       "args": {
@@ -17405,6 +17321,90 @@
         "code",
         "memory",
         "store.js"
+      ]
+    },
+    "codex:daily-review:collect": {
+      "aliases": [],
+      "args": {},
+      "description": "Collect read-only Siftable and local git context for Codex daily work reviews",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "limit": {
+          "description": "Maximum records per source",
+          "name": "limit",
+          "default": 20,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "calendar-days": {
+          "description": "Calendar lookahead days",
+          "name": "calendar-days",
+          "default": 7,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "skip-git": {
+          "description": "Skip local git summary",
+          "name": "skip-git",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "codex:daily-review:collect",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "codex",
+        "daily-review",
+        "collect.js"
       ]
     },
     "evidence:diff:apply": {
@@ -17914,152 +17914,6 @@
         "import.js"
       ]
     },
-    "datasets:templates:list": {
-      "aliases": [],
-      "args": {},
-      "description": "List built-in dataset templates",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "datasets:templates:list",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "datasets",
-        "templates",
-        "list.js"
-      ]
-    },
-    "datasets:templates:show": {
-      "aliases": [],
-      "args": {
-        "template": {
-          "description": "Template name",
-          "name": "template",
-          "options": [
-            "sources",
-            "people",
-            "events",
-            "claims",
-            "evidence_sources",
-            "evidence_source_fragments",
-            "evidence_claims",
-            "evidence_people",
-            "evidence_organizations",
-            "evidence_places",
-            "evidence_artifacts",
-            "evidence_events",
-            "evidence_relationships",
-            "evidence_contradictions"
-          ],
-          "required": true
-        }
-      },
-      "description": "Show a built-in dataset template schema",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "datasets:templates:show",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "datasets",
-        "templates",
-        "show.js"
-      ]
-    },
     "datasets:diff-plans:list": {
       "aliases": [],
       "args": {},
@@ -18216,6 +18070,152 @@
         "commands",
         "datasets",
         "diff-plans",
+        "show.js"
+      ]
+    },
+    "datasets:templates:list": {
+      "aliases": [],
+      "args": {},
+      "description": "List built-in dataset templates",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "datasets:templates:list",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "datasets",
+        "templates",
+        "list.js"
+      ]
+    },
+    "datasets:templates:show": {
+      "aliases": [],
+      "args": {
+        "template": {
+          "description": "Template name",
+          "name": "template",
+          "options": [
+            "sources",
+            "people",
+            "events",
+            "claims",
+            "evidence_sources",
+            "evidence_source_fragments",
+            "evidence_claims",
+            "evidence_people",
+            "evidence_organizations",
+            "evidence_places",
+            "evidence_artifacts",
+            "evidence_events",
+            "evidence_relationships",
+            "evidence_contradictions"
+          ],
+          "required": true
+        }
+      },
+      "description": "Show a built-in dataset template schema",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "datasets:templates:show",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "datasets",
+        "templates",
         "show.js"
       ]
     },
@@ -18547,150 +18547,6 @@
         "status.js"
       ]
     },
-    "work:dependencies:get": {
-      "aliases": [],
-      "args": {
-        "id": {
-          "description": "Work item UUID",
-          "name": "id",
-          "required": true
-        }
-      },
-      "description": "Get authoritative dependencies and claimability for a work item",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "work:dependencies:get",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "work",
-        "dependencies",
-        "get.js"
-      ]
-    },
-    "work:dependencies:set": {
-      "aliases": [],
-      "args": {
-        "id": {
-          "description": "Work item UUID",
-          "name": "id",
-          "required": true
-        }
-      },
-      "description": "Atomically replace the authoritative dependencies for a work item",
-      "flags": {
-        "json": {
-          "description": "Format output as json.",
-          "helpGroup": "GLOBAL",
-          "name": "json",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "token": {
-          "description": "Personal access token",
-          "helpGroup": "GLOBAL",
-          "name": "token",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "api-url": {
-          "description": "API base URL",
-          "helpGroup": "GLOBAL",
-          "name": "api-url",
-          "default": "https://siftable.io",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "no-input": {
-          "description": "Disable interactive prompts",
-          "helpGroup": "GLOBAL",
-          "name": "no-input",
-          "allowNo": false,
-          "type": "boolean"
-        },
-        "workspace": {
-          "description": "Workspace org ID to scope operations to",
-          "helpGroup": "GLOBAL",
-          "name": "workspace",
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        },
-        "depends-on": {
-          "description": "Dependency JSON array; pass [] to clear dependencies",
-          "name": "depends-on",
-          "required": true,
-          "hasDynamicHelp": false,
-          "multiple": false,
-          "type": "option"
-        }
-      },
-      "hasDynamicHelp": false,
-      "hiddenAliases": [],
-      "id": "work:dependencies:set",
-      "pluginAlias": "@siftable/cli",
-      "pluginName": "@siftable/cli",
-      "pluginType": "core",
-      "strict": true,
-      "enableJsonFlag": true,
-      "isESM": false,
-      "relativePath": [
-        "dist",
-        "commands",
-        "work",
-        "dependencies",
-        "set.js"
-      ]
-    },
     "work:dependency-policy:get": {
       "aliases": [],
       "args": {},
@@ -18841,6 +18697,150 @@
         "commands",
         "work",
         "dependency-policy",
+        "set.js"
+      ]
+    },
+    "work:dependencies:get": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Work item UUID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Get authoritative dependencies and claimability for a work item",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:dependencies:get",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "dependencies",
+        "get.js"
+      ]
+    },
+    "work:dependencies:set": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Work item UUID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Atomically replace the authoritative dependencies for a work item",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "depends-on": {
+          "description": "Dependency JSON array; pass [] to clear dependencies",
+          "name": "depends-on",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:dependencies:set",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "dependencies",
         "set.js"
       ]
     },
@@ -19240,5 +19240,5 @@
       ]
     }
   },
-  "version": "0.5.31"
+  "version": "0.5.32"
 }
