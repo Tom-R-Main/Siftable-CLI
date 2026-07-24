@@ -3,7 +3,7 @@ import {BaseCommand} from '../../lib/base-command.js';
 import {executeCodebaseIndex} from '../../lib/codebase-index.js';
 
 export default class CodebaseIncremental extends BaseCommand {
-  static description = 'Incrementally index a codebase using git-aware changed files';
+  static description = 'Deprecated hosted incremental-ingestion path (blocked by default)';
   static aliases = ['codebase incremental-index', 'codebase index-incremental'];
 
   static args = {

@@ -1,5 +1,8 @@
 import { ExfClient } from '@siftable/mcp-server/dist/exfClient.js';
-import { indexLocalCodebase } from '@siftable/mcp-server/dist/localIndexer.js';
+import {
+  assertHostedCodebaseIngestionEnabled,
+  indexLocalCodebase,
+} from '@siftable/mcp-server/dist/localIndexer.js';
 import { indexIncrementally, formatIncrementalResult } from '@siftable/mcp-server/dist/incrementalIndexer.js';
 
 interface ExecuteCodebaseIndexOptions {
@@ -23,6 +26,8 @@ export async function executeCodebaseIndex({
   jsonEnabled,
   log,
 }: ExecuteCodebaseIndexOptions): Promise<unknown> {
+  await assertHostedCodebaseIngestionEnabled(client);
+
   const includePatterns = include?.split(',').map((pattern) => pattern.trim());
   const excludePatterns = exclude?.split(',').map((pattern) => pattern.trim());
 
@@ -37,6 +42,10 @@ export async function executeCodebaseIndex({
       onProgress,
     });
 
+    if (result.phase === 'error') {
+      throw new Error(result.error || 'Incremental hosted indexing failed.');
+    }
+
     if (!jsonEnabled) {
       process.stderr.write('\n');
       log(formatIncrementalResult(result));
@@ -50,6 +59,10 @@ export async function executeCodebaseIndex({
     excludePatterns,
     onProgress,
   });
+
+  if (result.phase === 'error') {
+    throw new Error(result.error || 'Hosted indexing failed.');
+  }
 
   if (!jsonEnabled) {
     process.stderr.write('\n');

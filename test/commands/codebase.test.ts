@@ -8,7 +8,8 @@ describe('codebase commands', () => {
   describe('codebase topic help', () => {
     it('does not treat bare codebase as a missing-id indexing invocation', async () => {
       const result = await runCommand(['codebase']);
-      expect(result.stdout).toContain('Code indexing and search');
+      expect(result.stdout).toContain('Code context');
+      expect(result.stdout).toContain('Deprecated hosted full-ingestion path');
       expect(result.stdout).toContain('codebase incremental');
       expect(result.exitCode).toBe(0);
     });
@@ -40,6 +41,60 @@ describe('codebase commands', () => {
         '--token', 'exf_pat_test',
       ]);
       expect(result.stdout).toContain('Repository registered');
+    });
+
+    it('surfaces machine-readable deprecation guidance', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/code/repositories')
+        .reply(410, {
+          type: 'codebase_ingestion_deprecated',
+          title: 'Hosted codebase ingestion deprecated',
+          status: 410,
+          detail: 'Hosted codebase ingestion is deprecated and new source uploads are disabled.',
+          code: 'CODEBASE_INGESTION_DEPRECATED',
+          action: 'Use rg in an authorized live checkout.',
+        })
+        .install();
+
+      const result = await runCommand([
+        'codebase', 'register',
+        '--name', 'my-repo',
+        '--path', '/tmp/repo',
+        '--token', 'exf_pat_test',
+      ]);
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.error?.message).toContain('CODEBASE_INGESTION_DEPRECATED');
+      expect(result.error?.message).toContain('Use rg');
+    });
+  });
+
+  describe('codebase index', () => {
+    it('preflights the server capability before reading the local path', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/code/capabilities')
+        .reply(200, {
+          capabilities: {
+            hostedIngestion: {
+              enabled: false,
+              state: 'deprecated',
+              code: 'CODEBASE_INGESTION_DEPRECATED',
+              message: 'Hosted codebase ingestion is deprecated.',
+              action: 'Use git grep in an authorized live checkout.',
+            },
+          },
+        })
+        .install();
+
+      const result = await runCommand([
+        'codebase', 'index', 'repo-001',
+        '--path', '/path/that/does/not/exist',
+        '--token', 'exf_pat_test',
+      ]);
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.error?.message).toContain('CODEBASE_INGESTION_DEPRECATED');
+      expect(result.error?.message).toContain('Use git grep');
     });
   });
 
@@ -115,6 +170,33 @@ describe('codebase commands', () => {
       expect(result.exitCode).toBe(2);
       expect(result.error?.message).toContain('Missing 1 required arg');
       expect(result.error?.message).toContain('Repository ID');
+    });
+
+    it('preflights the server capability before inspecting git state', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/code/capabilities')
+        .reply(200, {
+          capabilities: {
+            hostedIngestion: {
+              enabled: false,
+              state: 'deprecated',
+              code: 'CODEBASE_INGESTION_DEPRECATED',
+              message: 'Hosted codebase ingestion is deprecated.',
+              action: 'Use rg in an authorized live checkout.',
+            },
+          },
+        })
+        .install();
+
+      const result = await runCommand([
+        'codebase', 'incremental', 'repo-001',
+        '--path', '/path/that/does/not/exist',
+        '--token', 'exf_pat_test',
+      ]);
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.error?.message).toContain('CODEBASE_INGESTION_DEPRECATED');
+      expect(result.error?.message).toContain('Use rg');
     });
   });
 });

@@ -3,7 +3,7 @@ import {BaseCommand} from '../../lib/base-command.js';
 import {executeCodebaseIndex} from '../../lib/codebase-index.js';
 
 export default class CodebaseIndex extends BaseCommand {
-  static description = 'Index a codebase (scan and upload files)';
+  static description = 'Deprecated hosted-ingestion path (blocked unless temporarily restored by an operator)';
   static aliases = ['codebase index'];
 
   static args = {
@@ -23,16 +23,16 @@ export default class CodebaseIndex extends BaseCommand {
 
     if (!args.id) {
       const lines = [
-        'Code indexing and search',
+        'Code context',
         '',
         'USAGE',
         '  $ sift codebase <COMMAND>',
         '',
         'COMMANDS',
-        '  codebase index        Full index: scan and upload matching files',
-        '  codebase incremental  Incremental index: git-aware changed files only',
+        '  codebase index        Deprecated hosted full-ingestion path',
+        '  codebase incremental  Deprecated hosted incremental-ingestion path',
         '  codebase list         List indexed repositories',
-        '  codebase register     Register a codebase for indexing',
+        '  codebase register     Deprecated hosted repository registration path',
         '  codebase search       Semantic code search',
         '  codebase snapshot     Get latest index snapshot for a repository',
         '  codebase status       Check indexing status for a repository',
