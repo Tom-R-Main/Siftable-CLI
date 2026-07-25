@@ -2,6 +2,7 @@ import {
   clearWorkspaceFileCache,
   findLocalFiles,
   inspectLocalWorkspace,
+  isSensitiveDiscoveryPath,
   readText,
   scanRepositoryManifest,
   searchLiteral,
@@ -826,12 +827,7 @@ export function explorerThoroughness(env: NodeJS.ProcessEnv = process.env): Expl
 }
 
 export function isSecretLikeExplorerPath(path: string): boolean {
-  const normalized = path.replace(/\\/g, '/').toLowerCase();
-  const base = normalized.split('/').pop() || normalized;
-  if (/^\.env(?:\.|$)/.test(base)) return true;
-  if (/\.(pem|p12|pfx|key|crt|cer|der)$/i.test(base)) return true;
-  if (/(^|\/)(secrets?|credentials?|private-keys?)(\/|$)/.test(normalized)) return true;
-  return false;
+  return isSensitiveDiscoveryPath(path);
 }
 
 function repoExplorerActivityEvidenceQuality(report: ExplorerReport): ExplorerConfidence {
@@ -991,7 +987,10 @@ export async function globLocalFilesForExplorer(input: {
     sourceOnly: true,
   });
   const regex = globToRegExp(pattern);
-  const matched = manifest.files.filter((file) => regex.test(file.path)).slice(0, maxFiles);
+  const matched = manifest.files
+    .filter((file) => !isSecretLikeExplorerPath(file.path))
+    .filter((file) => regex.test(file.path))
+    .slice(0, maxFiles);
   const capped = manifest.stats.capped || matched.length >= maxFiles;
   return {
     matches: matched,
@@ -1036,6 +1035,7 @@ export async function grepLocalFilesForExplorer(input: {
     sourceOnly: true,
   });
   const files = manifest.files
+    .filter((file) => !isSecretLikeExplorerPath(file.path))
     .filter((file) => !includeRegex || includeRegex.test(file.path))
     .slice(0, maxFiles);
   const matches: ExplorerGrepResult['matches'] = [];

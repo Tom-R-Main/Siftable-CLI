@@ -411,26 +411,6 @@ export function createPeopleTools(client: ExfClient): ToolDefinition<any, any>[]
 
 export function createCodebaseTools(client: ExfClient): ToolDefinition<any, any>[] {
   return [
-    defineTool<{ query: string; repositoryId?: string }>({
-      name: "exf_codebase_search",
-      description:
-        "Semantic search across indexed codebases in Siftable. " +
-        "Finds relevant code snippets, files, and functions by meaning.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: { type: "string", description: "Search query (natural language)" },
-          repositoryId: { type: "string", description: "Limit to a specific repository" },
-        },
-        required: ["query"],
-      },
-      tags: ["codebase"],
-      handler: async ({ query, repositoryId }) => {
-        const data = await client.searchCode(query, repositoryId);
-        return ok(data, `Found ${data.results.length} result(s)`);
-      },
-    }),
-
     defineTool<{ repositoryId: string; area: string }>({
       name: "exf_code_who_knows",
       description:

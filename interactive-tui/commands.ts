@@ -18,6 +18,7 @@ import {
 } from "./cellRender";
 import {discoverSkills, formatSkillsList, loadSkill} from "./skillsEngine";
 import {renderSkillPreflight} from "./skillPreflight";
+import {codeSearch} from "./fsEngine";
 import {planAgentWork, buildAgentWorkGraph, resolveWorkItemRef, type RawWorkItem} from "./planning/agentWork";
 import {loadPlanOverlay, addDeclaredEdges, type DeclaredEdge} from "./planning/planStore";
 import {
@@ -961,14 +962,23 @@ async function searchCodeEvidence(
   query: string,
   limit = 6,
 ): Promise<{results: Record<string, unknown>[]; testHints: Record<string, unknown>[]}> {
-  const repos = listFrom(await ctx.apiClient.listCodeRepositories(), "repositories");
-  const repo =
-    repos.find((candidate) => typeof candidate.rootPath === "string" && ctx.cwd().startsWith(candidate.rootPath as string)) ??
-    repos[0];
-  const results = listFrom(
-    await ctx.apiClient.searchCode({query, repositoryId: repo?.id as string | undefined, limit}),
-    "results",
-  );
+  const root = ctx.workspaceRoot() || ctx.cwd();
+  const search = await codeSearch({
+    root,
+    authorizedRoot: root,
+    intent: query,
+    maxFiles: 1000,
+    maxSpans: limit,
+    respectGitignore: true,
+  });
+  const results: Record<string, unknown>[] = search.spans.map((span) => ({
+    filePath: span.path,
+    startLine: span.startLine,
+    endLine: span.endLine,
+    symbolName: span.symbol,
+    score: span.score,
+    source: "live_checkout",
+  }));
   const testHints = results.filter((result) => String(result.filePath ?? "").match(/\.(test|spec|vitest)\./));
   return {results, testHints};
 }
@@ -978,7 +988,7 @@ function formatEvidence(heading: string, results: Record<string, unknown>[], tes
     heading,
     results.length
       ? results.map((result) => `- ${result.filePath}:${result.startLine ?? "?"} ${result.symbolName ?? ""}`.trimEnd()).join("\n")
-      : "No code search results.",
+      : "No live checkout search results.",
     testHints.length
       ? "\nTest evidence:\n" + testHints.map((result) => `- ${result.filePath}`).join("\n")
       : "\nTest evidence: not found in top results.",

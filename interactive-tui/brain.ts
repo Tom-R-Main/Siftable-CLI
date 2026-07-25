@@ -19,6 +19,7 @@
  * value is inherited.
  */
 import {
+  assertAuthorizedDiscoveryRoot,
   batchReadFiles,
   codeSearch,
   clearWorkspaceFileCache,
@@ -507,6 +508,10 @@ function buildLocalTools(of: OfModule): unknown[] {
     handler: async (params) => {
       try {
         const path = resolveLocalPath(String(params.path));
+        await assertAuthorizedDiscoveryRoot(path, defaultWorkspaceRoot());
+        if (isSecretLikeExplorerPath(path)) {
+          return of.err('refusing to read secret-like file path');
+        }
         const result = await readText(path, MAX_READ_BYTES);
         return of.ok(result);
       } catch (e) {
@@ -527,10 +532,14 @@ function buildLocalTools(of: OfModule): unknown[] {
       try {
         const fs = await import('node:fs/promises');
         const path = resolveLocalPath(String(params.path || '.'));
+        await assertAuthorizedDiscoveryRoot(path, defaultWorkspaceRoot());
         const entries = await fs.readdir(path, { withFileTypes: true });
         return of.ok({
           path,
-          entries: entries.slice(0, 500).map((e) => ({ name: e.name, dir: e.isDirectory() })),
+          entries: entries
+            .filter((entry) => !isSecretLikeExplorerPath(entry.name))
+            .slice(0, 500)
+            .map((e) => ({ name: e.name, dir: e.isDirectory() })),
         });
       } catch (e) {
         return of.err(e instanceof Error ? e.message : String(e));
@@ -563,6 +572,7 @@ function buildLocalTools(of: OfModule): unknown[] {
     handler: async (params) => {
       try {
         const root = params.root ? resolveLocalPath(String(params.root)) : currentUserCwd();
+        await assertAuthorizedDiscoveryRoot(root, defaultWorkspaceRoot());
         const query = String(params.query || '');
         if (!query) return of.err('query is required');
         const result = await searchLiteral(root, query, {
@@ -572,6 +582,7 @@ function buildLocalTools(of: OfModule): unknown[] {
           includeVendor: params.includeVendor === true,
           includeBuildOutputs: params.includeBuildOutputs === true,
           respectGitignore: typeof params.respectGitignore === 'boolean' ? params.respectGitignore : undefined,
+          excludeSensitive: true,
           detail: ['paths', 'locations', 'snippets', 'full'].includes(String(params.detail)) ? String(params.detail) as 'paths' | 'locations' | 'snippets' | 'full' : undefined,
         });
         return of.ok(result, `Found ${result.matches.length} match(es)`);
@@ -597,6 +608,7 @@ function buildLocalTools(of: OfModule): unknown[] {
     handler: async (params) => {
       try {
         const root = params.root ? resolveLocalPath(String(params.root)) : defaultWorkspaceRoot();
+        await assertAuthorizedDiscoveryRoot(root, defaultWorkspaceRoot());
         return of.ok(await inspectLocalWorkspace(root));
       } catch (e) {
         return of.err(e instanceof Error ? e.message : String(e));
@@ -624,6 +636,7 @@ function buildLocalTools(of: OfModule): unknown[] {
     handler: async (params) => {
       try {
         const root = params.root ? resolveLocalPath(String(params.root)) : currentUserCwd();
+        await assertAuthorizedDiscoveryRoot(root, defaultWorkspaceRoot());
         const query = String(params.query || '');
         if (!query) return of.err('query is required');
         const result = await findLocalFiles({
@@ -669,6 +682,7 @@ function buildLocalTools(of: OfModule): unknown[] {
         const queries = Array.isArray(params.queries) ? params.queries.map(String) : undefined;
         return of.ok(await codeSearch({
           root,
+          authorizedRoot: defaultWorkspaceRoot(),
           intent,
           queries,
           maxFiles: typeof params.maxFiles === 'number' ? params.maxFiles : 500,
@@ -715,7 +729,14 @@ function buildLocalTools(of: OfModule): unknown[] {
     handler: async (params) => {
       try {
         const root = params.root ? resolveWorkspacePath(String(params.root)) : defaultWorkspaceRoot();
+        await assertAuthorizedDiscoveryRoot(root, defaultWorkspaceRoot());
         if (!Array.isArray(params.files)) return of.err('files array is required');
+        if (params.files.some((item) => {
+          const record = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+          return isSecretLikeExplorerPath(String(record.path || ''));
+        })) {
+          return of.err('refusing to read secret-like file path');
+        }
         const files = params.files
           .map((item) => {
             const record = item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
@@ -1293,6 +1314,11 @@ function buildRepoExplorerScoutTools(
   const usage = { toolCalls: 0, searches: 0, filesRead: 0 };
   const resolveLocalPath = (p: string) => resolveSessionPath(p || '.', userCwd());
   const resolveWorkspacePath = (p: string) => resolveSessionPath(p || workspaceRoot(), workspaceRoot());
+  const resolveAuthorizedRoot = async (candidate?: string) => {
+    const root = candidate ? resolveLocalPath(candidate) : workspaceRoot();
+    await assertAuthorizedDiscoveryRoot(root, workspaceRoot());
+    return root;
+  };
   const checkBudget = (kind: 'tool' | 'search' | 'read', readCount = 0) => {
     if (Date.now() - startedAt > budget.maxElapsedMs) {
       throw new Error('repo explorer scout budget exceeded: elapsed time');
@@ -1327,7 +1353,8 @@ function buildRepoExplorerScoutTools(
     handler: async (params) => {
       try {
         checkBudget('tool');
-        return of.ok(await inspectLocalWorkspace(params.root ? resolveLocalPath(String(params.root)) : workspaceRoot()));
+        const root = await resolveAuthorizedRoot(params.root ? String(params.root) : undefined);
+        return of.ok(await inspectLocalWorkspace(root));
       } catch (e) {
         return of.err(e instanceof Error ? e.message : String(e));
       }
@@ -1356,10 +1383,12 @@ function buildRepoExplorerScoutTools(
         const detail = ['paths', 'locations', 'snippets'].includes(String(params.detail))
           ? String(params.detail) as 'paths' | 'locations' | 'snippets'
           : 'locations';
-        const result = await searchLiteral(params.root ? resolveLocalPath(String(params.root)) : workspaceRoot(), query, {
+        const root = await resolveAuthorizedRoot(params.root ? String(params.root) : undefined);
+        const result = await searchLiteral(root, query, {
           detail,
           maxFiles: Math.min(typeof params.maxFiles === 'number' ? params.maxFiles : 1000, 1000),
           maxMatches: Math.min(typeof params.maxMatches === 'number' ? params.maxMatches : 30, 30),
+          excludeSensitive: true,
         });
         return of.ok(result, `Found ${result.matches.length} match(es)`);
       } catch (e) {
@@ -1385,8 +1414,9 @@ function buildRepoExplorerScoutTools(
         checkBudget('search');
         const pattern = String(params.pattern || '');
         if (!pattern) return of.err('pattern is required');
+        const root = await resolveAuthorizedRoot(params.root ? String(params.root) : undefined);
         const result = await globLocalFilesForExplorer({
-          root: params.root ? resolveLocalPath(String(params.root)) : workspaceRoot(),
+          root,
           pattern,
           maxFiles: Math.min(typeof params.maxFiles === 'number' ? params.maxFiles : 80, 120),
         });
@@ -1416,8 +1446,9 @@ function buildRepoExplorerScoutTools(
         checkBudget('search');
         const pattern = String(params.pattern || '');
         if (!pattern) return of.err('pattern is required');
+        const root = await resolveAuthorizedRoot(params.root ? String(params.root) : undefined);
         const result = await grepLocalFilesForExplorer({
-          root: params.root ? resolveLocalPath(String(params.root)) : workspaceRoot(),
+          root,
           pattern,
           include: params.include ? String(params.include) : undefined,
           maxFiles: Math.min(typeof params.maxFiles === 'number' ? params.maxFiles : 250, 400),
@@ -1450,6 +1481,7 @@ function buildRepoExplorerScoutTools(
           return of.err('refusing to read secret-like file path');
         }
         const root = params.root ? resolveWorkspacePath(String(params.root)) : workspaceRoot();
+        await assertAuthorizedDiscoveryRoot(root, workspaceRoot());
         return of.ok(await batchReadFiles([{
           path: String(params.path || ''),
           startLine: typeof params.startLine === 'number' ? params.startLine : undefined,
@@ -1493,6 +1525,7 @@ function buildRepoExplorerScoutTools(
           .find((record) => isSecretLikeExplorerPath(String(record.path || '')));
         if (secretLike) return of.err('refusing to read secret-like file path');
         const root = params.root ? resolveWorkspacePath(String(params.root)) : workspaceRoot();
+        await assertAuthorizedDiscoveryRoot(root, workspaceRoot());
         const files = rawFiles.map((item) => {
           const record = item && typeof item === 'object' ? item as Record<string, unknown> : {};
           return {

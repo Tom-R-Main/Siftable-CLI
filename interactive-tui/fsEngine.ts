@@ -7,7 +7,7 @@
  * strings, status codes, and compact JSON result frames.
  */
 import { existsSync } from "node:fs";
-import { readdir, readFile, writeFile, rename, mkdir, stat, chmod, unlink } from "node:fs/promises";
+import { readdir, readFile, writeFile, rename, mkdir, stat, chmod, unlink, realpath } from "node:fs/promises";
 import { extname, join, dirname, resolve as resolvePath, relative, isAbsolute, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { getSessionCwd, getWorkspaceRoot } from "./navigation";
@@ -63,6 +63,8 @@ export interface SearchCaps {
   includeVendor?: boolean;
   includeBuildOutputs?: boolean;
   respectGitignore?: boolean;
+  /** Force the TypeScript traversal so sensitive-file exclusions are guaranteed. */
+  excludeSensitive?: boolean;
   detail?: SearchDetail;
 }
 
@@ -198,6 +200,7 @@ export interface CodeSearchResult {
     eligibleFiles?: number;
     phaseTimings?: CodeSearchPhaseTimings;
     contentCache?: CodeSearchContentCacheStats;
+    excludedSensitiveFiles?: number;
   };
 }
 
@@ -230,6 +233,24 @@ export interface CodeSearchContentCacheStats {
   currentBytes: number;
   evictions: number;
   skippedTooLarge: number;
+}
+
+const SENSITIVE_DISCOVERY_FILE_RE =
+  /(^|\/)(?:(?:secrets?|credentials?|private[-_]?keys?)(?:\/|$)|\.env(?:\.|$)|\.npmrc$|\.pypirc$|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?$|[^/]+\.(?:pem|key|p12|pfx|keystore|crt|cer|der)$|(?:credentials|service[-_]?account|secrets?)\.(?:json|ya?ml|toml)$)/i;
+
+export function isSensitiveDiscoveryPath(path: string): boolean {
+  return SENSITIVE_DISCOVERY_FILE_RE.test(toSlash(path));
+}
+
+export async function assertAuthorizedDiscoveryRoot(root: string, authorizedRoot: string): Promise<void> {
+  const [canonicalRoot, canonicalAuthorizedRoot] = await Promise.all([
+    realpath(root),
+    realpath(authorizedRoot),
+  ]);
+  const rel = relative(canonicalAuthorizedRoot, canonicalRoot);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new Error(`code_search root escapes the authorized workspace: ${root}`);
+  }
 }
 
 export interface FileSearchResult {
@@ -306,6 +327,7 @@ const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
 type WorkspaceFileCollection = {
   files: WorkspaceFile[];
   skippedFiles: number;
+  sensitiveExcludedFiles: number;
   truncated: boolean;
   cacheHit: boolean;
   fileSetId: string;
@@ -344,6 +366,7 @@ type TraversalPolicy = {
 type TraversalResult = {
   files: TraversalFile[];
   skippedFiles: number;
+  sensitiveExcludedFiles: number;
   skippedByReason: SearchSkippedByReason;
   truncated: boolean;
   capReason: SearchCapReason | null;
@@ -551,7 +574,7 @@ export async function readText(path: string, maxBytes = DEFAULT_READ_BYTES): Pro
 
 export async function searchLiteral(root: string, query: string, caps: SearchCaps = {}): Promise<SearchResult> {
   const symbols = nativeSymbols();
-  if (symbols) {
+  if (symbols && !caps.excludeSensitive) {
     const rootBytes = encoder.encode(root);
     const queryBytes = encoder.encode(query);
     const capWords = new Uint32Array([
@@ -830,6 +853,7 @@ async function collectTraversalFiles(root: string, policy: TraversalPolicy): Pro
   const gitRoot = policy.respectGitignore ? findGitRoot(absRoot) : null;
   const ancestorRules = gitRoot ? await loadAncestorGitignoreRules(gitRoot, absRoot) : [];
   let skippedFiles = 0;
+  let sensitiveExcludedFiles = 0;
   let truncated = false;
   let capReason: SearchCapReason | null = null;
   let fileSetStatWallMs = 0;
@@ -888,6 +912,11 @@ async function collectTraversalFiles(root: string, policy: TraversalPolicy): Pro
         skip("gitignore");
         continue;
       }
+      if (isSensitiveDiscoveryPath(rel)) {
+        sensitiveExcludedFiles += 1;
+        skip("other");
+        continue;
+      }
       if (isDir) {
         await walk(abs, depth + 1, rules);
         continue;
@@ -926,6 +955,7 @@ async function collectTraversalFiles(root: string, policy: TraversalPolicy): Pro
   return {
     files,
     skippedFiles,
+    sensitiveExcludedFiles,
     skippedByReason,
     truncated,
     capReason,
@@ -1588,6 +1618,7 @@ async function readWorkspaceFileForSearch(
 
 export async function codeSearch(input: {
   root?: string;
+  authorizedRoot?: string;
   intent: string;
   queries?: string[];
   paths?: string[];
@@ -1602,16 +1633,25 @@ export async function codeSearch(input: {
 }): Promise<CodeSearchResult> {
   const totalStart = performance.now();
   const root = resolvePath(input.root || getWorkspaceRoot() || getSessionCwd());
+  if (input.authorizedRoot) {
+    await assertAuthorizedDiscoveryRoot(root, resolvePath(input.authorizedRoot));
+  }
   const maxSpans = input.maxSpans ?? 12;
   const contextLines = input.contextLines ?? 2;
   const queries = compileQueries(input.intent, input.queries).slice(0, 8);
-  const files = await collectWorkspaceFiles(root, {
+  const collectedFiles = await collectWorkspaceFiles(root, {
     maxFiles: input.maxFiles ?? 2000,
     maxDepth: 10,
     forceRefresh: input.forceRefresh,
     maxCacheAgeMs: input.maxCacheAgeMs,
     respectGitignore: input.respectGitignore,
   });
+  const files = {
+    ...collectedFiles,
+    files: collectedFiles.files.filter((file) => !isSensitiveDiscoveryPath(file.path)),
+  };
+  const excludedSensitiveFiles =
+    collectedFiles.sensitiveExcludedFiles + collectedFiles.files.length - files.files.length;
   const phaseTimings: CodeSearchPhaseTimings = {
     totalWallMs: 0,
     cacheLookupWallMs: files.phaseTimings.cacheLookupWallMs,
@@ -1743,6 +1783,7 @@ export async function codeSearch(input: {
       eligibleFiles: files.files.length,
       phaseTimings,
       contentCache: contentCacheStats,
+      excludedSensitiveFiles,
     },
   };
 }
@@ -1810,6 +1851,10 @@ export async function batchReadFiles(
   for (const request of files.slice(0, 12)) {
     const absPath = resolvePath(absRoot, request.path);
     try {
+      await assertAuthorizedDiscoveryRoot(absPath, absRoot);
+      if (isSensitiveDiscoveryPath(request.path)) {
+        throw new Error("refusing to read sensitive file path");
+      }
       const maxBytes = Math.min(request.maxBytes ?? 48 * 1024, 96 * 1024);
       const read = await readText(absPath, maxBytes);
       const lines = read.content.split(/\r\n|\r|\n/);
@@ -1853,6 +1898,7 @@ function cloneWorkspaceFileCollection(
   return {
     files: result.files.map((file) => ({ ...file })),
     skippedFiles: result.skippedFiles,
+    sensitiveExcludedFiles: result.sensitiveExcludedFiles,
     truncated: result.truncated,
     cacheHit,
     fileSetId: result.fileSetId,
@@ -1923,6 +1969,7 @@ async function collectWorkspaceFiles(
   const result: WorkspaceFileCollection = {
     files,
     skippedFiles,
+    sensitiveExcludedFiles: traversal.sensitiveExcludedFiles,
     truncated: traversal.truncated || files.length >= opts.maxFiles,
     cacheHit: false,
     fileSetId: workspaceFileSetId(cacheKey, files),

@@ -2,14 +2,13 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, relative } from "node:path";
 import type { ChatInput, ChatInputPart } from "./controlClient";
+import { codeSearch } from "./fsEngine";
 import type { SkillInfo, SkillPreflightProvider } from "./skillsEngine";
 
 type ApiResponse = { data?: Record<string, unknown>; error?: string; statusCode?: number };
 
 export interface SkillPreflightClient {
   listWorkItems?(options?: Record<string, unknown>): Promise<ApiResponse>;
-  listCodeRepositories?(options?: Record<string, unknown>): Promise<ApiResponse>;
-  searchCode?(options: Record<string, unknown>): Promise<ApiResponse>;
   searchNotes?(query: string, options?: Record<string, unknown>): Promise<ApiResponse>;
   listNotes?(options?: Record<string, unknown>): Promise<ApiResponse>;
 }
@@ -153,7 +152,7 @@ async function renderProvider(
       case "recent_notes":
         return await renderRecentNotes(input.apiClient, input.query);
       case "code_search_hints":
-        return await renderCodeSearchHints(input.apiClient, input.workspaceRoot || input.cwd, input.query);
+        return await renderCodeSearchHints(input.workspaceRoot || input.cwd, input.query);
       case "env_schema_names":
         return renderEnvSchemaNames(input.workspaceRoot || input.cwd);
     }
@@ -227,28 +226,29 @@ async function renderRecentNotes(apiClient: SkillPreflightClient | undefined, qu
   ].join("\n");
 }
 
-async function renderCodeSearchHints(apiClient: SkillPreflightClient | undefined, root: string, query: string): Promise<string> {
-  if (!apiClient?.searchCode) return "## code_search_hints\nunavailable: no code search client";
-  let repositoryId: string | undefined;
-  if (apiClient.listCodeRepositories) {
-    const repos = listFrom(dataRecord(await apiClient.listCodeRepositories()), "repositories");
-    const repo = repos.find((candidate) => {
-      const rootPath = stringField(candidate, "rootPath");
-      return rootPath && root.startsWith(rootPath);
-    }) ?? repos[0];
-    repositoryId = stringField(repo ?? {}, "id");
-  }
-  const results = listFrom(dataRecord(await apiClient.searchCode({ query, repositoryId, limit: 6 })), "results").slice(0, 6);
+async function renderCodeSearchHints(root: string, query: string): Promise<string> {
+  const search = await codeSearch({
+    root,
+    authorizedRoot: root,
+    intent: query,
+    maxFiles: 500,
+    maxSpans: 6,
+    respectGitignore: true,
+  });
+  const results = search.spans.slice(0, 6);
   return [
     "## code_search_hints",
     `query: ${query.slice(0, 160)}`,
-    results.length ? "indexed matches:" : "indexed matches: none returned",
+    results.length ? "live checkout matches:" : "live checkout matches: none returned",
     ...results.map((result) => {
-      const path = stringField(result, "filePath") || stringField(result, "path") || "(unknown file)";
-      const line = result.startLine ?? result.line ?? "?";
-      const symbol = stringField(result, "symbolName") || stringField(result, "symbol") || "";
+      const path = result.path || "(unknown file)";
+      const line = result.startLine ?? "?";
+      const symbol = result.symbol || "";
       return `- ${path}:${line}${symbol ? ` ${symbol}` : ""}`;
     }),
+    search.stats.excludedSensitiveFiles
+      ? `excluded sensitive files: ${search.stats.excludedSensitiveFiles}`
+      : "excluded sensitive files: none encountered",
   ].join("\n");
 }
 
