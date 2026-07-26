@@ -111,6 +111,35 @@ describe('codebase commands', () => {
     });
   });
 
+  describe('codebase delete', () => {
+    it('creates a plan and never claims indexed data was deleted', async () => {
+      mockFetch()
+        .on('DELETE', '/api/v1/code/repositories/repo-001')
+        .reply(202, {
+          message: 'Repository retirement plan created; no indexed data was deleted',
+          repositoryId: 'repo-001',
+          retirementPlan: {
+            id: 'plan-001',
+            repositoryGeneration: 'generation',
+            planFingerprint: 'fingerprint',
+            status: 'planned',
+            inventory: {blockingIssues: []},
+            applyAvailablePublicly: false,
+          },
+        })
+        .install();
+
+      const result = await runCommand([
+        'codebase', 'delete', 'repo-001', '--yes', '--token', 'exf_pat_test',
+      ]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('Retirement plan plan-001 created');
+      expect(result.stdout).toContain('No indexed data was deleted');
+      expect(result.stdout).not.toContain('Repository repo-001 deleted');
+    });
+  });
+
   describe('codebase search', () => {
     it('searches code', async () => {
       mockFetch()
