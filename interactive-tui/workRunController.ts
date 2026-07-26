@@ -70,7 +70,11 @@ export type StartContractedWorkResult =
 
 export interface WorkRunRecoveryResult {
   recovered: SafeChildSessionRecoveryRecord[];
-  failed: Array<{runId?: string; reason: string}>;
+  failed: Array<{
+    runId?: string;
+    reason: string;
+    compensation?: CompensationResult;
+  }>;
 }
 
 export interface WorkRunController {
@@ -211,6 +215,12 @@ function claimToken(
     throw new WorkRunError("claim", "claim work item returned no matching opaque lease");
   }
   return workItem.claimToken;
+}
+
+function isDefinitiveClaimRejection(response: ApiResponse): boolean {
+  return typeof response.statusCode === "number"
+    && response.statusCode >= 400
+    && response.statusCode < 500;
 }
 
 function assertTransition(
@@ -367,14 +377,29 @@ export function createWorkRunController(
     const claimOwner = makeOwner();
     let token: string;
     try {
-      token = claimToken(
-        workItemId,
-        await options.client.claimWorkItem({
-          workItemId,
-          claimOwner,
-          leaseSeconds,
-        }),
-      );
+      let lastError: unknown;
+      token = "";
+      for (let attempt = 0; attempt < 2; attempt++) {
+        let response: ApiResponse;
+        try {
+          response = await options.client.claimWorkItem({
+            workItemId,
+            claimOwner,
+            leaseSeconds,
+          });
+        } catch (error) {
+          lastError = error;
+          continue;
+        }
+        try {
+          token = claimToken(workItemId, response);
+          break;
+        } catch (error) {
+          lastError = error;
+          if (isDefinitiveClaimRejection(response)) break;
+        }
+      }
+      if (!token) throw lastError ?? new WorkRunError("claim", "claim work item returned no lease");
     } catch (error) {
       return {
         ok: false,
@@ -556,25 +581,45 @@ export function createWorkRunController(
         continue;
       }
       let recovered: ChildSessionRecoveryRecord = {...record, session: adopted.session};
+      if (record.phase === "started") {
+        try {
+          await options.store.put(recovered);
+          result.recovered.push(safeRecord(recovered));
+        } catch (error) {
+          result.failed.push({runId: record.runId, reason: errorReason(error, secrets)});
+        }
+        continue;
+      }
+
       try {
         await options.store.put(recovered);
-        if (record.phase === "spawned") {
-          assertTransition(
-            record.work.workItemId,
-            await options.client.transitionWorkItem(record.work.workItemId, "start", {
-              claimOwner: record.credentials.claimOwner,
-              claimToken: record.credentials.claimToken,
-              leaseSeconds,
-            }),
-            "start",
-            "recover start work item",
-          );
-          recovered = {...recovered, phase: "started"};
-          await options.store.put(recovered);
-        }
+        assertTransition(
+          record.work.workItemId,
+          await options.client.transitionWorkItem(record.work.workItemId, "start", {
+            claimOwner: record.credentials.claimOwner,
+            claimToken: record.credentials.claimToken,
+            leaseSeconds,
+          }),
+          "start",
+          "recover start work item",
+        );
+        recovered = {...recovered, phase: "started"};
+        await options.store.put(recovered);
         result.recovered.push(safeRecord(recovered));
       } catch (error) {
-        result.failed.push({runId: record.runId, reason: errorReason(error, secrets)});
+        const compensation = await compensate({
+          runId: record.runId,
+          sessionId: adopted.session.sessionId,
+          workItemId: record.work.workItemId,
+          claimOwner: record.credentials.claimOwner,
+          claimToken: record.credentials.claimToken,
+          metadataMayExist: true,
+        });
+        result.failed.push({
+          runId: record.runId,
+          reason: errorReason(error, secrets),
+          compensation,
+        });
       }
     }
     return result;

@@ -87,9 +87,11 @@ function fakeClient(log: string[], options: {
   work?: ReturnType<typeof workResponse>;
   plan?: ReturnType<typeof planResponse>;
   claimFailure?: boolean;
+  claimMalformedOnce?: boolean;
   startFailure?: boolean;
   releaseFailure?: boolean;
 } = {}): WorkRunClient {
+  let claimCalls = 0;
   return {
     async getWorkItem(id) {
       log.push(`load:${id}`);
@@ -100,8 +102,12 @@ function fakeClient(log: string[], options: {
       return options.plan ?? planResponse();
     },
     async claimWorkItem(input) {
+      claimCalls++;
       log.push(`claim:${input.workItemId}`);
       if (options.claimFailure) return {statusCode: 409, error: "unavailable"};
+      if (options.claimMalformedOnce && claimCalls === 1) {
+        return {statusCode: 200, data: {workItem: {id: input.workItemId}}};
+      }
       return {
         statusCode: 200,
         data: {workItem: {id: input.workItemId, claimToken: token}},
@@ -329,6 +335,24 @@ describe("workRunController contracted orchestration", () => {
     expect(spawnLog).toContain(`release:${workItemId}`);
   });
 
+  it("reconciles an unknown claim outcome with the same owner before spawning", async () => {
+    const log: string[] = [];
+    const stored = await store();
+    const children = fakeChildren(log);
+    const controller = createWorkRunController({
+      client: fakeClient(log, {claimMalformedOnce: true}),
+      childController: children.controller,
+      store: stored.store,
+      ownerFactory: () => owner,
+    });
+
+    const result = await controller.startContractedWork(workItemId);
+
+    expect(result.ok).toBe(true);
+    expect(log.filter((entry) => entry === `claim:${workItemId}`)).toHaveLength(2);
+    expect(log.indexOf("spawn")).toBeGreaterThan(log.lastIndexOf(`claim:${workItemId}`));
+  });
+
   it("surfaces a failed post-register worktree cleanup while still releasing the lease", async () => {
     const log: string[] = [];
     const stored = await store();
@@ -496,6 +520,47 @@ describe("workRunController recovery", () => {
     });
   });
 
+  it("compensates a failed recovery start without stranding the adopted session", async () => {
+    const log: string[] = [];
+    const stored = await store(log);
+    await stored.store.put({
+      runId: stored.store.runIdFor("/repo", workItemId),
+      phase: "spawned",
+      updatedAtMs: 0,
+      work: identity(),
+      session: session(),
+      credentials: {claimOwner: owner, claimToken: token},
+    });
+    log.length = 0;
+
+    const children = fakeChildren(log);
+    const controller = createWorkRunController({
+      client: fakeClient(log, {startFailure: true}),
+      childController: children.controller,
+      store: stored.store,
+      ownerFactory: () => "different-owner",
+    });
+    const result = await controller.recoverWorkRuns();
+
+    expect(result.recovered).toEqual([]);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0].reason).toContain("recover start work item failed");
+    expect(result.failed[0].compensation).toEqual({
+      attempted: ["metadata", "worktree", "lease"],
+      failures: [],
+    });
+    expect(log).toEqual([
+      "adopt",
+      "put:spawned",
+      `start:${workItemId}`,
+      "remove-metadata",
+      "remove",
+      `release:${workItemId}`,
+    ]);
+    expect(await stored.store.listSafe()).toEqual([]);
+    expect(children.current()).toBeUndefined();
+  });
+
   it("reports a malformed sibling record while recovering the valid record", async () => {
     const log: string[] = [];
     const stored = await store(log);
@@ -509,7 +574,17 @@ describe("workRunController recovery", () => {
       credentials: {claimOwner: owner, claimToken: token},
     });
     const malformedRunId = "f".repeat(64);
-    await writeFile(join(stored.root, `${malformedRunId}.json`), "{malformed", "utf8");
+    await writeFile(join(stored.root, `${malformedRunId}.json`), JSON.stringify({
+      runId: malformedRunId,
+      phase: "started",
+      updatedAtMs: 123,
+      work: {workItemId},
+      session: {
+        ...session(),
+        work: {workItemId},
+      },
+      credentials: {claimOwner: owner, claimToken: token},
+    }), "utf8");
     log.length = 0;
 
     const children = fakeChildren(log);

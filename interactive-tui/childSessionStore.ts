@@ -60,16 +60,83 @@ function assertRunId(runId: string): void {
   if (!RUN_ID.test(runId)) throw new Error("invalid work-session recovery id");
 }
 
+function object(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function stringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+function isWorkIdentity(value: unknown): value is MergeMasterWorkIdentity {
+  const identity = object(value);
+  const contract = object(identity?.contract);
+  const plan = object(identity?.plan);
+  const writeScope = object(identity?.writeScope);
+  return typeof identity?.workItemId === "string"
+    && identity.workItemId.length > 0
+    && typeof identity.title === "string"
+    && identity.title.length > 0
+    && contract?.classification === "bounded"
+    && (contract.profile === "coding" || contract.profile === "read_only")
+    && (
+      contract.version === undefined
+      || (
+        typeof contract.version === "number"
+        && Number.isInteger(contract.version)
+        && contract.version >= 1
+      )
+    )
+    && typeof plan?.planId === "string"
+    && plan.planId.length > 0
+    && typeof plan.planVersion === "number"
+    && Number.isInteger(plan.planVersion)
+    && plan.planVersion >= 1
+    && plan.state === "active"
+    && stringArray(writeScope?.include)
+    && stringArray(writeScope.exclude);
+}
+
+function isChildSessionRecord(value: unknown): value is ChildSessionRecord {
+  const session = object(value);
+  return typeof session?.sessionId === "number"
+    && Number.isInteger(session.sessionId)
+    && session.sessionId > 0
+    && typeof session.parentSessionId === "number"
+    && Number.isInteger(session.parentSessionId)
+    && session.parentSessionId > 0
+    && typeof session.title === "string"
+    && typeof session.repoRoot === "string"
+    && session.repoRoot.length > 0
+    && typeof session.branch === "string"
+    && session.branch.length > 0
+    && typeof session.baseBranch === "string"
+    && session.baseBranch.length > 0
+    && typeof session.worktreePath === "string"
+    && session.worktreePath.length > 0
+    && typeof session.sessionCwd === "string"
+    && session.sessionCwd.length > 0
+    && typeof session.baseCommit === "string"
+    && typeof session.headCommit === "string"
+    && (session.accessMode === "read_only" || session.accessMode === "read_write")
+    && stringArray(session.writeScope)
+    && typeof session.conversationKey === "string"
+    && session.conversationKey.length > 0
+    && isWorkIdentity(session.work);
+}
+
 function isRecord(value: unknown): value is ChildSessionRecoveryRecord {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const record = value as Partial<ChildSessionRecoveryRecord>;
-  const credentials = record.credentials as ChildSessionRecoveryRecord["credentials"] | undefined;
-  return typeof record.runId === "string"
+  const record = object(value);
+  const credentials = object(record?.credentials);
+  return typeof record?.runId === "string"
     && RUN_ID.test(record.runId)
     && (record.phase === "spawned" || record.phase === "started")
     && typeof record.updatedAtMs === "number"
-    && Boolean(record.work && typeof record.work.workItemId === "string")
-    && Boolean(record.session && typeof record.session.repoRoot === "string")
+    && Number.isFinite(record.updatedAtMs)
+    && isWorkIdentity(record.work)
+    && isChildSessionRecord(record.session)
     && typeof credentials?.claimOwner === "string"
     && credentials.claimOwner.length > 0
     && typeof credentials.claimToken === "string"
