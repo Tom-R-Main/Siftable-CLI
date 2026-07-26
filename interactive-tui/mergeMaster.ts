@@ -226,6 +226,12 @@ export interface MergeMasterSession {
 
   createdAtMs: number;
   updatedAtMs: number;
+
+  /**
+   * Safe, authoritative work identity for contracted child sessions. Lease
+   * credentials deliberately live outside the registry.
+   */
+  work?: MergeMasterWorkIdentity;
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +426,29 @@ export interface CreateParentInput {
   nowMs?: number;
 }
 
+export interface MergeMasterWorkContract {
+  classification: "bounded";
+  profile: "coding" | "read_only";
+  version?: number;
+}
+
+export interface MergeMasterWorkPlan {
+  planId: string;
+  planVersion: number;
+  state: "active";
+}
+
+export interface MergeMasterWorkIdentity {
+  workItemId: string;
+  title: string;
+  contract: MergeMasterWorkContract;
+  plan: MergeMasterWorkPlan;
+  writeScope: {
+    include: string[];
+    exclude: string[];
+  };
+}
+
 export interface CreateChildInput {
   parentSessionId: number;
   accessMode: MergeMasterAccessMode;
@@ -439,6 +468,8 @@ export interface CreateChildInput {
    * carried in the native session struct.
    */
   writeScope?: string[];
+  /** Safe contracted-work identity; never contains lease credentials. */
+  work?: MergeMasterWorkIdentity;
 }
 
 interface MergeMasterBackend {
@@ -744,6 +775,25 @@ let backend: MergeMasterBackend | undefined;
 // and so neither block nor are blocked — the gate only reasons about scope it
 // actually knows.
 const childWriteScopes = new Map<number, { accessMode: MergeMasterAccessMode; scope: Set<string> }>();
+const childWorkIdentities = new Map<number, MergeMasterWorkIdentity>();
+
+function cloneWorkIdentity(identity: MergeMasterWorkIdentity): MergeMasterWorkIdentity {
+  return {
+    ...identity,
+    contract: {...identity.contract},
+    plan: {...identity.plan},
+    writeScope: {
+      include: [...identity.writeScope.include],
+      exclude: [...identity.writeScope.exclude],
+    },
+  };
+}
+
+function withWorkIdentity(session: MergeMasterSession | null): MergeMasterSession | null {
+  if (!session) return null;
+  const work = childWorkIdentities.get(session.sessionId);
+  return work ? {...session, work: cloneWorkIdentity(work)} : session;
+}
 
 function getBackend(): MergeMasterBackend {
   if (backend) return backend;
@@ -762,6 +812,7 @@ export function resetMergeMasterForTests(): void {
   nativeSymbols()?.sift_mm_reset();
   backend = undefined;
   childWriteScopes.clear();
+  childWorkIdentities.clear();
 }
 
 export function createParentSession(input: CreateParentInput): number {
@@ -771,7 +822,11 @@ export function createParentSession(input: CreateParentInput): number {
 }
 
 export function createChildSession(input: CreateChildInput): number {
-  return getBackend().createChild(input); // 0 on rejected invariant — caller decides
+  const sessionId = getBackend().createChild(input); // 0 on rejected invariant — caller decides
+  if (sessionId && input.work) {
+    childWorkIdentities.set(sessionId, cloneWorkIdentity(input.work));
+  }
+  return sessionId;
 }
 
 export function transitionSessionStatus(sessionId: number, status: MergeMasterStatus, nowMs = 0): number {
@@ -789,7 +844,7 @@ export function setSessionHeadCommit(sessionId: number, headCommit: string, nowM
 }
 
 export function getMergeMasterSession(sessionId: number): MergeMasterSession | null {
-  return getBackend().snapshotSession(sessionId);
+  return withWorkIdentity(getBackend().snapshotSession(sessionId));
 }
 
 export function getMergeView(
@@ -800,7 +855,12 @@ export function getMergeView(
 }
 
 export function listMergeMasterSessions(): MergeMasterSession[] {
-  return getBackend().listSessions();
+  return getBackend().listSessions().map((session) => withWorkIdentity(session)!);
+}
+
+export function getWorkIdentity(sessionId: number): MergeMasterWorkIdentity | undefined {
+  const identity = childWorkIdentities.get(sessionId);
+  return identity ? cloneWorkIdentity(identity) : undefined;
 }
 
 // ---------------------------------------------------------------------------

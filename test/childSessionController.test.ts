@@ -6,7 +6,7 @@
  *  - block  → ZERO `git worktree add` calls happen (Gate-A preflights before Git);
  *  - failure after creation → the worktree is cleaned up, never stranded.
  */
-import {mkdtemp, mkdir, rm, stat, realpath, writeFile} from 'node:fs/promises';
+import {mkdtemp, mkdir, rm, stat, realpath, symlink, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {
@@ -18,6 +18,7 @@ import {
 import {
   getMergeMasterSession,
   resetMergeMasterForTests,
+  type MergeMasterWorkIdentity,
 } from '../interactive-tui/mergeMaster';
 import {createChildSessionController} from '../interactive-tui/childSessionController';
 
@@ -63,6 +64,14 @@ async function setupRepo(): Promise<{repoRoot: string; worktreesRoot: string; cl
 
 beforeEach(() => resetMergeMasterForTests());
 afterEach(() => resetMergeMasterForTests());
+
+const contractedWork: MergeMasterWorkIdentity = {
+  workItemId: 'work-123',
+  title: 'fix the parser',
+  contract: {classification: 'bounded', profile: 'coding', version: 1},
+  plan: {planId: 'plan-123', planVersion: 2, state: 'active'},
+  writeScope: {include: ['src/parser.ts'], exclude: ['dist/**']},
+};
 
 describe('childSessionController.spawnChild — admit path', () => {
   it('creates a worktree on disk and a session whose cwd is the worktree', async () => {
@@ -213,6 +222,99 @@ describe('childSessionController — list + remove', () => {
       expect(removed.ok).toBe(true);
       expect(ctrl.listChildSessions()).toHaveLength(0);
       expect(listChildWorktrees(repoRoot, git)).toHaveLength(0);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+describe('childSessionController — contracted identity and recovery adoption', () => {
+  it('carries safe work identity on the child record and registry snapshot', async () => {
+    const {repoRoot, worktreesRoot, cleanup} = await setupRepo();
+    try {
+      const ctrl = createChildSessionController({runner: git, worktreesRoot});
+      const result = ctrl.spawnChild({
+        title: contractedWork.title,
+        accessMode: 'read_write',
+        writeScope: contractedWork.writeScope.include,
+        cwd: repoRoot,
+        work: contractedWork,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.session.work).toEqual(contractedWork);
+      expect(getMergeMasterSession(result.session.sessionId)?.work).toEqual(contractedWork);
+      expect(JSON.stringify(result.session)).not.toMatch(/claimToken|claimOwner/);
+      expect(JSON.stringify(getMergeMasterSession(result.session.sessionId))).not.toMatch(/claimToken|claimOwner/);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('re-registers the exact recorded worktree without adding another worktree', async () => {
+    const {repoRoot, worktreesRoot, cleanup} = await setupRepo();
+    try {
+      const firstSpy = spyRunner();
+      const first = createChildSessionController({runner: firstSpy.runner, worktreesRoot});
+      const spawned = first.spawnChild({
+        title: contractedWork.title,
+        accessMode: 'read_write',
+        writeScope: contractedWork.writeScope.include,
+        cwd: repoRoot,
+        work: contractedWork,
+      });
+      expect(spawned.ok).toBe(true);
+      if (!spawned.ok) return;
+      expect(worktreeAdds(firstSpy.calls)).toBe(1);
+
+      resetMergeMasterForTests();
+      const recoverySpy = spyRunner();
+      const recovered = createChildSessionController({runner: recoverySpy.runner, worktreesRoot});
+      const adopted = recovered.adoptChild(spawned.session);
+
+      expect(adopted.ok).toBe(true);
+      if (!adopted.ok) return;
+      expect(worktreeAdds(recoverySpy.calls)).toBe(0);
+      expect(adopted.session.work).toEqual(contractedWork);
+      expect(adopted.session.worktreePath).toBe(spawned.session.worktreePath);
+      expect(adopted.session.branch).toBe(spawned.session.branch);
+      expect(listChildWorktrees(repoRoot, git)).toHaveLength(1);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('adopts a recorded symlink path when Git reports the canonical worktree path', async () => {
+    const {repoRoot, worktreesRoot, cleanup} = await setupRepo();
+    try {
+      const first = createChildSessionController({runner: git, worktreesRoot});
+      const spawned = first.spawnChild({
+        title: contractedWork.title,
+        accessMode: 'read_write',
+        writeScope: contractedWork.writeScope.include,
+        cwd: repoRoot,
+        work: contractedWork,
+      });
+      expect(spawned.ok).toBe(true);
+      if (!spawned.ok) return;
+
+      const symlinkPath = join(worktreesRoot, 'recorded-symlink');
+      await symlink(spawned.session.worktreePath, symlinkPath, 'dir');
+      resetMergeMasterForTests();
+      const recoverySpy = spyRunner();
+      const recovered = createChildSessionController({runner: recoverySpy.runner, worktreesRoot});
+      const adopted = recovered.adoptChild({
+        ...spawned.session,
+        worktreePath: symlinkPath,
+        sessionCwd: symlinkPath,
+      });
+
+      expect(adopted.ok).toBe(true);
+      if (!adopted.ok) return;
+      expect(worktreeAdds(recoverySpy.calls)).toBe(0);
+      expect(adopted.session.worktreePath).toBe(await realpath(spawned.session.worktreePath));
+      expect(listChildWorktrees(repoRoot, git)).toHaveLength(1);
     } finally {
       await cleanup();
     }

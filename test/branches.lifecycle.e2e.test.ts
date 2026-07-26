@@ -25,9 +25,11 @@ import {mkdtemp, mkdir, writeFile, rm, realpath} from "node:fs/promises";
 import {existsSync} from "node:fs";
 import {join} from "node:path";
 import {tmpdir} from "node:os";
-import {createGitRunner, resolveRepoRoot, worktreeStatus, type GitRunner} from "../interactive-tui/worktreeService";
+import {createGitRunner, listChildWorktrees, resolveRepoRoot, worktreeStatus, type GitRunner} from "../interactive-tui/worktreeService";
 import {createChildSessionController} from "../interactive-tui/childSessionController";
+import {createChildSessionStore, type ChildSessionStore} from "../interactive-tui/childSessionStore";
 import {getMergeMasterSession, resetMergeMasterForTests} from "../interactive-tui/mergeMaster";
+import {createWorkRunController, type WorkRunClient} from "../interactive-tui/workRunController";
 
 const git: GitRunner = createGitRunner();
 
@@ -179,6 +181,120 @@ describe("lane G — full /branches lifecycle on a real repo", () => {
         cwd: fx.repoRoot,
       });
       expect(reclaim.ok).toBe(true);
+    } finally {
+      await fx.cleanup();
+    }
+  });
+});
+
+describe("contracted work-run lifecycle on a real repo", () => {
+  it("starts only after the exact child worktree, registry session, and recovery record exist", async () => {
+    const fx = await setupRepo();
+    try {
+      const log: string[] = [];
+      const controller = createChildSessionController({runner: git, worktreesRoot: fx.worktreesRoot});
+      const actualStore = createChildSessionStore({root: join(fx.worktreesRoot, "recovery")});
+      const store: ChildSessionStore = {
+        ...actualStore,
+        async put(record) {
+          log.push(`persist:${record.phase}`);
+          await actualStore.put(record);
+        },
+      };
+      const client: WorkRunClient = {
+        async getWorkItem(id) {
+          log.push(`load:${id}`);
+          return {
+            statusCode: 200,
+            data: {workItem: {
+              id,
+              title: "contracted child",
+              contractSummary: {classification: "bounded", profile: "coding", version: 1},
+              writeScope: {include: ["shared.txt"], exclude: ["dist/**"]},
+            }},
+          };
+        },
+        async getWorkVerificationPlan(id) {
+          log.push(`plan:${id}`);
+          return {statusCode: 200, data: {plan: {id: "plan-real", workItemId: id, version: 1, state: "active"}}};
+        },
+        async claimWorkItem(input) {
+          log.push(`claim:${input.workItemId}`);
+          return {statusCode: 200, data: {workItem: {id: input.workItemId, claimToken: "lease-real"}}};
+        },
+        async transitionWorkItem(id, action) {
+          if (action === "start") {
+            const child = controller.listChildSessions()[0];
+            expect(child).toBeDefined();
+            expect(existsSync(child.worktreePath)).toBe(true);
+            expect(getMergeMasterSession(child.sessionId)?.work?.workItemId).toBe(id);
+            expect((await store.listSafe())[0].phase).toBe("spawned");
+          }
+          log.push(`${action}:${id}`);
+          return {statusCode: 200, data: {workItem: {id}}};
+        },
+      };
+      const run = createWorkRunController({
+        client,
+        childController: controller,
+        store,
+        cwd: fx.repoRoot,
+        ownerFactory: () => "owner-real",
+      });
+
+      expect((await run.startContractedWork("work-real")).ok).toBe(true);
+      expect(log).toEqual([
+        "load:work-real",
+        "plan:work-real",
+        "claim:work-real",
+        "persist:spawned",
+        "start:work-real",
+        "persist:started",
+      ]);
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it("rejects legacy work before claim and before creating a worktree", async () => {
+    const fx = await setupRepo();
+    try {
+      let claims = 0;
+      const controller = createChildSessionController({runner: git, worktreesRoot: fx.worktreesRoot});
+      const store = createChildSessionStore({root: join(fx.worktreesRoot, "recovery")});
+      const run = createWorkRunController({
+        client: {
+          async getWorkItem(id) {
+            return {
+              statusCode: 200,
+              data: {workItem: {
+                id,
+                title: "legacy",
+                contractSummary: {classification: "legacy"},
+                writeScope: {include: [], exclude: []},
+              }},
+            };
+          },
+          async getWorkVerificationPlan() {
+            throw new Error("must not load a plan for legacy work");
+          },
+          async claimWorkItem() {
+            claims++;
+            throw new Error("must not claim legacy work");
+          },
+          async transitionWorkItem() {
+            throw new Error("must not transition legacy work");
+          },
+        },
+        childController: controller,
+        store,
+        cwd: fx.repoRoot,
+      });
+
+      const result = await run.startContractedWork("work-legacy");
+      expect(result.ok).toBe(false);
+      expect(claims).toBe(0);
+      expect(listChildWorktrees(fx.repoRoot, git)).toHaveLength(0);
     } finally {
       await fx.cleanup();
     }

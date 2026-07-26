@@ -13,11 +13,13 @@
  * Everything external is injectable (`deps`) so the sequencing — and especially
  * the cleanup branch — is unit-testable on a real temp Git repo without a TUI.
  */
+import {realpathSync} from "node:fs";
 import {homedir} from "node:os";
 import {join} from "node:path";
 import {getSessionCwd} from "./navigation";
 import {
   createChildWorktree,
+  listWorktrees,
   removeChildWorktree,
   resolveRepoRoot,
   createGitRunner,
@@ -34,6 +36,7 @@ import {
   createParentSession,
   evaluateChildAdmission,
   getMergeMasterSession,
+  getWorkIdentity,
   isTerminalStatus,
   setSessionHeadCommit,
   transitionSessionStatus,
@@ -42,6 +45,7 @@ import {
   type GatedChildResult,
   type MergeMasterAccessMode,
   type MergeMasterStatus,
+  type MergeMasterWorkIdentity,
 } from "./mergeMaster";
 import {commitChild as gitCommitChild, evaluateMerge, type MergePacket} from "./mergeGate";
 import {isWorktreeDirty} from "./worktreeService";
@@ -62,6 +66,8 @@ export interface ChildSessionRecord {
   accessMode: MergeMasterAccessMode;
   writeScope: string[];
   conversationKey: string;
+  /** Safe contracted-work identity; lease credentials are never stored here. */
+  work?: MergeMasterWorkIdentity;
 }
 
 /** A record enriched with the child's live registry status, for the agent bar. */
@@ -80,11 +86,31 @@ export interface SpawnChildInput {
   focus?: string;
   /** Where to resolve the repo from; defaults to the active session cwd. */
   cwd?: string;
+  /** Safe authoritative work identity for the contracted orchestration path. */
+  work?: MergeMasterWorkIdentity;
 }
 
 export type SpawnChildResult =
   | {ok: true; session: ChildSessionRecord}
-  | {ok: false; reason: string; blockedBy?: number; sharedScope?: string[]};
+  | {
+      ok: false;
+      reason: string;
+      blockedBy?: number;
+      sharedScope?: string[];
+      /** A post-creation failure already attempted worktree compensation. */
+      worktreeCleanupAttempted?: boolean;
+      /** Explicit failure from that compensation attempt, when any. */
+      cleanupFailure?: string;
+    };
+
+export class ChildSessionSpawnError extends Error {
+  readonly worktreeCleanupAttempted = true;
+
+  constructor(message: string, readonly cleanupFailure?: string, cause?: unknown) {
+    super(message, {cause});
+    this.name = "ChildSessionSpawnError";
+  }
+}
 
 export interface ChildSessionControllerDeps {
   /** Git command runner — inject a spy to observe (or a fake to drive) git. */
@@ -175,6 +201,8 @@ export type SendBackChildResult =
 
 export interface ChildSessionController {
   spawnChild(input: SpawnChildInput): SpawnChildResult;
+  /** Re-register an exact, already-existing child worktree after restart. */
+  adoptChild(record: ChildSessionRecord): SpawnChildResult;
   listChildSessions(): ChildSessionView[];
   getChild(sessionId: number): ChildSessionRecord | undefined;
   /** Run the ready-to-merge gate (lane D) and set ready_to_merge / merge_blocked. */
@@ -246,13 +274,12 @@ export function createChildSessionController(
     return id;
   }
 
-  function cleanupWorktree(repoRoot: string, worktreePath: string): void {
-    // Best-effort: we are already on a failure path; force past a dirty tree and
-    // drop the branch so a retry with the same seed isn't blocked by leftovers.
+  function cleanupWorktree(repoRoot: string, worktreePath: string): string | undefined {
     try {
       removeChildWorktree({repoRoot, worktreePath, deleteBranch: true, force: true}, runner);
-    } catch {
-      /* nothing else we can do here — the caller surfaces the original failure */
+      return undefined;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
     }
   }
 
@@ -300,12 +327,18 @@ export function createChildSessionController(
         baseCommit: wt.baseCommit,
         headCommit: wt.headCommit,
         writeScope: input.writeScope,
+        work: input.work,
         conversationKey,
         nowMs: now(),
       });
       if (gated.admitted === false) {
-        cleanupWorktree(repoRoot, wt.worktreePath);
-        return {ok: false, reason: gated.admission.reason};
+        const cleanupFailure = cleanupWorktree(repoRoot, wt.worktreePath);
+        return {
+          ok: false,
+          reason: gated.admission.reason,
+          worktreeCleanupAttempted: true,
+          cleanupFailure,
+        };
       }
       const record: ChildSessionRecord = {
         sessionId: gated.sessionId,
@@ -321,13 +354,77 @@ export function createChildSessionController(
         accessMode: input.accessMode,
         writeScope: input.writeScope ?? [],
         conversationKey,
+        work: input.work ? getWorkIdentity(gated.sessionId) ?? input.work : undefined,
       };
       records.set(record.sessionId, record);
       return {ok: true, session: record};
     } catch (err) {
-      cleanupWorktree(repoRoot, wt.worktreePath);
-      throw err;
+      const cleanupFailure = cleanupWorktree(repoRoot, wt.worktreePath);
+      throw new ChildSessionSpawnError(
+        err instanceof Error ? err.message : String(err),
+        cleanupFailure,
+        err,
+      );
     }
+  }
+
+  function adoptChild(record: ChildSessionRecord): SpawnChildResult {
+    let worktree;
+    let canonicalRecordedPath: string;
+    try {
+      canonicalRecordedPath = realpathSync(record.worktreePath);
+      worktree = listWorktrees(record.repoRoot, runner).find(
+        (candidate) =>
+          !candidate.isPrimary
+          && realpathSync(candidate.path) === canonicalRecordedPath
+          && candidate.branch === record.branch,
+      );
+    } catch (err) {
+      return {ok: false, reason: err instanceof Error ? err.message : String(err)};
+    }
+    if (!worktree) {
+      return {
+        ok: false,
+        reason: `recorded child worktree is missing or mismatched: ${record.worktreePath} (${record.branch})`,
+      };
+    }
+
+    const canonicalWorktreePath = realpathSync(worktree.path);
+    const parentSessionId = ensureParent(record.repoRoot, record.baseBranch, record.repoRoot);
+    const gated = registerSession({
+      parentSessionId,
+      accessMode: record.accessMode,
+      branch: record.branch,
+      worktreePath: canonicalWorktreePath,
+      sessionCwd: canonicalWorktreePath,
+      baseBranch: record.baseBranch,
+      baseCommit: record.baseCommit,
+      headCommit: worktree.head || record.headCommit,
+      writeScope: record.writeScope,
+      work: record.work,
+      conversationKey: record.conversationKey,
+      nowMs: now(),
+    });
+    if (gated.admitted === false) {
+      return {
+        ok: false,
+        reason: gated.admission.reason,
+        blockedBy: gated.admission.conflictSessionId || undefined,
+        sharedScope: gated.admission.sharedScope,
+      };
+    }
+
+    const adopted: ChildSessionRecord = {
+      ...record,
+      sessionId: gated.sessionId,
+      parentSessionId,
+      worktreePath: canonicalWorktreePath,
+      sessionCwd: canonicalWorktreePath,
+      headCommit: worktree.head || record.headCommit,
+      work: record.work ? getWorkIdentity(gated.sessionId) ?? record.work : undefined,
+    };
+    records.set(adopted.sessionId, adopted);
+    return {ok: true, session: adopted};
   }
 
   function listChildSessions(): ChildSessionView[] {
@@ -646,6 +743,7 @@ export function createChildSessionController(
 
   return {
     spawnChild,
+    adoptChild,
     listChildSessions,
     getChild: (sessionId) => records.get(sessionId),
     reviewChild,
