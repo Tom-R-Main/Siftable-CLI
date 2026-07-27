@@ -70,15 +70,15 @@
       "code:memory": {
         "description": "Code memory and facts"
       },
-    "vault": {
-      "description": "Secrets vault"
-    },
-    "capabilities": {
-      "description": "Server-brokered Vault capabilities"
-    },
-    "grants": {
-      "description": "Ephemeral provider credentials for reviewed local execution"
-    },
+      "vault": {
+        "description": "Secrets vault"
+      },
+      "capabilities": {
+        "description": "Server-brokered Vault capabilities"
+      },
+      "grants": {
+        "description": "Ephemeral provider credentials for reviewed local execution"
+      },
       "datasets": {
         "description": "Structured datasets"
       },
