@@ -8,6 +8,7 @@ import AiInvoke from '../../src/commands/ai/invoke.js';
 import AiUsage from '../../src/commands/ai/usage.js';
 import {BaseCommand} from '../../src/lib/base-command.js';
 import {SiftClient} from '@siftable/mcp-server/dist/exfClient.js';
+import {mockFetch, restoreFetch, runCommand} from '../helpers/mock-api';
 
 async function runCommandEntry(
   CommandClass: new (argv: string[], config: Config) => {run(): Promise<unknown>},
@@ -50,6 +51,11 @@ describe('model connection interactive CLI transport', () => {
     model: 'anthropic/claude-sonnet-4.6',
     status: 'available' as const,
   };
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    restoreFetch();
+  });
 
   it('lists, selects, and invokes through the same typed client without a credential field', async () => {
     const canary = 'sk-ai-gateway-canary-plaintext';
@@ -95,6 +101,19 @@ describe('model connection interactive CLI transport', () => {
     expect(AiStatus.requiredScope).toBe('ai:connections:use');
     expect(AiInvoke.requiredScope).toBe('ai:invoke');
     expect(AiUsage.requiredScope).toBe('ai:usage:read');
+  });
+
+  it('dispatches ai:list through the committed oclif manifest', async () => {
+    mockFetch()
+      .on('GET', '/api/v1/mcp/ai/models')
+      .reply(200, {models: [model]})
+      .install();
+
+    const result = await runCommand(['ai', 'list', '--token', 'sift_pat_test']);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.error).toBeUndefined();
+    expect(result.stdout).toContain(model.model);
   });
 
   it('binds CLI AI commands to the real MCP SiftClient transport', () => {

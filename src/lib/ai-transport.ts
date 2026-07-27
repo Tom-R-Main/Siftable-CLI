@@ -6,4 +6,4 @@ export type {
   AiModelSummary,
   AiTransport,
   AiUsageSummary,
-} from '../../../shared/dist/types/aiGateway.js';
+} from '@execufunction/shared';

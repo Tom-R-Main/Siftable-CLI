@@ -100,9 +100,9 @@ Link work to a planning task with `sift work create --task <task-id>` rather tha
 
 ## Command reference
 
-All 197 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
+All 201 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
 
-**Topics:** [General](#general) · [Agents](#agents) · [Approvals](#approvals) · [Auth](#auth) · [Billing](#billing) · [Calendar](#calendar) · [Capabilities](#capabilities) · [Code](#code) · [Codebase](#codebase) · [Codex](#codex) · [Datasets](#datasets) · [Documents](#documents) · [Events](#events) · [Evidence](#evidence) · [Grants](#grants) · [Graph](#graph) · [Notes](#notes) · [Organizations](#organizations) · [People](#people) · [Projects](#projects) · [Recipes](#recipes) · [Research](#research) · [Skills](#skills) · [Tasks](#tasks) · [Timeline](#timeline) · [Vault](#vault) · [Work](#work) · [Worker](#worker)
+**Topics:** [General](#general) · [AI](#ai) · [Agents](#agents) · [Approvals](#approvals) · [Auth](#auth) · [Billing](#billing) · [Calendar](#calendar) · [Capabilities](#capabilities) · [Code](#code) · [Codebase](#codebase) · [Codex](#codex) · [Datasets](#datasets) · [Documents](#documents) · [Events](#events) · [Evidence](#evidence) · [Grants](#grants) · [Graph](#graph) · [Notes](#notes) · [Organizations](#organizations) · [People](#people) · [Projects](#projects) · [Recipes](#recipes) · [Research](#research) · [Skills](#skills) · [Tasks](#tasks) · [Timeline](#timeline) · [Vault](#vault) · [Work](#work) · [Worker](#worker)
 
 
 ### General
@@ -136,6 +136,14 @@ Diagnose local Siftable CLI configuration without printing secrets
 #### `sift interactive`
 Launch the Siftable terminal copilot (sift interactive) — an in-process AI assistant over your tasks, work, calendar, projects, and people.
 
+**Flags**
+
+- `--connected-models` — List eligible connected models and exit
+- `--connection <value>` — Select a Model Connection UUID for a gateway invocation
+- `--max-output-tokens <value>` — Maximum connected-model output tokens (1-32768)
+- `--model <value>` — Select an eligible connected model for a gateway invocation
+- `--prompt <value>` — Invoke the selected connected model once and exit
+
 #### `sift mermaid`
 Render a Mermaid diagram to the terminal (flowchart, sequence, state, class, ER, C4, architecture, mindmap). Reads a .mmd file or stdin.
 
@@ -153,6 +161,39 @@ Render a Mermaid diagram to the terminal (flowchart, sequence, state, class, ER,
 - `--overflow <allow|clip|error>` *(default: "clip")* — What to do when the diagram exceeds the bounds
 - `--unicode` — Use Unicode box drawing (default)
 - `--width <value>` — Fit into an exact N-column pane (pads/clips)
+
+
+### AI
+
+Connected-model discovery, invocation, status, and usage. These commands expose only non-secret connection metadata and use explicit incremental device scopes.
+
+#### `sift ai invoke`
+Invoke an eligible connected model (requires `ai:invoke` and `ai:connections:use`)
+
+**Flags**
+
+- `--connection <value>` *(required)* — Model Connection UUID returned by `sift ai list`
+- `--max-output-tokens <value>` — Maximum output tokens (1-32768)
+- `--model <value>` *(required)* — Eligible model ID returned by `sift ai list`
+- `--prompt <value>` *(required)* — Prompt text
+
+#### `sift ai list`
+List eligible connected models (requires `ai:models:read`)
+
+#### `sift ai status [connection]`
+Show non-secret Model Connection status (requires `ai:connections:use`)
+
+**Arguments**
+
+- `connection` — Optional Model Connection UUID
+
+#### `sift ai usage`
+Show connected-model usage totals (requires `ai:usage:read`)
+
+**Flags**
+
+- `--from <value>` — ISO-8601 period start
+- `--to <value>` — ISO-8601 period end
 
 
 ### Agents
@@ -256,7 +297,7 @@ Authenticate with Siftable
 
 **Flags**
 
-- `--scope <vault:metadata:read|vault:manage|vault:audit:read>` *(repeatable)* — Incremental Vault scope to request (repeatable; never grants plaintext reveal)
+- `--scope <ai:models:read|ai:invoke|ai:usage:read|ai:connections:use|vault:metadata:read|vault:manage|vault:audit:read>` *(repeatable)* — Incremental AI invocation or Vault scope to request; management AI scopes and plaintext reveal are unavailable
 
 #### `sift auth logout`
 Remove stored authentication

@@ -50,6 +50,7 @@ const IMPORT_PATTERNS = [
 ];
 // new URL('./x', import.meta.url) — runtime file/dir refs (assets, native libs).
 const URL_PATTERN = /new\s+URL\(\s*[`"'](\.[^`"']*)/g;
+const FORBIDDEN_WORKSPACE_IMPORT = /shared\/dist|(?:\.\.\/){2,}shared(?:\/|["'])/;
 
 const RESOLVE_EXTS = ['', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json', '/index.ts', '/index.tsx', '/index.js'];
 
@@ -67,6 +68,7 @@ function main() {
   const files = shippedFiles();
   const shipped = new Set(files);
   const tsFiles = files.filter((f) => /^interactive-tui\/.*\.(ts|tsx)$/.test(f) || /^bin\//.test(f));
+  const emittedFiles = files.filter((f) => /^dist\/.*\.(?:[cm]?js|d\.ts)$/.test(f));
 
   const problems = [];
 
@@ -114,6 +116,13 @@ function main() {
     }
   }
 
+  for (const f of emittedFiles) {
+    const src = readFileSync(path.join(ROOT, f), 'utf8');
+    if (FORBIDDEN_WORKSPACE_IMPORT.test(src)) {
+      problems.push(`${f}\n    contains an escaping shared workspace import`);
+    }
+  }
+
   if (problems.length) {
     console.error(`\n✗ verify-package-imports: ${problems.length} unresolved reference(s) in the shipped package:\n`);
     for (const p of problems) console.error('  ' + p + '\n');
@@ -121,7 +130,7 @@ function main() {
     process.exit(1);
   }
 
-  console.log(`✓ verify-package-imports: all relative imports + runtime asset refs resolve within the package (${tsFiles.length} files scanned, ${files.length} shipped).`);
+  console.log(`✓ verify-package-imports: package-relative references resolve and emitted imports stay within declared packages (${tsFiles.length + emittedFiles.length} files scanned, ${files.length} shipped).`);
 }
 
 main();
