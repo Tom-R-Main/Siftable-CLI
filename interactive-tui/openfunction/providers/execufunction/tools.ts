@@ -637,9 +637,11 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
     }>({
       name: "exf_work_item_transition",
       description:
-        "Transition a work item. start/heartbeat/block/review/fail require claimOwner and claimToken; " +
+        "Transition a work item. start/heartbeat/block/fail require claimOwner and claimToken; " +
+        "review may omit lease credentials only when parking a queued doNotClaim review gate. " +
         "release requires claimOwner and claimToken. Active cancel requires both credentials; queued/blocked cancel omits both. " +
-        "requeue is tokenless human recovery for blocked work. complete may omit lease credentials only for human resolution from needs_review.",
+        "requeue is tokenless operator recovery for blocked work. complete may omit lease credentials from needs_review; " +
+        "the server enforces dependency readiness but does not distinguish human and automated work:write callers.",
       inputSchema: {
         type: "object",
         properties: {
@@ -659,7 +661,7 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
       },
       tags: ["work_items"],
       handler: async ({workItemId, action, claimOwner, claimToken, leaseSeconds, resultSummary, reason}) => {
-        const ownerBound = new Set(["start", "heartbeat", "block", "review", "fail"]);
+        const ownerBound = new Set(["start", "heartbeat", "block", "fail"]);
         if (ownerBound.has(action) && (!claimOwner || !claimToken)) {
           return err(`${action} requires claimOwner and claimToken from the active claim`);
         }
