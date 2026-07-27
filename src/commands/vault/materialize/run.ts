@@ -1,14 +1,16 @@
 import {Flags} from '@oclif/core';
 import {randomBytes} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
-import {BaseCommand} from '../../../lib/base-command.js';
+import {BaseCommand, DEFAULT_API_URL} from '../../../lib/base-command.js';
 import {
   createMaterializationArtifactBinding,
   createMaterializationCredentialBinding,
+  createMaterializationRunnerProofBinding,
   createMaterializerRunner,
   decryptMaterializationEnvelope,
   inspectMaterializationDestination,
   materializeApprovedPlaintext,
+  signMaterializationRunnerProof,
   type MaterializationReceipt,
 } from '../../../lib/localMaterializer.js';
 import type {ExecutionGrantEnvelope} from '../../../lib/localExecutionRunner.js';
@@ -83,8 +85,14 @@ export default class VaultMaterializeRun extends BaseCommand {
     if (!precondition.expectedAbsence && !flags.overwrite) {
       throw new Error('Existing destination requires --overwrite and exact approved digest');
     }
-    const runner = createMaterializerRunner();
+    const runner = await createMaterializerRunner(
+      flags['api-url'] ?? process.env.SIFT_API_URL ?? DEFAULT_API_URL,
+    );
+    if (!runner.privateKey) {
+      throw new Error('Vault materializer device identity is unavailable');
+    }
     const nonce = randomBytes(32).toString('base64url');
+    const runnerProofTimestamp = new Date().toISOString();
     const local = {
       source: {vaultEntryId: flags.entry, credentialField: flags.field},
       destinationPath: flags.destination,
@@ -100,6 +108,25 @@ export default class VaultMaterializeRun extends BaseCommand {
       runnerFingerprint: runner.fingerprint,
       materializerDigest: runner.materializerDigest,
     };
+    const runnerProofBinding = runner.sessionEligible
+      ? createMaterializationRunnerProofBinding({
+        vaultEntryId: flags.entry,
+        credentialField: flags.field,
+        destinationPath: flags.destination,
+        workspaceRoot: flags.workspace,
+        requestedMode: flags.mode as '0400' | '0600',
+        expectedAbsence: precondition.expectedAbsence,
+        expectedDestinationDigest: precondition.expectedDestinationDigest,
+        overwriteConsent: !precondition.expectedAbsence && flags.overwrite,
+        trackedFileException: flags['tracked-exception'],
+        plaintextDisclosureAcknowledged: true,
+        purpose: flags.purpose,
+        requestNonce: nonce,
+        runnerPublicKeyFingerprint: runner.fingerprint,
+        materializerDigest: runner.materializerDigest,
+        runnerProofTimestamp,
+      })
+      : null;
     const requested = await this.apiRequest<{
       materialization: MaterializationRecord;
       artifactEnvelope: ExecutionGrantEnvelope;
@@ -126,6 +153,15 @@ export default class VaultMaterializeRun extends BaseCommand {
           runnerPublicKeyPem: runner.publicKeyPem,
           runnerPublicKeyFingerprint: runner.fingerprint,
           materializerDigest: runner.materializerDigest,
+          ...(runnerProofBinding
+            ? {
+              runnerProofTimestamp,
+              runnerProof: signMaterializationRunnerProof(
+                runnerProofBinding,
+                runner.privateKey,
+              ),
+            }
+            : {}),
         },
       },
     );

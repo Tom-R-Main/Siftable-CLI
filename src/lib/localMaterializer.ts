@@ -1,7 +1,9 @@
 import {
+  constants as cryptoConstants,
   createHash,
   generateKeyPairSync,
   randomBytes,
+  sign,
   type KeyObject,
 } from 'node:crypto';
 import {execFile} from 'node:child_process';
@@ -23,6 +25,7 @@ import path from 'node:path';
 import {promisify} from 'node:util';
 import type {ExecutionGrantEnvelope} from './localExecutionRunner.js';
 import {decryptExecutionGrantEnvelope} from './localExecutionRunner.js';
+import {loadOrCreateMaterializerDeviceIdentity} from './materializerDeviceIdentity.js';
 
 const execFileAsync = promisify(execFile);
 const SAFE_MODES = new Map([['0400', 0o400], ['0600', 0o600]]);
@@ -34,6 +37,7 @@ export interface MaterializerRunner {
   privateKey: KeyObject | null;
   fingerprint: string;
   materializerDigest: string;
+  sessionEligible: boolean;
 }
 
 export interface DestinationPrecondition {
@@ -186,19 +190,79 @@ export async function inspectMaterializationDestination(input: {
   }
 }
 
-export function createMaterializerRunner(): MaterializerRunner {
-  const pair = generateKeyPairSync('rsa', {modulusLength: 3072});
-  const publicKeyPem = pair.publicKey.export({type: 'spki', format: 'pem'}).toString();
+export async function createMaterializerRunner(
+  apiUrl: string,
+): Promise<MaterializerRunner> {
   const materializerDigest = createHash('sha256')
     .update(readFileSync(__filename))
     .update(process.version)
     .digest('hex');
+  if (process.platform !== 'darwin') {
+    const pair = generateKeyPairSync('rsa', {modulusLength: 3072});
+    const publicKeyPem = pair.publicKey.export({type: 'spki', format: 'pem'}).toString();
+    return {
+      publicKeyPem,
+      privateKey: pair.privateKey,
+      fingerprint: createHash('sha256').update(publicKeyPem.trim()).digest('hex'),
+      materializerDigest,
+      sessionEligible: false,
+    };
+  }
+  const identity = await loadOrCreateMaterializerDeviceIdentity({apiUrl});
   return {
-    publicKeyPem,
-    privateKey: pair.privateKey,
-    fingerprint: createHash('sha256').update(publicKeyPem.trim()).digest('hex'),
+    publicKeyPem: identity.publicKeyPem,
+    privateKey: identity.privateKey,
+    fingerprint: identity.fingerprint,
     materializerDigest,
+    sessionEligible: true,
   };
+}
+
+export function createMaterializationRunnerProofBinding(input: {
+  vaultEntryId: string;
+  credentialField: string;
+  destinationPath: string;
+  workspaceRoot: string;
+  requestedMode: '0400' | '0600';
+  expectedAbsence: boolean;
+  expectedDestinationDigest?: string;
+  overwriteConsent: boolean;
+  trackedFileException: boolean;
+  plaintextDisclosureAcknowledged: true;
+  purpose: string;
+  requestNonce: string;
+  runnerPublicKeyFingerprint: string;
+  materializerDigest: string;
+  runnerProofTimestamp: string;
+}): string {
+  return canonicalJson({
+    vaultEntryId: input.vaultEntryId,
+    credentialField: input.credentialField,
+    destinationPath: input.destinationPath,
+    workspaceRoot: input.workspaceRoot,
+    requestedMode: input.requestedMode,
+    expectedAbsence: String(input.expectedAbsence),
+    expectedDestinationDigest: input.expectedDestinationDigest ?? 'none',
+    overwriteConsent: String(input.overwriteConsent),
+    trackedFileException: String(input.trackedFileException),
+    plaintextDisclosureAcknowledged: 'true',
+    purposeDigest: createHash('sha256').update(input.purpose).digest('hex'),
+    requestNonce: input.requestNonce,
+    runnerPublicKeyFingerprint: input.runnerPublicKeyFingerprint,
+    materializerDigest: input.materializerDigest,
+    runnerProofTimestamp: input.runnerProofTimestamp,
+  });
+}
+
+export function signMaterializationRunnerProof(
+  binding: string,
+  privateKey: KeyObject,
+): string {
+  return sign('sha256', Buffer.from(binding), {
+    key: privateKey,
+    padding: cryptoConstants.RSA_PKCS1_PSS_PADDING,
+    saltLength: 32,
+  }).toString('base64url');
 }
 
 export function createMaterializationArtifactBinding(input: {

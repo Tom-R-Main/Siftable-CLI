@@ -1,5 +1,10 @@
 import {execFile} from 'node:child_process';
 import {
+  constants as cryptoConstants,
+  generateKeyPairSync,
+  verify,
+} from 'node:crypto';
+import {
   chmod,
   lstat,
   mkdir,
@@ -14,11 +19,14 @@ import {
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {promisify} from 'node:util';
-import {afterEach, describe, expect, it} from 'vitest';
+import {afterEach, describe, expect, it, vi} from 'vitest';
 import {
+  createMaterializerRunner,
   createMaterializationCredentialBinding,
+  createMaterializationRunnerProofBinding,
   inspectMaterializationDestination,
   materializeApprovedPlaintext,
+  signMaterializationRunnerProof,
   validateMaterializationPath,
 } from './localMaterializer.js';
 
@@ -33,6 +41,7 @@ async function workspace(): Promise<string> {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   while (roots.length) await rm(roots.pop()!, {recursive: true, force: true});
 });
 
@@ -245,5 +254,64 @@ describe('local Vault materializer', () => {
     ]) {
       expect(createMaterializationCredentialBinding(changed)).not.toBe(expected);
     }
+  });
+
+  it('proves possession over every session-relevant materialization field', () => {
+    const pair = generateKeyPairSync('rsa', {modulusLength: 2048});
+    const base = {
+      vaultEntryId: 'entry-1',
+      credentialField: 'value',
+      destinationPath: '/workspace/runtime/credential',
+      workspaceRoot: '/workspace',
+      requestedMode: '0600' as const,
+      expectedAbsence: true,
+      overwriteConsent: false,
+      trackedFileException: false,
+      plaintextDisclosureAcknowledged: true as const,
+      purpose: 'Embed the reviewed corpus',
+      requestNonce: 'n'.repeat(32),
+      runnerPublicKeyFingerprint: 'a'.repeat(64),
+      materializerDigest: 'b'.repeat(64),
+      runnerProofTimestamp: '2026-07-27T18:00:00.000Z',
+    };
+    const binding = createMaterializationRunnerProofBinding(base);
+    const signature = signMaterializationRunnerProof(binding, pair.privateKey);
+
+    expect(binding).toBe(
+      '{"credentialField":"value","destinationPath":"/workspace/runtime/credential",'
+      + '"expectedAbsence":"true","expectedDestinationDigest":"none",'
+      + '"materializerDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",'
+      + '"overwriteConsent":"false","plaintextDisclosureAcknowledged":"true",'
+      + '"purposeDigest":"af58481c1626e42a0e4e22c2e5903032c24bfc787845fefed8185ff49c32ee7d",'
+      + '"requestedMode":"0600","requestNonce":"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",'
+      + '"runnerProofTimestamp":"2026-07-27T18:00:00.000Z",'
+      + '"runnerPublicKeyFingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
+      + '"trackedFileException":"false","vaultEntryId":"entry-1","workspaceRoot":"/workspace"}',
+    );
+    expect(verify(
+      'sha256',
+      Buffer.from(binding),
+      {
+        key: pair.publicKey,
+        padding: cryptoConstants.RSA_PKCS1_PSS_PADDING,
+        saltLength: 32,
+      },
+      Buffer.from(signature, 'base64url'),
+    )).toBe(true);
+    expect(createMaterializationRunnerProofBinding({
+      ...base,
+      destinationPath: '/workspace/runtime/other',
+    })).not.toBe(binding);
+    expect(signature).not.toContain('BEGIN PRIVATE KEY');
+  });
+
+  it('keeps approve-once materialization available without an OS-backed identity', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+
+    const runner = await createMaterializerRunner('https://siftable.io');
+
+    expect(runner.sessionEligible).toBe(false);
+    expect(runner.privateKey).not.toBeNull();
+    expect(runner.fingerprint).toMatch(/^[0-9a-f]{64}$/);
   });
 });
