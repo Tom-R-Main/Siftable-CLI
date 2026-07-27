@@ -130,7 +130,6 @@
     }
   },
   "dependencies": {
-    "@execufunction/shared": "*",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@morphllm/morphsdk": "^0.2.177",
     "@oclif/core": "^4",

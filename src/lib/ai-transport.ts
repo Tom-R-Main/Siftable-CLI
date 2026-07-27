@@ -6,4 +6,4 @@ export type {
   AiModelSummary,
   AiTransport,
   AiUsageSummary,
-} from '@execufunction/shared';
+} from '@siftable/mcp-server';

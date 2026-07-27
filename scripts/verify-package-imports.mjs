@@ -18,10 +18,11 @@
  * Exits non-zero (failing the publish) if anything is unresolved.
  */
 import { execSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
+const EMITTED_IMPORTS_ONLY = process.argv.includes('--emitted-imports-only');
 
 function shippedFiles() {
   const out = execSync('npm pack --dry-run --ignore-scripts --json', {
@@ -50,7 +51,8 @@ const IMPORT_PATTERNS = [
 ];
 // new URL('./x', import.meta.url) — runtime file/dir refs (assets, native libs).
 const URL_PATTERN = /new\s+URL\(\s*[`"'](\.[^`"']*)/g;
-const FORBIDDEN_WORKSPACE_IMPORT = /shared\/dist|(?:\.\.\/){2,}shared(?:\/|["'])/;
+const FORBIDDEN_WORKSPACE_IMPORT =
+  /@execufunction\/shared|shared\/dist|(?:\.\.\/){2,}shared(?:\/|["'])/;
 
 const RESOLVE_EXTS = ['', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json', '/index.ts', '/index.tsx', '/index.js'];
 
@@ -64,7 +66,60 @@ function resolvesAsModule(abs, shipped) {
   return false;
 }
 
+function emittedFilesOnDisk(root) {
+  if (!existsSync(root)) return [];
+  const files = [];
+  const visit = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const absolute = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(absolute);
+      } else if (/\.(?:[cm]?js|d\.ts)$/.test(entry.name)) {
+        files.push(absolute);
+      }
+    }
+  };
+  visit(root);
+  return files;
+}
+
+function verifyEmittedImportsOnly() {
+  const packageRoots = [
+    path.join(ROOT, 'dist'),
+    path.resolve(ROOT, '../exf-mcp-server/dist'),
+  ];
+  const packageFiles = packageRoots.map((root) => ({
+    root,
+    files: emittedFilesOnDisk(root),
+  }));
+  const missingPackages = packageFiles.filter(({ files }) => files.length === 0);
+  const files = packageFiles.flatMap(({ files }) => files);
+  const problems = files
+    .filter((file) => FORBIDDEN_WORKSPACE_IMPORT.test(readFileSync(file, 'utf8')))
+    .map((file) => `${path.relative(path.dirname(ROOT), file)}\n    contains an escaping shared workspace import`);
+
+  if (missingPackages.length) {
+    const missing = missingPackages
+      .map(({ root }) => path.relative(path.dirname(ROOT), root))
+      .join(', ');
+    console.error(`✗ verify-package-imports: no compiled JS or declaration files found under ${missing}.`);
+    process.exit(1);
+  }
+  if (problems.length) {
+    console.error(`\n✗ verify-package-imports: ${problems.length} escaping workspace import(s):\n`);
+    for (const problem of problems) console.error(`  ${problem}\n`);
+    process.exit(1);
+  }
+
+  console.log(`✓ verify-package-imports: emitted imports stay within public package boundaries (${files.length} files scanned).`);
+}
+
 function main() {
+  if (EMITTED_IMPORTS_ONLY) {
+    verifyEmittedImportsOnly();
+    return;
+  }
+
   const files = shippedFiles();
   const shipped = new Set(files);
   const tsFiles = files.filter((f) => /^interactive-tui\/.*\.(ts|tsx)$/.test(f) || /^bin\//.test(f));
