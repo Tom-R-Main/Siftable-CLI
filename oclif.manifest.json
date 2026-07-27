@@ -875,6 +875,7 @@
       "description": "Authenticate with Siftable",
       "examples": [
         "<%= config.bin %> auth login",
+        "<%= config.bin %> auth login --scope ai:invoke --scope ai:connections:use",
         "<%= config.bin %> auth login --scope vault:metadata:read",
         "<%= config.bin %> auth login --scope vault:metadata:read --scope vault:audit:read",
         "<%= config.bin %> auth login --token sift_pat_xxx",
@@ -921,11 +922,15 @@
           "type": "option"
         },
         "scope": {
-          "description": "Incremental Vault scope to request (repeatable; never grants plaintext reveal)",
+          "description": "Incremental AI invocation or Vault scope to request (repeatable; management AI scopes and plaintext reveal are unavailable)",
           "name": "scope",
           "hasDynamicHelp": false,
           "multiple": true,
           "options": [
+            "ai:models:read",
+            "ai:invoke",
+            "ai:usage:read",
+            "ai:connections:use",
             "vault:metadata:read",
             "vault:manage",
             "vault:audit:read"

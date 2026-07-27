@@ -50,6 +50,7 @@ export default class AuthLogin extends BaseCommand {
 
   static examples = [
     '<%= config.bin %> auth login',
+    '<%= config.bin %> auth login --scope ai:invoke --scope ai:connections:use',
     '<%= config.bin %> auth login --scope vault:metadata:read',
     '<%= config.bin %> auth login --scope vault:metadata:read --scope vault:audit:read',
     '<%= config.bin %> auth login --token sift_pat_xxx',
@@ -63,8 +64,16 @@ export default class AuthLogin extends BaseCommand {
       description: 'Personal access token (skips device flow)',
     }),
     scope: Flags.string({
-      description: 'Incremental Vault scope to request (repeatable; never grants plaintext reveal)',
-      options: ['vault:metadata:read', 'vault:manage', 'vault:audit:read'],
+      description: 'Incremental AI invocation or Vault scope to request (repeatable; management AI scopes and plaintext reveal are unavailable)',
+      options: [
+        'ai:models:read',
+        'ai:invoke',
+        'ai:usage:read',
+        'ai:connections:use',
+        'vault:metadata:read',
+        'vault:manage',
+        'vault:audit:read',
+      ],
       multiple: true,
     }),
   };

@@ -12,6 +12,7 @@ module.exports = {
   ],
   modulePathIgnorePatterns: ['<rootDir>/dist/'],
   moduleNameMapper: {
+    '^.*?/packages/exf-cli/dist/(.*)\\.js$': '<rootDir>/src/$1.ts',
     '^\\.\\./dist/lib/daily-review-context\\.js$': '<rootDir>/src/lib/daily-review-context.ts',
     '^@siftable/mcp-server/dist/exfClient\\.js$': '<rootDir>/../exf-mcp-server/src/exfClient.ts',
     '^\\.\\./\\.\\./shared/dist/types/aiGateway\\.js$': '<rootDir>/../shared/src/types/aiGateway.ts',

@@ -7,6 +7,7 @@ import AiStatus from '../../src/commands/ai/status.js';
 import AiInvoke from '../../src/commands/ai/invoke.js';
 import AiUsage from '../../src/commands/ai/usage.js';
 import {BaseCommand} from '../../src/lib/base-command.js';
+import {SiftClient} from '@siftable/mcp-server/dist/exfClient.js';
 
 async function runCommandEntry(
   CommandClass: new (argv: string[], config: Config) => {run(): Promise<unknown>},
@@ -94,6 +95,20 @@ describe('model connection interactive CLI transport', () => {
     expect(AiStatus.requiredScope).toBe('ai:connections:use');
     expect(AiInvoke.requiredScope).toBe('ai:invoke');
     expect(AiUsage.requiredScope).toBe('ai:usage:read');
+  });
+
+  it('binds CLI AI commands to the real MCP SiftClient transport', () => {
+    const client = new SiftClient({
+      apiUrl: 'https://siftable.test',
+      pat: 'opaque-test-pat',
+    });
+
+    expect(client).toEqual(expect.objectContaining({
+      listAiModels: expect.any(Function),
+      getAiConnectionStatus: expect.any(Function),
+      generateAi: expect.any(Function),
+      getAiUsage: expect.any(Function),
+    }));
   });
 
   it.each([

@@ -35,6 +35,7 @@ describe('auth commands', () => {
               verification_uri_complete: 'https://siftable.io/app/device?code=ABCD-EFGH',
               expires_in: 900,
               interval: 0,
+              scopes: ['projects:read'],
             }),
           } as Response;
         }

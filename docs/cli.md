@@ -55,7 +55,8 @@ Every command accepts these:
 - **IDs.** Resources are referenced by UUID. Some commands (e.g. `sift work get`) also accept a unique ID prefix.
 - **Destructive commands** require an explicit confirmation flag — typically `--confirm` (bulk deletes, which otherwise preview) or `-y, --yes` (single deletes). Without it they no-op or print a preview.
 - **Workspace scoping.** Pass `--workspace`/`SIFT_WORKSPACE_ID` to operate inside a specific workspace org; otherwise commands run against your personal scope.
-- **Raw Vault reads are retired.** `sift vault read` returns migration guidance without requesting plaintext. Vault metadata, management, and audit access require explicit incremental scopes via `sift auth login --scope <scope>`; `mcp:*` grants none of them.
+- **Incremental authorization.** AI model discovery, invocation, usage, and connection use plus Vault metadata, management, and audit access require explicit scopes via `sift auth login --scope <scope>`; reserved AI management scopes are unavailable through device authorization, and `mcp:*` grants none of these capabilities.
+- **Raw Vault reads are retired.** `sift vault read` returns migration guidance without requesting plaintext.
 
 ## Diagnostics
 
