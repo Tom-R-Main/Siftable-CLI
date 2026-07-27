@@ -31,7 +31,7 @@ export abstract class WorkActionCommand extends BaseCommand {
 
   protected async runWorkAction(command: typeof WorkActionCommand, action: string, extra: Record<string, unknown> = {}): Promise<unknown> {
     const {args, flags} = await this.parse(command);
-    const ownerBoundActions = new Set(['start', 'heartbeat', 'block', 'review', 'fail']);
+    const ownerBoundActions = new Set(['start', 'heartbeat', 'block', 'fail']);
     if (ownerBoundActions.has(action) && (!flags.owner || !flags['claim-token'])) {
       this.error(`${action} requires both --owner and --claim-token from the active claim.`);
     }
