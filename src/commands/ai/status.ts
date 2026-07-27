@@ -16,9 +16,9 @@ export default class AiStatus extends BaseCommand {
 
   async run(): Promise<unknown> {
     const {args, flags} = await this.parse(AiStatus);
-    const client = await this.client(flags) as unknown as AiTransport;
+    const client: AiTransport = await this.client(flags);
     const result = await client.getAiConnectionStatus(args.connection);
-    this.handleApiError(result);
+    this.handleAiApiError(result, 'ai:connections:use');
     const connections = (result.data?.connections ?? []).map(connection => ({
       connectionId: connection.connectionId,
       connectionName: connection.connectionName,

@@ -9,9 +9,9 @@ export default class AiList extends BaseCommand {
 
   async run(): Promise<unknown> {
     const {flags} = await this.parse(AiList);
-    const client = await this.client(flags) as unknown as AiTransport;
+    const client: AiTransport = await this.client(flags);
     const result = await client.listAiModels();
-    this.handleApiError(result);
+    this.handleAiApiError(result, 'ai:models:read');
     const models = (result.data?.models ?? []).map(model => ({
       connectionId: model.connectionId,
       connectionName: model.connectionName,

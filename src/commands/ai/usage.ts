@@ -14,9 +14,9 @@ export default class AiUsage extends BaseCommand {
 
   async run(): Promise<unknown> {
     const {flags} = await this.parse(AiUsage);
-    const client = await this.client(flags) as unknown as AiTransport;
+    const client: AiTransport = await this.client(flags);
     const result = await client.getAiUsage({from: flags.from, to: flags.to});
-    this.handleApiError(result);
+    this.handleAiApiError(result, 'ai:usage:read');
     const usage = result.data?.usage;
     if (!usage) this.error('AI usage summary was unavailable.');
     const output = {

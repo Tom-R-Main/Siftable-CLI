@@ -213,6 +213,22 @@ export abstract class BaseCommand extends Command {
     }
   }
 
+  protected handleAiApiError(
+    response: {statusCode: number; error?: string},
+    requiredScope: string,
+  ): void {
+    if (!response.error) return;
+    const status = Number.isInteger(response.statusCode) && response.statusCode > 0
+      ? response.statusCode
+      : 1;
+    const message = response.statusCode === 401
+      ? 'AI request was not authenticated (401). Run `sift auth login` to authenticate.'
+      : response.statusCode === 403
+        ? `AI request was denied (403). Required scope: ${requiredScope}.`
+        : `AI request failed (${response.statusCode || 'transport'}).`;
+    this.error(message, {exit: status});
+  }
+
   protected surfaceApiWarnings(response: {warnings?: string[]}): void {
     if (this.jsonEnabled()) return;
     for (const warning of response.warnings ?? []) this.warn(warning);

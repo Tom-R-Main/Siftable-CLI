@@ -28,14 +28,14 @@ export default class AiInvoke extends BaseCommand {
 
   async run(): Promise<unknown> {
     const {flags} = await this.parse(AiInvoke);
-    const client = await this.client(flags) as unknown as AiTransport;
+    const client: AiTransport = await this.client(flags);
     const result = await client.generateAi({
       connectionId: flags.connection,
       model: flags.model,
       prompt: flags.prompt,
       maxOutputTokens: flags['max-output-tokens'],
     });
-    this.handleApiError(result);
+    this.handleAiApiError(result, 'ai:invoke');
     const response = result.data?.response;
     if (!response) this.error('AI response was unavailable.');
     const output = {

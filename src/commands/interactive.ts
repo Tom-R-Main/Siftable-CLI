@@ -203,10 +203,10 @@ export default class Interactive extends BaseCommand {
     const {flags} = await this.parse(Interactive);
 
     if (flags['connected-models'] || flags.model) {
-      const client = await this.client(flags) as unknown as AiTransport;
-      const listed = await client.listAiModels();
-      this.handleApiError(listed);
+      const client: AiTransport = await this.client(flags);
       if (flags['connected-models'] && !flags.model) {
+        const listed = await client.listAiModels();
+        this.handleAiApiError(listed, 'ai:models:read');
         const models = (listed.data?.models ?? []).map(model => ({
           connectionId: model.connectionId,
           connectionName: model.connectionName,
