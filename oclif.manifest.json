@@ -269,6 +269,15 @@
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
+        },
+        "stream": {
+          "dependsOn": [
+            "prompt"
+          ],
+          "description": "Consume selected connected-model output incrementally",
+          "name": "stream",
+          "allowNo": false,
+          "type": "boolean"
         }
       },
       "hasDynamicHelp": false,
@@ -986,6 +995,12 @@
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
+        },
+        "stream": {
+          "description": "Consume and print incremental connected-model output",
+          "name": "stream",
+          "allowNo": false,
+          "type": "boolean"
         }
       },
       "hasDynamicHelp": false,
@@ -19594,5 +19609,5 @@
       ]
     }
   },
-  "version": "0.5.31"
+  "version": "0.5.32"
 }

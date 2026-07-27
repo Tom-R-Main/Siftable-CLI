@@ -143,6 +143,7 @@ Launch the Siftable terminal copilot (sift interactive) — an in-process AI ass
 - `--max-output-tokens <value>` — Maximum connected-model output tokens (1-32768)
 - `--model <value>` — Select an eligible connected model for a gateway invocation
 - `--prompt <value>` — Invoke the selected connected model once and exit
+- `--stream` — Consume selected connected-model output incrementally
 
 #### `sift mermaid`
 Render a Mermaid diagram to the terminal (flowchart, sequence, state, class, ER, C4, architecture, mindmap). Reads a .mmd file or stdin.
@@ -176,6 +177,7 @@ Invoke an eligible connected model (requires `ai:invoke` and `ai:connections:use
 - `--max-output-tokens <value>` — Maximum output tokens (1-32768)
 - `--model <value>` *(required)* — Eligible model ID returned by `sift ai list`
 - `--prompt <value>` *(required)* — Prompt text
+- `--stream` — Consume and print incremental connected-model output
 
 #### `sift ai list`
 List eligible connected models (requires `ai:models:read`)

@@ -6,6 +6,7 @@ import {BaseCommand, DEFAULT_API_URL} from '../lib/base-command.js';
 import type {
   AiGenerateResponse,
   AiModelSummary,
+  AiStreamTransport,
   AiTransport,
 } from '../lib/ai-transport.js';
 import {resolveToken} from '../lib/auth.js';
@@ -14,7 +15,8 @@ function envValue(primary: string, legacy: string): string | undefined {
   return process.env[primary] || process.env[legacy];
 }
 
-type InteractiveAiClient = Pick<AiTransport, 'listAiModels' | 'generateAi'>;
+type InteractiveAiClient = Pick<AiTransport, 'listAiModels' | 'generateAi'>
+  & Partial<Pick<AiStreamTransport, 'generateAiStream'>>;
 
 export async function runInteractiveAiRequest(
   client: InteractiveAiClient,
@@ -23,6 +25,8 @@ export async function runInteractiveAiRequest(
     model: string;
     prompt?: string;
     maxOutputTokens?: number;
+    stream?: boolean;
+    onDelta?: (text: string) => void;
   },
 ): Promise<{selected: AiModelSummary; response?: AiGenerateResponse}> {
   const listed = await client.listAiModels();
@@ -44,6 +48,44 @@ export async function runInteractiveAiRequest(
     status: 'available',
   };
   if (input.prompt === undefined) return {selected: safeSelected};
+  if (input.stream) {
+    if (!client.generateAiStream) {
+      throw new Error('Connected model streaming is unavailable.');
+    }
+    let text = '';
+    let finishReason = 'unknown';
+    let inputTokens: number | null = null;
+    let outputTokens: number | null = null;
+    for await (const event of client.generateAiStream({
+      connectionId: safeSelected.connectionId,
+      model: safeSelected.model,
+      prompt: input.prompt,
+      maxOutputTokens: input.maxOutputTokens,
+    })) {
+      if (event.type === 'delta') {
+        text += event.text;
+        input.onDelta?.(event.text);
+      }
+      if (event.type === 'usage') {
+        inputTokens = event.inputTokens;
+        outputTokens = event.outputTokens;
+      }
+      if (event.type === 'completed') finishReason = event.finishReason;
+      if (event.type === 'failed') {
+        throw new Error(`Connected model stream failed (${event.code}).`);
+      }
+    }
+    return {
+      selected: safeSelected,
+      response: {
+        connectionId: safeSelected.connectionId,
+        model: safeSelected.model,
+        text,
+        finishReason,
+        usage: {inputTokens, outputTokens},
+      },
+    };
+  }
   const generated = await client.generateAi({
     connectionId: safeSelected.connectionId,
     model: safeSelected.model,
@@ -197,6 +239,11 @@ export default class Interactive extends BaseCommand {
       max: 32_768,
       dependsOn: ['prompt'],
     }),
+    stream: Flags.boolean({
+      description: 'Consume selected connected-model output incrementally',
+      default: false,
+      dependsOn: ['prompt'],
+    }),
   };
 
   async run(): Promise<void> {
@@ -228,10 +275,14 @@ export default class Interactive extends BaseCommand {
         model: flags.model!,
         prompt: flags.prompt,
         maxOutputTokens: flags['max-output-tokens'],
+        stream: flags.stream,
+        onDelta: flags.stream && !this.jsonEnabled()
+          ? (delta: string) => this.log(delta)
+          : undefined,
       });
       if (result.response) {
         if (this.jsonEnabled()) this.log(JSON.stringify(result));
-        else this.log(result.response.text);
+        else if (!flags.stream) this.log(result.response.text);
       } else {
         this.log(`selected ${result.selected.connectionId} ${result.selected.model}`);
       }
