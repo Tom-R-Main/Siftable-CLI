@@ -12,6 +12,7 @@ module.exports = {
   ],
   modulePathIgnorePatterns: ['<rootDir>/dist/'],
   moduleNameMapper: {
+    '^\\.\\./dist/lib/daily-review-context\\.js$': '<rootDir>/src/lib/daily-review-context.ts',
     '^(\\.{1,2}/.*)\\.js$': '$1',
   },
   transform: {
