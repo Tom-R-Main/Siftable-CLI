@@ -1,11 +1,72 @@
 import {spawnSync} from 'node:child_process';
 import {existsSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
+import {Flags} from '@oclif/core';
 import {BaseCommand, DEFAULT_API_URL} from '../lib/base-command.js';
+import type {
+  AiGenerateResponse,
+  AiModelSummary,
+  AiTransport,
+} from '../lib/ai-transport.js';
 import {resolveToken} from '../lib/auth.js';
 
 function envValue(primary: string, legacy: string): string | undefined {
   return process.env[primary] || process.env[legacy];
+}
+
+type InteractiveAiClient = Pick<AiTransport, 'listAiModels' | 'generateAi'>;
+
+export async function runInteractiveAiRequest(
+  client: InteractiveAiClient,
+  input: {
+    connectionId?: string;
+    model: string;
+    prompt?: string;
+    maxOutputTokens?: number;
+  },
+): Promise<{selected: AiModelSummary; response?: AiGenerateResponse}> {
+  const listed = await client.listAiModels();
+  if (listed.error || !listed.data) {
+    throw new Error(`Unable to list eligible connected models (${listed.statusCode || 'transport'}).`);
+  }
+  const selected = listed.data.models.find(model => (
+    model.model === input.model
+    && (!input.connectionId || model.connectionId === input.connectionId)
+  ));
+  if (!selected) {
+    throw new Error('No eligible connected model matched the requested selection.');
+  }
+  const safeSelected: AiModelSummary = {
+    connectionId: selected.connectionId,
+    connectionName: selected.connectionName,
+    provider: selected.provider,
+    model: selected.model,
+    status: 'available',
+  };
+  if (input.prompt === undefined) return {selected: safeSelected};
+  const generated = await client.generateAi({
+    connectionId: safeSelected.connectionId,
+    model: safeSelected.model,
+    prompt: input.prompt,
+    maxOutputTokens: input.maxOutputTokens,
+  });
+  if (generated.error || !generated.data?.response) {
+    throw new Error(`Connected model invocation failed (${generated.statusCode || 'transport'}).`);
+  }
+  const response = generated.data.response;
+  return {
+    selected: safeSelected,
+    response: {
+      connectionId: response.connectionId,
+      model: response.model,
+      text: response.text,
+      finishReason: response.finishReason,
+      usage: {
+        inputTokens: response.usage.inputTokens,
+        outputTokens: response.usage.outputTokens,
+      },
+    },
+  };
 }
 
 /**
@@ -116,10 +177,66 @@ export default class Interactive extends BaseCommand {
 
   static flags = {
     ...BaseCommand.baseFlags,
+    'connected-models': Flags.boolean({
+      description: 'List eligible connected models and exit',
+    }),
+    connection: Flags.string({
+      description: 'Select a Model Connection UUID for a gateway invocation',
+      dependsOn: ['model'],
+    }),
+    model: Flags.string({
+      description: 'Select an eligible connected model for a gateway invocation',
+    }),
+    prompt: Flags.string({
+      description: 'Invoke the selected connected model once and exit',
+      dependsOn: ['model'],
+    }),
+    'max-output-tokens': Flags.integer({
+      description: 'Maximum connected-model output tokens (1-32768)',
+      min: 1,
+      max: 32_768,
+      dependsOn: ['prompt'],
+    }),
   };
 
   async run(): Promise<void> {
     const {flags} = await this.parse(Interactive);
+
+    if (flags['connected-models'] || flags.model) {
+      const client = await this.client(flags) as unknown as AiTransport;
+      const listed = await client.listAiModels();
+      this.handleApiError(listed);
+      if (flags['connected-models'] && !flags.model) {
+        const models = (listed.data?.models ?? []).map(model => ({
+          connectionId: model.connectionId,
+          connectionName: model.connectionName,
+          provider: model.provider,
+          model: model.model,
+          status: model.status,
+        }));
+        if (this.jsonEnabled()) {
+          this.log(JSON.stringify(models));
+        } else {
+          for (const model of models) {
+            this.log(`${model.connectionId}\t${model.provider}\t${model.model}\t${model.connectionName}`);
+          }
+        }
+        return;
+      }
+      const result = await runInteractiveAiRequest(client, {
+        connectionId: flags.connection,
+        model: flags.model!,
+        prompt: flags.prompt,
+        maxOutputTokens: flags['max-output-tokens'],
+      });
+      if (result.response) {
+        if (this.jsonEnabled()) this.log(JSON.stringify(result));
+        else this.log(result.response.text);
+      } else {
+        this.log(`selected ${result.selected.connectionId} ${result.selected.model}`);
+      }
+      return;
+    }
 
     const token = flags.token || envValue('SIFT_TOKEN', 'EXF_TOKEN') || resolveToken();
     if (!token) {

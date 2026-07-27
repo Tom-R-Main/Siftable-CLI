@@ -121,11 +121,11 @@ export abstract class BaseCommand extends Command {
             ? String((payload.extra as Record<string, unknown>).requiredScope)
             : undefined;
         return [
-          requiredScope?.startsWith('vault:')
+          requiredScope?.startsWith('vault:') || requiredScope?.startsWith('ai:')
             ? `Reauthorize explicitly with: sift auth login --scope ${requiredScope}`
             : 'Create or rotate the workspace service token with the required scope.',
-          requiredScope?.startsWith('vault:')
-            ? 'Vault scopes are incremental and are never inherited from mcp:* or legacy tokens.'
+          requiredScope?.startsWith('vault:') || requiredScope?.startsWith('ai:')
+            ? `${requiredScope.startsWith('ai:') ? 'AI' : 'Vault'} scopes are incremental and are never inherited from mcp:* or legacy tokens.`
             : 'Use tasks:read/tasks:write for task commands and work:read/work:write for work commands.',
         ];
         }
