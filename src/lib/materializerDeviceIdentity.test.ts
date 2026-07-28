@@ -4,6 +4,7 @@ import path from 'node:path';
 import {mkdtemp, rm} from 'node:fs/promises';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
+  buildMacOsKeychainWriteCommand,
   loadOrCreateMaterializerDeviceIdentity,
   type MaterializerIdentityStore,
 } from './materializerDeviceIdentity.js';
@@ -36,6 +37,26 @@ afterEach(async () => {
 });
 
 describe('materializer device identity', () => {
+  it('keeps Keychain secret data in interpreter stdin instead of process arguments', () => {
+    const account = 'a'.repeat(64);
+    const value = Buffer.from('11'.repeat(32), 'hex');
+    const encodedValueHex = Buffer.from(value.toString('base64url'), 'utf8').toString('hex');
+
+    const command = buildMacOsKeychainWriteCommand(account, value);
+    expect(command).toBe(
+      `add-generic-password -U -a ${account} -s io.siftable.cli.vault-materializer `
+      + '-l "Siftable Vault materializer device identity" '
+      + `-X ${encodedValueHex}`,
+    );
+    expect(command).not.toContain(value.toString('base64url'));
+    expect(() => buildMacOsKeychainWriteCommand('unsafe account', value)).toThrow(
+      'Keychain account is invalid',
+    );
+    expect(() => buildMacOsKeychainWriteCommand(account, Buffer.alloc(31))).toThrow(
+      'must be 32 bytes',
+    );
+  });
+
   it('reuses one OS-protected identity for the same API origin', async () => {
     const stateDirectory = await temporaryDirectory();
     const store = new MemoryIdentityStore();
