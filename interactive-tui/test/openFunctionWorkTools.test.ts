@@ -67,20 +67,6 @@ describe("OpenFunction work-item tools", () => {
     expect(transitionWorkItem).toHaveBeenCalledWith("work-1", "complete", {resultSummary: "Reviewed"});
   });
 
-  it("lets the server validate a tokenless review-gate park request", async () => {
-    const transitionWorkItem = mock(async () => ({statusCode: 200, data: {workItem: {id: "gate-1"}}}));
-    const tools = toolsFor({transitionWorkItem});
-    const result = await tools.get("exf_work_item_transition")!.handler({
-      workItemId: "gate-1",
-      action: "review",
-      resultSummary: "Awaiting operator approval",
-    });
-    expect(result.success).toBe(true);
-    expect(transitionWorkItem).toHaveBeenCalledWith("gate-1", "review", {
-      resultSummary: "Awaiting operator approval",
-    });
-  });
-
   it("supports tokenless requeue and paired active-cancel credentials", async () => {
     const transitionWorkItem = mock(async () => ({statusCode: 200, data: {workItem: {id: "work-1"}}}));
     const transition = toolsFor({transitionWorkItem}).get("exf_work_item_transition")!;

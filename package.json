@@ -1,6 +1,6 @@
 {
   "name": "@siftable/cli",
-  "version": "0.5.34",
+  "version": "0.5.35",
   "description": "Siftable CLI — human planning tasks, executable agent work queues, knowledge, and automation tools",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -70,15 +70,15 @@
       "code:memory": {
         "description": "Code memory and facts"
       },
-      "vault": {
-        "description": "Secrets vault"
-      },
-      "capabilities": {
-        "description": "Server-brokered Vault capabilities"
-      },
-      "grants": {
-        "description": "Ephemeral provider credentials for reviewed local execution"
-      },
+    "vault": {
+      "description": "Secrets vault"
+    },
+    "capabilities": {
+      "description": "Server-brokered Vault capabilities"
+    },
+    "grants": {
+      "description": "Ephemeral provider credentials for reviewed local execution"
+    },
       "datasets": {
         "description": "Structured datasets"
       },
@@ -151,7 +151,9 @@
     "nock": "^13.5.0",
     "oclif": "^4",
     "ts-jest": "^29.1.0",
-    "typescript": "~5.9.3"
+    "tsx": "^4.19.0",
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.5"
   },
   "engines": {
     "node": ">=18.0.0"

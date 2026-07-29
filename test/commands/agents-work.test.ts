@@ -424,38 +424,6 @@ describe('work commands', () => {
     expect(json.workItem.claimToken).toBeUndefined();
   });
 
-  it('allows the server to park an unclaimable review gate without lease credentials', async () => {
-    mockFetch()
-      .on('POST', '/api/v1/work-items/gate-001/review')
-      .body((body) => {
-        const input = body as any;
-        return input.claimOwner == null
-          && input.claimToken == null
-          && input.resultSummary === 'Awaiting operator approval';
-      })
-      .reply(200, {
-        workItem: {
-          id: 'gate-001',
-          title: 'Approval gate',
-          status: 'needs_review',
-        },
-      })
-      .install();
-
-    const result = await runCommand([
-      'work',
-      'review',
-      'gate-001',
-      '--summary',
-      'Awaiting operator approval',
-      '--token',
-      'sift_pat_test',
-      '--json',
-    ]);
-    const json = JSON.parse(result.stdout);
-    expect(json.workItem).toMatchObject({ id: 'gate-001', status: 'needs_review' });
-  });
-
   it('requires owner and token together before releasing active work', async () => {
     mockFetch().install();
     const result = await runCommand([

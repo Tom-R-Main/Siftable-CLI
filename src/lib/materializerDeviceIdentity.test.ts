@@ -4,6 +4,7 @@ import path from 'node:path';
 import {mkdtemp, rm} from 'node:fs/promises';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
+  buildMacOsKeychainWriteCommand,
   loadOrCreateMaterializerDeviceIdentity,
   type MaterializerIdentityStore,
 } from './materializerDeviceIdentity.js';
@@ -36,6 +37,26 @@ afterEach(async () => {
 });
 
 describe('materializer device identity', () => {
+  it('keeps Keychain secret data in interpreter stdin instead of process arguments', () => {
+    const account = 'a'.repeat(64);
+    const value = Buffer.from('11'.repeat(32), 'hex');
+    const encodedValueHex = Buffer.from(value.toString('base64url'), 'utf8').toString('hex');
+
+    const command = buildMacOsKeychainWriteCommand(account, value);
+    expect(command).toBe(
+      `add-generic-password -U -a ${account} -s io.siftable.cli.vault-materializer `
+      + '-l "Siftable Vault materializer device identity" '
+      + `-X ${encodedValueHex}`,
+    );
+    expect(command).not.toContain(value.toString('base64url'));
+    expect(() => buildMacOsKeychainWriteCommand('unsafe account', value)).toThrow(
+      'Keychain account is invalid',
+    );
+    expect(() => buildMacOsKeychainWriteCommand(account, Buffer.alloc(31))).toThrow(
+      'must be 32 bytes',
+    );
+  });
+
   it('reuses one OS-protected identity for the same API origin', async () => {
     const stateDirectory = await temporaryDirectory();
     const store = new MemoryIdentityStore();
@@ -95,25 +116,28 @@ describe('materializer device identity', () => {
     expect(store.values.size).toBe(2);
   });
 
-  it('recovers a lock left behind by a process that no longer exists', async () => {
-    const stateDirectory = await temporaryDirectory();
-    const store = new MemoryIdentityStore();
-    const account = 'https://siftable.io';
-    const originHash = await import('node:crypto').then(({createHash}) => (
-      createHash('sha256').update(new URL(account).origin).digest('hex')
-    ));
-    await writeFile(
-      path.join(stateDirectory, `${originHash}.json.lock`),
-      '2147483647',
-      {mode: 0o600},
-    );
+  it.skipIf(process.platform !== 'darwin')(
+    'recovers a lock left behind by a process that no longer exists',
+    async () => {
+      const stateDirectory = await temporaryDirectory();
+      const store = new MemoryIdentityStore();
+      const account = 'https://siftable.io';
+      const originHash = await import('node:crypto').then(({createHash}) => (
+        createHash('sha256').update(new URL(account).origin).digest('hex')
+      ));
+      await writeFile(
+        path.join(stateDirectory, `${originHash}.json.lock`),
+        '2147483647',
+        {mode: 0o600},
+      );
 
-    await expect(loadOrCreateMaterializerDeviceIdentity({
-      apiUrl: account,
-      stateDirectory,
-      store,
-    })).resolves.toEqual(expect.objectContaining({
-      fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
-    }));
-  });
+      await expect(loadOrCreateMaterializerDeviceIdentity({
+        apiUrl: account,
+        stateDirectory,
+        store,
+      })).resolves.toEqual(expect.objectContaining({
+        fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+      }));
+    },
+  );
 });

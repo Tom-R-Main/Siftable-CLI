@@ -6,6 +6,7 @@ import {
   createPublicKey,
   generateKeyPairSync,
   randomBytes,
+  timingSafeEqual,
   type KeyObject,
 } from 'node:crypto';
 import {spawn} from 'node:child_process';
@@ -16,6 +17,7 @@ import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 
 const KEYCHAIN_SERVICE = 'io.siftable.cli.vault-materializer';
+const KEYCHAIN_LABEL = 'Siftable Vault materializer device identity';
 const IDENTITY_VERSION = 1;
 const LOCK_WAIT_MILLISECONDS = 5_000;
 
@@ -38,6 +40,31 @@ export interface MaterializerDeviceIdentity {
 export interface MaterializerIdentityStore {
   read(account: string): Promise<Buffer | null>;
   write(account: string, value: Buffer): Promise<void>;
+}
+
+export function buildMacOsKeychainWriteCommand(
+  account: string,
+  value: Buffer,
+): string {
+  if (!/^[0-9a-f]{64}$/.test(account)) {
+    throw new Error('Vault materializer Keychain account is invalid');
+  }
+  if (value.length !== 32) {
+    throw new Error('Vault materializer Keychain value must be 32 bytes');
+  }
+  const encodedValueHex = Buffer.from(value.toString('base64url'), 'utf8').toString('hex');
+  return [
+    'add-generic-password',
+    '-U',
+    '-a',
+    account,
+    '-s',
+    KEYCHAIN_SERVICE,
+    '-l',
+    `"${KEYCHAIN_LABEL}"`,
+    '-X',
+    encodedValueHex,
+  ].join(' ');
 }
 
 async function runSecurity(
@@ -106,21 +133,19 @@ export const macOsKeychainIdentityStore: MaterializerIdentityStore = {
       );
     }
     const result = await runSecurity(
-      [
-        'add-generic-password',
-        '-U',
-        '-a',
-        account,
-        '-s',
-        KEYCHAIN_SERVICE,
-        '-l',
-        'Siftable Vault materializer device identity',
-        '-w',
-      ],
-      value.toString('base64url'),
+      ['-i'],
+      buildMacOsKeychainWriteCommand(account, value),
     );
     if (result.exitCode !== 0) {
       throw new Error('Unable to store the Vault materializer identity in macOS Keychain');
+    }
+    const storedValue = await macOsKeychainIdentityStore.read(account);
+    if (
+      !storedValue
+      || storedValue.length !== value.length
+      || !timingSafeEqual(storedValue, value)
+    ) {
+      throw new Error('Unable to verify the Vault materializer identity in macOS Keychain');
     }
   },
 };
