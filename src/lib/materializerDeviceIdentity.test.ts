@@ -116,25 +116,28 @@ describe('materializer device identity', () => {
     expect(store.values.size).toBe(2);
   });
 
-  it('recovers a lock left behind by a process that no longer exists', async () => {
-    const stateDirectory = await temporaryDirectory();
-    const store = new MemoryIdentityStore();
-    const account = 'https://siftable.io';
-    const originHash = await import('node:crypto').then(({createHash}) => (
-      createHash('sha256').update(new URL(account).origin).digest('hex')
-    ));
-    await writeFile(
-      path.join(stateDirectory, `${originHash}.json.lock`),
-      '2147483647',
-      {mode: 0o600},
-    );
+  it.skipIf(process.platform !== 'darwin')(
+    'recovers a lock left behind by a process that no longer exists',
+    async () => {
+      const stateDirectory = await temporaryDirectory();
+      const store = new MemoryIdentityStore();
+      const account = 'https://siftable.io';
+      const originHash = await import('node:crypto').then(({createHash}) => (
+        createHash('sha256').update(new URL(account).origin).digest('hex')
+      ));
+      await writeFile(
+        path.join(stateDirectory, `${originHash}.json.lock`),
+        '2147483647',
+        {mode: 0o600},
+      );
 
-    await expect(loadOrCreateMaterializerDeviceIdentity({
-      apiUrl: account,
-      stateDirectory,
-      store,
-    })).resolves.toEqual(expect.objectContaining({
-      fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
-    }));
-  });
+      await expect(loadOrCreateMaterializerDeviceIdentity({
+        apiUrl: account,
+        stateDirectory,
+        store,
+      })).resolves.toEqual(expect.objectContaining({
+        fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+      }));
+    },
+  );
 });
