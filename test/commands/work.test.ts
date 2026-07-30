@@ -5,6 +5,9 @@
  * is covered in ../workHubOverlay.test.ts; these tests cover the data shaping +
  * API plumbing against the mocked client.
  */
+import {mkdir, mkdtemp, rm, writeFile} from "node:fs/promises";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
 import {loadWorkBoard, workItemEvidence, createHandoffWorkItem, interactiveCommands} from "../../interactive-tui/commands";
 import type {WorkBoardItem} from "../../interactive-tui/workHubOverlay";
 import {buildCommandContext, response} from "../helpers/interactive-command-context";
@@ -66,29 +69,48 @@ describe("loadWorkBoard", () => {
 
 describe("workItemEvidence", () => {
   it("builds a query from title + acceptance + prompt and searches code", async () => {
-    const {ctx} = buildCommandContext();
-    (ctx.apiClient.searchCode as jest.Mock).mockReturnValue(
-      response({results: [{filePath: "src/a.ts", startLine: 10, symbolName: "foo"}, {filePath: "src/a.test.ts", startLine: 1}]}),
-    );
-    const item: WorkBoardItem = {
-      id: "i1",
-      title: "Fix paste",
-      status: "queued",
-      agent: "codex",
-      owner: null,
-      prompt: "the composer drops the first line",
-      writeScope: ["src/**"],
-      verification: ["npm test"],
-      acceptance: ["paste preserved"],
-      blockers: [],
-    };
-    const text = await workItemEvidence(ctx, item);
-    const query = (ctx.apiClient.searchCode as jest.Mock).mock.calls[0][0].query as string;
-    expect(query).toBe("Fix paste. paste preserved. the composer drops the first line");
-    expect(text).toContain("Evidence: Fix paste");
-    expect(text).toContain("src/a.ts:10 foo");
-    expect(text).toContain("Test evidence:");
-    expect(text).toContain("src/a.test.ts");
+    const workspace = await mkdtemp(join(tmpdir(), "sift-work-evidence-"));
+    try {
+      await mkdir(join(workspace, "src"));
+      await writeFile(
+        join(workspace, "src", "title.ts"),
+        'export const titleMarker = "Fix";\n',
+      );
+      await writeFile(
+        join(workspace, "src", "acceptance.ts"),
+        'export const acceptanceMarker = "preserved";\n',
+      );
+      await writeFile(
+        join(workspace, "src", "prompt.test.ts"),
+        'it("finds the prompt marker", () => expect("composer").toBe("composer"));\n',
+      );
+      const {ctx, apiClient} = buildCommandContext({
+        cwd: () => workspace,
+        workspaceRoot: () => workspace,
+      });
+      const item: WorkBoardItem = {
+        id: "i1",
+        title: "Fix paste",
+        status: "queued",
+        agent: "codex",
+        owner: null,
+        prompt: "the composer drops the first line",
+        writeScope: ["src/**"],
+        verification: ["npm test"],
+        acceptance: ["paste preserved"],
+        blockers: [],
+      };
+      const text = await workItemEvidence(ctx, item);
+      expect(apiClient.searchCode).not.toHaveBeenCalled();
+      expect(text).toContain("Evidence: Fix paste");
+      expect(text).toContain("src/title.ts:1");
+      expect(text).toContain("src/acceptance.ts:1");
+      expect(text).toContain("src/prompt.test.ts:1");
+      expect(text).toContain("Test evidence:");
+      expect(text).toContain("src/prompt.test.ts");
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
   });
 });
 
