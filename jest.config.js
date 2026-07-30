@@ -9,6 +9,7 @@ module.exports = {
     '/node_modules/',
     '<rootDir>/test/commands/interactive.chat-agent.test.ts',
     '<rootDir>/test/commands/vault-containment.test.ts',
+    '<rootDir>/test/commands/vault-scopes.test.ts',
   ],
   modulePathIgnorePatterns: ['<rootDir>/dist/'],
   moduleNameMapper: {
