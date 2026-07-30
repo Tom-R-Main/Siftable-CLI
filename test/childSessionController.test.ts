@@ -121,7 +121,7 @@ describe('childSessionController.spawnChild — Gate-A block preflights before G
         cwd: repoRoot,
       });
       expect(b.ok).toBe(false);
-      if (!b.ok) {
+      if (b.ok === false) {
         expect(b.reason).toMatch(/serialized/i);
         expect(b.blockedBy).toBe(a.ok ? a.session.sessionId : -1);
       }
@@ -167,7 +167,7 @@ describe('childSessionController.spawnChild — post-creation failure cleanup', 
       const res = ctrl.spawnChild({title: 'C', accessMode: 'read_write', writeScope: ['x'], cwd: repoRoot});
 
       expect(res.ok).toBe(false);
-      if (!res.ok) expect(res.reason).toMatch(/simulated backend rejection/);
+      if (res.ok === false) expect(res.reason).toMatch(/simulated backend rejection/);
       // Created-then-removed → nothing stranded.
       expect(listChildWorktrees(repoRoot, git)).toHaveLength(0);
     } finally {

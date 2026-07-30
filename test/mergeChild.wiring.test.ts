@@ -104,7 +104,7 @@ describe("lane E E3 — mergeChild / listMergeReadiness", () => {
 
       const again = controller.mergeChild(id);
       expect(again.ok).toBe(false);
-      if (!again.ok) expect(again.reason).toMatch(/terminal/);
+      if (again.ok === false) expect(again.reason).toMatch(/terminal/);
     } finally {
       await fx.cleanup();
     }
@@ -150,7 +150,7 @@ describe("lane E E3 — mergeChild / listMergeReadiness", () => {
 
       const res = controller.mergeChild(id);
       expect(res.ok).toBe(false);
-      if (res.ok) return;
+      if (res.ok === true) return;
       expect(res.reason).toMatch(/needs_input|resume/);
       expect(getMergeMasterSession(id)!.status).toBe("needs_input");
       expect(fx.baseTip()).toBe(baseBefore);

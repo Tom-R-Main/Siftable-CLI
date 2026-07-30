@@ -5,7 +5,11 @@
  * Also guards the collapse: /children /enter /leave /ready stay registered and
  * dispatchable but hidden, and `b` aliases /branches.
  */
-import {interactiveCommands, type InteractiveCommandContext} from "../../interactive-tui/commands";
+import {
+  interactiveCommands,
+  type ChildSessionActions,
+  type InteractiveCommandContext,
+} from "../../interactive-tui/commands";
 import {buildCommandContext} from "../helpers/interactive-command-context";
 import type {ParentMergeView} from "../../interactive-tui/mergeView";
 
@@ -19,6 +23,13 @@ function run(ctx: InteractiveCommandContext, name: string, args: string[] = []):
 }
 function lastText(messages: {text: string}[]): string {
   return messages[messages.length - 1]?.text ?? "";
+}
+
+function fakeSessions(overrides: Partial<ChildSessionActions> = {}): ChildSessionActions {
+  return {
+    ...buildCommandContext().ctx.sessions,
+    ...overrides,
+  };
 }
 
 const populated: ParentMergeView = {
@@ -36,7 +47,7 @@ describe("/branches command (text fallback)", () => {
   it("renders the dashboard from sessions.mergeView()", () => {
     const mergeView = jest.fn(() => populated);
     const {ctx, messages} = buildCommandContext({
-      sessions: {list: jest.fn(() => []), activeChildId: jest.fn(() => null), spawn: jest.fn(), enter: jest.fn(), leave: jest.fn(), review: jest.fn(), mergeView, merge: jest.fn()},
+      sessions: fakeSessions({mergeView}),
     });
     run(ctx, "branches");
     expect(mergeView).toHaveBeenCalled();

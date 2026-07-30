@@ -30,7 +30,8 @@ async function runCommandEntry(
     });
     const command = new CommandClass(argv, config);
     await command.run();
-    exitCode = process.exitCode ?? 0;
+    const commandExitCode = process.exitCode;
+    exitCode = typeof commandExitCode === 'number' ? commandExitCode : Number(commandExitCode ?? 0);
   } catch (caught) {
     error = caught as Error;
     exitCode = (caught as {oclif?: {exit?: number}}).oclif?.exit ?? 1;

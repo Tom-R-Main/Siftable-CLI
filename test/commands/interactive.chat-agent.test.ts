@@ -6,6 +6,7 @@
 // testPathIgnorePatterns). vi.mock is hoisted above the imports below.
 import {describe, it, expect, vi} from 'vitest';
 import type {AIAdapter, ChatMessage} from '../../interactive-tui/openfunction/framework/adapters/types';
+import type {ChatAgentConfig} from '../../interactive-tui/openfunction/framework/chat-agent-types';
 import type {ToolRegistry} from '../../interactive-tui/openfunction/framework/registry';
 import {createChatAgent} from '../../interactive-tui/openfunction/framework/chat-agent';
 import {defineTool, ok} from '../../interactive-tui/openfunction/framework/tool';
@@ -26,7 +27,7 @@ vi.mock('../../interactive-tui/openfunction/framework/chat-agent-resolve', async
     resolveAdapter: vi.fn(),
     resolveContextProviders: vi.fn(async () => []),
     resolveSystemPrompt: vi.fn((config: {prompt?: string}) => config.prompt ?? 'You are a test assistant.'),
-    buildAgentRegistry: vi.fn((config: {tools?: unknown[] | InstanceType<typeof ToolRegistry>}) => {
+    buildAgentRegistry: vi.fn((config: Pick<ChatAgentConfig, 'tools'>) => {
       if (config.tools instanceof ToolRegistry) return config.tools;
       const registry = new ToolRegistry();
       if (Array.isArray(config.tools)) registry.registerAll(config.tools);

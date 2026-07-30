@@ -5,7 +5,11 @@
  * verdict + blockers, passes --commit through as autoCommit, and points a
  * dirty-blocked child at the one-step fix.
  */
-import {interactiveCommands, type InteractiveCommandContext} from "../../interactive-tui/commands";
+import {
+  interactiveCommands,
+  type ChildSessionActions,
+  type InteractiveCommandContext,
+} from "../../interactive-tui/commands";
 import {buildCommandContext} from "../helpers/interactive-command-context";
 import type {MergePacket} from "../../interactive-tui/mergeGate";
 
@@ -41,18 +45,18 @@ function lastText(messages: {text: string}[]): string {
   return messages[messages.length - 1]?.text ?? "";
 }
 
+function fakeSessions(overrides: Partial<ChildSessionActions> = {}): ChildSessionActions {
+  return {
+    ...buildCommandContext().ctx.sessions,
+    ...overrides,
+  };
+}
+
 describe("/ready", () => {
   it("reviews the active child when no id is given, rendering the ready verdict", () => {
     const review = jest.fn(() => ({ok: true as const, packet: packet(), statusApplied: true, committed: false}));
     const {ctx, messages} = buildCommandContext({
-      sessions: {
-        list: jest.fn(() => []),
-        activeChildId: jest.fn(() => 2),
-        spawn: jest.fn(),
-        enter: jest.fn(),
-        leave: jest.fn(),
-        review,
-      },
+      sessions: fakeSessions({activeChildId: jest.fn(() => 2), review}),
     });
     run(ctx, "ready", []);
     expect(review).toHaveBeenCalledWith(2, {autoCommit: false});
@@ -63,14 +67,7 @@ describe("/ready", () => {
   it("errors when there is no active child and no id", () => {
     const review = jest.fn();
     const {ctx, messages} = buildCommandContext({
-      sessions: {
-        list: jest.fn(() => []),
-        activeChildId: jest.fn(() => null),
-        spawn: jest.fn(),
-        enter: jest.fn(),
-        leave: jest.fn(),
-        review,
-      },
+      sessions: fakeSessions({activeChildId: jest.fn(() => null), review}),
     });
     run(ctx, "ready", []);
     expect(review).not.toHaveBeenCalled();
@@ -85,7 +82,7 @@ describe("/ready", () => {
       packet: packet({verdict: "merge_blocked", conflicts: ["src/a.ts"], blockers: ["conflicts with main in: src/a.ts"]}),
     }));
     const {ctx, messages} = buildCommandContext({
-      sessions: {list: jest.fn(() => []), activeChildId: jest.fn(() => null), spawn: jest.fn(), enter: jest.fn(), leave: jest.fn(), review},
+      sessions: fakeSessions({activeChildId: jest.fn(() => null), review}),
     });
     run(ctx, "ready", ["7"]);
     expect(review).toHaveBeenCalledWith(7, {autoCommit: false});
@@ -96,7 +93,7 @@ describe("/ready", () => {
   it("passes --commit through as autoCommit and notes the commit", () => {
     const review = jest.fn(() => ({ok: true as const, statusApplied: true, committed: true, packet: packet()}));
     const {ctx, messages} = buildCommandContext({
-      sessions: {list: jest.fn(() => []), activeChildId: jest.fn(() => 2), spawn: jest.fn(), enter: jest.fn(), leave: jest.fn(), review},
+      sessions: fakeSessions({activeChildId: jest.fn(() => 2), review}),
     });
     run(ctx, "ready", ["--commit"]);
     expect(review).toHaveBeenCalledWith(2, {autoCommit: true});
@@ -111,7 +108,7 @@ describe("/ready", () => {
       packet: packet({verdict: "merge_blocked", dirty: true, blockers: ["child worktree has uncommitted changes"]}),
     }));
     const {ctx, messages} = buildCommandContext({
-      sessions: {list: jest.fn(() => []), activeChildId: jest.fn(() => 2), spawn: jest.fn(), enter: jest.fn(), leave: jest.fn(), review},
+      sessions: fakeSessions({activeChildId: jest.fn(() => 2), review}),
     });
     run(ctx, "ready", []);
     expect(lastText(messages)).toContain("/ready 2 --commit");
@@ -120,7 +117,7 @@ describe("/ready", () => {
   it("surfaces a hard failure (unknown/terminal child)", () => {
     const review = jest.fn(() => ({ok: false as const, reason: "child #9 is merged (terminal) — nothing to review"}));
     const {ctx, messages} = buildCommandContext({
-      sessions: {list: jest.fn(() => []), activeChildId: jest.fn(() => null), spawn: jest.fn(), enter: jest.fn(), leave: jest.fn(), review},
+      sessions: fakeSessions({activeChildId: jest.fn(() => null), review}),
     });
     run(ctx, "ready", ["9"]);
     expect(lastText(messages)).toContain("terminal");

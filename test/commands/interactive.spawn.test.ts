@@ -8,8 +8,13 @@
  *  - --rw-any creates an unserialized writer (explicit);
  *  - a Gate-A block surfaces as a message naming the conflicting child.
  */
-import {interactiveCommands, type InteractiveCommandContext} from '../../interactive-tui/commands';
+import {
+  interactiveCommands,
+  type ChildSessionActions,
+  type InteractiveCommandContext,
+} from '../../interactive-tui/commands';
 import {buildCommandContext} from '../helpers/interactive-command-context';
+import type {ChildSessionView} from '../../interactive-tui/childSessionController';
 
 function run(ctx: InteractiveCommandContext, name: string, args: string[] = []): void {
   const cmd = interactiveCommands.find((c) => c.name === name || c.aliases?.includes(name));
@@ -18,13 +23,29 @@ function run(ctx: InteractiveCommandContext, name: string, args: string[] = []):
 }
 
 /** A sessions double with spies + controllable spawn/enter/leave results. */
-function fakeSessions(overrides: Partial<Record<'spawn' | 'enter' | 'leave' | 'list' | 'activeChildId', unknown>> = {}) {
+function fakeSessions(overrides: Partial<ChildSessionActions> = {}): ChildSessionActions {
   return {
-    list: jest.fn(() => []),
-    activeChildId: jest.fn(() => null),
-    spawn: jest.fn(() => ({ok: false, reason: 'unset'})),
-    enter: jest.fn(() => ({ok: false, reason: 'unset'})),
-    leave: jest.fn(() => ({ok: false, reason: 'not in a child session'})),
+    ...buildCommandContext().ctx.sessions,
+    ...overrides,
+  };
+}
+
+function childView(overrides: Partial<ChildSessionView>): ChildSessionView {
+  return {
+    sessionId: 2,
+    parentSessionId: 1,
+    title: 'child',
+    repoRoot: '/repo',
+    branch: 'sift/child-1',
+    baseBranch: 'main',
+    worktreePath: '/wt/child',
+    sessionCwd: '/wt/child',
+    baseCommit: 'c0',
+    headCommit: 'c0',
+    accessMode: 'read_write',
+    writeScope: [],
+    conversationKey: 'child-key',
+    status: 'running',
     ...overrides,
   };
 }
@@ -124,8 +145,8 @@ describe('/children · /enter · /leave', () => {
     const sessions = fakeSessions({
       activeChildId: jest.fn(() => 2),
       list: jest.fn(() => [
-        {sessionId: 2, status: 'running', branch: 'sift/a-1', writeScope: ['src/a.ts'], accessMode: 'read_write'},
-        {sessionId: 5, status: 'running', branch: 'sift/b-2', writeScope: [], accessMode: 'read_only'},
+        childView({sessionId: 2, branch: 'sift/a-1', writeScope: ['src/a.ts'], accessMode: 'read_write'}),
+        childView({sessionId: 5, branch: 'sift/b-2', writeScope: [], accessMode: 'read_only'}),
       ]),
     });
     const {ctx, messages} = buildCommandContext({sessions});
@@ -145,7 +166,7 @@ describe('/children · /enter · /leave', () => {
   it('/enter resolves by stable session id', () => {
     const enter = jest.fn((id: number) => ({
       ok: true,
-      session: {sessionId: id, branch: 'sift/a-1', worktreePath: '/wt/a'},
+      session: childView({sessionId: id, branch: 'sift/a-1', worktreePath: '/wt/a'}),
     }));
     const sessions = fakeSessions({enter});
     const {ctx, messages} = buildCommandContext({sessions});

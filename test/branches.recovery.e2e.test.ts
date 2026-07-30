@@ -194,7 +194,7 @@ describe("lane F — controller recovery", () => {
 
       const res = controller.rebaseChild(c.session.sessionId);
       expect(res.ok).toBe(false);
-      if (res.ok) return;
+      if (res.ok === true) return;
       expect(res.conflicts).toContain("shared.txt");
       // Still blocked, still inspectable.
       expect(getMergeMasterSession(c.session.sessionId)!.status).toBe("merge_blocked");
