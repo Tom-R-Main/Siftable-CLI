@@ -19,8 +19,8 @@ module.exports = {
     '^(\\.{1,2}/.*)\\.js$': '$1',
   },
   transform: {
-    // Wraps ts-jest to rewrite the TUI's Bun/ESM `import.meta.url` into a
-    // CommonJS-safe form before compilation. See test/importMetaTransformer.cjs.
+    // Runtime transpilation is deliberately independent from the authoritative
+    // Node16/Bundler typecheck configs. See test/importMetaTransformer.cjs.
     '^.+\\.ts$': '<rootDir>/test/importMetaTransformer.cjs',
   },
 };

@@ -21,6 +21,7 @@
     "test": "jest",
     "test:vitest": "vitest run --config vitest.config.ts",
     "native:release": "cd interactive-tui && bash scripts/build-native-release.sh",
+    "verify:test-typecheck-boundaries": "node scripts/verify-test-typecheck-boundaries.mjs",
     "verify:package": "node scripts/verify-package-imports.mjs",
     "prepublishOnly": "npm run build",
     "prepack": "npm run build && npx oclif manifest && npm run native:release && npm run verify:package"
@@ -150,7 +151,6 @@
     "jest": "^29.7.0",
     "nock": "^13.5.0",
     "oclif": "^4",
-    "ts-jest": "^29.1.0",
     "typescript": "~5.9.3"
   },
   "engines": {
