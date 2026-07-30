@@ -1588,7 +1588,7 @@ function spawnCommand(ctx: InteractiveCommandContext, args: string[]): void {
     accessMode: parsed.accessMode,
     writeScope: parsed.writeScope,
   });
-  if (!res.ok) {
+  if (res.ok === false) {
     const extra = res.blockedBy ? ` (blocked by child #${res.blockedBy})` : "";
     ctx.push({role: "system", text: `/spawn blocked: ${res.reason}${extra}`});
     return;
@@ -1679,7 +1679,7 @@ function readyCommand(ctx: InteractiveCommandContext, args: string[]): void {
     return;
   }
   const res = ctx.sessions.review(target.id, {autoCommit});
-  if (!res.ok) {
+  if (res.ok === false) {
     ctx.push({role: "system", text: `/ready: ${res.reason}`});
     return;
   }
@@ -1749,7 +1749,7 @@ function mergeCommand(ctx: InteractiveCommandContext, args: string[]): void {
     return;
   }
   const res = ctx.sessions.merge(parsed.id, {keep: parsed.keep, message: parsed.message});
-  if (!res.ok) {
+  if (res.ok === false) {
     let text = `/merge: ${res.reason}`;
     if (res.packet) text = `${formatPacket(res.packet)}\n  → ${res.reason}`;
     ctx.push({role: "system", text});
@@ -1774,7 +1774,7 @@ function rebaseCommand(ctx: InteractiveCommandContext, args: string[]): void {
     return;
   }
   const res = ctx.sessions.rebase(target.id);
-  if (!res.ok) {
+  if (res.ok === false) {
     let text = `/rebase: ${res.reason}`;
     if (res.conflicts?.length) text += `\n  conflicts: ${res.conflicts.join(", ")}\n  → /sendback ${target.id} <how to resolve>`;
     ctx.push({role: "system", text});
@@ -1809,7 +1809,7 @@ function sendBackCommand(ctx: InteractiveCommandContext, args: string[]): void {
     return;
   }
   const res = ctx.sessions.sendBack(target.id, instruction);
-  if (!res.ok) {
+  if (res.ok === false) {
     ctx.push({role: "system", text: `/sendback: ${res.reason}`});
     return;
   }

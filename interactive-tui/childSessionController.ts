@@ -262,7 +262,7 @@ export function createChildSessionController(
       accessMode: input.accessMode,
       writeScope: input.writeScope,
     });
-    if (!admission.admit) {
+    if (admission.admit === false) {
       return {
         ok: false,
         reason: admission.reason,
@@ -303,7 +303,7 @@ export function createChildSessionController(
         conversationKey,
         nowMs: now(),
       });
-      if (!gated.admitted) {
+      if (gated.admitted === false) {
         cleanupWorktree(repoRoot, wt.worktreePath);
         return {ok: false, reason: gated.admission.reason};
       }

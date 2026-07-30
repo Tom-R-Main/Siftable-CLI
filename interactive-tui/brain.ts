@@ -951,7 +951,7 @@ function buildLocalTools(of: OfModule): unknown[] {
           accessMode: readonly ? 'read_only' : 'read_write',
           writeScope: readonly || unscoped ? undefined : scope,
         });
-        if (!res.ok) {
+        if (res.ok === false) {
           const extra = res.blockedBy ? ` (blocked by child #${res.blockedBy})` : '';
           return of.err(`spawn_branch blocked: ${res.reason}${extra}`);
         }
@@ -991,7 +991,7 @@ function buildLocalTools(of: OfModule): unknown[] {
           autoCommit: params.autoCommit === true,
           message: typeof params.message === 'string' ? params.message : undefined,
         });
-        if (!res.ok) return of.err(`ready_branch: ${res.reason}`);
+        if (res.ok === false) return of.err(`ready_branch: ${res.reason}`);
         const p = res.packet;
         const stat = `${p.files.length} file(s), +${p.totalAdditions} -${p.totalDeletions}`;
         const blockers = p.blockers.length ? `\nblockers: ${p.blockers.join('; ')}` : '';
@@ -1039,7 +1039,7 @@ function buildLocalTools(of: OfModule): unknown[] {
           keep: params.keep === true,
           message: typeof params.message === 'string' ? params.message : undefined,
         });
-        if (!res.ok) return of.err(`merge_branch: ${res.reason}`);
+        if (res.ok === false) return of.err(`merge_branch: ${res.reason}`);
         const sha = res.baseCommit.slice(0, 7);
         const tail = res.cleaned ? 'worktree + branch removed' : 'worktree + branch kept';
         const verb = res.merged ? 'merged' : 'already up-to-date';
@@ -1073,7 +1073,7 @@ function buildLocalTools(of: OfModule): unknown[] {
       if (!Number.isInteger(id)) return of.err('rebase_branch: id must be a session id (integer).');
       try {
         const res = sessionController.rebaseChild(id);
-        if (!res.ok) {
+        if (res.ok === false) {
           const conflicts = res.conflicts?.length ? ` conflicts: ${res.conflicts.join(', ')}` : '';
           return of.err(`rebase_branch: ${res.reason}${conflicts}`);
         }
@@ -1111,7 +1111,7 @@ function buildLocalTools(of: OfModule): unknown[] {
       if (!instruction) return of.err('sendback_branch: instruction is required.');
       try {
         const res = sessionController.sendBackChild(id, instruction);
-        if (!res.ok) return of.err(`sendback_branch: ${res.reason}`);
+        if (res.ok === false) return of.err(`sendback_branch: ${res.reason}`);
         const posted = res.posted ? 'posted to its thread' : 'not persisted (thread off)';
         return of.ok({ posted: res.posted }, `sent #${id} back to work (running) · instruction ${posted}`);
       } catch (e) {

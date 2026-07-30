@@ -1507,19 +1507,19 @@ function App() {
         } else if (action.kind === "ready") {
           const res = childController.reviewChild(action.sessionId);
           refreshBranchesPicker(
-            res.ok ? `#${action.sessionId} → ${res.packet.verdict}` : `ready: ${res.reason}`,
+            res.ok === true ? `#${action.sessionId} → ${res.packet.verdict}` : `ready: ${res.reason}`,
           );
         } else if (action.kind === "merge") {
           const res = childController.mergeChild(action.sessionId);
           refreshBranchesPicker(
-            res.ok
+            res.ok === true
               ? `${res.merged ? "merged" : "up-to-date"} #${action.sessionId} → ${res.packet.baseBranch} (${res.baseCommit.slice(0, 7)})${res.cleaned ? " · cleaned" : ""}`
               : `merge: ${res.reason}`,
           );
         } else if (action.kind === "rebase") {
           const res = childController.rebaseChild(action.sessionId);
           refreshBranchesPicker(
-            res.ok
+            res.ok === true
               ? `${res.rebased ? "rebased" : "current"} #${action.sessionId} → ${res.verdict}`
               : `rebase: ${res.reason}${res.conflicts?.length ? ` (${res.conflicts.join(", ")})` : ""}`,
           );
@@ -1533,11 +1533,11 @@ function App() {
           refreshBranchesPicker(res.ok ? `abandoned #${action.sessionId}` : `abandon: ${res.reason}`);
         } else if (action.kind === "spawn") {
           const mapped = draftToSpawnInput(action.draft);
-          if (!mapped.ok) {
+          if (mapped.ok === false) {
             setBranchesPicker({ ...bp, status: `spawn: ${mapped.error}` }); // stay in the form
           } else {
             const res = commandCtx().sessions.spawn(mapped.input);
-            if (res.ok) {
+            if (res.ok === true) {
               setBranchesPicker({
                 state: initialBranchesState(),
                 view: childController.listMergeReadiness(),
@@ -1587,7 +1587,7 @@ function App() {
           }
         } else if (action.kind === "handoff") {
           const mapped = draftToHandoffInput(action.draft);
-          if (!mapped.ok) {
+          if (mapped.ok === false) {
             setWorkPicker({ ...wp, status: `handoff: ${mapped.error}` }); // stay in the form
           } else {
             void createHandoffWorkItem(commandCtx(), mapped.input)
