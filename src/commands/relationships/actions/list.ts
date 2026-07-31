@@ -1,34 +1,42 @@
+import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../../lib/base-command.js';
 import {renderTable} from '../../../lib/output.js';
 
-interface RelationshipActionContract extends Record<string, unknown> {
-  id: string;
-  label: string;
-  description: string;
-  commitmentClass: string;
-  inputJsonSchema: Record<string, unknown>;
-  outputJsonSchema: Record<string, unknown>;
-  surfaceBindings: Array<{surface: string; availability: string}>;
-}
+export default class RelationshipActionsList extends BaseCommand {
+  static description = 'List registered relationship actions and their commitment policies';
 
-export default class RelationshipsActionsList extends BaseCommand {
-  static description = 'Discover canonical relationship actions and runtime schemas';
-  static flags = {...BaseCommand.baseFlags};
+  static flags = {
+    ...BaseCommand.baseFlags,
+    commitment: Flags.string({description: 'Filter by commitment class'}),
+    'approval-policy': Flags.string({description: 'Filter by approval policy'}),
+    limit: Flags.integer({description: 'Maximum results'}),
+  };
 
   async run(): Promise<unknown> {
-    const {flags} = await this.parse(RelationshipsActionsList);
-    const response = await this.apiRequest<{version: number; actions: RelationshipActionContract[]}>(
-      flags,
-      '/api/v1/ontology/relationship-actions',
-    );
+    const {flags} = await this.parse(RelationshipActionsList);
+    const client = await this.client(flags);
+    const response = await client.listRelationshipActions({
+      commitmentClass: flags.commitment,
+      approvalPolicy: flags['approval-policy'],
+      limit: flags.limit,
+    });
+    this.handleApiError(response);
+    const actions = this.unwrapList(response, 'actions');
     if (!this.jsonEnabled()) {
-      this.log(`Relationship action contract v${response.version}`);
-      renderTable(response.actions, [
-        {key: 'id', header: 'Action'},
-        {key: 'label', header: 'Label'},
+      renderTable(actions, [
+        {key: 'id', header: 'ID'},
+        {key: 'label', header: 'Action'},
         {key: 'commitmentClass', header: 'Commitment'},
+        {
+          key: 'approvalPolicy',
+          header: 'Approval',
+          get: (row) => {
+            const policy = row.approvalPolicy as Record<string, unknown> | undefined;
+            return typeof policy?.mode === 'string' ? policy.mode : '-';
+          },
+        },
       ]);
     }
-    return response;
+    return actions;
   }
 }
