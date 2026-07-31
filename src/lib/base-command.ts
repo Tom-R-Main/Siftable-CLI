@@ -50,7 +50,11 @@ export abstract class BaseCommand extends Command {
   protected async apiRequest<T>(
     flags: {token?: string; 'api-url'?: string; workspace?: string},
     path: string,
-    options: {method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; body?: unknown} = {},
+    options: {
+      method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+      body?: unknown;
+      idempotencyKey?: string;
+    } = {},
   ): Promise<T> {
     const token = flags.token || envValue('SIFT_TOKEN', 'EXF_TOKEN') || resolveToken();
     if (!token) this.error('No authentication token found. Run `sift auth login` or set SIFT_TOKEN.');
@@ -60,7 +64,7 @@ export abstract class BaseCommand extends Command {
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
-        'Idempotency-Key': this.idempotencyKey(),
+        'Idempotency-Key': options.idempotencyKey ?? this.idempotencyKey(),
         ...(flags.workspace ? {'X-Workspace-Id': flags.workspace} : {}),
       },
       body: options.body == null ? undefined : JSON.stringify(options.body),
@@ -94,13 +98,26 @@ export abstract class BaseCommand extends Command {
 
     try {
       const payload = JSON.parse(error) as Record<string, unknown>;
+      const nestedError = payload.error !== null
+        && typeof payload.error === 'object'
+        && !Array.isArray(payload.error)
+        ? payload.error as Record<string, unknown>
+        : undefined;
+      const normalizedPayload = nestedError
+        ? {
+          ...payload,
+          ...nestedError,
+          type: typeof nestedError.code === 'string' ? nestedError.code : payload.type,
+        }
+        : payload;
       const title = typeof payload.title === 'string' ? payload.title : undefined;
       const detail = typeof payload.detail === 'string' ? payload.detail : undefined;
       const message = [title, detail].filter(Boolean).join(': ')
         || (typeof payload.message === 'string' ? payload.message : undefined)
+        || (typeof nestedError?.message === 'string' ? nestedError.message : undefined)
         || (typeof payload.error === 'string' ? payload.error : undefined)
         || error;
-      return {message, raw: error, payload};
+      return {message, raw: error, payload: normalizedPayload};
     } catch {
       return {message: error, raw: error};
     }

@@ -1,12 +1,17 @@
+import {BaseCommand} from '../../src/lib/base-command';
+import {installIsolatedConfigDirHooks} from '../helpers/config-env';
 import {mockFetch, restoreFetch, runCommand} from '../helpers/mock-api';
 
-afterAll(() => restoreFetch());
+installIsolatedConfigDirHooks('sift-cli-relationships-test-');
+
+afterEach(() => restoreFetch());
 
 const recommendationId = '11111111-1111-4111-8111-111111111111';
-const subjectId = '22222222-2222-4222-8222-222222222222';
+const entityId = '22222222-2222-4222-8222-222222222222';
+const workspaceId = '33333333-3333-4333-8333-333333333333';
 const snapshot = {
   recommendationId,
-  subject: {kind: 'opportunity', id: subjectId},
+  subject: {kind: 'opportunity', id: entityId},
   priorityScore: 82,
   executable: true,
   suppressionReasons: [],
@@ -15,9 +20,9 @@ const snapshot = {
   policyVersion: 'relationship-policy.v1',
   gates: [{code: 'citations_present', status: 'passed', reason: 'One exact citation is available.'}],
 };
-const record = {snapshot, state: 'pending_review', latestReview: null, executedAt: null};
+const recommendation = {snapshot, state: 'pending_review', latestReview: null, executedAt: null};
 
-describe('relationships CLI', () => {
+describe('relationship intelligence commands', () => {
   it('composes a structured brief and lists or shows immutable recommendations', async () => {
     mockFetch()
       .on('POST', '/api/v1/relationships/brief')
@@ -25,15 +30,22 @@ describe('relationships CLI', () => {
       .reply(200, {brief: {subjectLabel: 'Acme renewal', citations: [{}], recommendations: [snapshot]}})
       .on('GET', '/api/v1/relationships/recommendations')
       .query((url) => url.searchParams.get('subjectType') === 'opportunity'
-        && url.searchParams.get('subjectId') === subjectId)
-      .reply(200, {recommendations: [record]})
+        && url.searchParams.get('subjectId') === entityId)
+      .reply(200, {recommendations: [recommendation]})
       .on('GET', `/api/v1/relationships/recommendations/${recommendationId}`)
-      .reply(200, {recommendation: record})
+      .reply(200, {recommendation})
       .install();
 
-    const brief = await runCommand(['relationships', 'brief', `opportunity:${subjectId}`, '--json', '--token', 'exf_pat_test']);
-    const list = await runCommand(['relationships', 'recommendations', 'list', '--subject', `opportunity:${subjectId}`, '--json', '--token', 'exf_pat_test']);
-    const show = await runCommand(['relationships', 'recommendations', 'show', recommendationId, '--json', '--token', 'exf_pat_test']);
+    const brief = await runCommand([
+      'relationships', 'brief', `opportunity:${entityId}`, '--json', '--token', 'exf_pat_test',
+    ]);
+    const list = await runCommand([
+      'relationships', 'recommendations', 'list',
+      '--subject', `opportunity:${entityId}`, '--json', '--token', 'exf_pat_test',
+    ]);
+    const show = await runCommand([
+      'relationships', 'recommendations', 'show', recommendationId, '--json', '--token', 'exf_pat_test',
+    ]);
 
     expect(JSON.parse(brief.stdout).subjectLabel).toBe('Acme renewal');
     expect(JSON.parse(list.stdout)[0].snapshot.recommendationId).toBe(recommendationId);
@@ -44,9 +56,12 @@ describe('relationships CLI', () => {
     mockFetch()
       .on('POST', `/api/v1/relationships/recommendations/${recommendationId}/reviews`)
       .body((body) => (body as {decision?: string}).decision === 'accepted')
-      .reply(201, {recommendation: {...record, state: 'accepted'}})
+      .reply(201, {recommendation: {...recommendation, state: 'accepted'}})
       .on('POST', `/api/v1/relationships/recommendations/${recommendationId}/execute`)
-      .reply(200, {recommendation: {...record, state: 'executed'}, outcome: {status: 'applied'}})
+      .reply(200, {
+        recommendation: {...recommendation, state: 'executed'},
+        outcome: {status: 'applied'},
+      })
       .install();
 
     const reviewed = await runCommand([
@@ -62,24 +77,139 @@ describe('relationships CLI', () => {
     expect(JSON.parse(executed.stdout).outcome.status).toBe('applied');
   });
 
-  it('lists and runs the canonical relationship action binding', async () => {
+  it('keeps the existing next-action CLI syntax compatible', async () => {
     mockFetch()
       .on('GET', '/api/v1/ontology/relationship-actions')
-      .reply(200, {version: 1, actions: [{id: 'relationship.next_action.set', label: 'Set next action'}]})
+      .reply(200, {
+        version: 2,
+        actions: [{
+          id: 'relationship.next_action.set',
+          label: 'Set next action',
+          commitmentClass: 'persistent_internal',
+        }],
+      })
       .on('POST', '/api/v1/ontology/relationship-actions/run')
       .body((body) => (body as {actionId?: string}).actionId === 'relationship.next_action.set')
       .reply(200, {result: {actionId: 'relationship.next_action.set', status: 'applied'}})
       .install();
 
-    const listed = await runCommand(['relationships', 'actions', 'list', '--json', '--token', 'exf_pat_test']);
+    const listed = await runCommand([
+      'relationships', 'actions', 'list', '--json', '--token', 'exf_pat_test',
+    ]);
     const run = await runCommand([
       'relationships', 'actions', 'run', 'relationship.next_action.set',
-      '--entity', `opportunity:${subjectId}`,
+      '--entity', `opportunity:${entityId}`,
       '--input', JSON.stringify({title: 'Follow up', dueAt: '2026-08-03T17:00:00.000Z'}),
       '--yes', '--json', '--token', 'exf_pat_test',
     ]);
 
     expect(JSON.parse(listed.stdout).actions[0].id).toBe('relationship.next_action.set');
     expect(JSON.parse(run.stdout).status).toBe('applied');
+  });
+});
+
+describe('relationship collaboration commands', () => {
+  it('discovers the live server registry without a copied CLI contract', async () => {
+    mockFetch()
+      .on('GET', '/api/v1/ontology/relationship-actions')
+      .reply(200, {
+        version: 2,
+        actions: [{
+          id: 'relationship.assignment.set',
+          label: 'Set relationship assignment',
+          description: 'Assign a relationship',
+          commitmentClass: 'persistent_internal',
+          inputJsonSchema: {type: 'object'},
+          outputJsonSchema: {type: 'object'},
+          surfaceBindings: [],
+        }],
+      })
+      .install();
+
+    const result = await runCommand([
+      'relationships', 'actions', 'list', '--token', 'sift_pat_test', '--json',
+    ]);
+
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      version: 2,
+      actions: [{id: 'relationship.assignment.set'}],
+    });
+  });
+
+  it('forwards arbitrary action IDs, expected version, workspace, and the caller replay key', async () => {
+    mockFetch()
+      .on('POST', '/api/v1/ontology/relationship-actions/run')
+      .body((body) => {
+        const invocation = body as Record<string, any>;
+        return invocation.actionId === 'relationship.assignment.set'
+          && invocation.entity.kind === 'opportunity'
+          && invocation.entity.id === entityId
+          && invocation.input.assigneeId === workspaceId
+          && invocation.input.teamQueueId === null
+          && invocation.input.expectedVersion === 7;
+      })
+      .reply(200, {result: {actionId: 'relationship.assignment.set', status: 'applied'}})
+      .install();
+
+    const result = await runCommand([
+      'relationships', 'actions', 'run',
+      'relationship.assignment.set', `opportunity:${entityId}`,
+      '--input', JSON.stringify({assigneeId: workspaceId, teamQueueId: null}),
+      '--expected-version', '7',
+      '--idempotency-key', 'rel-assignment-0001',
+      '--workspace', workspaceId,
+      '--yes',
+      '--token', 'sift_pat_test',
+      '--json',
+    ]);
+
+    expect(result.error).toBeUndefined();
+    const fetchMock = global.fetch as jest.Mock;
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.headers).toMatchObject({
+      'Idempotency-Key': 'rel-assignment-0001',
+      'X-Workspace-Id': workspaceId,
+    });
+    expect(JSON.parse(result.stdout)).toMatchObject({actionId: 'relationship.assignment.set'});
+  });
+
+  it('surfaces stable nested relationship conflict codes', async () => {
+    mockFetch()
+      .on('POST', '/api/v1/ontology/relationship-actions/run')
+      .reply(409, {
+        error: {
+          actionId: 'relationship.watch.set',
+          code: 'RELATIONSHIP_ACTION_CONFLICT',
+          message: 'Relationship changed from version 2 to 3',
+        },
+      })
+      .install();
+
+    const result = await runCommand([
+      'relationships', 'actions', 'run',
+      'relationship.watch.set', `opportunity:${entityId}`,
+      '--input', JSON.stringify({watching: true}),
+      '--expected-version', '2',
+      '--idempotency-key', 'rel-watch-0001',
+      '--yes',
+      '--token', 'sift_pat_test',
+      '--json',
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const parsed = (BaseCommand.prototype as unknown as {
+      parseApiError(error: string): {message: string; payload: Record<string, unknown>};
+    }).parseApiError(JSON.stringify({
+      error: {
+        actionId: 'relationship.watch.set',
+        code: 'RELATIONSHIP_ACTION_CONFLICT',
+        message: 'Relationship changed from version 2 to 3',
+      },
+    }));
+    expect(parsed).toMatchObject({
+      message: 'Relationship changed from version 2 to 3',
+      payload: {type: 'RELATIONSHIP_ACTION_CONFLICT', actionId: 'relationship.watch.set'},
+    });
   });
 });
