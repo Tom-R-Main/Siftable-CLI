@@ -3,6 +3,7 @@ import {Config} from '@oclif/core';
 import {runInteractiveAiRequest} from '../../src/commands/interactive.js';
 import Interactive from '../../src/commands/interactive.js';
 import AiList from '../../src/commands/ai/list.js';
+import AiConnect from '../../src/commands/ai/connect.js';
 import AiStatus from '../../src/commands/ai/status.js';
 import AiInvoke from '../../src/commands/ai/invoke.js';
 import AiUsage from '../../src/commands/ai/usage.js';
@@ -97,11 +98,18 @@ describe('model connection interactive CLI transport', () => {
     expect(JSON.stringify(result)).not.toContain('secretReference');
   });
 
-  it('exports the four stable named command contracts', () => {
+  it('exports the stable named command contracts', () => {
     expect(AiList.requiredScope).toBe('ai:models:read');
     expect(AiStatus.requiredScope).toBe('ai:connections:use');
     expect(AiInvoke.requiredScope).toBe('ai:invoke');
     expect(AiUsage.requiredScope).toBe('ai:usage:read');
+  });
+
+  it('keeps credential entry in the browser instead of accepting API keys in the CLI', async () => {
+    const result = await runCommandEntry(AiConnect, ['--json']);
+    expect(result.exitCode).toBe(0);
+    expect(result.error).toBeUndefined();
+    expect(result.stdout).not.toContain('sk-');
   });
 
   it('dispatches ai:list through the committed oclif manifest', async () => {
@@ -115,6 +123,16 @@ describe('model connection interactive CLI transport', () => {
     expect(result.exitCode).toBe(0);
     expect(result.error).toBeUndefined();
     expect(result.stdout).toContain(model.model);
+  });
+
+  it('dispatches ai:connect through the committed oclif manifest without accepting a key', async () => {
+    const result = await runCommand(['ai', 'connect']);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.error).toBeUndefined();
+    expect(result.stdout).toContain('https://siftable.io/settings/model-connections');
+    expect(result.stdout).toContain('never receives or stores');
+    expect(result.stdout).not.toContain('sk-');
   });
 
   it('binds CLI AI commands to the real MCP SiftClient transport', () => {
@@ -271,6 +289,21 @@ describe('model connection interactive CLI transport', () => {
     expect(result.exitCode).toBe(403);
     expect(surface).toContain('ai:invoke');
     expect(surface).not.toContain(canary);
+  });
+
+  it('surfaces a structured disabled-mode explanation instead of a generic 404', async () => {
+    const client = {
+      listAiModels: jest.fn().mockResolvedValue({
+        statusCode: 404,
+        error: JSON.stringify({type: 'ai_gateway_unavailable'}),
+      }),
+    };
+    jest.spyOn(BaseCommand.prototype as never, 'client' as never)
+      .mockResolvedValueOnce(client as never);
+
+    const result = await runCommandEntry(AiList, ['--token', 'sift_pat_test']);
+    expect(result.exitCode).toBe(404);
+    expect(result.error?.message).toContain('not enabled');
   });
 
   it('fails closed when selection is absent and never dispatches', async () => {

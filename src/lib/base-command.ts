@@ -221,11 +221,27 @@ export abstract class BaseCommand extends Command {
     const status = Number.isInteger(response.statusCode) && response.statusCode > 0
       ? response.statusCode
       : 1;
+    let code = '';
+    try {
+      const payload = JSON.parse(response.error) as {type?: unknown; code?: unknown};
+      const candidate = payload.type ?? payload.code;
+      if (typeof candidate === 'string' && /^ai_[a-z0-9_]{1,60}$/.test(candidate)) {
+        code = candidate;
+      }
+    } catch {
+      // Transport text is intentionally not surfaced.
+    }
     const message = response.statusCode === 401
       ? 'AI request was not authenticated (401). Run `sift auth login` to authenticate.'
       : response.statusCode === 403
         ? `AI request was denied (403). Required scope: ${requiredScope}.`
-        : `AI request failed (${response.statusCode || 'transport'}).`;
+        : code === 'ai_gateway_unavailable'
+          ? 'Model Connections are not enabled on this Siftable deployment.'
+          : code === 'ai_provider_disabled'
+            ? 'The selected model provider is temporarily disabled.'
+            : code === 'ai_resource_limit_exceeded'
+              ? 'The connected-model request exceeded its configured resource limit.'
+              : `AI request failed (${response.statusCode || 'transport'}${code ? `, ${code}` : ''}).`;
     this.error(message, {exit: status});
   }
 
