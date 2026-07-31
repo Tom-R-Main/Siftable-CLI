@@ -109,6 +109,49 @@ describe('relationship intelligence commands', () => {
 });
 
 describe('relationship collaboration commands', () => {
+  it('shows the same typed append-only history the GUI reads', async () => {
+    const snapshotWithHistory = {
+      entity: {kind: 'opportunity', id: entityId},
+      ownerType: 'workspace',
+      ownerId: workspaceId,
+      ownerUserId: recommendationId,
+      assigneeUserId: null,
+      teamQueue: {id: recommendationId, kind: 'general', name: 'General'},
+      version: 8,
+      isWatching: true,
+      allowedActionIds: ['relationship.comment.add'],
+      events: [{
+        id: '55555555-5555-4555-8555-555555555555',
+        actionId: 'relationship.comment.add',
+        eventType: 'comment_added',
+        actorUserId: recommendationId,
+        versionBefore: 7,
+        versionAfter: 8,
+        occurredAt: '2026-07-30T12:00:00.000Z',
+        detail: {commentExcerpt: 'Contract terms confirmed.', mentionUserIds: []},
+      }],
+      updatedAt: '2026-07-30T12:00:00.000Z',
+    };
+    mockFetch()
+      .on('GET', `/api/v1/ontology/relationship-collaboration/opportunity/${entityId}`)
+      .reply(200, {snapshot: snapshotWithHistory})
+      .install();
+
+    const human = await runCommand([
+      'relationships', 'show', `opportunity:${entityId}`, '--token', 'sift_pat_test',
+    ]);
+    const json = await runCommand([
+      'relationships', 'show', `opportunity:${entityId}`, '--json', '--token', 'sift_pat_test',
+    ]);
+
+    expect(human.stdout).toContain('Collaboration history (1):');
+    expect(human.stdout).toContain('comment_added v7 -> v8');
+    expect(human.stdout).toContain('Contract terms confirmed.');
+    const parsed = JSON.parse(json.stdout);
+    expect(parsed.events).toHaveLength(1);
+    expect(parsed.events[0]).toMatchObject({eventType: 'comment_added', versionAfter: 8});
+  });
+
   it('discovers the live server registry without a copied CLI contract', async () => {
     mockFetch()
       .on('GET', '/api/v1/ontology/relationship-actions')
