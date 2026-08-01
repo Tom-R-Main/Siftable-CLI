@@ -19,7 +19,7 @@ const CONFIGS = [
     path: resolve(CLI_ROOT, 'tsconfig.test.json'),
     module: ts.ModuleKind.Node16,
     moduleResolution: ts.ModuleResolutionKind.Node16,
-    expectedTests: 26,
+    expectedTests: 27,
   },
   {
     name: 'tui-bundler',

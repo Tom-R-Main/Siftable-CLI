@@ -62,6 +62,18 @@
       "organizations": {
         "description": "Organizations and companies"
       },
+      "relationships": {
+        "description": "Headless relationship actions and collaboration"
+      },
+      "relationships:actions": {
+        "description": "Discover and run canonical relationship actions"
+      },
+      "relationships:queues": {
+        "description": "Workspace relationship team queues"
+      },
+      "relationships:handoffs": {
+        "description": "Source-linked outcome handoff receipts"
+      },
       "codebase": {
         "description": "Code indexing and search"
       },

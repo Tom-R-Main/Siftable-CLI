@@ -36,6 +36,7 @@
     "test/commands/people.test.ts",
     "test/commands/projects.test.ts",
     "test/commands/research.test.ts",
+    "test/commands/relationships.test.ts",
     "test/commands/self-awareness.test.ts",
     "test/commands/skills.test.ts",
     "test/commands/tasks.test.ts",

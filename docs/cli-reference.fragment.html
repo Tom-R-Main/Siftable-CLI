@@ -8,7 +8,7 @@
               </div>
               <div class="cli-cmd">
                 <code class="cli-cmd__name">sift codebase</code>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.general.codebase.desc">Index a codebase (scan and upload files)</p>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.general.codebase.desc">Deprecated hosted-ingestion path (blocked unless temporarily restored by an operator)</p>
                 <dl class="cli-cmd__params">
                   <dt>Arguments</dt>
                   <dd><code>id</code> — Repository ID</dd>
@@ -30,6 +30,15 @@
               <div class="cli-cmd">
                 <code class="cli-cmd__name">sift interactive</code>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.general.interactive.desc">Launch the Siftable terminal copilot (sift interactive) — an in-process AI assistant over your tasks, work, calendar, projects, and people.</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--connected-models</code> — List eligible connected models and exit</dd>
+                  <dd><code>--connection &lt;value&gt;</code> <span class="flag-meta">needs model</span> — Select a Model Connection UUID for a gateway invocation</dd>
+                  <dd><code>--max-output-tokens &lt;value&gt;</code> <span class="flag-meta">needs prompt</span> — Maximum connected-model output tokens (1-32768)</dd>
+                  <dd><code>--model &lt;value&gt;</code> — Select an eligible connected model for a gateway invocation</dd>
+                  <dd><code>--prompt &lt;value&gt;</code> <span class="flag-meta">needs model</span> — Invoke the selected connected model once and exit</dd>
+                  <dd><code>--stream</code> <span class="flag-meta">needs prompt</span> — Consume selected connected-model output incrementally</dd>
+                </dl>
               </div>
               <div class="cli-cmd">
                 <code class="cli-cmd__name">sift mermaid</code>
@@ -119,6 +128,42 @@
                 </dl>
               </div>
             </details>
+            <h2 id="cli-ai" data-i18n="docs.cli.ai.title">Ai</h2>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.ai.count">4 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift ai invoke</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.ai.invoke.desc">Invoke an eligible connected model (requires ai:invoke and ai:connections:use)</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--connection &lt;value&gt;</code> <span class="flag-meta">required</span> — Model Connection UUID returned by sift ai list</dd>
+                  <dd><code>--max-output-tokens &lt;value&gt;</code> — Maximum output tokens (1-32768)</dd>
+                  <dd><code>--model &lt;value&gt;</code> <span class="flag-meta">required</span> — Eligible model ID returned by sift ai list</dd>
+                  <dd><code>--prompt &lt;value&gt;</code> <span class="flag-meta">required</span> — Prompt text</dd>
+                  <dd><code>--stream</code> — Consume and print incremental connected-model output</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift ai list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.ai.list.desc">List eligible connected models (requires ai:models:read)</p>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift ai status</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.ai.status.desc">Show non-secret Model Connection status (requires ai:connections:use)</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>connection</code> — Optional Model Connection UUID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift ai usage</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.ai.usage.desc">Show connected-model usage totals (requires ai:usage:read)</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--from &lt;value&gt;</code> — ISO-8601 period start</dd>
+                  <dd><code>--to &lt;value&gt;</code> — ISO-8601 period end</dd>
+                </dl>
+              </div>
+            </details>
             <h2 id="cli-approvals" data-i18n="docs.cli.approvals.title">Approvals</h2>
             <details class="cli-topic"><summary><span data-i18n="docs.cli.approvals.count">2 commands</span></summary>
               <div class="cli-cmd">
@@ -152,7 +197,7 @@
                 <p class="cli-cmd__desc" data-i18n="docs.cli.auth.login.desc">Authenticate with Siftable</p>
                 <dl class="cli-cmd__params">
                   <dt>Flags</dt>
-                  <dd><code>--scope &lt;vault:metadata:read|vault:manage|vault:audit:read&gt;</code> <span class="flag-meta">repeatable</span> — Incremental Vault scope to request (repeatable; never grants plaintext reveal)</dd>
+                  <dd><code>--scope &lt;ai:models:read|ai:invoke|ai:usage:read|ai:connections:use|vault:metadata:read|vault:manage|vault:audit:read&gt;</code> <span class="flag-meta">repeatable</span> — Incremental AI invocation or Vault scope to request (repeatable; management AI scopes and plaintext reveal are unavailable)</dd>
                 </dl>
               </div>
               <div class="cli-cmd">
@@ -379,6 +424,7 @@
                 <dl class="cli-cmd__params">
                   <dt>Flags</dt>
                   <dd><code>--category &lt;architecture|integration|convention|entrypoint|gotcha|ownership&gt;</code> <span class="flag-meta">required</span> — Fact category</dd>
+                  <dd><code>--evidence-chunk &lt;value&gt;</code> <span class="flag-meta">repeatable</span> — Historical indexed chunk ID supporting the fact</dd>
                   <dd><code>--fact &lt;value&gt;</code> <span class="flag-meta">required</span> — Fact to store (1-2 sentences)</dd>
                   <dd><code>--file &lt;value&gt;</code> — Related file path</dd>
                   <dd><code>--repo &lt;value&gt;</code> — Repository ID</dd>
@@ -401,17 +447,17 @@
             <details class="cli-topic"><summary><span data-i18n="docs.cli.codebase.count">7 commands</span></summary>
               <div class="cli-cmd">
                 <code class="cli-cmd__name">sift codebase delete</code>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.delete.desc">Delete a repository and all indexed data</p>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.delete.desc">Create a dry-run retirement plan for hosted indexed source</p>
                 <dl class="cli-cmd__params">
                   <dt>Arguments</dt>
                   <dd><code>id</code> <span class="req">required</span> — Repository ID</dd>
                   <dt>Flags</dt>
-                  <dd><code>-y, --yes</code> — Skip confirmation</dd>
+                  <dd><code>-y, --yes</code> — Skip plan confirmation</dd>
                 </dl>
               </div>
               <div class="cli-cmd">
                 <code class="cli-cmd__name">sift codebase incremental</code>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.incremental.desc">Incrementally index a codebase using git-aware changed files</p>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.incremental.desc">Deprecated hosted incremental-ingestion path (blocked by default)</p>
                 <dl class="cli-cmd__params">
                   <dt>Arguments</dt>
                   <dd><code>id</code> <span class="req">required</span> — Repository ID</dd>
@@ -427,7 +473,7 @@
               </div>
               <div class="cli-cmd">
                 <code class="cli-cmd__name">sift codebase register</code>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.register.desc">Register a codebase for indexing</p>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.register.desc">Deprecated hosted repository-ingestion path (blocked by default)</p>
                 <dl class="cli-cmd__params">
                   <dt>Flags</dt>
                   <dd><code>--auto-index</code> — Enable automatic indexing</dd>
@@ -1711,6 +1757,108 @@
                 <dl class="cli-cmd__params">
                   <dt>Arguments</dt>
                   <dd><code>id</code> <span class="req">required</span> — Recipe ID</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-relationships" data-i18n="docs.cli.relationships.title">Relationships</h2>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.relationships.count">11 commands</span></summary>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift relationships actions list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.actions-list.desc">Discover canonical relationship actions and runtime schemas</p>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift relationships actions run</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.actions-run.desc">Run any canonical relationship action with replay-safe caller identity</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>action</code> <span class="req">required</span> — Canonical action ID from relationships actions list</dd>
+                  <dd><code>entity</code> — Relationship entity as opportunity:&lt;uuid&gt; or prospect:&lt;uuid&gt;</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--entity &lt;value&gt;</code> — Target as prospect:uuid or opportunity:uuid</dd>
+                  <dd><code>--expected-version &lt;value&gt;</code> — Current collaboration version</dd>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> — Stable 8-128 character key for exact retries</dd>
+                  <dd><code>--input &lt;value&gt;</code> — Action input JSON object</dd>
+                  <dd><code>--input-file &lt;value&gt;</code> — Path to an action input JSON file</dd>
+                  <dd><code>--yes</code> — Confirm action execution</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift relationships brief</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.brief.desc">Compose an exact, evidence-grounded relationship brief</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>subject</code> <span class="req">required</span> — Subject as prospect:uuid or opportunity:uuid</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--lens &lt;value&gt;</code> <span class="flag-meta">default: "relationship"</span> — Relationship lens identifier</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift relationships handoffs list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.handoffs-list.desc">List immutable relationship outcome receipts in the onboarding queue</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 100</span> — Maximum receipts</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift relationships handoffs show</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.handoffs-show.desc">Show one immutable relationship outcome handoff receipt</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Outcome handoff receipt UUID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift relationships queues list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.queues-list.desc">List relationship team queues in the active workspace</p>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift relationships recommendations execute</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.recommendations-execute.desc">Execute an accepted, current recommendation through the canonical action runtime</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Recommendation UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--yes</code> — Confirm canonical action execution</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift relationships recommendations list</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.recommendations-list.desc">List immutable relationship recommendation snapshots</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--lens &lt;value&gt;</code> — Relationship lens identifier</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 50</span> — Maximum recommendations</dd>
+                  <dd><code>--subject &lt;value&gt;</code> — Filter by prospect:uuid or opportunity:uuid</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift relationships recommendations review</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.recommendations-review.desc">Append an ordinary review decision to a relationship recommendation</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Recommendation UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--decision &lt;accepted|dismissed|snoozed|needs_information&gt;</code> <span class="flag-meta">required</span> — Review decision</dd>
+                  <dd><code>--reason &lt;value&gt;</code> — Review reason</dd>
+                  <dd><code>--snoozed-until &lt;value&gt;</code> — Offset-aware ISO date-time, required for snoozed</dd>
+                  <dd><code>--yes</code> — Confirm the append-only review</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift relationships recommendations show</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.recommendations-show.desc">Show a relationship recommendation with its exact citations and gates</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Recommendation UUID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <code class="cli-cmd__name">sift relationships show</code>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.show.desc">Show the current relationship collaboration snapshot</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>entity</code> <span class="req">required</span> — Relationship entity as opportunity:&lt;uuid&gt; or prospect:&lt;uuid&gt;</dd>
                 </dl>
               </div>
             </details>

@@ -12,6 +12,7 @@ const TOPICS = [
   {topic: 'notes', description: 'Knowledge notes'},
   {topic: 'people', description: 'People and contacts'},
   {topic: 'organizations', description: 'Organizations and companies'},
+  {topic: 'relationships', description: 'Evidence-grounded briefs, recommendations, reviews, and canonical actions'},
   {topic: 'calendar', description: 'Calendar events'},
   {topic: 'datasets', description: 'Structured datasets, analysis, and imports'},
   {topic: 'timeline', description: 'Timeline facts and narratives'},

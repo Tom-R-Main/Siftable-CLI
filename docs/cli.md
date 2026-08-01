@@ -100,9 +100,9 @@ Link work to a planning task with `sift work create --task <task-id>` rather tha
 
 ## Command reference
 
-All 201 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
+All 212 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
 
-**Topics:** [General](#general) · [AI](#ai) · [Agents](#agents) · [Approvals](#approvals) · [Auth](#auth) · [Billing](#billing) · [Calendar](#calendar) · [Capabilities](#capabilities) · [Code](#code) · [Codebase](#codebase) · [Codex](#codex) · [Datasets](#datasets) · [Documents](#documents) · [Events](#events) · [Evidence](#evidence) · [Grants](#grants) · [Graph](#graph) · [Notes](#notes) · [Organizations](#organizations) · [People](#people) · [Projects](#projects) · [Recipes](#recipes) · [Research](#research) · [Skills](#skills) · [Tasks](#tasks) · [Timeline](#timeline) · [Vault](#vault) · [Work](#work) · [Worker](#worker)
+**Topics:** [General](#general) · [Agents](#agents) · [Ai](#ai) · [Approvals](#approvals) · [Auth](#auth) · [Billing](#billing) · [Calendar](#calendar) · [Capabilities](#capabilities) · [Code](#code) · [Codebase](#codebase) · [Codex](#codex) · [Datasets](#datasets) · [Documents](#documents) · [Events](#events) · [Evidence](#evidence) · [Grants](#grants) · [Graph](#graph) · [Notes](#notes) · [Organizations](#organizations) · [People](#people) · [Projects](#projects) · [Recipes](#recipes) · [Relationships](#relationships) · [Research](#research) · [Skills](#skills) · [Tasks](#tasks) · [Timeline](#timeline) · [Vault](#vault) · [Work](#work) · [Worker](#worker)
 
 
 ### General
@@ -114,7 +114,7 @@ Show Siftable CLI capabilities and readiness status
 
 #### `sift codebase`
 *Alias: `sift codebase index`*
-Index a codebase (scan and upload files)
+Deprecated hosted-ingestion path (blocked unless temporarily restored by an operator)
 
 **Arguments**
 
@@ -139,11 +139,11 @@ Launch the Siftable terminal copilot (sift interactive) — an in-process AI ass
 **Flags**
 
 - `--connected-models` — List eligible connected models and exit
-- `--connection <value>` — Select a Model Connection UUID for a gateway invocation
-- `--max-output-tokens <value>` — Maximum connected-model output tokens (1-32768)
+- `--connection <value>` *(needs model)* — Select a Model Connection UUID for a gateway invocation
+- `--max-output-tokens <value>` *(needs prompt)* — Maximum connected-model output tokens (1-32768)
 - `--model <value>` — Select an eligible connected model for a gateway invocation
-- `--prompt <value>` — Invoke the selected connected model once and exit
-- `--stream` — Consume selected connected-model output incrementally
+- `--prompt <value>` *(needs model)* — Invoke the selected connected model once and exit
+- `--stream` *(needs prompt)* — Consume selected connected-model output incrementally
 
 #### `sift mermaid`
 Render a Mermaid diagram to the terminal (flowchart, sequence, state, class, ER, C4, architecture, mindmap). Reads a .mmd file or stdin.
@@ -162,40 +162,6 @@ Render a Mermaid diagram to the terminal (flowchart, sequence, state, class, ER,
 - `--overflow <allow|clip|error>` *(default: "clip")* — What to do when the diagram exceeds the bounds
 - `--unicode` — Use Unicode box drawing (default)
 - `--width <value>` — Fit into an exact N-column pane (pads/clips)
-
-
-### AI
-
-Connected-model discovery, invocation, status, and usage. These commands expose only non-secret connection metadata and use explicit incremental device scopes.
-
-#### `sift ai invoke`
-Invoke an eligible connected model (requires `ai:invoke` and `ai:connections:use`)
-
-**Flags**
-
-- `--connection <value>` *(required)* — Model Connection UUID returned by `sift ai list`
-- `--max-output-tokens <value>` — Maximum output tokens (1-32768)
-- `--model <value>` *(required)* — Eligible model ID returned by `sift ai list`
-- `--prompt <value>` *(required)* — Prompt text
-- `--stream` — Consume and print incremental connected-model output
-
-#### `sift ai list`
-List eligible connected models (requires `ai:models:read`)
-
-#### `sift ai status [connection]`
-Show non-secret Model Connection status (requires `ai:connections:use`)
-
-**Arguments**
-
-- `connection` — Optional Model Connection UUID
-
-#### `sift ai usage`
-Show connected-model usage totals (requires `ai:usage:read`)
-
-**Flags**
-
-- `--from <value>` — ISO-8601 period start
-- `--to <value>` — ISO-8601 period end
 
 
 ### Agents
@@ -267,6 +233,38 @@ List work assigned to an agent alias
 - `--status <value>` — Work item status
 
 
+### Ai
+
+#### `sift ai invoke`
+Invoke an eligible connected model (requires ai:invoke and ai:connections:use)
+
+**Flags**
+
+- `--connection <value>` *(required)* — Model Connection UUID returned by sift ai list
+- `--max-output-tokens <value>` — Maximum output tokens (1-32768)
+- `--model <value>` *(required)* — Eligible model ID returned by sift ai list
+- `--prompt <value>` *(required)* — Prompt text
+- `--stream` — Consume and print incremental connected-model output
+
+#### `sift ai list`
+List eligible connected models (requires ai:models:read)
+
+#### `sift ai status`
+Show non-secret Model Connection status (requires ai:connections:use)
+
+**Arguments**
+
+- `connection` — Optional Model Connection UUID
+
+#### `sift ai usage`
+Show connected-model usage totals (requires ai:usage:read)
+
+**Flags**
+
+- `--from <value>` — ISO-8601 period start
+- `--to <value>` — ISO-8601 period end
+
+
 ### Approvals
 
 #### `sift approvals request`
@@ -299,7 +297,7 @@ Authenticate with Siftable
 
 **Flags**
 
-- `--scope <ai:models:read|ai:invoke|ai:usage:read|ai:connections:use|vault:metadata:read|vault:manage|vault:audit:read>` *(repeatable)* — Incremental AI invocation or Vault scope to request; management AI scopes and plaintext reveal are unavailable
+- `--scope <ai:models:read|ai:invoke|ai:usage:read|ai:connections:use|vault:metadata:read|vault:manage|vault:audit:read>` *(repeatable)* — Incremental AI invocation or Vault scope to request (repeatable; management AI scopes and plaintext reveal are unavailable)
 
 #### `sift auth logout`
 Remove stored authentication
@@ -519,6 +517,7 @@ Store a codebase fact
 **Flags**
 
 - `--category <architecture|integration|convention|entrypoint|gotcha|ownership>` *(required)* — Fact category
+- `--evidence-chunk <value>` *(repeatable)* — Historical indexed chunk ID supporting the fact
 - `--fact <value>` *(required)* — Fact to store (1-2 sentences)
 - `--file <value>` — Related file path
 - `--repo <value>` — Repository ID
@@ -541,7 +540,7 @@ Find experts for a code area
 Code indexing and search.
 
 #### `sift codebase delete`
-Delete a repository and all indexed data
+Create a dry-run retirement plan for hosted indexed source
 
 **Arguments**
 
@@ -549,11 +548,11 @@ Delete a repository and all indexed data
 
 **Flags**
 
-- `-y, --yes` — Skip confirmation
+- `-y, --yes` — Skip plan confirmation
 
 #### `sift codebase incremental`
 *Alias: `sift codebase incremental-index`, `sift codebase index-incremental`*
-Incrementally index a codebase using git-aware changed files
+Deprecated hosted incremental-ingestion path (blocked by default)
 
 **Arguments**
 
@@ -569,7 +568,7 @@ Incrementally index a codebase using git-aware changed files
 List indexed repositories
 
 #### `sift codebase register`
-Register a codebase for indexing
+Deprecated hosted repository-ingestion path (blocked by default)
 
 **Flags**
 
@@ -1880,6 +1879,105 @@ Show a built-in research workflow recipe
 **Arguments**
 
 - `id` *(required)* — Recipe ID
+
+
+### Relationships
+
+#### `sift relationships actions list`
+Discover canonical relationship actions and runtime schemas
+
+#### `sift relationships actions run`
+Run any canonical relationship action with replay-safe caller identity
+
+**Arguments**
+
+- `action` *(required)* — Canonical action ID from relationships actions list
+- `entity` — Relationship entity as opportunity:<uuid> or prospect:<uuid>
+
+**Flags**
+
+- `--entity <value>` — Target as prospect:uuid or opportunity:uuid
+- `--expected-version <value>` — Current collaboration version
+- `--idempotency-key <value>` — Stable 8-128 character key for exact retries
+- `--input <value>` — Action input JSON object
+- `--input-file <value>` — Path to an action input JSON file
+- `--yes` — Confirm action execution
+
+#### `sift relationships brief`
+Compose an exact, evidence-grounded relationship brief
+
+**Arguments**
+
+- `subject` *(required)* — Subject as prospect:uuid or opportunity:uuid
+
+**Flags**
+
+- `--lens <value>` *(default: "relationship")* — Relationship lens identifier
+
+#### `sift relationships handoffs list`
+List immutable relationship outcome receipts in the onboarding queue
+
+**Flags**
+
+- `--limit <value>` *(default: 100)* — Maximum receipts
+
+#### `sift relationships handoffs show`
+Show one immutable relationship outcome handoff receipt
+
+**Arguments**
+
+- `id` *(required)* — Outcome handoff receipt UUID
+
+#### `sift relationships queues list`
+List relationship team queues in the active workspace
+
+#### `sift relationships recommendations execute`
+Execute an accepted, current recommendation through the canonical action runtime
+
+**Arguments**
+
+- `id` *(required)* — Recommendation UUID
+
+**Flags**
+
+- `--yes` — Confirm canonical action execution
+
+#### `sift relationships recommendations list`
+List immutable relationship recommendation snapshots
+
+**Flags**
+
+- `--lens <value>` — Relationship lens identifier
+- `--limit <value>` *(default: 50)* — Maximum recommendations
+- `--subject <value>` — Filter by prospect:uuid or opportunity:uuid
+
+#### `sift relationships recommendations review`
+Append an ordinary review decision to a relationship recommendation
+
+**Arguments**
+
+- `id` *(required)* — Recommendation UUID
+
+**Flags**
+
+- `--decision <accepted|dismissed|snoozed|needs_information>` *(required)* — Review decision
+- `--reason <value>` — Review reason
+- `--snoozed-until <value>` — Offset-aware ISO date-time, required for snoozed
+- `--yes` — Confirm the append-only review
+
+#### `sift relationships recommendations show`
+Show a relationship recommendation with its exact citations and gates
+
+**Arguments**
+
+- `id` *(required)* — Recommendation UUID
+
+#### `sift relationships show`
+Show the current relationship collaboration snapshot
+
+**Arguments**
+
+- `entity` *(required)* — Relationship entity as opportunity:<uuid> or prospect:<uuid>
 
 
 ### Research
