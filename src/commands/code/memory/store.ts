@@ -14,6 +14,10 @@ export default class CodeMemoryStore extends BaseCommand {
     }),
     file: Flags.string({description: 'Related file path'}),
     repo: Flags.string({description: 'Repository ID'}),
+    'evidence-chunk': Flags.string({
+      description: 'Historical indexed chunk ID supporting the fact',
+      multiple: true,
+    }),
   };
 
   async run(): Promise<unknown> {
@@ -24,13 +28,14 @@ export default class CodeMemoryStore extends BaseCommand {
       category: flags.category as 'architecture' | 'integration' | 'convention' | 'entrypoint' | 'gotcha' | 'ownership',
       filePath: flags.file,
       repositoryId: flags.repo,
+      evidenceChunkIds: flags['evidence-chunk'],
     });
     this.handleApiError(response);
 
-    const memory = response.data as Record<string, unknown>;
+    const memory = response.data;
 
     if (!this.jsonEnabled()) {
-      this.log(`Fact stored: ${memory.id}`);
+      this.log(`Fact stored: ${memory?.id}`);
     }
 
     return response.data;

@@ -22,7 +22,8 @@ describe('Vault materialization CLI surface', () => {
       entry: 'entry-1',
       field: 'value',
       destination: '/workspace/runtime/credential',
-      workspace: '/workspace',
+      workspace: '00000000-0000-4000-8000-000000000001',
+      'workspace-root': '/workspace',
       mode: '0600',
       purpose: 'Write migration credential',
       nonce: 'n'.repeat(32),
@@ -37,11 +38,15 @@ describe('Vault materialization CLI surface', () => {
     (request as any).log = vi.fn();
     const requested = await request.run();
     expect(requestApi).toHaveBeenCalledWith(
-      expect.anything(),
+      expect.objectContaining({
+        workspace: '00000000-0000-4000-8000-000000000001',
+        'workspace-root': '/workspace',
+      }),
       '/api/v1/vault/materializations',
       expect.objectContaining({body: expect.objectContaining({
         surface: 'cli',
         destinationPath: '/workspace/runtime/credential',
+        workspaceRoot: '/workspace',
         plaintextDisclosureAcknowledged: true,
       })}),
     );

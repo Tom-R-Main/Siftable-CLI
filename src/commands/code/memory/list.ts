@@ -27,7 +27,16 @@ export default class CodeMemoryList extends BaseCommand {
         {key: 'id', header: 'ID'},
         {key: 'content', header: 'Fact'},
         {key: 'factType', header: 'Category'},
+        {key: 'repositoryName', header: 'Repository'},
         {key: 'filePath', header: 'File'},
+        {
+          key: 'evidence',
+          header: 'Evidence',
+          get: row => {
+            const evidence = row.evidence as Record<string, unknown> | undefined;
+            return typeof evidence?.availability === 'string' ? evidence.availability : 'not_recorded';
+          },
+        },
       ]);
     }
 

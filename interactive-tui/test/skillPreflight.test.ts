@@ -48,13 +48,17 @@ describe("skill preflight", () => {
     const root = tempRoot();
     writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { test: "jest", build: "tsc" } }), "utf8");
     mkdirSync(join(root, "src"), { recursive: true });
+    mkdirSync(join(root, "interactive-tui", "native"), { recursive: true });
+    writeFileSync(
+      join(root, "interactive-tui", "native", "skill_meta.zig"),
+      "pub fn parseMeta() void { // zig native tui ffi\\n}\\n",
+      "utf8",
+    );
     writeFileSync(join(root, ".env.example"), "OPENAI_API_KEY=\nSIFT_WORKSPACE_ID=\n", "utf8");
     writeFileSync(join(root, ".env"), "SHOULD_NOT_APPEAR=secret\n", "utf8");
 
     const apiClient = {
       listWorkItems: async () => ({ statusCode: 200, data: { workItems: [{ title: "Native parser", status: "queued", assignedAlias: "codex" }] } }),
-      listCodeRepositories: async () => ({ statusCode: 200, data: { repositories: [{ id: "repo-1", rootPath: root }] } }),
-      searchCode: async () => ({ statusCode: 200, data: { results: [{ filePath: "interactive-tui/native/skill_meta.zig", startLine: 12, symbolName: "parseMeta" }] } }),
       searchNotes: async () => ({ statusCode: 200, data: { results: [{ title: "Zig note", snippet: "native parser boundary" }] } }),
     };
 
@@ -70,6 +74,7 @@ describe("skill preflight", () => {
     expect(rendered.text).toContain("## sift_work");
     expect(rendered.text).toContain("Native parser");
     expect(rendered.text).toContain("skill_meta.zig");
+    expect(rendered.text).toContain("live checkout matches:");
     expect(rendered.text).toContain("OPENAI_API_KEY");
     expect(rendered.text).not.toContain("SHOULD_NOT_APPEAR");
   });
