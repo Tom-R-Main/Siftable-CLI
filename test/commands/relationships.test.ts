@@ -79,7 +79,7 @@ describe('relationship intelligence commands', () => {
 
   it('keeps the existing next-action CLI syntax compatible', async () => {
     mockFetch()
-      .on('GET', '/api/v1/ontology/relationship-actions')
+      .on('GET', '/api/v1/ontology/relationships/actions')
       .reply(200, {
         version: 2,
         actions: [{
@@ -100,10 +100,11 @@ describe('relationship intelligence commands', () => {
       'relationships', 'actions', 'run', 'relationship.next_action.set',
       '--entity', `opportunity:${entityId}`,
       '--input', JSON.stringify({title: 'Follow up', dueAt: '2026-08-03T17:00:00.000Z'}),
+      '--idempotency-key', 'next-action-compat-0001',
       '--yes', '--json', '--token', 'exf_pat_test',
     ]);
 
-    expect(JSON.parse(listed.stdout).actions[0].id).toBe('relationship.next_action.set');
+    expect(JSON.parse(listed.stdout)[0].id).toBe('relationship.next_action.set');
     expect(JSON.parse(run.stdout).status).toBe('applied');
   });
 });
@@ -154,7 +155,7 @@ describe('relationship collaboration commands', () => {
 
   it('discovers the live server registry without a copied CLI contract', async () => {
     mockFetch()
-      .on('GET', '/api/v1/ontology/relationship-actions')
+      .on('GET', '/api/v1/ontology/relationships/actions')
       .reply(200, {
         version: 2,
         actions: [{
@@ -173,10 +174,9 @@ describe('relationship collaboration commands', () => {
       'relationships', 'actions', 'list', '--token', 'sift_pat_test', '--json',
     ]);
 
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      version: 2,
-      actions: [{id: 'relationship.assignment.set'}],
-    });
+    expect(JSON.parse(result.stdout)).toMatchObject([
+      {id: 'relationship.assignment.set'},
+    ]);
   });
 
   it('forwards arbitrary action IDs, expected version, workspace, and the caller replay key', async () => {
