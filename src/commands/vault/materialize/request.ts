@@ -26,9 +26,8 @@ export default class VaultMaterializeRequest extends BaseCommand {
 
   async run(): Promise<unknown> {
     const {flags} = await this.parse(VaultMaterializeRequest);
-    // `--workspace` is the local filesystem root for this command, not the
-    // organization UUID used by BaseCommand. Never forward the path as
-    // X-Workspace-Id.
+    // `--workspace-root` is a local filesystem path, not the organization UUID
+    // accepted by BaseCommand. Never forward the path as X-Workspace-Id.
     const apiFlags = {
       token: flags.token,
       'api-url': flags['api-url'],
