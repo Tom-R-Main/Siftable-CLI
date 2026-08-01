@@ -1,15 +1,18 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../../lib/base-command.js';
+import {parseEntityRef} from '../../../lib/entity-ref.js';
 
 export default class RelationshipActionsDryRun extends BaseCommand {
   static description = 'Preview a relationship action on the server without committing it';
 
   static args = {
     id: Args.string({description: 'Relationship action ID', required: true}),
+    entity: Args.string({description: 'Relationship entity as opportunity:<uuid> or prospect:<uuid>'}),
   };
 
   static flags = {
     ...BaseCommand.baseFlags,
+    entity: Flags.string({description: 'Target as prospect:uuid or opportunity:uuid'}),
     input: Flags.string({description: 'Action input JSON object'}),
     'input-file': Flags.string({description: 'Path to action input JSON'}),
     'idempotency-key': Flags.string({
@@ -20,13 +23,21 @@ export default class RelationshipActionsDryRun extends BaseCommand {
 
   async run(): Promise<unknown> {
     const {args, flags} = await this.parse(RelationshipActionsDryRun);
+    const entityInput = args.entity ?? flags.entity;
+    const parsedEntity = entityInput ? parseEntityRef(entityInput) : undefined;
+    if (parsedEntity && !['prospect', 'opportunity'].includes(parsedEntity.entityType)) {
+      this.error('Entity must be prospect:uuid or opportunity:uuid.');
+    }
     const input = this.parseJsonInput<Record<string, unknown>>(
       flags.input,
       flags['input-file'],
       'input',
     ) ?? {};
     const client = await this.client(flags);
-    const response = await client.dryRunRelationshipAction(args.id, input, flags['idempotency-key']);
+    const response = await client.dryRunRelationshipAction(args.id, {
+      ...(parsedEntity ? {entity: {kind: parsedEntity.entityType, id: parsedEntity.entityId}} : {}),
+      input,
+    }, flags['idempotency-key']);
     this.handleApiError(response);
     const preview = this.unwrapOne(response, 'dryRun');
     if (!this.jsonEnabled()) this.log(JSON.stringify(preview, null, 2));

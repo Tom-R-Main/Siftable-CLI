@@ -22,7 +22,7 @@ describe('relationship CLI-first adapters', () => {
     });
     (instance as any).parse = jest.fn().mockResolvedValue({
       args: {id: 'relationship.communication.send'},
-      flags: {input: '{"personId":"person-1"}', 'idempotency-key': 'stable-action-001'},
+      flags: {input: '{"personId":"person-1"}', 'idempotency-key': 'stable-action-001', yes: true},
     });
     (instance as any).client = jest.fn().mockResolvedValue({runRelationshipAction});
     (instance as any).handleApiError = jest.fn();
@@ -33,7 +33,7 @@ describe('relationship CLI-first adapters', () => {
 
     expect(runRelationshipAction).toHaveBeenCalledWith(
       'relationship.communication.send',
-      {personId: 'person-1'},
+      {input: {personId: 'person-1'}},
       'stable-action-001',
     );
     expect((RelationshipActionsRun.flags['idempotency-key'] as {required?: boolean}).required).toBe(true);
@@ -59,7 +59,7 @@ describe('relationship CLI-first adapters', () => {
     expect(result).toMatchObject({wouldRequireApproval: true});
     expect(dryRunRelationshipAction).toHaveBeenCalledWith(
       'relationship.communication.send',
-      {},
+      {input: {}},
       'stable-preview-001',
     );
     expect(RelationshipActionsDryRun.flags).not.toHaveProperty('approval');
