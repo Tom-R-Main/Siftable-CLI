@@ -1,8 +1,14 @@
 import {existsSync} from 'node:fs';
-import {mkdtemp, mkdir, rm} from 'node:fs/promises';
+import {mkdtemp, mkdir, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {buildChildEnv, findBun, resolveTuiDir, resolveWorkspaceRoot} from '../../src/commands/interactive.js';
+import {
+  buildChildEnv,
+  findBun,
+  resolveTuiDir,
+  resolveTuiRuntime,
+  resolveWorkspaceRoot,
+} from '../../src/commands/interactive.js';
 
 describe('sift interactive — launcher env', () => {
   describe('buildChildEnv', () => {
@@ -111,6 +117,36 @@ describe('sift interactive — launcher env', () => {
 
     it('returns null when no interactive-tui dir exists above the start', () => {
       expect(resolveTuiDir('/tmp')).toBeNull();
+    });
+
+    it('prefers the packaged runtime over the author source entry', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'sift-interactive-package-'));
+      try {
+        const commandDir = join(root, 'dist', 'commands');
+        const tuiDir = join(root, 'interactive-tui');
+        await mkdir(commandDir, {recursive: true});
+        await mkdir(join(tuiDir, 'runtime'), {recursive: true});
+        await writeFile(join(tuiDir, 'index.tsx'), 'source');
+        await writeFile(join(tuiDir, 'runtime', 'index.js'), 'bundle');
+
+        expect(resolveTuiRuntime(commandDir)).toEqual({
+          cwd: join(tuiDir, 'runtime'),
+          entry: join(tuiDir, 'runtime', 'index.js'),
+        });
+        expect(resolveTuiRuntime(commandDir, 'source')).toEqual({
+          cwd: tuiDir,
+          entry: join(tuiDir, 'index.tsx'),
+        });
+
+        await rm(join(tuiDir, 'runtime'), {recursive: true});
+        expect(resolveTuiRuntime(commandDir)).toBeNull();
+        expect(resolveTuiRuntime(commandDir, 'source')).toEqual({
+          cwd: tuiDir,
+          entry: join(tuiDir, 'index.tsx'),
+        });
+      } finally {
+        await rm(root, {recursive: true, force: true});
+      }
     });
   });
 });

@@ -10,11 +10,13 @@
     "exf": "bin/run.js"
   },
   "scripts": {
+    "prebuild": "npm run build --workspace @siftable/mcp-server && npm run build --workspace @siftable/tabular-import",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "manifest": "oclif manifest",
-    "interactive:dev": "npm run build && npm run manifest && (cd interactive-tui && bun run native:build) && node ./bin/run.js interactive",
+    "interactive:dev": "npm run build && npm run manifest && (cd interactive-tui && bun run native:build) && SIFT_INTERACTIVE_RUNTIME=source node ./bin/run.js interactive",
     "interactive:help": "npm run build && npm run manifest && node ./bin/run.js interactive --help",
+    "package:interactive": "npm run build --workspace @siftable/cli && bun install --cwd interactive-tui --frozen-lockfile && bun run interactive-tui/scripts/build-packaged-runtime.mjs",
     "interactive:image-fixtures": "node scripts/create-interactive-image-fixtures.mjs",
     "bench:tui-actions": "tsx scripts/bench-tui-actions.ts",
     "explorer:eval": "tsx scripts/eval-repo-explorer.ts",
@@ -22,9 +24,9 @@
     "test:vitest": "vitest run --config vitest.config.ts",
     "native:release": "cd interactive-tui && bash scripts/build-native-release.sh",
     "verify:test-typecheck-boundaries": "node scripts/verify-test-typecheck-boundaries.mjs",
-    "verify:package": "node scripts/verify-package-imports.mjs",
+    "verify:package": "npm run package:interactive && node scripts/verify-package-imports.mjs",
     "prepublishOnly": "npm run build",
-    "prepack": "npm run build && npx oclif manifest && npm run native:release && npm run verify:package"
+    "prepack": "npm run build && npx oclif manifest && npm run verify:package"
   },
   "oclif": {
     "bin": "sift",
@@ -147,14 +149,10 @@
     "@morphllm/morphsdk": "^0.2.177",
     "@oclif/core": "^4",
     "@oclif/plugin-help": "^6",
-    "@opentui/core": "^0.3.1",
-    "@opentui/keymap": "^0.3.1",
-    "@opentui/solid": "^0.3.1",
     "@siftable/tabular-import": "*",
     "@siftable/mcp-server": "^1.2.17",
     "pg": "^8.20.0",
-    "sharp": "^0.34.4",
-    "solid-js": "^1.9.10"
+    "sharp": "^0.34.4"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",
@@ -192,22 +190,7 @@
     "bin",
     "LICENSE",
     "oclif.manifest.json",
-    "interactive-tui/*.ts",
-    "interactive-tui/*.tsx",
-    "interactive-tui/*.toml",
-    "interactive-tui/build.zig",
-    "interactive-tui/native/*.ts",
-    "interactive-tui/native/*.zig",
-    "interactive-tui/native/lib*.dylib",
-    "interactive-tui/native/lib*.so",
-    "interactive-tui/native/lib*.dll",
-    "interactive-tui/native/cell-render",
-    "interactive-tui/scripts/build-native.sh",
-    "interactive-tui/scripts/build-native-release.sh",
-    "interactive-tui/planning/**/*",
-    "interactive-tui/assets/**/*",
-    "interactive-tui/skills/**/*",
-    "interactive-tui/openfunction/**/*"
+    "interactive-tui/runtime/**/*"
   ],
   "publishConfig": {
     "access": "public"

@@ -200,15 +200,37 @@ export function findBun(): string | null {
   return existsSync(fallback) ? fallback : null;
 }
 
+export type InteractiveTuiRuntime = {
+  cwd: string;
+  entry: string;
+};
+
+export type InteractiveTuiRuntimePreference = 'packaged' | 'source';
+
 /** Walk up from the compiled command to the package root, then to the TUI entry. */
-export function resolveTuiDir(startDir: string): string | null {
+export function resolveTuiRuntime(
+  startDir: string,
+  preference: InteractiveTuiRuntimePreference = 'packaged',
+): InteractiveTuiRuntime | null {
   let dir = startDir;
   for (let i = 0; i < 8; i++) {
-    const candidate = join(dir, 'interactive-tui', 'index.tsx');
-    if (existsSync(candidate)) return join(dir, 'interactive-tui');
+    const tuiDir = join(dir, 'interactive-tui');
+    const packagedEntry = join(tuiDir, 'runtime', 'index.js');
+    if (preference === 'packaged' && existsSync(packagedEntry)) {
+      return {cwd: join(tuiDir, 'runtime'), entry: packagedEntry};
+    }
+    const sourceEntry = join(tuiDir, 'index.tsx');
+    if (preference === 'source' && existsSync(sourceEntry)) {
+      return {cwd: tuiDir, entry: sourceEntry};
+    }
     dir = join(dir, '..');
   }
   return null;
+}
+
+/** Backward-compatible helper retained for tests and callers that only need the directory. */
+export function resolveTuiDir(startDir: string): string | null {
+  return resolveTuiRuntime(startDir, 'source')?.cwd ?? null;
 }
 
 export default class Interactive extends BaseCommand {
@@ -302,9 +324,10 @@ export default class Interactive extends BaseCommand {
       );
     }
 
-    const tuiDir = resolveTuiDir(__dirname);
-    if (!tuiDir) {
-      this.error('Could not locate the interactive TUI (interactive-tui/index.tsx).');
+    const runtimePreference = process.env.SIFT_INTERACTIVE_RUNTIME === 'source' ? 'source' : 'packaged';
+    const tuiRuntime = resolveTuiRuntime(__dirname, runtimePreference);
+    if (!tuiRuntime) {
+      this.error('Could not locate the packaged interactive TUI runtime.');
     }
 
     const env = buildChildEnv({
@@ -312,15 +335,15 @@ export default class Interactive extends BaseCommand {
       apiUrl: flags['api-url'] || envValue('SIFT_API_URL', 'EXF_API_URL') || DEFAULT_API_URL,
       workspaceId: flags.workspace || envValue('SIFT_WORKSPACE_ID', 'EXF_WORKSPACE_ID'),
       userCwd: process.cwd(),
-      tuiDir,
+      tuiDir: tuiRuntime.cwd,
       baseEnv: process.env,
     });
 
-    // Run bun FROM the TUI dir so it finds bunfig.toml (the @opentui/solid
-    // preload) and node_modules. The user's working directory is preserved in
-    // SIFT_USER_CWD for tools/shell that should act where the user invoked us.
-    const result = spawnSync(bun, ['index.tsx'], {
-      cwd: tuiDir,
+    // Run Bun from the selected runtime directory. Published packages select
+    // the bundled runtime, whose bunfig disables auto-install; author checkouts
+    // retain the source entry and its Solid transform preload.
+    const result = spawnSync(bun, [tuiRuntime.entry], {
+      cwd: tuiRuntime.cwd,
       env,
       stdio: 'inherit',
     });

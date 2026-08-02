@@ -4,6 +4,7 @@
   "type": "module",
   "description": "Bun/opentui TUI spawned by `sift interactive` (runs the OpenFunction brain in-process)",
   "scripts": {
+    "pretest": "bun run native:build",
     "test": "bun test",
     "native:build": "./scripts/build-native.sh",
     "native:test": "zig build test",
@@ -15,6 +16,6 @@
     "@opentui/core": "^0.3.1",
     "@opentui/solid": "^0.3.1",
     "@opentui/keymap": "^0.3.1",
-    "solid-js": "^1.9.10"
+    "solid-js": "1.9.12"
   }
 }
