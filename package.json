@@ -11,8 +11,8 @@
   },
   "scripts": {
     "prebuild": "npm run build --workspace @siftable/mcp-server && npm run build --workspace @siftable/tabular-import",
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "build": "tsc6",
+    "typecheck": "tsc6 --noEmit",
     "manifest": "oclif manifest",
     "interactive:dev": "npm run build && npm run manifest && (cd interactive-tui && bun run native:build) && SIFT_INTERACTIVE_RUNTIME=source node ./bin/run.js interactive",
     "interactive:help": "npm run build && npm run manifest && node ./bin/run.js interactive --help",
@@ -161,7 +161,7 @@
     "jest": "^29.7.0",
     "nock": "^13.5.0",
     "oclif": "^4",
-    "typescript": "6.0.3"
+    "typescript": "npm:@typescript/typescript6@6.0.2"
   },
   "engines": {
     "node": ">=18.0.0"
