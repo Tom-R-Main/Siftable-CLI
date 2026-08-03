@@ -1,4 +1,6 @@
-import {existsSync} from 'node:fs';
+import {existsSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import RelationshipActionsRun from '../../src/commands/relationships/actions/run.js';
 import RelationshipActionsDryRun from '../../src/commands/relationships/actions/dry-run.js';
 import RelationshipSequencesCreate from '../../src/commands/relationships/sequences/create.js';
@@ -8,9 +10,26 @@ import RelationshipSequencesPause from '../../src/commands/relationships/sequenc
 import RelationshipSequencesResume from '../../src/commands/relationships/sequences/resume.js';
 import RelationshipSequencesDryRun from '../../src/commands/relationships/sequences/dry-run.js';
 import RelationshipProposalsRequestApproval from '../../src/commands/relationships/proposals/request-approval.js';
+import RelationshipPlaybooksCreate from '../../src/commands/relationships/playbooks/create.js';
+import RelationshipPlaybooksReview from '../../src/commands/relationships/playbooks/review.js';
+import RelationshipDiagnosesCreate from '../../src/commands/relationships/diagnoses/create.js';
+import RelationshipPlaybookRecommendationsCreate from '../../src/commands/relationships/playbook-recommendations/create.js';
+import RelationshipGeneratedAssetsGenerate from '../../src/commands/relationships/generated-assets/generate.js';
+import RelationshipGeneratedAssetsReview from '../../src/commands/relationships/generated-assets/review.js';
+import RelationshipGeneratedAssetsDraft from '../../src/commands/relationships/generated-assets/draft.js';
 
 function command<T>(constructor: new (...args: never[]) => T): T {
   return Object.create(constructor.prototype) as T;
+}
+
+const tempDir = mkdtempSync(join(tmpdir(), 'sift-relationship-playbooks-'));
+
+afterAll(() => rmSync(tempDir, {recursive: true, force: true}));
+
+function jsonFile(name: string, value: unknown): string {
+  const path = join(tempDir, name);
+  writeFileSync(path, JSON.stringify(value));
+  return path;
 }
 
 describe('relationship CLI-first adapters', () => {
@@ -107,5 +126,80 @@ describe('relationship CLI-first adapters', () => {
     );
     expect(existsSync('src/commands/relationships/proposals/approve.ts')).toBe(false);
     expect(existsSync('src/commands/relationships/proposals/consume.ts')).toBe(false);
+  });
+
+  test('playbook creation and approval are separate CLI decisions', async () => {
+    const create = command(RelationshipPlaybooksCreate);
+    const review = command(RelationshipPlaybooksReview);
+    const apiRequest = jest.fn()
+      .mockResolvedValueOnce({playbook: {snapshot: {playbookVersionId: 'playbook-1'}, latestReview: null}})
+      .mockResolvedValueOnce({review: {reviewId: 'review-1', decision: 'approved'}});
+    (create as any).parse = jest.fn().mockResolvedValue({flags: {file: jsonFile('playbook.json', {stableKey: 'gap'}), yes: true}});
+    (create as any).apiRequest = apiRequest;
+    (create as any).confirmAction = jest.fn().mockResolvedValue(true);
+    (create as any).jsonEnabled = () => true;
+    (review as any).parse = jest.fn().mockResolvedValue({args: {id: 'playbook-1'}, flags: {decision: 'approved', reason: 'Reviewed', yes: true}});
+    (review as any).apiRequest = apiRequest;
+    (review as any).confirmAction = jest.fn().mockResolvedValue(true);
+    (review as any).jsonEnabled = () => true;
+
+    await create.run();
+    await review.run();
+
+    expect(apiRequest.mock.calls[0][1]).toBe('/api/v1/relationship-playbooks/playbooks');
+    expect(apiRequest.mock.calls[1][1]).toBe('/api/v1/relationship-playbooks/playbooks/playbook-1/reviews');
+  });
+
+  test('diagnosis, recommendation, and generation preserve the headless JSON contract', async () => {
+    const diagnosis = command(RelationshipDiagnosesCreate);
+    const recommend = command(RelationshipPlaybookRecommendationsCreate);
+    const generate = command(RelationshipGeneratedAssetsGenerate);
+    const apiRequest = jest.fn()
+      .mockResolvedValueOnce({diagnosis: {diagnosisId: 'diagnosis-1'}})
+      .mockResolvedValueOnce({recommendation: {recommendationId: 'recommendation-1', selectedMoveId: 'diagnose'}})
+      .mockResolvedValueOnce({generatedAsset: {snapshot: {generatedAssetId: 'asset-1'}, latestReview: null}});
+    for (const [instance, file, value] of [
+      [diagnosis, 'diagnosis.json', {currentState: []}],
+      [recommend, 'recommendation.json', {moves: [{}, {}, {}]}],
+      [generate, 'generation.json', {playbookVersionId: 'playbook-1'}],
+    ] as const) {
+      (instance as any).parse = jest.fn().mockResolvedValue({flags: {file: jsonFile(file, value), yes: true}});
+      (instance as any).apiRequest = apiRequest;
+      (instance as any).confirmAction = jest.fn().mockResolvedValue(true);
+      (instance as any).jsonEnabled = () => true;
+    }
+
+    await diagnosis.run();
+    await recommend.run();
+    await generate.run();
+
+    expect(apiRequest.mock.calls.map((call) => call[1])).toEqual([
+      '/api/v1/relationship-playbooks/diagnoses',
+      '/api/v1/relationship-playbooks/recommendations',
+      '/api/v1/relationship-playbooks/generated-assets',
+    ]);
+  });
+
+  test('generated artifact approval remains separate from external draft and send', async () => {
+    const review = command(RelationshipGeneratedAssetsReview);
+    const draft = command(RelationshipGeneratedAssetsDraft);
+    const apiRequest = jest.fn()
+      .mockResolvedValueOnce({review: {reviewId: 'review-1', decision: 'approved'}})
+      .mockResolvedValueOnce({asset: {snapshot: {generatedAssetId: 'asset-1'}}, action: {proposal: {id: 'proposal-1'}}});
+    (review as any).parse = jest.fn().mockResolvedValue({args: {id: 'asset-1'}, flags: {decision: 'approved', reason: 'Content reviewed', yes: true}});
+    (review as any).apiRequest = apiRequest;
+    (review as any).confirmAction = jest.fn().mockResolvedValue(true);
+    (review as any).jsonEnabled = () => true;
+    (draft as any).parse = jest.fn().mockResolvedValue({args: {id: 'asset-1'}, flags: {file: jsonFile('draft.json', {destination: {channel: 'email', to: ['buyer@example.com']}, idempotencyKey: 'draft-1'}), yes: true}});
+    (draft as any).apiRequest = apiRequest;
+    (draft as any).confirmAction = jest.fn().mockResolvedValue(true);
+    (draft as any).jsonEnabled = () => true;
+
+    await review.run();
+    const result = await draft.run() as {action: {proposal: {id: string}}};
+
+    expect(apiRequest.mock.calls[1][1]).toBe('/api/v1/relationship-playbooks/generated-assets/asset-1/draft');
+    expect(result.action.proposal.id).toBe('proposal-1');
+    expect(existsSync('src/commands/relationships/generated-assets/send.ts')).toBe(false);
   });
 });
