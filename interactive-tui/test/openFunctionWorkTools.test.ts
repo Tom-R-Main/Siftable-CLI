@@ -111,7 +111,7 @@ describe("OpenFunction work-item tools", () => {
         workItem: {
           id: "work-1",
           claimToken: "secret",
-          dependencies: [{predecessorId: "work-0", requiredGate: "verified", satisfied: false}],
+          dependencies: [{predecessorId: "work-0", requiredGate: "commands_passed", satisfied: false}],
           claimability: {state: "waiting", blockedBy: []},
         },
       },
@@ -121,6 +121,6 @@ describe("OpenFunction work-item tools", () => {
     expect(result.success).toBe(true);
     expect((result.data as any).workItem.claimToken).toBeUndefined();
     expect((result.data as any).workItem.claimability.state).toBe("waiting");
-    expect((result.data as any).workItem.dependencies[0].requiredGate).toBe("verified");
+    expect((result.data as any).workItem.dependencies[0].requiredGate).toBe("commands_passed");
   });
 });

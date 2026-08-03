@@ -21,8 +21,8 @@ Work-item tools
 
 The embedded Siftable provider exposes the authoritative queue contract. Create
 and dependency-replacement tools accept `dependsOn` entries containing a
-work-item UUID and optional `requiredGate` (`done`, `commands_passed`, or
-`verified`). List/get responses return server-derived `dependencies` and
+work-item UUID and optional `requiredGate` (`done` or `commands_passed`).
+List/get responses return server-derived `dependencies` and
 `claimability`; repo-local planning overlays never change claimability.
 
 Claim returns an opaque `claimToken`. Lease-owned lifecycle actions must pass

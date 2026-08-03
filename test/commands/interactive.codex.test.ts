@@ -160,7 +160,7 @@ describe('LocalControlClient — Codex engine', () => {
 
   it('keeps Siftable-token auth for non-Codex engines', async () => {
     const client = new LocalControlClient({
-      getModel: () => ({provider: 'openrouter', model: 'google/gemini-3.5-flash'}),
+      getModel: () => ({provider: 'openrouter', model: 'google/gemini-3.6-flash'}),
       getToken: () => 'sift_pat_x',
       getCodexAccount: async () => null,
     });
@@ -182,7 +182,7 @@ describe('LocalControlClient — Codex engine', () => {
   it('codexSetActive switches the brain provider on and off', async () => {
     const setModel = jest.fn((input: {provider?: string; model?: string}) => ({
       provider: input.provider ?? 'openrouter',
-      model: input.model ?? 'google/gemini-3.5-flash',
+      model: input.model ?? 'google/gemini-3.6-flash',
     }));
     const client = new LocalControlClient({setModel});
 
@@ -309,11 +309,23 @@ describe('model catalog + reasoning effort', () => {
 
   it('resolves both Opus doors by alias', () => {
     // Door A — via OpenRouter.
-    expect(findModelChoice('opus')?.provider).toBe('openrouter');
+    expect(findModelChoice('opus')).toMatchObject({
+      provider: 'openrouter',
+      model: 'anthropic/claude-opus-5',
+    });
+    // Persisted Sonnet selections are promoted rather than resurrecting an
+    // obsolete catalog option.
+    expect(findModelChoice('sonnet')).toMatchObject({
+      provider: 'openrouter',
+      model: 'anthropic/claude-opus-5',
+    });
     // Door B — direct Anthropic API (/claude-api).
     const direct = findModelChoice('claude-api');
-    expect(direct?.provider).toBe('anthropic');
-    expect(direct?.auth).toBe('anthropic');
+    expect(direct).toMatchObject({
+      provider: 'anthropic',
+      model: 'claude-opus-5',
+      auth: 'anthropic',
+    });
   });
 
   it('catalogues GPT-5.6 Sol, Terra, and Luna through Codex with max reasoning', async () => {
@@ -452,7 +464,7 @@ describe('model catalog + reasoning effort', () => {
   it('gates the direct-Anthropic door behind an API key instead of failing a turn', async () => {
     const prev = process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
-    const config = jest.fn(async () => ({provider: 'anthropic', model: 'claude-opus-4-8'}));
+    const config = jest.fn(async () => ({provider: 'anthropic', model: 'claude-opus-5'}));
     const {ctx, messages} = buildCtx({config});
     await applyModelChoice(ctx, findModelChoice('claude-api')!, 'high');
     expect(config).not.toHaveBeenCalled();

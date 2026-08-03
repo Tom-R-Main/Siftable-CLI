@@ -50,7 +50,7 @@ describe('model connection interactive CLI transport', () => {
     connectionId: 'connection-1',
     connectionName: 'Primary',
     provider: 'openrouter',
-    model: 'anthropic/claude-sonnet-4.6',
+    model: 'anthropic/claude-opus-5',
     status: 'available' as const,
   };
 
@@ -155,7 +155,7 @@ describe('model connection interactive CLI transport', () => {
       argv: ['--token', 'sift_pat_test'],
       method: 'listAiModels',
       response: {statusCode: 200, data: {models: [model]}},
-      expected: 'claude-sonnet-4.6',
+      expected: 'claude-opus-5',
     },
     {
       CommandClass: AiStatus,

@@ -2490,7 +2490,7 @@
                   <dd><code>--agent &lt;value&gt;</code> — Assigned agent alias</dd>
                   <dd><code>--allowed-actions &lt;value&gt;</code> — Allowed actions JSON object</dd>
                   <dd><code>--context &lt;value&gt;</code> — Input context JSON object</dd>
-                  <dd><code>--depends-on &lt;value&gt;</code> — Dependency JSON array: [{"workItemId":"&lt;uuid&gt;","requiredGate"?:"done"|"commands_passed"|"verified"}]</dd>
+                  <dd><code>--depends-on &lt;value&gt;</code> — Dependency JSON array: [{"workItemId":"&lt;uuid&gt;","requiredGate"?:"done"|"commands_passed"}]</dd>
                   <dd><code>--project &lt;value&gt;</code> — Linked project ID</dd>
                   <dd><code>--prompt &lt;value&gt;</code> — Agent prompt or instructions</dd>
                   <dd><code>--rank &lt;value&gt;</code> <span class="flag-meta">default: 0</span> — Queue rank</dd>
@@ -2531,7 +2531,7 @@
                 <p class="cli-cmd__desc" data-i18n="docs.cli.work.dependency-policy-set.desc">Set a project default work-dependency gate</p>
                 <dl class="cli-cmd__params">
                   <dt>Flags</dt>
-                  <dd><code>--gate &lt;done|commands_passed|verified&gt;</code> <span class="flag-meta">required</span> — Default gate for dependencies that omit requiredGate</dd>
+                  <dd><code>--gate &lt;done|commands_passed&gt;</code> <span class="flag-meta">required</span> — Default gate for dependencies that omit requiredGate</dd>
                   <dd><code>--project &lt;value&gt;</code> <span class="flag-meta">required</span> — Project UUID</dd>
                 </dl>
               </div>
@@ -2738,14 +2738,14 @@
               </div>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work verify</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.work.verify.desc">Run the LLM verifier against a work item's acceptance criteria and record a verifier run. Promotion to verified requires passing verification-command evidence plus a verified verdict.</p>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.verify.desc">Deprecated compatibility command. Hosted LLM verification is retired; use verification-command evidence.</p>
                 <dl class="cli-cmd__params">
                   <dt>Arguments</dt>
                   <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
                   <dt>Flags</dt>
-                  <dd><code>--history</code> — List prior verifier runs instead of running a new one</dd>
-                  <dd><code>--model &lt;value&gt;</code> — Verifier model override</dd>
-                  <dd><code>--reps &lt;value&gt;</code> — Repeated evaluations per criterion (1-8, default 3)</dd>
+                  <dd><code>--history</code> — List historical verifier runs recorded before retirement</dd>
+                  <dd><code>--model &lt;value&gt;</code> — Deprecated; ignored because hosted verification is retired</dd>
+                  <dd><code>--reps &lt;value&gt;</code> — Deprecated; ignored because hosted verification is retired</dd>
                 </dl>
               </div>
             </details>

@@ -177,7 +177,7 @@ function agentSessionKey(): string {
 /** Provider id that routes the brain to the Codex app-server engine. */
 const CODEX_PROVIDER = 'codex';
 /** OpenFunction's default model — used to decide when to pass a model override to Codex. */
-const DEFAULT_OPENFUNCTION_MODEL = 'google/gemini-3.5-flash';
+const DEFAULT_OPENFUNCTION_MODEL = 'google/gemini-3.6-flash';
 
 let currentProvider = process.env.EXECUTERM_MODEL_PROVIDER || 'openrouter';
 let currentModel = process.env.EXECUTERM_MODEL || DEFAULT_OPENFUNCTION_MODEL;

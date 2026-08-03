@@ -463,7 +463,7 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
       assignedAlias?: string;
       projectId?: string;
       taskId?: string;
-      dependsOn?: Array<{workItemId: string; requiredGate?: "done" | "commands_passed" | "verified"}>;
+      dependsOn?: Array<{workItemId: string; requiredGate?: "done" | "commands_passed"}>;
     }>({
       name: "exf_work_item_create",
       description:
@@ -486,7 +486,7 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
                 workItemId: {type: "string", description: "Prerequisite work-item UUID"},
                 requiredGate: {
                   type: "string",
-                  enum: ["done", "commands_passed", "verified"],
+                  enum: ["done", "commands_passed"],
                   description: "Optional gate override",
                 },
               },
@@ -670,7 +670,7 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
 
     defineTool<{
       workItemId: string;
-      dependsOn: Array<{workItemId: string; requiredGate?: "done" | "commands_passed" | "verified"}>;
+      dependsOn: Array<{workItemId: string; requiredGate?: "done" | "commands_passed"}>;
     }>({
       name: "exf_work_item_dependencies_replace",
       description: "Atomically replace authoritative work-item dependencies. Pass an empty array to clear them.",
@@ -684,7 +684,7 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
               type: "object",
               properties: {
                 workItemId: {type: "string", description: "Prerequisite work-item UUID"},
-                requiredGate: {type: "string", enum: ["done", "commands_passed", "verified"]},
+                requiredGate: {type: "string", enum: ["done", "commands_passed"]},
               },
               required: ["workItemId"],
             },
@@ -700,7 +700,7 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
       },
     }),
 
-    defineTool<{projectId: string; defaultRequiredGate?: "done" | "commands_passed" | "verified"}>({
+    defineTool<{projectId: string; defaultRequiredGate?: "done" | "commands_passed"}>({
       name: "exf_work_dependency_policy",
       description: "Get or update the project's default gate for work dependencies that omit requiredGate.",
       inputSchema: {
@@ -709,7 +709,7 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
           projectId: {type: "string", description: "Project UUID"},
           defaultRequiredGate: {
             type: "string",
-            enum: ["done", "commands_passed", "verified"],
+            enum: ["done", "commands_passed"],
             description: "When omitted, read the current policy; when present, update it",
           },
         },

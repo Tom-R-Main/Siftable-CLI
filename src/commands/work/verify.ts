@@ -3,8 +3,7 @@ import {BaseCommand} from '../../lib/base-command.js';
 
 export default class WorkVerify extends BaseCommand {
   static description =
-    'Run the LLM verifier against a work item\'s acceptance criteria and record a verifier run. '
-    + 'Promotion to verified requires passing verification-command evidence plus a verified verdict.';
+    'Deprecated compatibility command. Hosted LLM verification is retired; use verification-command evidence.';
 
   static args = {
     id: Args.string({description: 'Work item ID', required: true}),
@@ -12,9 +11,9 @@ export default class WorkVerify extends BaseCommand {
 
   static flags = {
     ...BaseCommand.baseFlags,
-    reps: Flags.integer({description: 'Repeated evaluations per criterion (1-8, default 3)'}),
-    model: Flags.string({description: 'Verifier model override'}),
-    history: Flags.boolean({description: 'List prior verifier runs instead of running a new one'}),
+    reps: Flags.integer({description: 'Deprecated; ignored because hosted verification is retired'}),
+    model: Flags.string({description: 'Deprecated; ignored because hosted verification is retired'}),
+    history: Flags.boolean({description: 'List historical verifier runs recorded before retirement'}),
   };
 
   private formatRun(run: Record<string, any>): void {
@@ -30,9 +29,9 @@ export default class WorkVerify extends BaseCommand {
 
   async run(): Promise<unknown> {
     const {args, flags} = await this.parse(WorkVerify);
-    const client = await this.client(flags);
 
     if (flags.history) {
+      const client = await this.client(flags);
       const response = await client.listWorkItemVerifierRuns(args.id);
       this.handleApiError(response);
       const runs = (response.data as {runs: Array<Record<string, any>>}).runs ?? [];
@@ -46,13 +45,19 @@ export default class WorkVerify extends BaseCommand {
       return runs;
     }
 
-    const response = await client.verifyWorkItem(args.id, {
-      repetitions: flags.reps,
-      model: flags.model,
-    });
-    this.handleApiError(response);
-    const run = this.unwrapOne(response, 'run') as Record<string, any>;
-    if (!this.jsonEnabled()) this.formatRun(run);
-    return run;
+    const notice = {
+      status: 'retired',
+      workItemId: args.id,
+      message: 'Hosted LLM work verification has been retired and no model was invoked.',
+      authoritativeGate: 'commands_passed',
+      next: 'Submit immutable verification-command evidence with `sift work verification evidence`.',
+      historyCommand: `sift work verify ${args.id} --history`,
+    };
+    if (!this.jsonEnabled()) {
+      this.warn(notice.message);
+      this.log(notice.next);
+      this.log(`Historical runs: ${notice.historyCommand}`);
+    }
+    return notice;
   }
 }

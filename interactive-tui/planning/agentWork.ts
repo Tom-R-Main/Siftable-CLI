@@ -40,7 +40,7 @@ export interface RawWorkItem {
   claimability?: WorkItemClaimability | null;
 }
 
-export type WorkDependencyGate = "done" | "commands_passed" | "verified";
+export type WorkDependencyGate = "done" | "commands_passed";
 
 export interface WorkItemDependency {
   predecessorId: string;

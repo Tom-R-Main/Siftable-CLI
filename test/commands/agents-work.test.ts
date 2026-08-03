@@ -77,7 +77,7 @@ describe('work commands', () => {
           && Array.isArray(input.verificationCommands)
           && input.verificationCommands[0] === 'npm run build'
           && input.dependsOn?.[0]?.workItemId === predecessorId
-          && input.dependsOn?.[0]?.requiredGate === 'verified';
+          && input.dependsOn?.[0]?.requiredGate === 'commands_passed';
       })
       .reply(201, {
         workItem: {
@@ -102,7 +102,7 @@ describe('work commands', () => {
       '--verify',
       'npm run build;npm test',
       '--depends-on',
-      `[{"workItemId":"${predecessorId}","requiredGate":"verified"}]`,
+      `[{"workItemId":"${predecessorId}","requiredGate":"commands_passed"}]`,
       '--token',
       'sift_pat_test',
       '--json',
@@ -272,7 +272,7 @@ describe('work commands', () => {
           id: '22222222-2222-4222-8222-222222222222',
           dependencies: [{
             predecessorId: '11111111-1111-4111-8111-111111111111',
-            requiredGate: 'verified',
+            requiredGate: 'commands_passed',
             satisfied: false,
           }],
           claimability: {state: 'waiting', blockedBy: []},
@@ -285,7 +285,7 @@ describe('work commands', () => {
     ]);
     const json = JSON.parse(result.stdout);
     expect(json.workItemId).toBe('22222222-2222-4222-8222-222222222222');
-    expect(json.dependencies[0].requiredGate).toBe('verified');
+    expect(json.dependencies[0].requiredGate).toBe('commands_passed');
     expect(json.claimability.state).toBe('waiting');
   });
 
@@ -311,8 +311,8 @@ describe('work commands', () => {
       .on('GET', `/api/v1/projects/${projectId}/work-dependency-policy`)
       .reply(200, {defaultRequiredGate: 'commands_passed'})
       .on('PUT', `/api/v1/projects/${projectId}/work-dependency-policy`)
-      .body((body) => (body as any).defaultRequiredGate === 'verified')
-      .reply(200, {defaultRequiredGate: 'verified'})
+      .body((body) => (body as any).defaultRequiredGate === 'done')
+      .reply(200, {defaultRequiredGate: 'done'})
       .install();
     const read = await runCommand([
       'work', 'dependency-policy', 'get', '--project', projectId,
@@ -320,10 +320,24 @@ describe('work commands', () => {
     ]);
     expect(JSON.parse(read.stdout).defaultRequiredGate).toBe('commands_passed');
     const update = await runCommand([
-      'work', 'dependency-policy', 'set', '--project', projectId, '--gate', 'verified',
+      'work', 'dependency-policy', 'set', '--project', projectId, '--gate', 'done',
       '--token', 'sift_pat_test', '--json',
     ]);
-    expect(JSON.parse(update.stdout).defaultRequiredGate).toBe('verified');
+    expect(JSON.parse(update.stdout).defaultRequiredGate).toBe('done');
+  });
+
+  it('rejects the retired verified project dependency policy before calling the API', async () => {
+    mockFetch().install();
+    const result = await runCommand([
+      'work', 'dependency-policy', 'set',
+      '--project', '33333333-3333-4333-8333-333333333333',
+      '--gate', 'verified',
+      '--token', 'sift_pat_test',
+      '--json',
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('claims work with an owner lease', async () => {
@@ -590,24 +604,8 @@ describe('work commands', () => {
     expect(json.workItem.verificationState).toBe('commands_passed');
   });
 
-  it('runs verification with an explicit hosted model override', async () => {
-    mockFetch()
-      .on('POST', '/api/v1/work-items/work-001/verify')
-      .body((body) => (body as any).repetitions === 2 && (body as any).model === 'provider/verifier-model')
-      .reply(200, {
-        run: {
-          id: 'run-001',
-          verdict: 'verified',
-          aggregateScore: 0.91,
-          verifierModel: 'provider/verifier-model',
-          repetitions: 2,
-          rationale: 'All criteria passed.',
-          criterionScores: [
-            {criterionText: 'Tests pass', score: 0.94, uncertainty: 0.01, passed: true},
-          ],
-        },
-      })
-      .install();
+  it('returns a deterministic retirement notice without invoking the API or a model', async () => {
+    mockFetch().install();
 
     const result = await runCommand([
       'work',
@@ -622,36 +620,13 @@ describe('work commands', () => {
       '--json',
     ]);
     const json = JSON.parse(result.stdout);
-    expect(json.verdict).toBe('verified');
-    expect(json.criterionScores[0].criterionText).toBe('Tests pass');
-  });
-
-  it('defers model selection to server policy when no override is provided', async () => {
-    mockFetch()
-      .on('POST', '/api/v1/work-items/work-001/verify')
-      .body((body) => !Object.prototype.hasOwnProperty.call(body, 'model'))
-      .reply(200, {
-        run: {
-          id: 'run-002',
-          verdict: 'needs_review',
-          aggregateScore: 0.65,
-          verifierModel: 'server-policy-model',
-          repetitions: 3,
-          criterionScores: [],
-        },
-      })
-      .install();
-
-    const result = await runCommand([
-      'work',
-      'verify',
-      'work-001',
-      '--token',
-      'sift_pat_test',
-      '--json',
-    ]);
-    const json = JSON.parse(result.stdout);
-    expect(json.verifierModel).toBe('server-policy-model');
+    expect(json).toMatchObject({
+      status: 'retired',
+      workItemId: 'work-001',
+      authoritativeGate: 'commands_passed',
+    });
+    expect(json.message).toContain('no model was invoked');
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('lists verifier run history for a work item', async () => {

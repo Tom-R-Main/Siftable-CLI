@@ -31,6 +31,11 @@ describe('interactive command registry', () => {
     resetBypass();
   });
 
+  it('routes DeepSeek aliases to V4 Flash 0731 only', () => {
+    expect(findModelChoice('deepseek')?.model).toBe('deepseek/deepseek-v4-flash-0731');
+    expect(findModelChoice('deepseek-v4-pro')?.model).toBe('deepseek/deepseek-v4-flash-0731');
+  });
+
   it('exposes command suggestions from registry metadata (visible commands only)', () => {
     const names = commandSuggestions().map((command) => command.name);
     // Spans the grouped hierarchy; only non-hidden commands surface here.
@@ -162,7 +167,7 @@ describe('interactive command registry', () => {
     const {ctx, messages} = buildContext();
 
     await runInteractiveCommand(ctx, '/status');
-    expect(messages.at(-1)?.text).toContain('google/gemini-3.5-flash');
+    expect(messages.at(-1)?.text).toContain('google/gemini-3.6-flash');
     expect(messages.at(-1)?.text).toContain('queued:  2');
 
     await runInteractiveCommand(ctx, '/copy all');

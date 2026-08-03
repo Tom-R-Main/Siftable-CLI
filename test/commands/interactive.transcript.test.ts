@@ -11,7 +11,7 @@ const sample: TranscriptMessage[] = [
     text: 'Code flows like a stream,\nTasks are waiting in the queue,\nLet us build today.',
   },
   {role: 'shell', text: '$ ls\n[exit 0]'},
-  {role: 'system', text: 'ready · google/gemini-3.5-flash'},
+  {role: 'system', text: 'ready · google/gemini-3.6-flash'},
 ];
 
 describe('sift interactive transcript serialization', () => {
