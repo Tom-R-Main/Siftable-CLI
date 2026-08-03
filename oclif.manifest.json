@@ -21710,6 +21710,262 @@
         "verification",
         "revise.js"
       ]
+    },
+    "work:edit": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Work item ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "C2: Revise queued, unclaimed work while preserving its UUID and dependency edges. Do not use after claim or execution; wait for a queued unclaimed state or create follow-up work. Example: raise queue rank or refine acceptance criteria while the item is queued and unclaimed. Counterexample: do not change status, dependencies, or an active worker lease with this capability. Execution-contract edits supersede the active verification plan and reset verification evidence; queue-rank-only edits do not. The same Idempotency-Key and payload replays the original receipt; a different payload with that key is rejected.",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "expected-revision": {
+          "description": "Observed work item revision",
+          "name": "expected-revision",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "reason": {
+          "description": "Auditable reason for the revision",
+          "name": "reason",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "idempotency-key": {
+          "description": "Stable retry key for this exact edit",
+          "name": "idempotency-key",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "dry-run": {
+          "description": "Show normalized diff and proof consequences without mutating",
+          "name": "dry-run",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "patch": {
+          "description": "Editable fields as one JSON object",
+          "name": "patch",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "patch-file": {
+          "description": "Path to an editable-fields JSON object",
+          "name": "patch-file",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "title": {
+          "description": "Replacement title",
+          "name": "title",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "prompt": {
+          "description": "Replacement prompt; use --patch for null",
+          "name": "prompt",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "rank": {
+          "description": "Replacement queue rank",
+          "name": "rank",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "context": {
+          "description": "Replacement input context JSON object",
+          "name": "context",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "acceptance-criteria": {
+          "description": "Replacement acceptance criteria JSON array",
+          "name": "acceptance-criteria",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "allowed-actions": {
+          "description": "Replacement allowed actions JSON object",
+          "name": "allowed-actions",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "write-scope": {
+          "description": "Replacement write scope JSON object",
+          "name": "write-scope",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "verify": {
+          "description": "Replacement verification commands as JSON array or semicolon-separated text",
+          "name": "verify",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "contract": {
+          "description": "Replacement Work Contract V1 JSON",
+          "name": "contract",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "contract-file": {
+          "description": "Path to replacement Work Contract V1 JSON",
+          "name": "contract-file",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:edit",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "edit.js"
+      ]
+    },
+    "work:revisions": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Work item ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "List immutable, attributable work-item revision receipts and field diffs",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "limit": {
+          "description": "Maximum revisions to return",
+          "name": "limit",
+          "default": 50,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:revisions",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "revisions.js"
+      ]
     }
   },
   "version": "0.5.35"

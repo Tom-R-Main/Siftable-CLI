@@ -10,7 +10,8 @@
  *   - docs/cli-reference.fragment.html — the HTML block injected into the
  *                              marketing docs page (public/execufunction/docs.html)
  *                              between the <!-- BEGIN/END generated CLI command
- *                              reference --> markers. Re-splice after regenerating.
+ *                              reference --> markers.
+ *   - public/execufunction/docs.html — automatically refreshes that generated block.
  *
  * Usage (from packages/exf-cli):  npm run build && node scripts/gen-cli-docs.mjs
  * (run `oclif manifest` first if oclif.manifest.json is stale).
@@ -23,6 +24,7 @@ const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MANIFEST = path.join(PKG, 'oclif.manifest.json');
 const CLI_MD = path.join(PKG, 'docs', 'cli.md');
 const HTML_FRAGMENT = path.join(PKG, 'docs', 'cli-reference.fragment.html');
+const PUBLIC_DOCS = path.resolve(PKG, '..', '..', 'public', 'execufunction', 'docs.html');
 
 const m = JSON.parse(readFileSync(MANIFEST, 'utf8'));
 const cmds = m.commands;
@@ -78,7 +80,7 @@ const nonGlobalFlags = (c) => Object.keys(c.flags || {}).filter((n) => !GLOBAL_F
 function mdCommand(id) {
   const c = cmds[id];
   const out = [`#### \`sift ${id.replace(/:/g, ' ')}\``];
-  if (c.aliases?.length) out.push(`*Alias: ${c.aliases.map((a) => `\`sift ${a.replace(/:/g, ' ')}\``).join(', ')}*  `);
+  if (c.aliases?.length) out.push(`*Alias: ${c.aliases.map((a) => `\`sift ${a.replace(/:/g, ' ')}\``).join(', ')}*`);
   const desc = oneLine(c.summary || c.description);
   if (desc) out.push(desc);
   const args = c.args || {};
@@ -116,7 +118,11 @@ function htmlCommand(id) {
   const c = cmds[id];
   const key = `docs.cli.${topicKey(topicOf(id))}.${id.split(':').slice(1).join('-') || id}`;
   const desc = oneLine(c.summary || c.description);
-  const out = [`              <div class="cli-cmd">`, `                <code class="cli-cmd__name">sift ${esc(id.replace(/:/g, ' '))}</code>`];
+  const command = `sift ${esc(id.replace(/:/g, ' '))}`;
+  const out = [
+    `              <div class="cli-cmd">`,
+    `                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">${command}</code></div></div>`,
+  ];
   if (desc) out.push(`                <p class="cli-cmd__desc" data-i18n="${key}.desc">${esc(desc)}</p>`);
   const args = c.args || {};
   const fl = nonGlobalFlags(c);
@@ -159,6 +165,21 @@ const marker = '## Command reference';
 const cut = md.indexOf(marker);
 if (cut === -1) throw new Error(`"${marker}" heading not found in docs/cli.md`);
 writeFileSync(CLI_MD, md.slice(0, cut) + buildMarkdown());
-writeFileSync(HTML_FRAGMENT, buildHtml() + '\n');
-console.log(`Regenerated docs/cli.md (${ids.length} commands) and docs/cli-reference.fragment.html`);
-console.log(`Re-splice the fragment into public/execufunction/docs.html between the BEGIN/END markers, then run the marketing-i18n extract+build.`);
+const html = buildHtml();
+writeFileSync(HTML_FRAGMENT, html + '\n');
+
+const publicDocs = readFileSync(PUBLIC_DOCS, 'utf8');
+const beginMarker = '<!-- BEGIN generated CLI command reference (gen-cli-docs.mjs) -->';
+const endMarker = '<!-- END generated CLI command reference -->';
+const begin = publicDocs.indexOf(beginMarker);
+const end = publicDocs.indexOf(endMarker, begin);
+if (begin === -1 || end === -1 || end < begin) {
+  throw new Error('Generated CLI command reference markers not found in public/execufunction/docs.html');
+}
+writeFileSync(
+  PUBLIC_DOCS,
+  publicDocs.slice(0, begin) + html.trimStart() + publicDocs.slice(end + endMarker.length),
+);
+
+console.log(`Regenerated docs/cli.md (${ids.length} commands), docs/cli-reference.fragment.html, and public/execufunction/docs.html`);
+console.log('Run the marketing i18n extract/build and SEO build after command-reference changes.');

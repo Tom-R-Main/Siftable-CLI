@@ -100,7 +100,7 @@ Link work to a planning task with `sift work create --task <task-id>` rather tha
 
 ## Command reference
 
-All 212 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
+All 229 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
 
 **Topics:** [General](#general) · [Agents](#agents) · [Ai](#ai) · [Approvals](#approvals) · [Auth](#auth) · [Billing](#billing) · [Calendar](#calendar) · [Capabilities](#capabilities) · [Code](#code) · [Codebase](#codebase) · [Codex](#codex) · [Datasets](#datasets) · [Documents](#documents) · [Events](#events) · [Evidence](#evidence) · [Grants](#grants) · [Graph](#graph) · [Notes](#notes) · [Organizations](#organizations) · [People](#people) · [Projects](#projects) · [Recipes](#recipes) · [Relationships](#relationships) · [Research](#research) · [Skills](#skills) · [Tasks](#tasks) · [Timeline](#timeline) · [Vault](#vault) · [Work](#work) · [Worker](#worker)
 
@@ -234,6 +234,13 @@ List work assigned to an agent alias
 
 
 ### Ai
+
+#### `sift ai connect`
+Show the secure browser flow for adding a non-exportable Model Connection
+
+**Flags**
+
+- `--url <value>` *(default: "https://siftable.io/settings/model-connections")* — Siftable Model Connections settings URL
 
 #### `sift ai invoke`
 Invoke an eligible connected model (requires ai:invoke and ai:connections:use)
@@ -1883,25 +1890,53 @@ Show a built-in research workflow recipe
 
 ### Relationships
 
+#### `sift relationships actions dry-run`
+Preview a relationship action on the server without committing it
+
+**Arguments**
+
+- `id` *(required)* — Relationship action ID
+- `entity` — Relationship entity as opportunity:<uuid> or prospect:<uuid>
+
+**Flags**
+
+- `--entity <value>` — Target as prospect:uuid or opportunity:uuid
+- `--idempotency-key <value>` *(required)* — Stable 8-128 character key for reproducible server-side previews
+- `--input <value>` — Action input JSON object
+- `--input-file <value>` — Path to action input JSON
+
 #### `sift relationships actions list`
-Discover canonical relationship actions and runtime schemas
+List registered relationship actions and their commitment policies
+
+**Flags**
+
+- `--approval-policy <value>` — Filter by approval policy
+- `--commitment <value>` — Filter by commitment class
+- `--limit <value>` — Maximum results
 
 #### `sift relationships actions run`
 Run any canonical relationship action with replay-safe caller identity
 
 **Arguments**
 
-- `action` *(required)* — Canonical action ID from relationships actions list
+- `id` *(required)* — Canonical action ID from relationships actions list
 - `entity` — Relationship entity as opportunity:<uuid> or prospect:<uuid>
 
 **Flags**
 
 - `--entity <value>` — Target as prospect:uuid or opportunity:uuid
 - `--expected-version <value>` — Current collaboration version
-- `--idempotency-key <value>` — Stable 8-128 character key for exact retries
+- `--idempotency-key <value>` *(required)* — Stable 8-128 character key for exact retries
 - `--input <value>` — Action input JSON object
 - `--input-file <value>` — Path to an action input JSON file
 - `--yes` — Confirm action execution
+
+#### `sift relationships actions show`
+Show one registered relationship action
+
+**Arguments**
+
+- `id` *(required)* — Relationship action ID
 
 #### `sift relationships brief`
 Compose an exact, evidence-grounded relationship brief
@@ -1927,6 +1962,35 @@ Show one immutable relationship outcome handoff receipt
 **Arguments**
 
 - `id` *(required)* — Outcome handoff receipt UUID
+
+#### `sift relationships proposals get`
+Inspect one relationship action proposal and its evidence
+
+**Arguments**
+
+- `id` *(required)* — Proposal ID
+
+#### `sift relationships proposals list`
+List pending and historical relationship action proposals
+
+**Flags**
+
+- `--enrollment <value>` — Filter by enrollment ID
+- `--limit <value>` — Maximum results
+- `--sequence <value>` — Filter by sequence ID
+- `--status <value>` — Filter by proposal status
+
+#### `sift relationships proposals request-approval`
+Request short-lived human approval for a proposal; cannot approve or consume it
+
+**Arguments**
+
+- `id` *(required)* — Proposal ID
+
+**Flags**
+
+- `--idempotency-key <value>` *(required)* — Stable 8-128 character key for safe retries
+- `--purpose <value>` — Non-secret reason shown to the human approver
 
 #### `sift relationships queues list`
 List relationship team queues in the active workspace
@@ -1971,6 +2035,104 @@ Show a relationship recommendation with its exact citations and gates
 **Arguments**
 
 - `id` *(required)* — Recommendation UUID
+
+#### `sift relationships sequences create`
+Create a supervised relationship sequence from a JSON definition
+
+**Flags**
+
+- `--definition <value>` — Sequence definition JSON object
+- `--definition-file <value>` — Path to sequence definition JSON
+- `--idempotency-key <value>` *(required)* — Stable 8-128 character key for safe retries
+
+#### `sift relationships sequences dry-run`
+Preview a supervised sequence on the server without committing it
+
+**Arguments**
+
+- `id` *(required)* — Sequence ID
+
+**Flags**
+
+- `--idempotency-key <value>` *(required)* — Stable 8-128 character key for reproducible server-side previews
+- `--input <value>` — Dry-run input JSON object
+- `--input-file <value>` — Path to dry-run input JSON
+
+#### `sift relationships sequences enroll`
+Enroll a relationship target in a supervised sequence
+
+**Arguments**
+
+- `id` *(required)* — Sequence ID
+
+**Flags**
+
+- `--idempotency-key <value>` *(required)* — Stable 8-128 character key for safe retries
+- `--input <value>` — Enrollment input JSON object
+- `--input-file <value>` — Path to enrollment input JSON
+
+#### `sift relationships sequences get`
+Show one supervised relationship sequence
+
+**Arguments**
+
+- `id` *(required)* — Sequence ID
+
+#### `sift relationships sequences list`
+List supervised relationship sequences
+
+**Flags**
+
+- `--limit <value>` — Maximum results
+- `--status <value>` — Filter by sequence status
+
+#### `sift relationships sequences pause`
+Pause a supervised relationship sequence
+
+**Arguments**
+
+- `id` *(required)* — Sequence ID
+
+**Flags**
+
+- `--idempotency-key <value>` *(required)* — Stable 8-128 character key for safe retries
+- `--reason <value>` — Non-secret pause reason
+
+#### `sift relationships sequences resume`
+Resume a supervised relationship sequence
+
+**Arguments**
+
+- `id` *(required)* — Sequence ID
+
+**Flags**
+
+- `--idempotency-key <value>` *(required)* — Stable 8-128 character key for safe retries
+
+#### `sift relationships sequences runs`
+List execution evidence for a supervised relationship sequence
+
+**Arguments**
+
+- `id` *(required)* — Sequence ID
+
+**Flags**
+
+- `--limit <value>` — Maximum results
+- `--status <value>` — Filter by run status
+
+#### `sift relationships sequences update`
+Update a supervised relationship sequence from a JSON definition
+
+**Arguments**
+
+- `id` *(required)* — Sequence ID
+
+**Flags**
+
+- `--definition <value>` — Sequence update JSON object
+- `--definition-file <value>` — Path to sequence update JSON
+- `--idempotency-key <value>` *(required)* — Stable 8-128 character key for safe retries
 
 #### `sift relationships show`
 Show the current relationship collaboration snapshot
@@ -2316,6 +2478,7 @@ Request human approval for one destination-bound Vault materialization
 - `--runner-fingerprint <value>` *(required)*
 - `--runner-public-key <value>` *(required)*
 - `--tracked-exception`
+- `--workspace-root <value>` *(required)* — Absolute local workspace root containing the destination
 
 #### `sift vault materialize run`
 Request approval, wait, and materialize one Vault field at the exact approved path
@@ -2330,6 +2493,7 @@ Request approval, wait, and materialize one Vault field at the exact approved pa
 - `--overwrite`
 - `--purpose <value>` *(required)*
 - `--tracked-exception`
+- `--workspace-root <value>` *(required)* — Absolute local workspace root containing the destination
 
 #### `sift vault materialize status`
 Inspect safe status for a destination-bound Vault materialization
@@ -2491,6 +2655,32 @@ Set a project default work-dependency gate
 - `--gate <done|commands_passed|verified>` *(required)* — Default gate for dependencies that omit requiredGate
 - `--project <value>` *(required)* — Project UUID
 
+#### `sift work edit`
+C2: Revise queued, unclaimed work while preserving its UUID and dependency edges. Do not use after claim or execution; wait for a queued unclaimed state or create follow-up work. Example: raise queue rank or refine acceptance criteria while the item is queued and unclaimed. Counterexample: do not change status, dependencies, or an active worker lease with this capability. Execution-contract edits supersede the active verification plan and reset verification evidence; queue-rank-only edits do not. The same Idempotency-Key and payload replays the original receipt; a different payload with that key is rejected.
+
+**Arguments**
+
+- `id` *(required)* — Work item ID
+
+**Flags**
+
+- `--acceptance-criteria <value>` — Replacement acceptance criteria JSON array
+- `--allowed-actions <value>` — Replacement allowed actions JSON object
+- `--context <value>` — Replacement input context JSON object
+- `--contract <value>` — Replacement Work Contract V1 JSON
+- `--contract-file <value>` — Path to replacement Work Contract V1 JSON
+- `--dry-run` — Show normalized diff and proof consequences without mutating
+- `--expected-revision <value>` *(required)* — Observed work item revision
+- `--idempotency-key <value>` *(required)* — Stable retry key for this exact edit
+- `--patch <value>` — Editable fields as one JSON object
+- `--patch-file <value>` — Path to an editable-fields JSON object
+- `--prompt <value>` — Replacement prompt; use --patch for null
+- `--rank <value>` — Replacement queue rank
+- `--reason <value>` *(required)* — Auditable reason for the revision
+- `--title <value>` — Replacement title
+- `--verify <value>` — Replacement verification commands as JSON array or semicolon-separated text
+- `--write-scope <value>` — Replacement write scope JSON object
+
 #### `sift work fail`
 Mark a work item as failed
 
@@ -2593,6 +2783,17 @@ Mark executable agent work as needing human review
 - `--reason <value>` — Block or failure reason
 - `--summary <value>` — Result summary
 - `--verification-results <value>` — Verification evidence JSON array: [{"command","exitCode","output"?}]
+
+#### `sift work revisions`
+List immutable, attributable work-item revision receipts and field diffs
+
+**Arguments**
+
+- `id` *(required)* — Work item ID
+
+**Flags**
+
+- `--limit <value>` *(default: 50)* — Maximum revisions to return
 
 #### `sift work start`
 Mark a work item as running

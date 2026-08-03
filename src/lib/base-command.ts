@@ -51,7 +51,7 @@ export abstract class BaseCommand extends Command {
     flags: {token?: string; 'api-url'?: string; workspace?: string},
     path: string,
     options: {
-      method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+      method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
       body?: unknown;
       idempotencyKey?: string;
     } = {},
@@ -59,13 +59,14 @@ export abstract class BaseCommand extends Command {
     const token = flags.token || envValue('SIFT_TOKEN', 'EXF_TOKEN') || resolveToken();
     if (!token) this.error('No authentication token found. Run `sift auth login` or set SIFT_TOKEN.');
     const apiUrl = flags['api-url'] || envValue('SIFT_API_URL', 'EXF_API_URL') || DEFAULT_API_URL;
+    const workspaceId = flags.workspace || envValue('SIFT_WORKSPACE_ID', 'EXF_WORKSPACE_ID');
     const response = await fetch(`${apiUrl}${path}`, {
       method: options.method ?? 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
         'Idempotency-Key': options.idempotencyKey ?? this.idempotencyKey(),
-        ...(flags.workspace ? {'X-Workspace-Id': flags.workspace} : {}),
+        ...(workspaceId ? {'X-Workspace-Id': workspaceId} : {}),
       },
       body: options.body == null ? undefined : JSON.stringify(options.body),
     });
