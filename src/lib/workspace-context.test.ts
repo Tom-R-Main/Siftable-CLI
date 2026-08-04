@@ -9,6 +9,7 @@ import {
   looksLikeLocalPath,
   readSavedWorkspaceSelection,
   resolveContextSelection,
+  resolveWorkspaceTenantId,
   writeSavedWorkspaceSelection,
 } from './workspace-context.js';
 
@@ -40,6 +41,8 @@ describe('workspace context selection', () => {
     process.env.SIFT_WORKSPACE_ID = 'workspace-env';
     expect(resolveContextSelection().selectedWorkspaceId).toBe('workspace-env');
     expect(resolveContextSelection({workspaceFlag: 'workspace-flag'}).selectedWorkspaceId).toBe('workspace-flag');
+    expect(resolveWorkspaceTenantId()).toBe('workspace-env');
+    expect(resolveWorkspaceTenantId(null)).toBeUndefined();
     expect(JSON.parse(readFileSync(getWorkspaceSelectionFile(), 'utf8'))).not.toHaveProperty('token');
     clearSavedWorkspaceSelection();
     expect(readSavedWorkspaceSelection()).toBeNull();

@@ -1,6 +1,7 @@
 import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
 import {renderTable} from '../../lib/output.js';
+import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from '../../lib/vault-owner-context.js';
 
 export default class VaultAudit extends BaseCommand {
   static description = 'List Vault audit events (requires vault:audit:read)';
@@ -10,11 +11,13 @@ export default class VaultAudit extends BaseCommand {
   static flags = {
     ...BaseCommand.baseFlags,
     limit: Flags.integer({description: 'Maximum number of results'}),
+    owner: vaultOwnerFlag,
   };
 
   async run(): Promise<unknown> {
     const {flags} = await this.parse(VaultAudit);
-    const client = await this.client(flags);
+    const owner = resolveVaultOwnerContext(flags);
+    const client = await this.client(vaultApiFlags(flags, owner));
     const response = await client.listVaultAudit({limit: flags.limit});
     this.handleApiError(response);
 

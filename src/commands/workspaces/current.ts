@@ -15,7 +15,7 @@ export default class WorkspacesCurrent extends BaseCommand {
     let workspace: WorkspaceSummary | null = null;
     if (selection.selectedWorkspaceId) {
       const response = await this.apiRequest<{workspaces: WorkspaceSummary[]}>(
-        {token: flags.token, 'api-url': flags['api-url']},
+        {token: flags.token, 'api-url': flags['api-url'], workspace: null},
         '/api/v1/workspaces',
       );
       workspace = response.workspaces.find((candidate) => candidate.id === selection.selectedWorkspaceId) ?? null;

@@ -2,6 +2,7 @@ import {Flags} from '@oclif/core';
 import {readFile} from 'node:fs/promises';
 import {BaseCommand} from '../../../lib/base-command.js';
 import {resolveMaterializationRoot} from '../../../lib/materialization-root.js';
+import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from '../../../lib/vault-owner-context.js';
 
 export default class VaultMaterializeRequest extends BaseCommand {
   static description = 'Request human approval for one destination-bound Vault materialization';
@@ -22,6 +23,7 @@ export default class VaultMaterializeRequest extends BaseCommand {
     'runner-public-key': Flags.string({required: true}),
     'runner-fingerprint': Flags.string({required: true}),
     'materializer-digest': Flags.string({required: true}),
+    owner: vaultOwnerFlag,
   };
 
   async run(): Promise<unknown> {
@@ -30,12 +32,10 @@ export default class VaultMaterializeRequest extends BaseCommand {
     if (root.usedLegacyAlias && !this.jsonEnabled()) {
       this.warn('Using --workspace as a local path is deprecated. Use --workspace-root; --workspace identifies a collaborative tenant.');
     }
-    // `--workspace-root` is a local filesystem path, not the organization UUID
-    // accepted by BaseCommand. Never forward the path as X-Workspace-Id.
-    const apiFlags = {
-      token: flags.token,
-      'api-url': flags['api-url'],
-    };
+    const owner = resolveVaultOwnerContext(flags, {
+      legacyMaterializationAlias: root.usedLegacyAlias,
+    });
+    const apiFlags = vaultApiFlags(flags, owner);
     const response = await this.apiRequest<{
       materialization: Record<string, unknown>;
       artifactEnvelope: Record<string, unknown>;
@@ -47,6 +47,7 @@ export default class VaultMaterializeRequest extends BaseCommand {
         method: 'POST',
         body: {
           surface: 'cli',
+          contextContractVersion: owner.contextContractVersion,
           vaultEntryId: flags.entry,
           credentialField: flags.field,
           destinationPath: flags.destination,

@@ -4,7 +4,13 @@ import {readFileSync} from 'node:fs';
 import {SiftClient} from '@siftable/mcp-server/dist/exfClient.js';
 import {resolveToken} from './auth.js';
 import {confirm} from './output.js';
-import {looksLikeLocalPath} from './workspace-context.js';
+import {resolveWorkspaceTenantId} from './workspace-context.js';
+
+export interface ApiContextFlags {
+  token?: string;
+  'api-url'?: string;
+  workspace?: string | null;
+}
 
 function envValue(primary: string, legacy: string): string | undefined {
   return process.env[primary] || process.env[legacy];
@@ -35,7 +41,7 @@ export abstract class BaseCommand extends Command {
     }),
   };
 
-  protected async client(flags: {token?: string; 'api-url'?: string; workspace?: string}): Promise<SiftClient> {
+  protected async client(flags: ApiContextFlags): Promise<SiftClient> {
     const token = flags.token || envValue('SIFT_TOKEN', 'EXF_TOKEN') || resolveToken();
     if (!token) {
       this.error('No authentication token found. Run `sift auth login` or set SIFT_TOKEN.');
@@ -50,7 +56,7 @@ export abstract class BaseCommand extends Command {
   }
 
   protected async apiRequest<T>(
-    flags: {token?: string; 'api-url'?: string; workspace?: string},
+    flags: ApiContextFlags,
     path: string,
     options: {
       method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -80,12 +86,12 @@ export abstract class BaseCommand extends Command {
     return response.json() as Promise<T>;
   }
 
-  private workspaceId(flagValue?: string): string | undefined {
-    const workspaceId = flagValue || envValue('SIFT_WORKSPACE_ID', 'EXF_WORKSPACE_ID');
-    if (workspaceId && looksLikeLocalPath(workspaceId)) {
-      this.error('Workspace tenant IDs cannot be filesystem paths. Use --workspace-root for local checkout paths.');
+  private workspaceId(flagValue?: string | null): string | undefined {
+    try {
+      return resolveWorkspaceTenantId(flagValue);
+    } catch (error) {
+      this.error(error instanceof Error ? error.message : String(error));
     }
-    return workspaceId;
   }
 
   protected unwrapList(response: {data?: unknown}, key: string): Record<string, unknown>[] {

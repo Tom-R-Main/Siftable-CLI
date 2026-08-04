@@ -26,7 +26,7 @@ export default class WorkspacesUse extends BaseCommand {
       return result;
     }
     const response = await this.apiRequest<{workspaces: WorkspaceSummary[]}>(
-      {token: flags.token, 'api-url': flags['api-url']},
+      {token: flags.token, 'api-url': flags['api-url'], workspace: null},
       '/api/v1/workspaces',
     );
     const workspace = response.workspaces.find((candidate) => candidate.id === args.id);
@@ -41,7 +41,7 @@ export default class WorkspacesUse extends BaseCommand {
     const result = {
       owner: {kind: 'workspace', workspaceId: workspace.id, label: workspace.name},
       persisted: true,
-      note: 'Discovery selection saved. Existing command request headers remain unchanged until the identity cutover.',
+      note: 'Workspace selected. Subsequent scoped commands send this exact tenant ID; use `sift workspaces use personal` to return to Personal.',
     };
     if (!this.jsonEnabled()) {
       this.log(`Current workspace: ${workspace.name} (${workspace.id})`);

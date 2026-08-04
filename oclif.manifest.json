@@ -14169,6 +14169,14 @@
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
+        },
+        "owner": {
+          "description": "Exact Vault owner: personal or workspace:<tenant-id>",
+          "name": "owner",
+          "hasDynamicHelp": false,
+          "helpValue": "personal|workspace:<tenant-id>",
+          "multiple": false,
+          "type": "option"
         }
       },
       "hasDynamicHelp": false,
@@ -14300,6 +14308,14 @@
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
+        },
+        "owner": {
+          "description": "Exact Vault owner: personal or workspace:<tenant-id>",
+          "name": "owner",
+          "hasDynamicHelp": false,
+          "helpValue": "personal|workspace:<tenant-id>",
+          "multiple": false,
+          "type": "option"
         }
       },
       "hasDynamicHelp": false,
@@ -14389,6 +14405,14 @@
           "description": "Maximum number of results",
           "name": "limit",
           "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "owner": {
+          "description": "Exact Vault owner: personal or workspace:<tenant-id>",
+          "name": "owner",
+          "hasDynamicHelp": false,
+          "helpValue": "personal|workspace:<tenant-id>",
           "multiple": false,
           "type": "option"
         }
@@ -14533,6 +14557,14 @@
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
+        },
+        "owner": {
+          "description": "Exact Vault owner: personal or workspace:<tenant-id>",
+          "name": "owner",
+          "hasDynamicHelp": false,
+          "helpValue": "personal|workspace:<tenant-id>",
+          "multiple": false,
+          "type": "option"
         }
       },
       "hasDynamicHelp": false,
@@ -14634,6 +14666,14 @@
           "description": "Associated URL",
           "name": "url",
           "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "owner": {
+          "description": "Exact Vault owner: personal or workspace:<tenant-id>",
+          "name": "owner",
+          "hasDynamicHelp": false,
+          "helpValue": "personal|workspace:<tenant-id>",
           "multiple": false,
           "type": "option"
         }
@@ -23121,6 +23161,14 @@
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
+        },
+        "owner": {
+          "description": "Exact Vault owner: personal or workspace:<tenant-id>",
+          "name": "owner",
+          "hasDynamicHelp": false,
+          "helpValue": "personal|workspace:<tenant-id>",
+          "multiple": false,
+          "type": "option"
         }
       },
       "hasDynamicHelp": false,
@@ -23246,6 +23294,14 @@
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
+        },
+        "owner": {
+          "description": "Exact Vault owner: personal or workspace:<tenant-id>",
+          "name": "owner",
+          "hasDynamicHelp": false,
+          "helpValue": "personal|workspace:<tenant-id>",
+          "multiple": false,
+          "type": "option"
         }
       },
       "hasDynamicHelp": false,
@@ -23313,6 +23369,20 @@
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
+        },
+        "owner": {
+          "description": "Exact Vault owner: personal or workspace:<tenant-id>",
+          "name": "owner",
+          "hasDynamicHelp": false,
+          "helpValue": "personal|workspace:<tenant-id>",
+          "multiple": false,
+          "type": "option"
+        },
+        "legacy-context": {
+          "description": "Use the Personal/v0 identity of a request created with the deprecated path-shaped --workspace alias",
+          "name": "legacy-context",
+          "allowNo": false,
+          "type": "boolean"
         }
       },
       "hasDynamicHelp": false,
@@ -25022,6 +25092,88 @@
         "work",
         "dependencies",
         "set.js"
+      ]
+    },
+    "vault:materialize:revoke": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Materialization ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Revoke a pending destination-bound Vault materialization",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "owner": {
+          "description": "Exact Vault owner: personal or workspace:<tenant-id>",
+          "name": "owner",
+          "hasDynamicHelp": false,
+          "helpValue": "personal|workspace:<tenant-id>",
+          "multiple": false,
+          "type": "option"
+        },
+        "legacy-context": {
+          "description": "Use the Personal/v0 identity of a request created with the deprecated path-shaped --workspace alias",
+          "name": "legacy-context",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "vault:materialize:revoke",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "vault",
+        "materialize",
+        "revoke.js"
       ]
     }
   },

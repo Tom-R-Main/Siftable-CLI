@@ -1,5 +1,6 @@
 import {describe, expect, it, vi} from 'vitest';
 import VaultMaterializeRequest from './request.js';
+import VaultMaterializeRevoke from './revoke.js';
 import VaultMaterializeStatus from './status.js';
 
 function command<T>(constructor: {prototype: T}): T {
@@ -44,6 +45,7 @@ describe('Vault materialization CLI surface', () => {
       '/api/v1/vault/materializations',
       expect.objectContaining({body: expect.objectContaining({
         surface: 'cli',
+        contextContractVersion: 1,
         destinationPath: '/workspace/runtime/credential',
         workspaceRoot: '/workspace',
         plaintextDisclosureAcknowledged: true,
@@ -68,6 +70,7 @@ describe('Vault materialization CLI surface', () => {
     (status as any).log = vi.fn();
     const inspected = await status.run();
     expect(statusApi.mock.calls[0][1]).toContain('surface=cli');
+    expect(statusApi.mock.calls[0][1]).toContain('contextContractVersion=1');
     expect(JSON.stringify({requested, inspected})).not.toContain('SENTINEL_PLAINTEXT');
     expect(JSON.stringify(inspected)).not.toContain('artifactEnvelope');
   });
@@ -101,5 +104,95 @@ describe('Vault materialization CLI surface', () => {
       '/api/v1/vault/materializations',
       expect.objectContaining({body: expect.objectContaining({workspaceRoot: '/legacy'})}),
     );
+    expect(requestApi.mock.calls[0][2]).toEqual(expect.objectContaining({
+      body: expect.objectContaining({contextContractVersion: 0}),
+    }));
+  });
+
+  it('forwards one workspace identity through request, status, and revoke', async () => {
+    const request = command(VaultMaterializeRequest);
+    const requestApi = vi.fn().mockResolvedValue({
+      materialization: {id: 'materialization-workspace', approvalId: 'approval-workspace'},
+      artifactEnvelope: {ciphertext: 'opaque'},
+      artifactBinding: 'opaque-binding',
+    });
+    (request as any).parse = vi.fn().mockResolvedValue({flags: {
+      entry: 'entry-1',
+      field: 'value',
+      destination: '/workspace/runtime/credential',
+      workspace: 'workspace-1',
+      'workspace-root': '/workspace',
+      mode: '0600',
+      purpose: 'Workspace compatibility proof',
+      nonce: 'n'.repeat(32),
+      overwrite: false,
+      'tracked-exception': false,
+      'runner-public-key': '/dev/null',
+      'runner-fingerprint': 'a'.repeat(64),
+      'materializer-digest': 'b'.repeat(64),
+    }});
+    (request as any).apiRequest = requestApi;
+    (request as any).jsonEnabled = () => true;
+    await request.run();
+    expect(requestApi).toHaveBeenCalledWith(
+      expect.objectContaining({workspace: 'workspace-1'}),
+      '/api/v1/vault/materializations',
+      expect.objectContaining({body: expect.objectContaining({contextContractVersion: 1})}),
+    );
+
+    const revoke = command(VaultMaterializeRevoke);
+    const revokeApi = vi.fn().mockResolvedValue({materialization: {id: 'materialization-workspace'}});
+    (revoke as any).parse = vi.fn().mockResolvedValue({
+      args: {id: 'materialization-workspace'},
+      flags: {owner: 'workspace:workspace-1'},
+    });
+    (revoke as any).apiRequest = revokeApi;
+    (revoke as any).jsonEnabled = () => true;
+    await revoke.run();
+    expect(revokeApi).toHaveBeenCalledWith(
+      expect.objectContaining({workspace: 'workspace-1'}),
+      '/api/v1/vault/materializations/materialization-workspace/revoke',
+      expect.objectContaining({body: {surface: 'cli', contextContractVersion: 1}}),
+    );
+  });
+
+  it('requires an explicit legacy follow-up and never silently retries across owners', async () => {
+    const originalWorkspace = process.env.SIFT_WORKSPACE_ID;
+    process.env.SIFT_WORKSPACE_ID = 'workspace-current';
+    try {
+      const status = command(VaultMaterializeStatus);
+      const statusApi = vi.fn().mockResolvedValue({
+        materialization: {id: 'materialization-legacy', status: 'pending'},
+      });
+      (status as any).parse = vi.fn().mockResolvedValue({
+        args: {id: 'materialization-legacy'},
+        flags: {'legacy-context': true},
+      });
+      (status as any).apiRequest = statusApi;
+      (status as any).jsonEnabled = () => true;
+      await status.run();
+      expect(statusApi).toHaveBeenCalledWith(
+        expect.objectContaining({workspace: null}),
+        expect.stringContaining('contextContractVersion=0'),
+      );
+
+      const revoke = command(VaultMaterializeRevoke);
+      const revokeApi = vi.fn().mockResolvedValue({materialization: {id: 'materialization-legacy'}});
+      (revoke as any).parse = vi.fn().mockResolvedValue({
+        args: {id: 'materialization-legacy'},
+        flags: {'legacy-context': true},
+      });
+      (revoke as any).apiRequest = revokeApi;
+      (revoke as any).jsonEnabled = () => true;
+      await revoke.run();
+      expect(revokeApi).toHaveBeenCalledWith(
+        expect.objectContaining({workspace: null}),
+        '/api/v1/vault/materializations/materialization-legacy/revoke',
+        expect.objectContaining({body: {surface: 'cli', contextContractVersion: 0}}),
+      );
+    } finally {
+      if (originalWorkspace === undefined) delete process.env.SIFT_WORKSPACE_ID;
+      else process.env.SIFT_WORKSPACE_ID = originalWorkspace;
+    }
   });
 });

@@ -15,6 +15,7 @@ import {
 } from '../../../lib/localMaterializer.js';
 import type {ExecutionGrantEnvelope} from '../../../lib/localExecutionRunner.js';
 import {resolveMaterializationRoot} from '../../../lib/materialization-root.js';
+import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from '../../../lib/vault-owner-context.js';
 
 interface MaterializationRecord {
   id: string;
@@ -66,6 +67,7 @@ export default class VaultMaterializeRun extends BaseCommand {
     overwrite: Flags.boolean({default: false}),
     'tracked-exception': Flags.boolean({default: false}),
     'approval-timeout': Flags.integer({default: 600, min: 30, max: 600}),
+    owner: vaultOwnerFlag,
   };
 
   async run(): Promise<unknown> {
@@ -74,12 +76,10 @@ export default class VaultMaterializeRun extends BaseCommand {
     if (root.usedLegacyAlias && !this.jsonEnabled()) {
       this.warn('Using --workspace as a local path is deprecated. Use --workspace-root; --workspace identifies a collaborative tenant.');
     }
-    // `--workspace-root` is a local filesystem path, not the organization UUID
-    // accepted by BaseCommand. Never forward the path as X-Workspace-Id.
-    const apiFlags = {
-      token: flags.token,
-      'api-url': flags['api-url'],
-    };
+    const owner = resolveVaultOwnerContext(flags, {
+      legacyMaterializationAlias: root.usedLegacyAlias,
+    });
+    const apiFlags = vaultApiFlags(flags, owner);
     const policyAllowsTrackedException =
       process.env.SIFT_ALLOW_TRACKED_SECRET_MATERIALIZATION === 'true';
     const precondition = await inspectMaterializationDestination({
@@ -144,6 +144,7 @@ export default class VaultMaterializeRun extends BaseCommand {
         method: 'POST',
         body: {
           surface: 'cli',
+          contextContractVersion: owner.contextContractVersion,
           vaultEntryId: flags.entry,
           credentialField: flags.field,
           destinationPath: flags.destination,
@@ -202,7 +203,7 @@ export default class VaultMaterializeRun extends BaseCommand {
       while (Date.now() < deadline) {
         const approval = await this.apiRequest<{approval: {status: string}}>(
           apiFlags,
-          `/api/v1/governed-approvals/${encodeURIComponent(requested.materialization.approvalId)}?surface=cli`,
+          `/api/v1/governed-approvals/${encodeURIComponent(requested.materialization.approvalId)}?surface=cli&contextContractVersion=${owner.contextContractVersion}`,
         );
         approvalStatus = approval.approval.status;
         if (approvalStatus === 'approved') break;
@@ -221,6 +222,7 @@ export default class VaultMaterializeRun extends BaseCommand {
           method: 'POST',
           body: {
             surface: 'cli',
+            contextContractVersion: owner.contextContractVersion,
             artifact,
             approvalId: requested.materialization.approvalId,
             runnerFingerprint: runner.fingerprint,
@@ -279,6 +281,7 @@ export default class VaultMaterializeRun extends BaseCommand {
           method: 'POST',
           body: {
             surface: 'cli',
+            contextContractVersion: owner.contextContractVersion,
             requestNonce: nonce,
             destinationDigest: receipt.destinationDigest,
             mode: receipt.mode,
@@ -303,6 +306,7 @@ export default class VaultMaterializeRun extends BaseCommand {
               method: 'POST',
               body: {
                 surface: 'cli',
+                contextContractVersion: owner.contextContractVersion,
                 requestNonce: nonce,
                 failureCode: localWriteCompleted ? 'receipt_failed' : 'local_write_failed',
                 cleanupSucceeded,
@@ -311,6 +315,22 @@ export default class VaultMaterializeRun extends BaseCommand {
           );
         } catch {
           // Preserve the original local failure; the server still has the redeemed audit event.
+        }
+      } else {
+        try {
+          await this.apiRequest(
+            apiFlags,
+            `/api/v1/vault/materializations/${encodeURIComponent(requested.materialization.id)}/revoke`,
+            {
+              method: 'POST',
+              body: {
+                surface: 'cli',
+                contextContractVersion: owner.contextContractVersion,
+              },
+            },
+          );
+        } catch {
+          // Preserve the approval or timeout error; the request remains bounded and expires server-side.
         }
       }
       throw error;

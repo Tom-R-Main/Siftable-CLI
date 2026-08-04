@@ -12,7 +12,7 @@ export default class WorkspacesList extends BaseCommand {
   async run(): Promise<unknown> {
     const {flags} = await this.parse(WorkspacesList);
     const response = await this.apiRequest<{workspaces: WorkspaceSummary[]}>(
-      {token: flags.token, 'api-url': flags['api-url']},
+      {token: flags.token, 'api-url': flags['api-url'], workspace: null},
       '/api/v1/workspaces',
     );
     const selectedId = resolveContextSelection({workspaceFlag: flags.workspace}).selectedWorkspaceId;

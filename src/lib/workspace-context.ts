@@ -81,16 +81,25 @@ export function looksLikeLocalPath(value: string): boolean {
     || value.includes('\\');
 }
 
+export function resolveWorkspaceTenantId(workspaceFlag?: string | null): string | undefined {
+  if (workspaceFlag === null) return undefined;
+  const workspaceId = workspaceFlag
+    || process.env.SIFT_WORKSPACE_ID
+    || process.env.EXF_WORKSPACE_ID
+    || readSavedWorkspaceSelection()?.workspaceId;
+  if (workspaceId && looksLikeLocalPath(workspaceId)) {
+    throw new Error('Workspace tenant IDs cannot be filesystem paths. Use --workspace-root for a local checkout path.');
+  }
+  return workspaceId;
+}
+
 export function resolveContextSelection(options: {
   workspaceFlag?: string;
   checkoutRoot?: string | null;
 } = {}): SiftCliContextSelection {
   const environment = process.env.SIFT_WORKSPACE_ID || process.env.EXF_WORKSPACE_ID;
   const saved = readSavedWorkspaceSelection();
-  const selectedWorkspaceId = options.workspaceFlag || environment || saved?.workspaceId || null;
-  if (selectedWorkspaceId && looksLikeLocalPath(selectedWorkspaceId)) {
-    throw new Error('Workspace tenant IDs cannot be filesystem paths. Use --workspace-root for a local checkout path.');
-  }
+  const selectedWorkspaceId = resolveWorkspaceTenantId(options.workspaceFlag) ?? null;
   const selectionSource = options.workspaceFlag
     ? 'workspace_flag'
     : environment

@@ -38,10 +38,10 @@ export default class ContextCurrent extends BaseCommand {
       workspaceFlag: flags.workspace,
       checkoutRoot,
     });
-    const apiFlags = {token: flags.token, 'api-url': flags['api-url']};
+    const discoveryFlags = {token: flags.token, 'api-url': flags['api-url'], workspace: null};
     const [user, workspacesResponse] = await Promise.all([
-      this.apiRequest<CurrentUser>(apiFlags, '/api/v1/user/me'),
-      this.apiRequest<{workspaces: WorkspaceSummary[]}>(apiFlags, '/api/v1/workspaces'),
+      this.apiRequest<CurrentUser>(discoveryFlags, '/api/v1/user/me'),
+      this.apiRequest<{workspaces: WorkspaceSummary[]}>(discoveryFlags, '/api/v1/workspaces'),
     ]);
     const workspace = selection.selectedWorkspaceId
       ? workspacesResponse.workspaces.find((candidate) => candidate.id === selection.selectedWorkspaceId) ?? null
@@ -50,7 +50,11 @@ export default class ContextCurrent extends BaseCommand {
       this.error(`Selected workspace ${selection.selectedWorkspaceId} is unavailable. Run \`sift workspaces list\` and choose an exact ID.`);
     }
 
-    const client = await this.client(apiFlags);
+    const client = await this.client({
+      token: flags.token,
+      'api-url': flags['api-url'],
+      workspace: selection.selectedWorkspaceId,
+    });
     const repositoriesResponse = await client.listCodeRepositories();
     const repositories = repositoriesResponse.error
       ? []
