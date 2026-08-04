@@ -1,7 +1,7 @@
 import { Args, Flags } from '@oclif/core';
 import { BaseCommand } from '../../../lib/base-command.js';
 import { renderDetail } from '../../../lib/output.js';
-import { readJsonObject } from '../playbooks/_helpers.js';
+import {readJsonObject} from '../../../lib/relationship-command-input.js';
 
 export default class RelationshipGeneratedAssetsDraft extends BaseCommand {
   static description = 'Create a private communication proposal from an approved outreach asset; does not send';

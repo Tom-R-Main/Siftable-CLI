@@ -1,6 +1,7 @@
 import {Flags} from '@oclif/core';
 import {readFile} from 'node:fs/promises';
 import {BaseCommand} from '../../../lib/base-command.js';
+import {resolveMaterializationRoot} from '../../../lib/materialization-root.js';
 
 export default class VaultMaterializeRequest extends BaseCommand {
   static description = 'Request human approval for one destination-bound Vault materialization';
@@ -11,7 +12,6 @@ export default class VaultMaterializeRequest extends BaseCommand {
     destination: Flags.string({required: true}),
     'workspace-root': Flags.string({
       description: 'Absolute local workspace root containing the destination',
-      required: true,
     }),
     mode: Flags.string({options: ['0400', '0600'], default: '0600'}),
     purpose: Flags.string({required: true}),
@@ -26,6 +26,10 @@ export default class VaultMaterializeRequest extends BaseCommand {
 
   async run(): Promise<unknown> {
     const {flags} = await this.parse(VaultMaterializeRequest);
+    const root = resolveMaterializationRoot(flags);
+    if (root.usedLegacyAlias && !this.jsonEnabled()) {
+      this.warn('Using --workspace as a local path is deprecated. Use --workspace-root; --workspace identifies a collaborative tenant.');
+    }
     // `--workspace-root` is a local filesystem path, not the organization UUID
     // accepted by BaseCommand. Never forward the path as X-Workspace-Id.
     const apiFlags = {
@@ -46,7 +50,7 @@ export default class VaultMaterializeRequest extends BaseCommand {
           vaultEntryId: flags.entry,
           credentialField: flags.field,
           destinationPath: flags.destination,
-          workspaceRoot: flags['workspace-root'],
+          workspaceRoot: root.workspaceRoot,
           requestedMode: flags.mode,
           expectedAbsence: !flags['expected-digest'],
           expectedDestinationDigest: flags['expected-digest'],

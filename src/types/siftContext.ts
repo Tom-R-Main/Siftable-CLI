@@ -7,8 +7,19 @@
  */
 export interface SiftCliContextSelection {
   selectedWorkspaceId: string | null;
-  selectionSource: 'workspace_flag' | 'environment' | 'none';
+  selectionSource: 'workspace_flag' | 'environment' | 'saved_selection' | 'none';
   checkoutRoot: string | null;
+}
+
+export type SiftCliPrincipalType =
+  | 'personal_pat'
+  | 'workspace_service_pat'
+  | 'pat_unknown';
+
+export interface SiftCliPrincipalDeclaration {
+  type: SiftCliPrincipalType;
+  principalId: string | null;
+  authority: 'saved_login' | 'workspace_binding' | 'client_unresolved';
 }
 
 export const SIFT_CLI_CAPABILITY_SURFACES = {

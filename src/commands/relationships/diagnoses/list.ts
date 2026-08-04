@@ -1,7 +1,7 @@
 import { Flags } from '@oclif/core';
 import { BaseCommand } from '../../../lib/base-command.js';
 import { renderTable } from '../../../lib/output.js';
-import { queryString } from '../playbooks/_helpers.js';
+import {queryString} from '../../../lib/relationship-command-input.js';
 
 export default class RelationshipDiagnosesList extends BaseCommand {
   static description = 'List immutable relationship diagnosis snapshots';

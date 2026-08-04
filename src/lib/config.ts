@@ -4,6 +4,7 @@ import {homedir} from 'node:os';
 
 export interface AuthConfig {
   token: string;
+  principalType?: 'personal_pat' | 'workspace_service_pat';
 }
 
 export function getConfigDir(): string {

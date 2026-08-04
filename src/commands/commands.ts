@@ -1,5 +1,5 @@
 import {BaseCommand} from '../lib/base-command.js';
-import {CAPABILITIES} from '../lib/capabilities.js';
+import {STATIC_READINESS_CAPABILITIES} from '../lib/capabilities.js';
 import {RECIPES} from '../lib/recipes.js';
 import {renderTable} from '../lib/output.js';
 
@@ -41,7 +41,7 @@ export default class Commands extends BaseCommand {
     const result = {
       ok: true,
       topics: TOPICS,
-      capabilityIds: CAPABILITIES.map((capability) => capability.id),
+      capabilityIds: STATIC_READINESS_CAPABILITIES.map((capability) => capability.id),
       recipeIds: RECIPES.map((recipe) => recipe.id),
       next: [
         'Run `sift doctor --json` to verify local auth and API configuration.',

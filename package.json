@@ -11,10 +11,10 @@
   },
   "scripts": {
     "prebuild": "npm run build --workspace @siftable/mcp-server && npm run build --workspace @siftable/tabular-import",
-    "build": "tsc",
+    "build": "node scripts/clean-dist.mjs && tsc",
     "typecheck": "tsc --noEmit",
-    "manifest": "oclif manifest",
-    "interactive:dev": "npm run build && npm run manifest && (cd interactive-tui && bun run native:build) && SIFT_INTERACTIVE_RUNTIME=source node ./bin/run.js interactive",
+    "manifest": "npm run build && oclif manifest",
+    "interactive:dev": "npm run manifest && (cd interactive-tui && bun run native:build) && SIFT_INTERACTIVE_RUNTIME=source node ./bin/run.js interactive",
     "interactive:help": "npm run build && npm run manifest && node ./bin/run.js interactive --help",
     "package:interactive": "npm run build --workspace @siftable/cli && bun install --cwd interactive-tui --frozen-lockfile && bun run interactive-tui/scripts/build-packaged-runtime.mjs",
     "interactive:image-fixtures": "node scripts/create-interactive-image-fixtures.mjs",
@@ -26,7 +26,7 @@
     "verify:test-typecheck-boundaries": "node scripts/verify-test-typecheck-boundaries.mjs",
     "verify:package": "npm run package:interactive && node scripts/verify-package-imports.mjs",
     "prepublishOnly": "npm run build",
-    "prepack": "npm run build && npx oclif manifest && npm run verify:package"
+    "prepack": "npm run manifest && npm run verify:package"
   },
   "oclif": {
     "bin": "sift",
@@ -63,6 +63,18 @@
       },
       "organizations": {
         "description": "Organizations and companies"
+      },
+      "crm": {
+        "description": "Customer relationship records"
+      },
+      "crm:organizations": {
+        "description": "CRM organizations, excluding collaborative workspaces"
+      },
+      "context": {
+        "description": "Current principal, owner, project, and checkout context"
+      },
+      "workspaces": {
+        "description": "Collaborative workspace discovery and local selection"
       },
       "relationships": {
         "description": "Headless relationship actions and collaboration"

@@ -71,4 +71,35 @@ describe('Vault materialization CLI surface', () => {
     expect(JSON.stringify({requested, inspected})).not.toContain('SENTINEL_PLAINTEXT');
     expect(JSON.stringify(inspected)).not.toContain('artifactEnvelope');
   });
+
+  it('accepts the deprecated absolute --workspace path without forwarding a tenant header', async () => {
+    const request = command(VaultMaterializeRequest);
+    const requestApi = vi.fn().mockResolvedValue({
+      materialization: {id: 'materialization-legacy', approvalId: 'approval-legacy'},
+      artifactEnvelope: {ciphertext: 'opaque'},
+      artifactBinding: 'opaque-binding',
+    });
+    (request as any).parse = vi.fn().mockResolvedValue({flags: {
+      entry: 'entry-1',
+      field: 'value',
+      destination: '/legacy/runtime/credential',
+      workspace: '/legacy',
+      mode: '0600',
+      purpose: 'Compatibility proof',
+      nonce: 'n'.repeat(32),
+      overwrite: false,
+      'tracked-exception': false,
+      'runner-public-key': '/dev/null',
+      'runner-fingerprint': 'a'.repeat(64),
+      'materializer-digest': 'b'.repeat(64),
+    }});
+    (request as any).apiRequest = requestApi;
+    (request as any).jsonEnabled = () => true;
+    await request.run();
+    expect(requestApi).toHaveBeenCalledWith(
+      expect.not.objectContaining({workspace: expect.anything()}),
+      '/api/v1/vault/materializations',
+      expect.objectContaining({body: expect.objectContaining({workspaceRoot: '/legacy'})}),
+    );
+  });
 });

@@ -1,5 +1,5 @@
 import {BaseCommand} from '../lib/base-command.js';
-import {CAPABILITIES} from '../lib/capabilities.js';
+import {STATIC_READINESS_CAPABILITIES} from '../lib/capabilities.js';
 import {renderTable} from '../lib/output.js';
 
 export default class Capabilities extends BaseCommand {
@@ -13,11 +13,17 @@ export default class Capabilities extends BaseCommand {
     await this.parse(Capabilities);
     const result = {
       ok: true,
-      capabilities: CAPABILITIES,
+      kind: 'static_readiness',
+      selection: {
+        command: 'sift capabilities',
+        executable: false,
+        executableHandleSurface: 'sift capabilities list',
+      },
+      capabilities: STATIC_READINESS_CAPABILITIES,
     };
 
     if (!this.jsonEnabled()) {
-      renderTable(CAPABILITIES as unknown as Record<string, unknown>[], [
+      renderTable(STATIC_READINESS_CAPABILITIES as unknown as Record<string, unknown>[], [
         {key: 'id', header: 'Capability'},
         {key: 'status', header: 'Status'},
         {key: 'description', header: 'Description'},

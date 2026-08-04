@@ -1,7 +1,7 @@
 import { Flags } from '@oclif/core';
 import { BaseCommand } from '../../../lib/base-command.js';
 import { renderDetail } from '../../../lib/output.js';
-import { readJsonObject } from '../playbooks/_helpers.js';
+import {readJsonObject} from '../../../lib/relationship-command-input.js';
 
 export default class RelationshipPlaybookRecommendationsCreate extends BaseCommand {
   static description = 'Record a consequential recommendation with at least three plausible moves';

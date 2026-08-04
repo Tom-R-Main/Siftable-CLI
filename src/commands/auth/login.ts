@@ -88,6 +88,8 @@ export default class AuthLogin extends BaseCommand {
       if (requestedScopes.length > 0) {
         this.error('--scope applies only to device authorization; it cannot change an existing token.');
       }
+      // A pasted PAT is opaque: personal and workspace-service tokens share a
+      // prefix, so do not invent a principal subtype client-side.
       storeToken(token);
       if (!this.jsonEnabled()) {
         this.log(`Token stored in ${getConfigDir()}/auth.json`);
@@ -175,7 +177,8 @@ export default class AuthLogin extends BaseCommand {
       }
 
       if (tokenRes.ok && parsed && 'access_token' in parsed) {
-        storeToken(parsed.access_token);
+        // Device authorization always mints a personal PAT.
+        storeToken(parsed.access_token, 'personal_pat');
         if (!this.jsonEnabled()) {
           this.log(`  Logged in successfully! Token stored in ${getConfigDir()}/auth.json`);
         }

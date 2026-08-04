@@ -1,6 +1,6 @@
 import {Args} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
-import {CAPABILITIES} from '../../lib/capabilities.js';
+import {STATIC_READINESS_CAPABILITIES} from '../../lib/capabilities.js';
 import {renderDetail, renderTable} from '../../lib/output.js';
 
 export default class ResearchStatus extends BaseCommand {
@@ -28,7 +28,7 @@ export default class ResearchStatus extends BaseCommand {
       ok: true,
       projectId: args.project,
       context,
-      readiness: CAPABILITIES,
+      readiness: STATIC_READINESS_CAPABILITIES,
       next: [
         'Run `sift research plan "<goal>" --json` before writing.',
         'Run `sift datasets templates list --json` to inspect table contracts.',
@@ -39,10 +39,10 @@ export default class ResearchStatus extends BaseCommand {
     if (!this.jsonEnabled()) {
       renderDetail([
         ['Project ID', args.project],
-        ['Capabilities', CAPABILITIES.length],
+        ['Capabilities', STATIC_READINESS_CAPABILITIES.length],
       ]);
       this.log('');
-      renderTable(CAPABILITIES as unknown as Record<string, unknown>[], [
+      renderTable(STATIC_READINESS_CAPABILITIES as unknown as Record<string, unknown>[], [
         {key: 'id', header: 'Capability'},
         {key: 'status', header: 'Status'},
         {key: 'description', header: 'Description'},

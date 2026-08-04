@@ -1,7 +1,7 @@
 import { Flags } from '@oclif/core';
 import { BaseCommand } from '../../../lib/base-command.js';
 import { renderTable } from '../../../lib/output.js';
-import { queryString } from './_helpers.js';
+import {queryString} from '../../../lib/relationship-command-input.js';
 
 export default class RelationshipPlaybooksList extends BaseCommand {
   static description = 'List immutable relationship playbook versions and latest approval decisions';
