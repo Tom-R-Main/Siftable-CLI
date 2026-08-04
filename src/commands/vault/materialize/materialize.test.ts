@@ -5,6 +5,7 @@ import VaultMaterializeStatus from './status.js';
 import {
   assertCanonicalApprovalUrl,
   ownerFlagsForMaterializationSource,
+  withMaterializationSourceRecovery,
 } from '../materialization-source.js';
 
 function command<T>(constructor: {prototype: T}): T {
@@ -229,6 +230,13 @@ describe('Vault materialization CLI surface', () => {
       entry: 'personal/provider_key',
       owner: 'workspace:00000000-0000-4000-8000-000000000010',
     })).toThrow('conflicts');
+    expect(ownerFlagsForMaterializationSource({
+      entry: 'personal/provider_key',
+      workspace: '/legacy',
+    }, {legacyMaterializationAlias: true})).toMatchObject({
+      owner: 'personal',
+      workspace: undefined,
+    });
     expect(assertCanonicalApprovalUrl(
       'https://siftable.io/app/vault/approvals?approval=approval-1',
       'approval-1',
@@ -237,5 +245,53 @@ describe('Vault materialization CLI surface', () => {
       'https://siftable.io/app/vault/approvals?approval=approval-2',
       'approval-1',
     )).toThrow('exact approval binding');
+  });
+
+  it('preserves machine-readable source recovery after BaseCommand collapses a 404', async () => {
+    const failure = new Error('Not found: Vault materialization source not found') as Error & {
+      api?: Record<string, unknown>;
+      suggestions?: string[];
+    };
+    await expect(withMaterializationSourceRecovery(
+      async () => { throw failure; },
+      'missing_key',
+      'personal',
+    )).rejects.toThrow('Recovery: sift vault search "missing_key" --owner personal');
+    expect(failure.api).toEqual(expect.objectContaining({
+      type: 'vault_materialization_source_not_found',
+      extra: {
+        retryable: false,
+        recoveryCommand: 'sift vault search "missing_key" --owner personal',
+      },
+    }));
+    expect(failure.suggestions).toEqual(['sift vault search "missing_key" --owner personal']);
+  });
+
+  it('prints the typed lifecycle and its executable recovery command', async () => {
+    const status = command(VaultMaterializeStatus);
+    (status as any).parse = vi.fn().mockResolvedValue({
+      args: {id: 'materialization-1'},
+      flags: {},
+    });
+    (status as any).apiRequest = vi.fn().mockResolvedValue({materialization: {
+      id: 'materialization-1',
+      status: 'failed',
+      destinationPath: '/workspace/runtime/credential',
+      requestedMode: '0600',
+      expiresAt: '2026-08-04T20:00:00.000Z',
+      lifecycle: {
+        state: 'failed',
+        retryable: true,
+        recoveryCommand: 'sift vault materialize run --help',
+      },
+    }});
+    (status as any).jsonEnabled = () => false;
+    const log = vi.fn();
+    (status as any).log = log;
+    await status.run();
+    expect(log.mock.calls.flat()).toEqual(expect.arrayContaining([
+      'Status: failed',
+      'Recovery: sift vault materialize run --help',
+    ]));
   });
 });

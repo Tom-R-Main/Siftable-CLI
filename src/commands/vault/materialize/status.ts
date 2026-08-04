@@ -2,6 +2,19 @@ import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../../lib/base-command.js';
 import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from '../../../lib/vault-owner-context.js';
 
+interface MaterializationStatusRecord extends Record<string, unknown> {
+  id: string;
+  status: string;
+  destinationPath: string;
+  requestedMode: string;
+  expiresAt: string;
+  lifecycle?: {
+    state: string;
+    retryable: boolean;
+    recoveryCommand: string | null;
+  };
+}
+
 export default class VaultMaterializeStatus extends BaseCommand {
   static description = 'Inspect safe status for a destination-bound Vault materialization';
   static args = {id: Args.string({required: true})};
@@ -19,16 +32,19 @@ export default class VaultMaterializeStatus extends BaseCommand {
     const owner = resolveVaultOwnerContext(flags, {
       legacyMaterializationAlias: flags['legacy-context'],
     });
-    const response = await this.apiRequest<{materialization: Record<string, unknown>}>(
+    const response = await this.apiRequest<{materialization: MaterializationStatusRecord}>(
       vaultApiFlags(flags, owner),
       `/api/v1/vault/materializations/${encodeURIComponent(args.id)}?surface=cli&contextContractVersion=${owner.contextContractVersion}`,
     );
     if (!this.jsonEnabled()) {
       this.log(`Materialization: ${response.materialization.id}`);
-      this.log(`Status: ${response.materialization.status}`);
+      this.log(`Status: ${response.materialization.lifecycle?.state ?? response.materialization.status}`);
       this.log(`Destination: ${response.materialization.destinationPath}`);
       this.log(`Mode: ${response.materialization.requestedMode}`);
       this.log(`Expires: ${response.materialization.expiresAt}`);
+      if (response.materialization.lifecycle?.recoveryCommand) {
+        this.log(`Recovery: ${response.materialization.lifecycle.recoveryCommand}`);
+      }
     }
     return response.materialization;
   }

@@ -7,6 +7,7 @@ import {
   assertCanonicalApprovalUrl,
   ownerFlagsForMaterializationSource,
   type SafeMaterializationSource,
+  withMaterializationSourceRecovery,
 } from '../materialization-source.js';
 
 export default class VaultMaterializeRequest extends BaseCommand {
@@ -37,14 +38,20 @@ export default class VaultMaterializeRequest extends BaseCommand {
     if (root.usedLegacyAlias && !this.jsonEnabled()) {
       this.warn('Using --workspace as a local path is deprecated. Use --workspace-root; --workspace identifies a collaborative tenant.');
     }
-    const sourceFlags = ownerFlagsForMaterializationSource(flags);
+    const sourceFlags = ownerFlagsForMaterializationSource(flags, {
+      legacyMaterializationAlias: root.usedLegacyAlias,
+    });
     const owner = resolveVaultOwnerContext(sourceFlags, {
       legacyMaterializationAlias: root.usedLegacyAlias,
     });
     const apiFlags = vaultApiFlags(sourceFlags, owner);
-    const source = await this.apiRequest<{entry: SafeMaterializationSource}>(
-      apiFlags,
-      `/api/v1/vault/materializations/sources/resolve?surface=cli&contextContractVersion=${owner.contextContractVersion}&ref=${encodeURIComponent(flags.entry)}`,
+    const source = await withMaterializationSourceRecovery(
+      () => this.apiRequest<{entry: SafeMaterializationSource}>(
+        apiFlags,
+        `/api/v1/vault/materializations/sources/resolve?surface=cli&contextContractVersion=${owner.contextContractVersion}&ref=${encodeURIComponent(flags.entry)}`,
+      ),
+      flags.entry,
+      owner.owner,
     );
     if (!source.entry.credentialFields.includes(flags.field)) {
       throw new Error(

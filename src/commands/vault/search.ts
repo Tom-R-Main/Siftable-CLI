@@ -5,7 +5,7 @@ import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from '../../lib
 import type {SafeMaterializationSource} from './materialization-source.js';
 
 export default class VaultSearch extends BaseCommand {
-  static description = 'Search vault entries (metadata only; requires vault:metadata:read)';
+  static description = 'Search Vault entries and safe credential field names (requires vault:manage; values are never returned)';
 
   static requiredScope = 'vault:metadata:read';
 
