@@ -15,7 +15,7 @@ describe('governed approval CLI surface', () => {
     });
     (requestCommand as any).parse = vi.fn().mockResolvedValue({
       flags: {
-        action: 'vault.materialize',
+        action: 'relationship.approval.request',
         purpose: 'Write to an approved path',
         'resource-type': 'vault_entry',
         'resource-id': 'entry-1',
@@ -66,5 +66,20 @@ describe('governed approval CLI surface', () => {
 
     expect(existsSync('src/commands/approvals/approve.ts')).toBe(false);
     expect(existsSync('src/commands/approvals/consume.ts')).toBe(false);
+  });
+
+  it('rejects reserved Vault actions with the bounded task command', async () => {
+    const requestCommand = Object.create(ApprovalsRequest.prototype) as ApprovalsRequest;
+    (requestCommand as any).parse = vi.fn().mockResolvedValue({flags: {
+      action: 'vault.materialization.redeem',
+      purpose: 'Write to an approved path',
+      'resource-type': 'vault_materialization',
+      'resource-id': 'entry-1',
+      operation: 'materialize_file',
+      destination: '{}',
+    }});
+    (requestCommand as any).apiRequest = vi.fn();
+    await expect(requestCommand.run()).rejects.toThrow('sift vault materialize run --help');
+    expect((requestCommand as any).apiRequest).not.toHaveBeenCalled();
   });
 });

@@ -44,34 +44,29 @@ describe('Vault owner-scoped commands', () => {
 
   it('sends one explicit workspace owner and reports the server-persisted owner', async () => {
     const search = command(VaultSearch);
-    const client = {
-      searchVaultEntries: vi.fn().mockResolvedValue({
-        statusCode: 200,
-        data: {entries: [{
+    const apiRequest = vi.fn().mockResolvedValue({entries: [{
           id: 'entry-workspace',
           name: 'Workspace key',
           slug: 'provider_key',
-          entryType: 'env_var',
-          ownerType: 'workspace',
-          ownerId: 'workspace-1',
-          ownerProvenance: 'explicit',
-        }]},
-      }),
-    };
-    const createClient = vi.fn().mockResolvedValue(client);
+          owner: 'workspace:workspace-1',
+          qualifiedSlug: 'workspace:workspace-1/provider_key',
+          credentialFields: ['value'],
+        }]});
     (search as any).parse = vi.fn().mockResolvedValue({
       args: {query: 'provider'},
       flags: {owner: 'workspace:workspace-1'},
     });
-    (search as any).client = createClient;
-    (search as any).handleApiError = vi.fn();
+    (search as any).apiRequest = apiRequest;
     (search as any).jsonEnabled = () => true;
     const entries = await search.run() as Array<Record<string, unknown>>;
-    expect(createClient).toHaveBeenCalledWith(expect.objectContaining({workspace: 'workspace-1'}));
-    expect(client.searchVaultEntries).toHaveBeenCalledWith('provider', undefined);
+    expect(apiRequest).toHaveBeenCalledWith(
+      expect.objectContaining({workspace: 'workspace-1'}),
+      expect.stringContaining('search=provider'),
+    );
     expect(entries[0]).toMatchObject({
       owner: 'workspace:workspace-1',
       qualifiedSlug: 'workspace:workspace-1/provider_key',
+      credentialFields: ['value'],
     });
   });
 });

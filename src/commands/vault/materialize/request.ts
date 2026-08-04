@@ -3,6 +3,11 @@ import {readFile} from 'node:fs/promises';
 import {BaseCommand} from '../../../lib/base-command.js';
 import {resolveMaterializationRoot} from '../../../lib/materialization-root.js';
 import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from '../../../lib/vault-owner-context.js';
+import {
+  assertCanonicalApprovalUrl,
+  ownerFlagsForMaterializationSource,
+  type SafeMaterializationSource,
+} from '../materialization-source.js';
 
 export default class VaultMaterializeRequest extends BaseCommand {
   static description = 'Request human approval for one destination-bound Vault materialization';
@@ -32,14 +37,25 @@ export default class VaultMaterializeRequest extends BaseCommand {
     if (root.usedLegacyAlias && !this.jsonEnabled()) {
       this.warn('Using --workspace as a local path is deprecated. Use --workspace-root; --workspace identifies a collaborative tenant.');
     }
-    const owner = resolveVaultOwnerContext(flags, {
+    const sourceFlags = ownerFlagsForMaterializationSource(flags);
+    const owner = resolveVaultOwnerContext(sourceFlags, {
       legacyMaterializationAlias: root.usedLegacyAlias,
     });
-    const apiFlags = vaultApiFlags(flags, owner);
+    const apiFlags = vaultApiFlags(sourceFlags, owner);
+    const source = await this.apiRequest<{entry: SafeMaterializationSource}>(
+      apiFlags,
+      `/api/v1/vault/materializations/sources/resolve?surface=cli&contextContractVersion=${owner.contextContractVersion}&ref=${encodeURIComponent(flags.entry)}`,
+    );
+    if (!source.entry.credentialFields.includes(flags.field)) {
+      throw new Error(
+        `Vault field ${JSON.stringify(flags.field)} is unavailable. Run sift vault search ${JSON.stringify(source.entry.slug)} --owner ${source.entry.owner}.`,
+      );
+    }
     const response = await this.apiRequest<{
       materialization: Record<string, unknown>;
       artifactEnvelope: Record<string, unknown>;
       artifactBinding: string;
+      approvalUrl: string;
     }>(
       apiFlags,
       '/api/v1/vault/materializations',
@@ -48,7 +64,7 @@ export default class VaultMaterializeRequest extends BaseCommand {
         body: {
           surface: 'cli',
           contextContractVersion: owner.contextContractVersion,
-          vaultEntryId: flags.entry,
+          vaultEntryId: source.entry.id,
           credentialField: flags.field,
           destinationPath: flags.destination,
           workspaceRoot: root.workspaceRoot,
@@ -68,7 +84,10 @@ export default class VaultMaterializeRequest extends BaseCommand {
     );
     if (!this.jsonEnabled()) {
       this.log(`Materialization requested: ${response.materialization.id}`);
-      this.log(`Approval: ${response.materialization.approvalId}`);
+      this.log(`Approval: ${assertCanonicalApprovalUrl(
+        response.approvalUrl,
+        String(response.materialization.approvalId),
+      )}`);
       this.log('Warning: approval authorizes plaintext at rest at the exact displayed path.');
       this.log('The artifact is encrypted to the prepared runner; no plaintext or bearer artifact was emitted.');
     }

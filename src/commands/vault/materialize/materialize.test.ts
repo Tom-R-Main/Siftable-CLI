@@ -2,6 +2,10 @@ import {describe, expect, it, vi} from 'vitest';
 import VaultMaterializeRequest from './request.js';
 import VaultMaterializeRevoke from './revoke.js';
 import VaultMaterializeStatus from './status.js';
+import {
+  assertCanonicalApprovalUrl,
+  ownerFlagsForMaterializationSource,
+} from '../materialization-source.js';
 
 function command<T>(constructor: {prototype: T}): T {
   return Object.create(constructor.prototype) as T;
@@ -10,7 +14,10 @@ function command<T>(constructor: {prototype: T}): T {
 describe('Vault materialization CLI surface', () => {
   it('requests exact destination metadata and status without plaintext output', async () => {
     const request = command(VaultMaterializeRequest);
-    const requestApi = vi.fn().mockResolvedValue({
+    const requestApi = vi.fn().mockImplementation(async (_flags, url: string) => (
+      url.includes('/sources/resolve') ? {entry: {
+        id: 'entry-1', slug: 'entry', owner: 'personal', credentialFields: ['value'],
+      }} : {
       materialization: {
         id: 'materialization-1',
         approvalId: 'approval-1',
@@ -18,7 +25,8 @@ describe('Vault materialization CLI surface', () => {
       },
       artifactEnvelope: {algorithm: 'RSA-OAEP-256+A256GCM', ciphertext: 'opaque'},
       artifactBinding: 'opaque-binding',
-    });
+      approvalUrl: 'https://siftable.io/app/vault/approvals?approval=approval-1',
+    }));
     (request as any).parse = vi.fn().mockResolvedValue({flags: {
       entry: 'entry-1',
       field: 'value',
@@ -34,8 +42,9 @@ describe('Vault materialization CLI surface', () => {
       'materializer-digest': 'b'.repeat(64),
     }});
     (request as any).apiRequest = requestApi;
-    (request as any).jsonEnabled = () => true;
-    (request as any).log = vi.fn();
+    (request as any).jsonEnabled = () => false;
+    const requestLog = vi.fn();
+    (request as any).log = requestLog;
     const requested = await request.run();
     expect(requestApi).toHaveBeenCalledWith(
       expect.not.objectContaining({
@@ -51,6 +60,8 @@ describe('Vault materialization CLI surface', () => {
         plaintextDisclosureAcknowledged: true,
       })}),
     );
+    expect(requestLog.mock.calls.flat().filter((line) => String(line).startsWith('Approval: http')))
+      .toEqual(['Approval: https://siftable.io/app/vault/approvals?approval=approval-1']);
 
     const status = command(VaultMaterializeStatus);
     const statusApi = vi.fn().mockResolvedValue({
@@ -77,11 +88,15 @@ describe('Vault materialization CLI surface', () => {
 
   it('accepts the deprecated absolute --workspace path without forwarding a tenant header', async () => {
     const request = command(VaultMaterializeRequest);
-    const requestApi = vi.fn().mockResolvedValue({
+    const requestApi = vi.fn().mockImplementation(async (_flags, url: string) => (
+      url.includes('/sources/resolve') ? {entry: {
+        id: 'entry-1', slug: 'entry', owner: 'personal', credentialFields: ['value'],
+      }} : {
       materialization: {id: 'materialization-legacy', approvalId: 'approval-legacy'},
       artifactEnvelope: {ciphertext: 'opaque'},
       artifactBinding: 'opaque-binding',
-    });
+      approvalUrl: 'https://siftable.io/app/vault/approvals?approval=approval-legacy',
+    }));
     (request as any).parse = vi.fn().mockResolvedValue({flags: {
       entry: 'entry-1',
       field: 'value',
@@ -104,18 +119,22 @@ describe('Vault materialization CLI surface', () => {
       '/api/v1/vault/materializations',
       expect.objectContaining({body: expect.objectContaining({workspaceRoot: '/legacy'})}),
     );
-    expect(requestApi.mock.calls[0][2]).toEqual(expect.objectContaining({
+    expect(requestApi.mock.calls.at(-1)?.[2]).toEqual(expect.objectContaining({
       body: expect.objectContaining({contextContractVersion: 0}),
     }));
   });
 
   it('forwards one workspace identity through request, status, and revoke', async () => {
     const request = command(VaultMaterializeRequest);
-    const requestApi = vi.fn().mockResolvedValue({
+    const requestApi = vi.fn().mockImplementation(async (_flags, url: string) => (
+      url.includes('/sources/resolve') ? {entry: {
+        id: 'entry-1', slug: 'entry', owner: 'workspace:workspace-1', credentialFields: ['value'],
+      }} : {
       materialization: {id: 'materialization-workspace', approvalId: 'approval-workspace'},
       artifactEnvelope: {ciphertext: 'opaque'},
       artifactBinding: 'opaque-binding',
-    });
+      approvalUrl: 'https://siftable.io/app/vault/approvals?approval=approval-workspace',
+    }));
     (request as any).parse = vi.fn().mockResolvedValue({flags: {
       entry: 'entry-1',
       field: 'value',
@@ -194,5 +213,29 @@ describe('Vault materialization CLI surface', () => {
       if (originalWorkspace === undefined) delete process.env.SIFT_WORKSPACE_ID;
       else process.env.SIFT_WORKSPACE_ID = originalWorkspace;
     }
+  });
+
+  it('derives an exact owner from qualified slugs and validates the canonical URL', () => {
+    expect(ownerFlagsForMaterializationSource({
+      entry: 'personal/provider_key',
+    })).toMatchObject({owner: 'personal'});
+    expect(ownerFlagsForMaterializationSource({
+      entry: 'workspace:00000000-0000-4000-8000-000000000010/provider_key',
+    })).toMatchObject({
+      owner: 'workspace:00000000-0000-4000-8000-000000000010',
+      workspace: '00000000-0000-4000-8000-000000000010',
+    });
+    expect(() => ownerFlagsForMaterializationSource({
+      entry: 'personal/provider_key',
+      owner: 'workspace:00000000-0000-4000-8000-000000000010',
+    })).toThrow('conflicts');
+    expect(assertCanonicalApprovalUrl(
+      'https://siftable.io/app/vault/approvals?approval=approval-1',
+      'approval-1',
+    )).toContain('approval=approval-1');
+    expect(() => assertCanonicalApprovalUrl(
+      'https://siftable.io/app/vault/approvals?approval=approval-2',
+      'approval-1',
+    )).toThrow('exact approval binding');
   });
 });

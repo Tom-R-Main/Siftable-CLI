@@ -1,12 +1,8 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
 import {renderTable} from '../../lib/output.js';
-import {
-  projectVaultEntries,
-  resolveVaultOwnerContext,
-  vaultApiFlags,
-  vaultOwnerFlag,
-} from '../../lib/vault-owner-context.js';
+import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from '../../lib/vault-owner-context.js';
+import type {SafeMaterializationSource} from './materialization-source.js';
 
 export default class VaultSearch extends BaseCommand {
   static description = 'Search vault entries (metadata only; requires vault:metadata:read)';
@@ -26,20 +22,21 @@ export default class VaultSearch extends BaseCommand {
   async run(): Promise<unknown> {
     const {args, flags} = await this.parse(VaultSearch);
     const owner = resolveVaultOwnerContext(flags);
-    const client = await this.client(vaultApiFlags(flags, owner));
-    const response = await client.searchVaultEntries(args.query, flags.limit);
-    this.handleApiError(response);
-
-    const entries = projectVaultEntries(this.unwrapList(response, 'entries'), owner);
+    const response = await this.apiRequest<{entries: SafeMaterializationSource[]}>(
+      vaultApiFlags(flags, owner),
+      `/api/v1/vault/materializations/sources?surface=cli&contextContractVersion=${owner.contextContractVersion}&search=${encodeURIComponent(args.query)}`,
+    );
+    const entries = flags.limit == null
+      ? response.entries
+      : response.entries.slice(0, Math.max(0, flags.limit));
 
     if (!this.jsonEnabled()) {
       renderTable(entries, [
         {key: 'id', header: 'ID'},
         {key: 'name', header: 'Name'},
-        {key: 'entryType', header: 'Type'},
-        {key: 'category', header: 'Category'},
         {key: 'owner', header: 'Owner'},
         {key: 'qualifiedSlug', header: 'Qualified slug'},
+        {key: 'credentialFields', header: 'Fields'},
       ]);
     }
 

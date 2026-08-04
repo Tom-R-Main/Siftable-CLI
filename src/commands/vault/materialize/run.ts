@@ -16,6 +16,11 @@ import {
 import type {ExecutionGrantEnvelope} from '../../../lib/localExecutionRunner.js';
 import {resolveMaterializationRoot} from '../../../lib/materialization-root.js';
 import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from '../../../lib/vault-owner-context.js';
+import {
+  assertCanonicalApprovalUrl,
+  ownerFlagsForMaterializationSource,
+  type SafeMaterializationSource,
+} from '../materialization-source.js';
 
 interface MaterializationRecord {
   id: string;
@@ -76,10 +81,21 @@ export default class VaultMaterializeRun extends BaseCommand {
     if (root.usedLegacyAlias && !this.jsonEnabled()) {
       this.warn('Using --workspace as a local path is deprecated. Use --workspace-root; --workspace identifies a collaborative tenant.');
     }
-    const owner = resolveVaultOwnerContext(flags, {
+    const sourceFlags = ownerFlagsForMaterializationSource(flags);
+    const owner = resolveVaultOwnerContext(sourceFlags, {
       legacyMaterializationAlias: root.usedLegacyAlias,
     });
-    const apiFlags = vaultApiFlags(flags, owner);
+    const apiFlags = vaultApiFlags(sourceFlags, owner);
+    const source = await this.apiRequest<{entry: SafeMaterializationSource}>(
+      apiFlags,
+      `/api/v1/vault/materializations/sources/resolve?surface=cli&contextContractVersion=${owner.contextContractVersion}&ref=${encodeURIComponent(flags.entry)}`,
+    );
+    if (!source.entry.credentialFields.includes(flags.field)) {
+      throw new Error(
+        `Vault field ${JSON.stringify(flags.field)} is unavailable. Run sift vault search ${JSON.stringify(source.entry.slug)} --owner ${source.entry.owner}.`,
+      );
+    }
+    const vaultEntryId = source.entry.id;
     const policyAllowsTrackedException =
       process.env.SIFT_ALLOW_TRACKED_SECRET_MATERIALIZATION === 'true';
     const precondition = await inspectMaterializationDestination({
@@ -100,7 +116,7 @@ export default class VaultMaterializeRun extends BaseCommand {
     const nonce = randomBytes(32).toString('base64url');
     const runnerProofTimestamp = new Date().toISOString();
     const local = {
-      source: {vaultEntryId: flags.entry, credentialField: flags.field},
+      source: {vaultEntryId, credentialField: flags.field},
       destinationPath: flags.destination,
       workspaceRoot: root.workspaceRoot,
       requestedMode: flags.mode as '0400' | '0600',
@@ -116,7 +132,7 @@ export default class VaultMaterializeRun extends BaseCommand {
     };
     const runnerProofBinding = runner.sessionEligible
       ? createMaterializationRunnerProofBinding({
-        vaultEntryId: flags.entry,
+        vaultEntryId,
         credentialField: flags.field,
         destinationPath: flags.destination,
         workspaceRoot: root.workspaceRoot,
@@ -137,6 +153,7 @@ export default class VaultMaterializeRun extends BaseCommand {
       materialization: MaterializationRecord;
       artifactEnvelope: ExecutionGrantEnvelope;
       artifactBinding: string;
+      approvalUrl: string;
     }>(
       apiFlags,
       '/api/v1/vault/materializations',
@@ -145,7 +162,7 @@ export default class VaultMaterializeRun extends BaseCommand {
         body: {
           surface: 'cli',
           contextContractVersion: owner.contextContractVersion,
-          vaultEntryId: flags.entry,
+          vaultEntryId,
           credentialField: flags.field,
           destinationPath: flags.destination,
           workspaceRoot: root.workspaceRoot,
@@ -189,7 +206,10 @@ export default class VaultMaterializeRun extends BaseCommand {
       'vault_materialization_artifact',
       'artifact',
     );
-    this.log(`Approval required: ${requested.materialization.approvalId}`);
+    this.log(`Approval: ${assertCanonicalApprovalUrl(
+      requested.approvalUrl,
+      requested.materialization.approvalId,
+    )}`);
     this.log(`Plaintext destination: ${flags.destination} (${flags.mode})`);
     this.log('Approve this exact destination-bound request in the first-party Siftable browser.');
 
@@ -235,7 +255,7 @@ export default class VaultMaterializeRun extends BaseCommand {
       assertMatchesLocal(redeemed.materialization, local);
       const credentialBinding = createMaterializationCredentialBinding({
         materializationId: requested.materialization.id,
-        sourceEntry: flags.entry,
+        sourceEntry: vaultEntryId,
         sourceField: flags.field,
         runnerFingerprint: runner.fingerprint,
         materializerDigest: runner.materializerDigest,
