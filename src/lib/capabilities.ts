@@ -58,8 +58,8 @@ export const CAPABILITIES: Capability[] = [
   {
     id: 'research.people',
     status: 'ready',
-    commands: ['sift people get', 'sift people list', 'sift people search', 'sift people create', 'sift people update', 'sift people relate', 'sift people graph', 'sift people kinship', 'sift people timeline'],
-    description: 'Create, inspect, relate, graph, and timeline people as research entities rather than flat contact rows.',
+    commands: ['sift people get', 'sift people list', 'sift people search', 'sift people create', 'sift people update', 'sift people enrich', 'sift people relate', 'sift people graph', 'sift people kinship', 'sift people timeline'],
+    description: 'Create, inspect, research, reconcile, relate, graph, and timeline people as research entities rather than flat contact rows.',
   },
   {
     id: 'research.graph',
