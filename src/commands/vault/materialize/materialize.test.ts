@@ -10,6 +10,7 @@ import {
   assertCanonicalApprovalUrl,
   assertMaterializationSourceField,
   ownerFlagsForMaterializationSource,
+  withMaterializationFailureRecovery,
   withMaterializationRecovery,
   withMaterializationSourceRecovery,
 } from '../materialization-source.js';
@@ -317,7 +318,7 @@ describe('Vault materialization CLI surface', () => {
     };
     await expect(withMaterializationSourceRecovery(
       async () => { throw failure; },
-      'missing_key',
+      'personal/missing_key',
       'personal',
     )).rejects.toThrow('Recovery: sift vault search "missing_key" --owner personal');
     expect(failure.api).toEqual(expect.objectContaining({
@@ -328,6 +329,31 @@ describe('Vault materialization CLI surface', () => {
       },
     }));
     expect(failure.suggestions).toEqual(['sift vault search "missing_key" --owner personal']);
+  });
+
+  it('classifies terminal and timeout failures with one executable status recovery', () => {
+    const recoveryCommand = 'sift vault materialize status materialization-1';
+    const timeout = withMaterializationFailureRecovery(
+      new Error('Materialization approval timed out'),
+      {
+        type: 'vault_materialization_approval_timeout',
+        retryable: true,
+        recoveryCommand,
+      },
+    ) as Error & {api?: Record<string, any>; suggestions?: string[]};
+    expect(timeout.message).toContain(`Recovery: ${recoveryCommand}`);
+    expect(timeout.api?.extra).toEqual({retryable: true, recoveryCommand});
+    expect(timeout.suggestions).toEqual([recoveryCommand]);
+
+    const terminal = withMaterializationFailureRecovery(
+      new Error('Materialization approval is denied'),
+      {
+        type: 'vault_materialization_approval_terminal',
+        retryable: false,
+        recoveryCommand,
+      },
+    ) as Error & {api?: Record<string, any>};
+    expect(terminal.api?.extra).toEqual({retryable: false, recoveryCommand});
   });
 
   it('prints the typed lifecycle and its executable recovery command', async () => {

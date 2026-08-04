@@ -22,6 +22,7 @@ import {
   assertMaterializationSourceField,
   ownerFlagsForMaterializationSource,
   type SafeMaterializationSource,
+  withMaterializationFailureRecovery,
   withMaterializationRecovery,
   withMaterializationSourceRecovery,
 } from '../materialization-source.js';
@@ -160,9 +161,22 @@ export default class VaultMaterializeRun extends BaseCommand {
     }
     const runner = await createMaterializerRunner(
       flags['api-url'] ?? process.env.SIFT_API_URL ?? DEFAULT_API_URL,
-    );
+    ).catch(error => {
+      throw withMaterializationFailureRecovery(error, {
+        type: 'vault_materialization_runner_unavailable',
+        retryable: true,
+        recoveryCommand: 'sift vault materialize run --help',
+      });
+    });
     if (!runner.privateKey) {
-      throw new Error('Vault materializer device identity is unavailable');
+      throw withMaterializationFailureRecovery(
+        new Error('Vault materializer device identity is unavailable'),
+        {
+          type: 'vault_materialization_runner_unavailable',
+          retryable: true,
+          recoveryCommand: 'sift vault materialize run --help',
+        },
+      );
     }
     const signingPrivateKey = runner.privateKey;
     const nonce = randomBytes(32).toString('base64url');
@@ -248,7 +262,16 @@ export default class VaultMaterializeRun extends BaseCommand {
         recoveryCommand: 'sift vault materialize run --help',
       },
     );
-    assertMatchesLocal(requested.materialization, local);
+    const statusRecovery = `sift vault materialize status ${requested.materialization.id}`;
+    try {
+      assertMatchesLocal(requested.materialization, local);
+    } catch (error) {
+      throw withMaterializationFailureRecovery(error, {
+        type: 'vault_materialization_binding_mismatch',
+        retryable: false,
+        recoveryCommand: statusRecovery,
+      });
+    }
     const artifactBinding = createMaterializationArtifactBinding({
       materializationId: requested.materialization.id,
       runnerFingerprint: runner.fingerprint,
@@ -256,15 +279,31 @@ export default class VaultMaterializeRun extends BaseCommand {
       nonce,
     });
     if (requested.artifactBinding !== artifactBinding || !runner.privateKey) {
-      throw new Error('Materialization artifact binding is invalid');
+      throw withMaterializationFailureRecovery(
+        new Error('Materialization artifact binding is invalid'),
+        {
+          type: 'vault_materialization_artifact_binding_invalid',
+          retryable: false,
+          recoveryCommand: statusRecovery,
+        },
+      );
     }
-    let artifact = decryptMaterializationEnvelope(
-      requested.artifactEnvelope,
-      runner.privateKey,
-      artifactBinding,
-      'vault_materialization_artifact',
-      'artifact',
-    );
+    let artifact: string;
+    try {
+      artifact = decryptMaterializationEnvelope(
+        requested.artifactEnvelope,
+        runner.privateKey,
+        artifactBinding,
+        'vault_materialization_artifact',
+        'artifact',
+      );
+    } catch (error) {
+      throw withMaterializationFailureRecovery(error, {
+        type: 'vault_materialization_artifact_invalid',
+        retryable: false,
+        recoveryCommand: statusRecovery,
+      });
+    }
     this.log(`Approval: ${assertCanonicalApprovalUrl(
       requested.approvalUrl,
       requested.materialization.approvalId,
@@ -293,10 +332,28 @@ export default class VaultMaterializeRun extends BaseCommand {
         );
         approvalStatus = approval.approval.status;
         if (approvalStatus === 'approved') break;
-        if (approvalStatus !== 'pending') throw new Error(`Materialization approval is ${approvalStatus}`);
+        if (approvalStatus !== 'pending') {
+          throw withMaterializationFailureRecovery(
+            new Error(`Materialization approval is ${approvalStatus}`),
+            {
+              type: 'vault_materialization_approval_terminal',
+              retryable: false,
+              recoveryCommand: statusRecovery,
+            },
+          );
+        }
         await delay(2000);
       }
-      if (approvalStatus !== 'approved') throw new Error('Materialization approval timed out');
+      if (approvalStatus !== 'approved') {
+        throw withMaterializationFailureRecovery(
+          new Error('Materialization approval timed out'),
+          {
+            type: 'vault_materialization_approval_timeout',
+            retryable: true,
+            recoveryCommand: statusRecovery,
+          },
+        );
+      }
       const redeemed = await withMaterializationRecovery(
         () => this.apiRequest<{
           materialization: MaterializationRecord;
@@ -325,7 +382,15 @@ export default class VaultMaterializeRun extends BaseCommand {
         },
       );
       redemptionCompleted = true;
-      assertMatchesLocal(redeemed.materialization, local);
+      try {
+        assertMatchesLocal(redeemed.materialization, local);
+      } catch (error) {
+        throw withMaterializationFailureRecovery(error, {
+          type: 'vault_materialization_binding_mismatch',
+          retryable: false,
+          recoveryCommand: statusRecovery,
+        });
+      }
       const credentialBinding = createMaterializationCredentialBinding({
         materializationId: requested.materialization.id,
         sourceEntry: vaultEntryId,
@@ -342,7 +407,14 @@ export default class VaultMaterializeRun extends BaseCommand {
         nonce,
       });
       if (redeemed.binding !== credentialBinding || !runner.privateKey) {
-        throw new Error('Materialization credential binding is invalid');
+        throw withMaterializationFailureRecovery(
+          new Error('Materialization credential binding is invalid'),
+          {
+            type: 'vault_materialization_credential_binding_invalid',
+            retryable: false,
+            recoveryCommand: statusRecovery,
+          },
+        );
       }
       plaintext = decryptMaterializationEnvelope(
         redeemed.envelope,
@@ -433,7 +505,11 @@ export default class VaultMaterializeRun extends BaseCommand {
           // Preserve the approval or timeout error; the request remains bounded and expires server-side.
         }
       }
-      throw error;
+      throw withMaterializationFailureRecovery(error, {
+        type: 'vault_materialization_run_failed',
+        retryable: false,
+        recoveryCommand: statusRecovery,
+      });
     } finally {
       artifact = '';
       plaintext = '';

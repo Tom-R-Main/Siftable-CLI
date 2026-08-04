@@ -83,6 +83,45 @@ export function assertMaterializationSourceField(
   throw error;
 }
 
+export function withMaterializationFailureRecovery(
+  error: unknown,
+  options: {
+    type: string;
+    retryable: boolean;
+    recoveryCommand: string;
+  },
+): Error {
+  const recovered = error instanceof Error ? error : new Error(String(error));
+  const apiError = recovered as Error & {
+    api?: Record<string, unknown>;
+    suggestions?: string[];
+  };
+  const existingExtra = apiError.api?.extra;
+  const existing = existingExtra && typeof existingExtra === 'object'
+    ? existingExtra as Record<string, unknown>
+    : {};
+  const retryable = typeof existing.retryable === 'boolean'
+    ? existing.retryable
+    : options.retryable;
+  const recoveryCommand = typeof existing.recoveryCommand === 'string'
+    ? existing.recoveryCommand
+    : options.recoveryCommand;
+  if (!recovered.message.includes(`Recovery: ${recoveryCommand}`)) {
+    recovered.message = `${recovered.message}\nRecovery: ${recoveryCommand}`;
+  }
+  apiError.api = {
+    ...(apiError.api ?? {}),
+    type: typeof apiError.api?.type === 'string' ? apiError.api.type : options.type,
+    extra: {
+      ...existing,
+      retryable,
+      recoveryCommand,
+    },
+  };
+  apiError.suggestions = [recoveryCommand];
+  return recovered;
+}
+
 export async function withMaterializationRecovery<T>(
   operation: () => Promise<T>,
   options: {
@@ -95,26 +134,8 @@ export async function withMaterializationRecovery<T>(
     return await operation();
   } catch (error) {
     const recovered = error instanceof Error ? error : new Error(String(error));
-    const apiError = recovered as Error & {
-      api?: Record<string, unknown>;
-      suggestions?: string[];
-    };
     if (!recovered.message.startsWith('Not found:')) throw recovered;
-    if (!recovered.message.includes(`Recovery: ${options.recoveryCommand}`)) {
-      recovered.message = `${recovered.message}\nRecovery: ${options.recoveryCommand}`;
-    }
-    const existingExtra = apiError.api?.extra;
-    apiError.api = {
-      ...(apiError.api ?? {}),
-      type: typeof apiError.api?.type === 'string' ? apiError.api.type : options.type,
-      extra: {
-        ...(existingExtra && typeof existingExtra === 'object' ? existingExtra : {}),
-        retryable: options.retryable,
-        recoveryCommand: options.recoveryCommand,
-      },
-    };
-    apiError.suggestions = [options.recoveryCommand];
-    throw recovered;
+    throw withMaterializationFailureRecovery(recovered, options);
   }
 }
 
@@ -123,7 +144,9 @@ export async function withMaterializationSourceRecovery<T>(
   reference: string,
   owner: string,
 ): Promise<T> {
-  const recoveryCommand = `sift vault search ${JSON.stringify(reference)} --owner ${owner}`;
+  const searchTerm = reference.replace(/^personal\//, '')
+    .replace(/^workspace:[0-9a-f-]{36}\//i, '');
+  const recoveryCommand = `sift vault search ${JSON.stringify(searchTerm)} --owner ${owner}`;
   return withMaterializationRecovery(operation, {
     type: 'vault_materialization_source_not_found',
     retryable: false,
