@@ -123,7 +123,7 @@ export class LocalControlClient implements ControlTransport {
       return this.deps.setModel({ provider: CODEX_PROVIDER, model: CODEX_DEFAULT_MODEL });
     }
     // Restore the OpenFunction default engine.
-    return this.deps.setModel({ provider: "openrouter", model: "google/gemini-3.5-flash" });
+    return this.deps.setModel({ provider: "openrouter", model: "google/gemini-3.6-flash" });
   }
 
   async login(): Promise<{ verificationUri: string; userCode: string }> {

@@ -2613,7 +2613,7 @@ Create an executable agent work item
 - `--agent <value>` — Assigned agent alias
 - `--allowed-actions <value>` — Allowed actions JSON object
 - `--context <value>` — Input context JSON object
-- `--depends-on <value>` — Dependency JSON array: [{"workItemId":"<uuid>","requiredGate"?:"done"|"commands_passed"|"verified"}]
+- `--depends-on <value>` — Dependency JSON array: [{"workItemId":"<uuid>","requiredGate"?:"done"|"commands_passed"}]
 - `--project <value>` — Linked project ID
 - `--prompt <value>` — Agent prompt or instructions
 - `--rank <value>` *(default: 0)* — Queue rank
@@ -2652,7 +2652,7 @@ Set a project default work-dependency gate
 
 **Flags**
 
-- `--gate <done|commands_passed|verified>` *(required)* — Default gate for dependencies that omit requiredGate
+- `--gate <done|commands_passed>` *(required)* — Default gate for dependencies that omit requiredGate
 - `--project <value>` *(required)* — Project UUID
 
 #### `sift work edit`
@@ -2863,7 +2863,7 @@ Create an audited active verification-plan revision
 - `--yes` — Confirm activation without prompting
 
 #### `sift work verify`
-Run the LLM verifier against a work item's acceptance criteria and record a verifier run. Promotion to verified requires passing verification-command evidence plus a verified verdict.
+Deprecated compatibility command. Hosted LLM verification is retired; use verification-command evidence.
 
 **Arguments**
 
@@ -2871,9 +2871,9 @@ Run the LLM verifier against a work item's acceptance criteria and record a veri
 
 **Flags**
 
-- `--history` — List prior verifier runs instead of running a new one
-- `--model <value>` — Verifier model override
-- `--reps <value>` — Repeated evaluations per criterion (1-8, default 3)
+- `--history` — List historical verifier runs recorded before retirement
+- `--model <value>` — Deprecated; ignored because hosted verification is retired
+- `--reps <value>` — Deprecated; ignored because hosted verification is retired
 
 
 ### Worker

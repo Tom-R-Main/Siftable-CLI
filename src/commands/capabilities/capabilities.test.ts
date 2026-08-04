@@ -59,7 +59,7 @@ describe('Vault capability CLI surface', () => {
       flags: {
         handle: 'vcap_opaque',
         operation: 'generate_content',
-        input: '{"model":"gemini-3.5-flash","prompt":"hello"}',
+        input: '{"model":"gemini-3.6-flash","prompt":"hello"}',
         approval: 'approval-1',
         'idempotency-key': 'stable-request-1',
       },
@@ -77,7 +77,7 @@ describe('Vault capability CLI surface', () => {
           surface: 'cli',
           handle: 'vcap_opaque',
           operation: 'generate_content',
-          input: {model: 'gemini-3.5-flash', prompt: 'hello'},
+          input: {model: 'gemini-3.6-flash', prompt: 'hello'},
           approvalId: 'approval-1',
           idempotencyKey: 'stable-request-1',
         },

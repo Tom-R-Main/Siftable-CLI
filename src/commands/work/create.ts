@@ -19,7 +19,7 @@ export default class WorkCreate extends BaseCommand {
     'write-scope': Flags.string({description: 'Write scope JSON object'}),
     verify: Flags.string({description: 'Verification commands separated by semicolons'}),
     'depends-on': Flags.string({
-      description: 'Dependency JSON array: [{"workItemId":"<uuid>","requiredGate"?:"done"|"commands_passed"|"verified"}]',
+      description: 'Dependency JSON array: [{"workItemId":"<uuid>","requiredGate"?:"done"|"commands_passed"}]',
     }),
   };
 

@@ -145,6 +145,7 @@
     }
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.104.1",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@morphllm/morphsdk": "^0.2.177",
     "@oclif/core": "^4",

@@ -60,7 +60,7 @@ describe("buildAgentWorkGraph", () => {
           title: "Build substrate",
           status: "running",
           verificationState: "unverified",
-          requiredGate: "verified",
+          requiredGate: "commands_passed",
           satisfied: false,
         }],
         claimability: {
@@ -70,7 +70,7 @@ describe("buildAgentWorkGraph", () => {
             title: "Build substrate",
             status: "running",
             verificationState: "unverified",
-            requiredGate: "verified",
+            requiredGate: "commands_passed",
             satisfied: false,
           }],
         },
@@ -172,14 +172,14 @@ describe("planAgentWork rendering", () => {
         id: "b",
         title: "lane B consumer",
         status: "queued",
-        dependencies: [{predecessorId: "a", title: "lane A substrate", requiredGate: "verified", satisfied: false}],
+        dependencies: [{predecessorId: "a", title: "lane A substrate", requiredGate: "commands_passed", satisfied: false}],
         claimability: {state: "waiting", blockedBy: []},
       },
       {id: "c", title: "lane C follow-up", status: "queued"},
     ];
     const {text} = planAgentWork(queue, {declaredEdges: [{source: "b", target: "c"}]});
     expect(text).toContain("Authoritative queue gates (enforced by claim)");
-    expect(text).toContain("lane B consumer — waiting; after lane A substrate [verified]");
+    expect(text).toContain("lane B consumer — waiting; after lane A substrate [commands_passed]");
     expect(text).toContain("Planning-only precedence:");
     expect(text).toContain("do not affect queue claimability");
   });

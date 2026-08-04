@@ -45,7 +45,7 @@ export function buildCommandContext(overrides: Partial<InteractiveCommandContext
     },
     apiClient: apiClient as any,
     baseUrl: 'in-process (test)',
-    model: () => 'google/gemini-3.5-flash',
+    model: () => 'google/gemini-3.6-flash',
     setModel: jest.fn(),
     agents: () => [{workspaceId: 'ws-1', workItemId: null, taskId: null, agentType: 'codex', state: 'idle', assignedAlias: 'codex'}],
     queuedCount: () => 2,

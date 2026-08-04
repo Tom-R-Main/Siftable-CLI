@@ -27,10 +27,10 @@ export type ChatContent = string | ContentPart[];
  * Reasoning effort levels, normalized across providers.
  *
  * - OpenAI / OpenRouter / Codex map these straight to their `effort` field.
- * - Anthropic has no effort levels — adapters translate the level to an
- *   extended-thinking `budget_tokens` value. `none`/`minimal` disable thinking.
+ * - Claude Opus 5 maps these to `output_config.effort`; legacy none/minimal
+ *   selections normalize to low so adaptive thinking remains enabled.
  */
-export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /** A single tool/function call requested by the model. */
 export interface ToolCall {
@@ -104,7 +104,7 @@ export interface AdapterConfig {
   /**
    * Reasoning effort for models that support it. Adapters translate this to
    * their provider-native control (OpenAI/OpenRouter `reasoning.effort`,
-   * Anthropic extended-thinking `budget_tokens`). Ignored by models that
+   * Anthropic `output_config.effort`). Ignored by models that
    * don't expose reasoning.
    */
   reasoningEffort?: ReasoningEffort;

@@ -2,35 +2,30 @@
  * Anthropic Adapter (Claude)
  *
  * Env: ANTHROPIC_API_KEY
- * Default model: claude-sonnet-4-6
+ * Default model: claude-opus-5
  */
 
+import Anthropic from "@anthropic-ai/sdk";
 import type { AIAdapter, AdapterConfig, ChatMessage, ChatOptions, AdapterResponse, ReasoningEffort } from "./types.js";
 import type { ToolRegistry } from "../registry.js";
 import { safeJsonParse } from "./util.js";
 import { chatContentToText, imageBase64, imageMime, normalizeChatContent } from "./content.js";
 
-/**
- * Anthropic has no `effort` knob — extended thinking is controlled by a token
- * budget. Translate the normalized effort level to a budget; `none`/`minimal`
- * mean "no thinking". Budgets must be >= 1024 and strictly < max_tokens.
- */
-const THINKING_BUDGET: Record<ReasoningEffort, number> = {
-  none: 0,
-  minimal: 0,
-  low: 2048,
-  medium: 6144,
-  high: 12288,
-  xhigh: 24576,
+type ClaudeOpus5Effort = "low" | "medium" | "high" | "xhigh" | "max";
+
+const normalizeClaudeOpus5Effort = (effort?: ReasoningEffort): ClaudeOpus5Effort => {
+  if (!effort) return "high";
+  if (effort === "none" || effort === "minimal") return "low";
+  return effort;
 };
-/** Output headroom reserved for the answer on top of the thinking budget. */
-const ANSWER_HEADROOM = 8192;
-/**
- * Anthropic REQUIRES max_tokens (unlike OpenAI/Gemini, which we omit). With no
- * model-metadata DB to derive a per-model cap, use a generous default that
- * won't truncate normal answers — the old 2048 cut real responses short.
- */
-const DEFAULT_MAX_TOKENS = 8192;
+
+const normalizeClaudeModel = (model?: string): string => {
+  const requested = model?.trim() || "claude-opus-5";
+  if (/claude-(?:opus|sonnet)-(?!5(?:$|-))/.test(requested) || requested.includes("claude-sonnet-")) {
+    return "claude-opus-5";
+  }
+  return requested;
+};
 
 export function createAnthropicAdapter(config?: Partial<AdapterConfig>): AIAdapter {
   const apiKey = config?.apiKey ?? process.env.ANTHROPIC_API_KEY;
@@ -40,11 +35,12 @@ export function createAnthropicAdapter(config?: Partial<AdapterConfig>): AIAdapt
     );
   }
 
-  const model = config?.model ?? "claude-sonnet-4-6";
+  const model = normalizeClaudeModel(config?.model);
   const doFetch = config?.fetchImpl ?? fetch;
+  const client = new Anthropic({ apiKey, fetch: doFetch });
   const systemPrompt = config?.systemPrompt ?? "You are a helpful assistant with access to tools. Use tools when they're relevant.";
-  const thinkingBudget = config?.reasoningEffort ? THINKING_BUDGET[config.reasoningEffort] : 0;
-  const thinkingEnabled = thinkingBudget > 0;
+  const effort = normalizeClaudeOpus5Effort(config?.reasoningEffort);
+  const maxTokens = effort === "xhigh" || effort === "max" ? 64_000 : 16_000;
 
   return {
     name: config?.name ?? "Claude",
@@ -52,7 +48,7 @@ export function createAnthropicAdapter(config?: Partial<AdapterConfig>): AIAdapt
 
     async chat(messages: ChatMessage[], registry: ToolRegistry, options?: ChatOptions): Promise<AdapterResponse> {
       // Convert messages to Anthropic format
-      const anthropicMessages: any[] = [];
+      const anthropicMessages: Anthropic.MessageParam[] = [];
 
       for (const msg of messages) {
         if (msg.role === "user") {
@@ -65,7 +61,9 @@ export function createAnthropicAdapter(config?: Partial<AdapterConfig>): AIAdapt
           // the assistant message that contains the tool_use(s), replayed
           // verbatim (signatures are validated). The agent loop stashes them on
           // `thinkingBlocks`; without this the follow-up turn 400s.
-          const preserved = Array.isArray(msg.thinkingBlocks) ? msg.thinkingBlocks : [];
+          const preserved = Array.isArray(msg.thinkingBlocks)
+            ? msg.thinkingBlocks as Anthropic.ContentBlockParam[]
+            : [];
           if (msg.toolCalls?.length) {
             // Parallel: every tool_use block in one assistant turn.
             const toolUses = msg.toolCalls.map((c) => ({
@@ -118,20 +116,16 @@ export function createAnthropicAdapter(config?: Partial<AdapterConfig>): AIAdapt
         }
       }
 
-      const tools = registry.toAnthropicFormat();
-      const body: Record<string, unknown> = {
+      const tools = registry.toAnthropicFormat() as Anthropic.Tool[];
+      const body: Anthropic.MessageCreateParamsNonStreaming = {
         model,
-        // Extended thinking requires max_tokens > budget_tokens; reserve answer
-        // headroom on top of the budget when thinking is on.
-        max_tokens: thinkingEnabled ? thinkingBudget + ANSWER_HEADROOM : DEFAULT_MAX_TOKENS,
+        max_tokens: maxTokens,
         system: options?.systemPrompt ?? systemPrompt,
         messages: anthropicMessages,
         tools,
+        thinking: { type: "adaptive" },
+        output_config: { effort },
       };
-
-      if (thinkingEnabled) {
-        body.thinking = { type: "enabled", budget_tokens: thinkingBudget };
-      }
 
       // Tool choice + disable parallel tool use.
       // Without disable_parallel_tool_use, Anthropic may emit multiple
@@ -143,45 +137,21 @@ export function createAnthropicAdapter(config?: Partial<AdapterConfig>): AIAdapt
       // extend AdapterResponse to carry multiple calls per round.
       if (tools.length > 0) {
         const toolChoice: Record<string, unknown> = { type: "auto" };
-        // Extended thinking is incompatible with forced tool use (type "any"
-        // or "tool") AND with parallel tool use — Anthropic requires "auto"
-        // and serialized calls so each turn's thinking block can lead. With
-        // thinking off, allow fan-out (the loop handles parallel results) and
-        // honor the caller's forcing.
-        if (thinkingEnabled) {
-          toolChoice.disable_parallel_tool_use = true;
-        } else if (options?.toolChoice === "required") {
-          toolChoice.type = "any";
-        } else if (typeof options?.toolChoice === "object") {
-          toolChoice.type = "tool";
-          toolChoice.name = options.toolChoice.name;
-        }
-        body.tool_choice = toolChoice;
+        // Adaptive thinking is safest with automatic, serialized tool calls;
+        // this also guarantees every tool_use gets a matching tool_result.
+        toolChoice.disable_parallel_tool_use = true;
+        body.tool_choice = toolChoice as Anthropic.ToolChoice;
       }
 
-      const response = await doFetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify(body),
-      });
-
-      if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`Anthropic API error (${response.status}): ${error}`);
-      }
-
-      const data = await response.json();
+      const data = maxTokens > 16_000
+        ? await client.messages.stream(body).finalMessage()
+        : await client.messages.create(body);
 
       // Anthropic responses can contain both a text block (preamble like
       // "Let me check that...") AND a tool_use block in the same turn.
       // Capture both — when both are present the text is preamble; when
       // text is alone it's the final response.
-      const blocks: Array<{ type: string; text?: string; id?: string; name?: string; input?: unknown }> =
-        data.content ?? [];
+      const blocks = data.content;
       const textBlock = blocks.find((b) => b.type === "text");
       const toolUseBlocks = blocks.filter((b) => b.type === "tool_use");
 
@@ -209,7 +179,7 @@ export function createAnthropicAdapter(config?: Partial<AdapterConfig>): AIAdapt
   };
 }
 
-function anthropicContent(content: ChatMessage["content"]): unknown {
+function anthropicContent(content: ChatMessage["content"]): Anthropic.MessageParam["content"] {
   if (typeof content === "string") return content;
   return normalizeChatContent(content).map((part) =>
     part.type === "text"

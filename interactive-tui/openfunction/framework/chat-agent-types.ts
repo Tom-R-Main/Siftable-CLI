@@ -58,13 +58,13 @@ export interface ChatAgentConfig {
   /** AI provider: "gemini", "openai", "anthropic", "xai", "openrouter" */
   provider?: string;
 
-  /** Model override (e.g., "gemini-3.5-flash", "gpt-5.6-sol", "gpt-5.4-mini") */
+  /** Model override (e.g., "gemini-3.6-flash", "gpt-5.6-sol", "gpt-5.4-mini") */
   model?: string;
 
   /**
    * Reasoning effort for models that support it. Forwarded to the adapter,
    * which maps it to the provider-native control (OpenAI/OpenRouter
-   * `reasoning.effort`, Anthropic extended-thinking `budget_tokens`).
+   * `reasoning.effort`, Anthropic `output_config.effort`).
    */
   reasoningEffort?: ReasoningEffort;
 

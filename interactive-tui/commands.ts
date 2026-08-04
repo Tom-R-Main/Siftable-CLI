@@ -162,11 +162,10 @@ export interface ExplorerBudgetChoice {
 }
 
 // GPT-5.6 Codex models add `max`; older gpt-5.x OpenRouter models expose
-// low/med/high/xhigh. Anthropic and Gemini expose low/med/high (mapped to
-// thinking budgets on the Anthropic path).
+// low/med/high/xhigh. Claude Opus 5 exposes the full adaptive-effort ladder.
 const GPT56_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const GPT5_EFFORTS = ["low", "medium", "high", "xhigh"];
-const CLAUDE_EFFORTS = ["low", "medium", "high"];
+const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const GLM_EFFORTS = ["high", "xhigh"];
 
 // Ordered by tier, not by when each was added: flagship brains first (best for
@@ -209,42 +208,40 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     defaultEffort: "medium",
   },
   {
-    // Door A: Opus via OpenRouter — rides the OpenRouter `reasoning` wiring.
-    id: "openrouter/anthropic/claude-opus-4.8",
+    // Door A: Opus 5 via OpenRouter — rides the OpenRouter `reasoning` wiring.
+    id: "openrouter/anthropic/claude-opus-5",
     provider: "openrouter",
-    model: "anthropic/claude-opus-4.8",
-    label: "Claude Opus 4.8",
+    model: "anthropic/claude-opus-5",
+    label: "Claude Opus 5",
     description: "OpenRouter · 💸 premium",
-    aliases: ["opus", "claude-opus", "claude-opus-4.8"],
+    aliases: [
+      "opus",
+      "claude",
+      "claude-opus",
+      "claude-opus-5",
+      "claude-opus-4.8",
+      "claude-opus-4.7",
+      "sonnet",
+      "claude-sonnet-4.6",
+    ],
     auth: "api-key",
     reasoningEfforts: CLAUDE_EFFORTS,
     defaultEffort: "high",
   },
   {
-    // Door B: Opus via the direct Anthropic API (extended thinking, no
+    // Door B: Opus 5 via the direct Anthropic API (adaptive thinking, no
     // OpenRouter margin). Requires ANTHROPIC_API_KEY.
-    id: "anthropic/claude-opus-4-8",
+    id: "anthropic/claude-opus-5",
     provider: "anthropic",
-    model: "claude-opus-4-8",
-    label: "Claude Opus 4.8 (Anthropic)",
-    description: "direct Anthropic API · thinking · 💸💸",
+    model: "claude-opus-5",
+    label: "Claude Opus 5 (Anthropic)",
+    description: "direct Anthropic API · adaptive thinking · 💸💸",
     aliases: ["opus-direct", "claude-api", "anthropic-opus"],
     auth: "anthropic",
     requiredEnv: "ANTHROPIC_API_KEY",
     keyHint: "/key anthropic <key>",
     reasoningEfforts: CLAUDE_EFFORTS,
     defaultEffort: "high",
-  },
-  {
-    id: "openrouter/anthropic/claude-sonnet-4.6",
-    provider: "openrouter",
-    model: "anthropic/claude-sonnet-4.6",
-    label: "Claude Sonnet 4.6",
-    description: "OpenRouter",
-    aliases: ["claude", "sonnet", "claude-sonnet-4.6"],
-    auth: "api-key",
-    reasoningEfforts: CLAUDE_EFFORTS,
-    defaultEffort: "medium",
   },
   {
     id: "openrouter/x-ai/grok-4.5",
@@ -314,15 +311,40 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
   },
   // ── Fast / scout models (cheap, low-latency; Explorer defaults live here) ──
   {
-    id: "openrouter/google/gemini-3.5-flash",
+    id: "openrouter/google/gemini-3.6-flash",
     provider: "openrouter",
-    model: "google/gemini-3.5-flash",
-    label: "Gemini 3.5 Flash",
+    model: "google/gemini-3.6-flash",
+    label: "Gemini 3.6 Flash",
     description: "OpenRouter default",
-    aliases: ["gemini", "gemini-3.5-flash", "google/gemini-3.5-flash"],
+    aliases: [
+      "gemini",
+      "gemini-3.6-flash",
+      "google/gemini-3.6-flash",
+      "gemini-3.5-flash",
+      "google/gemini-3.5-flash",
+    ],
     auth: "api-key",
     reasoningEfforts: CLAUDE_EFFORTS,
     defaultEffort: "medium",
+  },
+  {
+    id: "openrouter/deepseek/deepseek-v4-flash-0731",
+    provider: "openrouter",
+    model: "deepseek/deepseek-v4-flash-0731",
+    label: "DeepSeek V4 Flash 0731",
+    description: "OpenRouter · 1M context · fast reasoning",
+    aliases: [
+      "deepseek",
+      "deepseek-v4-flash",
+      "deepseek-v4-flash-0731",
+      "deepseek-v4-pro",
+      "deepseek/deepseek-v4-flash",
+      "deepseek/deepseek-v4-flash-0731",
+      "deepseek/deepseek-v4-pro",
+    ],
+    auth: "api-key",
+    reasoningEfforts: ["none", "high", "max"],
+    defaultEffort: "high",
   },
   {
     id: "openrouter/google/gemini-3.1-flash-lite",
