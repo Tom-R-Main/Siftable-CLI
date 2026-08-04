@@ -226,6 +226,15 @@ describe('local Vault materializer', () => {
       trackedFileException: true,
       policyAllowsTrackedException: true,
     })).resolves.toEqual(expect.objectContaining({tracked: true}));
+
+    const secretNamedParent = path.join(root, '.supervise-secrets');
+    await mkdir(secretNamedParent);
+    await expect(inspectMaterializationDestination({
+      destinationPath: path.join(secretNamedParent, 'corpus-key'),
+      workspaceRoot: root,
+      trackedFileException: false,
+      policyAllowsTrackedException: false,
+    })).rejects.toThrow('protected secret-name policy');
   });
 
   it('binds wrong runner, path, mode, field-level purpose, and nonce changes', () => {

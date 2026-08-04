@@ -159,9 +159,14 @@ export async function inspectMaterializationDestination(input: {
 }): Promise<DestinationPrecondition> {
   await validateMaterializationPath(input);
   const gitPolicy = await gitPathPolicy(input.workspaceRoot, input.destinationPath);
-  if ((gitPolicy.tracked || gitPolicy.riskPolicyMatch)
-    && (!input.trackedFileException || !input.policyAllowsTrackedException)) {
-    throw new Error('Destination is tracked by Git or matches secret-risk policy');
+  const exceptionAllowed = input.trackedFileException && input.policyAllowsTrackedException;
+  if (gitPolicy.tracked && !exceptionAllowed) {
+    throw new Error('Destination is tracked by Git; choose an untracked runtime path');
+  }
+  if (gitPolicy.riskPolicyMatch && !exceptionAllowed) {
+    throw new Error(
+      'Destination path matches the protected secret-name policy; choose a dedicated untracked runtime path whose name does not imply durable secret storage',
+    );
   }
   try {
     const handle = await open(input.destinationPath, SAFE_READ_FLAGS);
