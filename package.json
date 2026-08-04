@@ -82,6 +82,18 @@
       "relationships:actions": {
         "description": "Discover and run canonical relationship actions"
       },
+      "relationships:meetings": {
+        "description": "Cited meeting briefs, evidence, and review-gated relationship changes"
+      },
+      "relationships:meetings:brief": {
+        "description": "Compose and inspect cited relationship meeting briefs"
+      },
+      "relationships:meetings:evidence": {
+        "description": "Capture and inspect consent-aware meeting evidence"
+      },
+      "relationships:meetings:proposals": {
+        "description": "Create, review, and atomically apply meeting-derived relationship proposals"
+      },
       "relationships:queues": {
         "description": "Workspace relationship team queues"
       },
