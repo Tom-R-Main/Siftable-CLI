@@ -6,6 +6,7 @@ export interface SafeMaterializationSource {
   owner: string;
   qualifiedSlug: string;
   credentialFields: string[];
+  credentialFieldsResolved: boolean;
 }
 
 export function ownerFlagsForMaterializationSource<
@@ -55,34 +56,77 @@ export function assertCanonicalApprovalUrl(value: string, approvalId: string): s
   return url.toString();
 }
 
-export async function withMaterializationSourceRecovery<T>(
+export function assertMaterializationSourceField(
+  source: SafeMaterializationSource,
+  field: string,
+): void {
+  if (source.credentialFieldsResolved && source.credentialFields.includes(field)) return;
+  const validFields = source.credentialFields.length > 0
+    ? source.credentialFields.map(value => JSON.stringify(value)).join(', ')
+    : 'none';
+  const recoveryCommand = 'sift vault materialize run --help';
+  const error = new Error(
+    `Vault field ${JSON.stringify(field)} is unavailable. Valid fields: ${validFields}\nRecovery: ${recoveryCommand}`,
+  ) as Error & {
+    api?: Record<string, unknown>;
+    suggestions?: string[];
+  };
+  error.api = {
+    type: 'vault_materialization_source_field_unavailable',
+    extra: {
+      retryable: false,
+      recoveryCommand,
+      validFields: source.credentialFields,
+    },
+  };
+  error.suggestions = [recoveryCommand];
+  throw error;
+}
+
+export async function withMaterializationRecovery<T>(
   operation: () => Promise<T>,
-  reference: string,
-  owner: string,
+  options: {
+    type: string;
+    retryable: boolean;
+    recoveryCommand: string;
+  },
 ): Promise<T> {
   try {
     return await operation();
   } catch (error) {
-    const recoveryCommand = `sift vault search ${JSON.stringify(reference)} --owner ${owner}`;
     const recovered = error instanceof Error ? error : new Error(String(error));
     const apiError = recovered as Error & {
       api?: Record<string, unknown>;
       suggestions?: string[];
     };
-    const existingType = typeof apiError.api?.type === 'string' ? apiError.api.type : undefined;
-    if (existingType === 'vault_materialization_source_not_found'
-      || recovered.message.startsWith('Not found:')) {
-      recovered.message = `${recovered.message}\nRecovery: ${recoveryCommand}`;
-      apiError.api = {
-        ...(apiError.api ?? {}),
-        type: 'vault_materialization_source_not_found',
-        extra: {
-          retryable: false,
-          recoveryCommand,
-        },
-      };
-      apiError.suggestions = [recoveryCommand];
+    if (!recovered.message.startsWith('Not found:')) throw recovered;
+    if (!recovered.message.includes(`Recovery: ${options.recoveryCommand}`)) {
+      recovered.message = `${recovered.message}\nRecovery: ${options.recoveryCommand}`;
     }
+    const existingExtra = apiError.api?.extra;
+    apiError.api = {
+      ...(apiError.api ?? {}),
+      type: typeof apiError.api?.type === 'string' ? apiError.api.type : options.type,
+      extra: {
+        ...(existingExtra && typeof existingExtra === 'object' ? existingExtra : {}),
+        retryable: options.retryable,
+        recoveryCommand: options.recoveryCommand,
+      },
+    };
+    apiError.suggestions = [options.recoveryCommand];
     throw recovered;
   }
+}
+
+export async function withMaterializationSourceRecovery<T>(
+  operation: () => Promise<T>,
+  reference: string,
+  owner: string,
+): Promise<T> {
+  const recoveryCommand = `sift vault search ${JSON.stringify(reference)} --owner ${owner}`;
+  return withMaterializationRecovery(operation, {
+    type: 'vault_materialization_source_not_found',
+    retryable: false,
+    recoveryCommand,
+  });
 }

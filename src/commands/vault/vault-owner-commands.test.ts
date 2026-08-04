@@ -63,7 +63,8 @@ describe('Vault owner-scoped commands', () => {
           slug: 'provider_key',
           owner: 'workspace:workspace-1',
           qualifiedSlug: 'workspace:workspace-1/provider_key',
-          credentialFields: ['value'],
+          credentialFields: [],
+          credentialFieldsResolved: false,
         }]});
     (search as any).parse = vi.fn().mockResolvedValue({
       args: {query: 'provider'},
@@ -79,7 +80,8 @@ describe('Vault owner-scoped commands', () => {
     expect(entries[0]).toMatchObject({
       owner: 'workspace:workspace-1',
       qualifiedSlug: 'workspace:workspace-1/provider_key',
-      credentialFields: ['value'],
+      credentialFields: [],
+      credentialFieldsResolved: false,
     });
   });
 });

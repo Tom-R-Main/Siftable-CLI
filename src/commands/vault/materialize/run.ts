@@ -19,8 +19,10 @@ import {resolveMaterializationRoot} from '../../../lib/materialization-root.js';
 import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from '../../../lib/vault-owner-context.js';
 import {
   assertCanonicalApprovalUrl,
+  assertMaterializationSourceField,
   ownerFlagsForMaterializationSource,
   type SafeMaterializationSource,
+  withMaterializationRecovery,
   withMaterializationSourceRecovery,
 } from '../materialization-source.js';
 
@@ -135,6 +137,7 @@ export default class VaultMaterializeRun extends BaseCommand {
       flags.entry,
       owner.owner,
     );
+    assertMaterializationSourceField(source.entry, flags.field);
     const vaultEntryId = source.entry.id;
     const destinationPath = destinationPathForMaterialization(
       flags.destination,
@@ -161,6 +164,7 @@ export default class VaultMaterializeRun extends BaseCommand {
     if (!runner.privateKey) {
       throw new Error('Vault materializer device identity is unavailable');
     }
+    const signingPrivateKey = runner.privateKey;
     const nonce = randomBytes(32).toString('base64url');
     const runnerProofTimestamp = new Date().toISOString();
     const local = {
@@ -197,44 +201,51 @@ export default class VaultMaterializeRun extends BaseCommand {
         runnerProofTimestamp,
       })
       : null;
-    const requested = await this.apiRequest<{
-      materialization: MaterializationRecord;
-      artifactEnvelope: ExecutionGrantEnvelope;
-      artifactBinding: string;
-      approvalUrl: string;
-    }>(
-      apiFlags,
-      '/api/v1/vault/materializations',
-      {
-        method: 'POST',
-        body: {
-          surface: 'cli',
-          contextContractVersion: owner.contextContractVersion,
-          vaultEntryId,
-          credentialField: flags.field,
-          destinationPath,
-          workspaceRoot: root.workspaceRoot,
-          requestedMode: flags.mode,
-          expectedAbsence: precondition.expectedAbsence,
-          expectedDestinationDigest: precondition.expectedDestinationDigest,
-          overwriteConsent: !precondition.expectedAbsence && flags.overwrite,
-          trackedFileException: flags['tracked-exception'],
-          plaintextDisclosureAcknowledged: true,
-          purpose: flags.purpose,
-          requestNonce: nonce,
-          runnerPublicKeyPem: runner.publicKeyPem,
-          runnerPublicKeyFingerprint: runner.fingerprint,
-          materializerDigest: runner.materializerDigest,
-          ...(runnerProofBinding
-            ? {
-              runnerProofTimestamp,
-              runnerProof: signMaterializationRunnerProof(
-                runnerProofBinding,
-                runner.privateKey,
-              ),
-            }
-            : {}),
+    const requested = await withMaterializationRecovery(
+      () => this.apiRequest<{
+        materialization: MaterializationRecord;
+        artifactEnvelope: ExecutionGrantEnvelope;
+        artifactBinding: string;
+        approvalUrl: string;
+      }>(
+        apiFlags,
+        '/api/v1/vault/materializations',
+        {
+          method: 'POST',
+          body: {
+            surface: 'cli',
+            contextContractVersion: owner.contextContractVersion,
+            vaultEntryId,
+            credentialField: flags.field,
+            destinationPath,
+            workspaceRoot: root.workspaceRoot,
+            requestedMode: flags.mode,
+            expectedAbsence: precondition.expectedAbsence,
+            expectedDestinationDigest: precondition.expectedDestinationDigest,
+            overwriteConsent: !precondition.expectedAbsence && flags.overwrite,
+            trackedFileException: flags['tracked-exception'],
+            plaintextDisclosureAcknowledged: true,
+            purpose: flags.purpose,
+            requestNonce: nonce,
+            runnerPublicKeyPem: runner.publicKeyPem,
+            runnerPublicKeyFingerprint: runner.fingerprint,
+            materializerDigest: runner.materializerDigest,
+            ...(runnerProofBinding
+              ? {
+                runnerProofTimestamp,
+                runnerProof: signMaterializationRunnerProof(
+                  runnerProofBinding,
+                  signingPrivateKey,
+                ),
+              }
+              : {}),
+          },
         },
+      ),
+      {
+        type: 'vault_materialization_source_not_found',
+        retryable: false,
+        recoveryCommand: 'sift vault materialize run --help',
       },
     );
     assertMatchesLocal(requested.materialization, local);
@@ -269,9 +280,16 @@ export default class VaultMaterializeRun extends BaseCommand {
       const deadline = Date.now() + flags['approval-timeout'] * 1000;
       let approvalStatus = 'pending';
       while (Date.now() < deadline) {
-        const approval = await this.apiRequest<{approval: {status: string}}>(
-          apiFlags,
-          `/api/v1/governed-approvals/${encodeURIComponent(requested.materialization.approvalId)}?surface=cli&contextContractVersion=${owner.contextContractVersion}`,
+        const approval = await withMaterializationRecovery(
+          () => this.apiRequest<{approval: {status: string}}>(
+            apiFlags,
+            `/api/v1/governed-approvals/${encodeURIComponent(requested.materialization.approvalId)}?surface=cli&contextContractVersion=${owner.contextContractVersion}`,
+          ),
+          {
+            type: 'vault_materialization_approval_unavailable',
+            retryable: false,
+            recoveryCommand: `sift vault materialize status ${requested.materialization.id}`,
+          },
         );
         approvalStatus = approval.approval.status;
         if (approvalStatus === 'approved') break;
@@ -279,24 +297,31 @@ export default class VaultMaterializeRun extends BaseCommand {
         await delay(2000);
       }
       if (approvalStatus !== 'approved') throw new Error('Materialization approval timed out');
-      const redeemed = await this.apiRequest<{
-        materialization: MaterializationRecord;
-        envelope: ExecutionGrantEnvelope;
-        binding: string;
-      }>(
-        apiFlags,
-        '/api/v1/vault/materializations/redeem',
-        {
-          method: 'POST',
-          body: {
-            surface: 'cli',
-            contextContractVersion: owner.contextContractVersion,
-            artifact,
-            approvalId: requested.materialization.approvalId,
-            runnerFingerprint: runner.fingerprint,
-            materializerDigest: runner.materializerDigest,
-            requestNonce: nonce,
+      const redeemed = await withMaterializationRecovery(
+        () => this.apiRequest<{
+          materialization: MaterializationRecord;
+          envelope: ExecutionGrantEnvelope;
+          binding: string;
+        }>(
+          apiFlags,
+          '/api/v1/vault/materializations/redeem',
+          {
+            method: 'POST',
+            body: {
+              surface: 'cli',
+              contextContractVersion: owner.contextContractVersion,
+              artifact,
+              approvalId: requested.materialization.approvalId,
+              runnerFingerprint: runner.fingerprint,
+              materializerDigest: runner.materializerDigest,
+              requestNonce: nonce,
+            },
           },
+        ),
+        {
+          type: 'vault_materialization_unavailable',
+          retryable: true,
+          recoveryCommand: 'sift vault materialize run --help',
         },
       );
       redemptionCompleted = true;
@@ -342,19 +367,26 @@ export default class VaultMaterializeRun extends BaseCommand {
           cleanupSucceeded = succeeded;
         },
       });
-      const completed = await this.apiRequest<{receipt: MaterializationRecord}>(
-        apiFlags,
-        `/api/v1/vault/materializations/${encodeURIComponent(requested.materialization.id)}/complete`,
-        {
-          method: 'POST',
-          body: {
-            surface: 'cli',
-            contextContractVersion: owner.contextContractVersion,
-            requestNonce: nonce,
-            destinationDigest: receipt.destinationDigest,
-            mode: receipt.mode,
-            cleanupSucceeded: receipt.cleanupSucceeded,
+      const completed = await withMaterializationRecovery(
+        () => this.apiRequest<{receipt: MaterializationRecord}>(
+          apiFlags,
+          `/api/v1/vault/materializations/${encodeURIComponent(requested.materialization.id)}/complete`,
+          {
+            method: 'POST',
+            body: {
+              surface: 'cli',
+              contextContractVersion: owner.contextContractVersion,
+              requestNonce: nonce,
+              destinationDigest: receipt.destinationDigest,
+              mode: receipt.mode,
+              cleanupSucceeded: receipt.cleanupSucceeded,
+            },
           },
+        ),
+        {
+          type: 'vault_materialization_not_found',
+          retryable: false,
+          recoveryCommand: `sift vault materialize status ${requested.materialization.id}`,
         },
       );
       if (!this.jsonEnabled()) {

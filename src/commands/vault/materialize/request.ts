@@ -5,8 +5,10 @@ import {resolveMaterializationRoot} from '../../../lib/materialization-root.js';
 import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from '../../../lib/vault-owner-context.js';
 import {
   assertCanonicalApprovalUrl,
+  assertMaterializationSourceField,
   ownerFlagsForMaterializationSource,
   type SafeMaterializationSource,
+  withMaterializationRecovery,
   withMaterializationSourceRecovery,
 } from '../materialization-source.js';
 
@@ -53,35 +55,44 @@ export default class VaultMaterializeRequest extends BaseCommand {
       flags.entry,
       owner.owner,
     );
-    const response = await this.apiRequest<{
-      materialization: Record<string, unknown>;
-      artifactEnvelope: Record<string, unknown>;
-      artifactBinding: string;
-      approvalUrl: string;
-    }>(
-      apiFlags,
-      '/api/v1/vault/materializations',
-      {
-        method: 'POST',
-        body: {
-          surface: 'cli',
-          contextContractVersion: owner.contextContractVersion,
-          vaultEntryId: source.entry.id,
-          credentialField: flags.field,
-          destinationPath: flags.destination,
-          workspaceRoot: root.workspaceRoot,
-          requestedMode: flags.mode,
-          expectedAbsence: !flags['expected-digest'],
-          expectedDestinationDigest: flags['expected-digest'],
-          overwriteConsent: flags.overwrite,
-          trackedFileException: flags['tracked-exception'],
-          plaintextDisclosureAcknowledged: true,
-          purpose: flags.purpose,
-          requestNonce: flags.nonce,
-          runnerPublicKeyPem: await readFile(flags['runner-public-key'], 'utf8'),
-          runnerPublicKeyFingerprint: flags['runner-fingerprint'],
-          materializerDigest: flags['materializer-digest'],
+    assertMaterializationSourceField(source.entry, flags.field);
+    const runnerPublicKeyPem = await readFile(flags['runner-public-key'], 'utf8');
+    const response = await withMaterializationRecovery(
+      () => this.apiRequest<{
+        materialization: Record<string, unknown>;
+        artifactEnvelope: Record<string, unknown>;
+        artifactBinding: string;
+        approvalUrl: string;
+      }>(
+        apiFlags,
+        '/api/v1/vault/materializations',
+        {
+          method: 'POST',
+          body: {
+            surface: 'cli',
+            contextContractVersion: owner.contextContractVersion,
+            vaultEntryId: source.entry.id,
+            credentialField: flags.field,
+            destinationPath: flags.destination,
+            workspaceRoot: root.workspaceRoot,
+            requestedMode: flags.mode,
+            expectedAbsence: !flags['expected-digest'],
+            expectedDestinationDigest: flags['expected-digest'],
+            overwriteConsent: flags.overwrite,
+            trackedFileException: flags['tracked-exception'],
+            plaintextDisclosureAcknowledged: true,
+            purpose: flags.purpose,
+            requestNonce: flags.nonce,
+            runnerPublicKeyPem,
+            runnerPublicKeyFingerprint: flags['runner-fingerprint'],
+            materializerDigest: flags['materializer-digest'],
+          },
         },
+      ),
+      {
+        type: 'vault_materialization_source_not_found',
+        retryable: false,
+        recoveryCommand: 'sift vault materialize run --help',
       },
     );
     if (!this.jsonEnabled()) {

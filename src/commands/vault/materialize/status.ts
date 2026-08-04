@@ -1,6 +1,7 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../../lib/base-command.js';
 import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from '../../../lib/vault-owner-context.js';
+import {withMaterializationRecovery} from '../materialization-source.js';
 
 interface MaterializationStatusRecord extends Record<string, unknown> {
   id: string;
@@ -32,9 +33,16 @@ export default class VaultMaterializeStatus extends BaseCommand {
     const owner = resolveVaultOwnerContext(flags, {
       legacyMaterializationAlias: flags['legacy-context'],
     });
-    const response = await this.apiRequest<{materialization: MaterializationStatusRecord}>(
-      vaultApiFlags(flags, owner),
-      `/api/v1/vault/materializations/${encodeURIComponent(args.id)}?surface=cli&contextContractVersion=${owner.contextContractVersion}`,
+    const response = await withMaterializationRecovery(
+      () => this.apiRequest<{materialization: MaterializationStatusRecord}>(
+        vaultApiFlags(flags, owner),
+        `/api/v1/vault/materializations/${encodeURIComponent(args.id)}?surface=cli&contextContractVersion=${owner.contextContractVersion}`,
+      ),
+      {
+        type: 'vault_materialization_not_found',
+        retryable: false,
+        recoveryCommand: 'sift vault materialize run --help',
+      },
     );
     if (!this.jsonEnabled()) {
       this.log(`Materialization: ${response.materialization.id}`);

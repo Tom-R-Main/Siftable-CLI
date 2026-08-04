@@ -1,6 +1,7 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../../lib/base-command.js';
 import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from '../../../lib/vault-owner-context.js';
+import {withMaterializationRecovery} from '../materialization-source.js';
 
 export default class VaultMaterializeRevoke extends BaseCommand {
   static description = 'Revoke a pending destination-bound Vault materialization';
@@ -21,15 +22,22 @@ export default class VaultMaterializeRevoke extends BaseCommand {
     const owner = resolveVaultOwnerContext(flags, {
       legacyMaterializationAlias: flags['legacy-context'],
     });
-    const response = await this.apiRequest<{materialization: Record<string, unknown>}>(
-      vaultApiFlags(flags, owner),
-      `/api/v1/vault/materializations/${encodeURIComponent(args.id)}/revoke`,
-      {
-        method: 'POST',
-        body: {
-          surface: 'cli',
-          contextContractVersion: owner.contextContractVersion,
+    const response = await withMaterializationRecovery(
+      () => this.apiRequest<{materialization: Record<string, unknown>}>(
+        vaultApiFlags(flags, owner),
+        `/api/v1/vault/materializations/${encodeURIComponent(args.id)}/revoke`,
+        {
+          method: 'POST',
+          body: {
+            surface: 'cli',
+            contextContractVersion: owner.contextContractVersion,
+          },
         },
+      ),
+      {
+        type: 'vault_materialization_not_found',
+        retryable: false,
+        recoveryCommand: 'sift vault materialize status --help',
       },
     );
     if (!this.jsonEnabled()) {

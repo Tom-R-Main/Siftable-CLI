@@ -8,7 +8,9 @@ import {
 import VaultMaterializeStatus from './status.js';
 import {
   assertCanonicalApprovalUrl,
+  assertMaterializationSourceField,
   ownerFlagsForMaterializationSource,
+  withMaterializationRecovery,
   withMaterializationSourceRecovery,
 } from '../materialization-source.js';
 
@@ -38,11 +40,11 @@ describe('Vault materialization CLI surface', () => {
     expect(failure.suggestions).toEqual(['sift vault materialize run --help']);
   });
 
-  it('lets the server validate custom fields while keeping plaintext out of CLI output', async () => {
+  it('uses exact audited fields while keeping plaintext out of CLI output', async () => {
     const request = command(VaultMaterializeRequest);
     const requestApi = vi.fn().mockImplementation(async (_flags, url: string) => (
       url.includes('/sources/resolve') ? {entry: {
-        id: 'entry-1', slug: 'entry', owner: 'personal', credentialFields: [],
+        id: 'entry-1', slug: 'entry', owner: 'personal', credentialFields: ['value'], credentialFieldsResolved: true,
       }} : {
       materialization: {
         id: 'materialization-1',
@@ -112,11 +114,47 @@ describe('Vault materialization CLI surface', () => {
     expect(JSON.stringify(inspected)).not.toContain('artifactEnvelope');
   });
 
+  it('makes an invalid field selection converge without creating an approval', () => {
+    expect(() => assertMaterializationSourceField({
+      id: 'entry-1',
+      name: 'SSH key',
+      slug: 'my_ssh',
+      owner: 'personal',
+      qualifiedSlug: 'personal/my_ssh',
+      credentialFields: ['value'],
+      credentialFieldsResolved: true,
+    }, 'private_key')).toThrow('Valid fields: "value"');
+  });
+
+  it('restores typed recovery after BaseCommand collapses a materialization 404', async () => {
+    const operation = withMaterializationRecovery(
+      async () => {
+        throw new Error('Not found: Vault materialization not found');
+      },
+      {
+        type: 'vault_materialization_not_found',
+        retryable: false,
+        recoveryCommand: 'sift vault materialize run --help',
+      },
+    );
+
+    await expect(operation).rejects.toMatchObject({
+      api: {
+        type: 'vault_materialization_not_found',
+        extra: {
+          retryable: false,
+          recoveryCommand: 'sift vault materialize run --help',
+        },
+      },
+      suggestions: ['sift vault materialize run --help'],
+    });
+  });
+
   it('accepts the deprecated absolute --workspace path without forwarding a tenant header', async () => {
     const request = command(VaultMaterializeRequest);
     const requestApi = vi.fn().mockImplementation(async (_flags, url: string) => (
       url.includes('/sources/resolve') ? {entry: {
-        id: 'entry-1', slug: 'entry', owner: 'personal', credentialFields: ['value'],
+        id: 'entry-1', slug: 'entry', owner: 'personal', credentialFields: ['value'], credentialFieldsResolved: true,
       }} : {
       materialization: {id: 'materialization-legacy', approvalId: 'approval-legacy'},
       artifactEnvelope: {ciphertext: 'opaque'},
@@ -154,7 +192,7 @@ describe('Vault materialization CLI surface', () => {
     const request = command(VaultMaterializeRequest);
     const requestApi = vi.fn().mockImplementation(async (_flags, url: string) => (
       url.includes('/sources/resolve') ? {entry: {
-        id: 'entry-1', slug: 'entry', owner: 'workspace:workspace-1', credentialFields: ['value'],
+        id: 'entry-1', slug: 'entry', owner: 'workspace:workspace-1', credentialFields: ['value'], credentialFieldsResolved: true,
       }} : {
       materialization: {id: 'materialization-workspace', approvalId: 'approval-workspace'},
       artifactEnvelope: {ciphertext: 'opaque'},
