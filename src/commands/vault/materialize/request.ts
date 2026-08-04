@@ -53,11 +53,6 @@ export default class VaultMaterializeRequest extends BaseCommand {
       flags.entry,
       owner.owner,
     );
-    if (!source.entry.credentialFields.includes(flags.field)) {
-      throw new Error(
-        `Vault field ${JSON.stringify(flags.field)} is unavailable. Run sift vault search ${JSON.stringify(source.entry.slug)} --owner ${source.entry.owner}.`,
-      );
-    }
     const response = await this.apiRequest<{
       materialization: Record<string, unknown>;
       artifactEnvelope: Record<string, unknown>;

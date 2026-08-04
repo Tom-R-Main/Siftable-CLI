@@ -97,11 +97,6 @@ export default class VaultMaterializeRun extends BaseCommand {
       flags.entry,
       owner.owner,
     );
-    if (!source.entry.credentialFields.includes(flags.field)) {
-      throw new Error(
-        `Vault field ${JSON.stringify(flags.field)} is unavailable. Run sift vault search ${JSON.stringify(source.entry.slug)} --owner ${source.entry.owner}.`,
-      );
-    }
     const vaultEntryId = source.entry.id;
     const policyAllowsTrackedException =
       process.env.SIFT_ALLOW_TRACKED_SECRET_MATERIALIZATION === 'true';

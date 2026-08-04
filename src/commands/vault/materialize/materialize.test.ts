@@ -13,11 +13,11 @@ function command<T>(constructor: {prototype: T}): T {
 }
 
 describe('Vault materialization CLI surface', () => {
-  it('requests exact destination metadata and status without plaintext output', async () => {
+  it('lets the server validate custom fields while keeping plaintext out of CLI output', async () => {
     const request = command(VaultMaterializeRequest);
     const requestApi = vi.fn().mockImplementation(async (_flags, url: string) => (
       url.includes('/sources/resolve') ? {entry: {
-        id: 'entry-1', slug: 'entry', owner: 'personal', credentialFields: ['value'],
+        id: 'entry-1', slug: 'entry', owner: 'personal', credentialFields: [],
       }} : {
       materialization: {
         id: 'materialization-1',
