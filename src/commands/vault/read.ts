@@ -15,7 +15,7 @@ export default class VaultRead extends BaseCommand {
   async run(): Promise<never> {
     await this.parse(VaultRead);
     this.error(
-      'Vault plaintext output is retired for CLI and MCP clients. For a local task, run `sift vault search <query> --owner personal`, then `sift vault materialize run --help` to create the actual destination-bound approval request. Do not use generic `sift approvals request` for Vault materialization.',
+      'Vault plaintext output is retired for CLI and MCP clients. For a local task, run `sift vault search <query> --owner personal`, then `sift vault materialize run --help` to create the actual destination-bound approval request. Use the first-party Siftable web Vault when an interactive browser reveal is required. Do not use generic `sift approvals request` for Vault materialization.',
       {exit: 1},
     );
   }

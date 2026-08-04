@@ -1,6 +1,10 @@
 import {describe, expect, it, vi} from 'vitest';
 import VaultMaterializeRequest from './request.js';
 import VaultMaterializeRevoke from './revoke.js';
+import {
+  destinationPathForMaterialization,
+  withMaterializationPreflightRecovery,
+} from './run.js';
 import VaultMaterializeStatus from './status.js';
 import {
   assertCanonicalApprovalUrl,
@@ -13,6 +17,27 @@ function command<T>(constructor: {prototype: T}): T {
 }
 
 describe('Vault materialization CLI surface', () => {
+  it('canonicalizes relative destinations and explains why no approval exists after local rejection', () => {
+    expect(destinationPathForMaterialization(
+      '.supervise-inputs/corpus-key',
+      '/private/tmp/checkout',
+    )).toBe('/private/tmp/checkout/.supervise-inputs/corpus-key');
+
+    const failure = withMaterializationPreflightRecovery(
+      new Error('Destination is tracked by Git or matches secret-risk policy'),
+    );
+    expect(failure.message).toContain('before any approval was created');
+    expect(failure.message).toContain('Recovery: sift vault materialize run --help');
+    expect(failure.api).toEqual({
+      type: 'vault_materialization_preflight_failed',
+      extra: {
+        retryable: false,
+        recoveryCommand: 'sift vault materialize run --help',
+      },
+    });
+    expect(failure.suggestions).toEqual(['sift vault materialize run --help']);
+  });
+
   it('lets the server validate custom fields while keeping plaintext out of CLI output', async () => {
     const request = command(VaultMaterializeRequest);
     const requestApi = vi.fn().mockImplementation(async (_flags, url: string) => (

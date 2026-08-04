@@ -1,5 +1,6 @@
 import {Flags} from '@oclif/core';
 import {randomBytes} from 'node:crypto';
+import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {BaseCommand, DEFAULT_API_URL} from '../../../lib/base-command.js';
 import {
@@ -44,6 +45,40 @@ interface MaterializationRecord {
   auditReference: string | null;
 }
 
+const MATERIALIZATION_PREFLIGHT_RECOVERY = 'sift vault materialize run --help';
+
+type MaterializationPreflightError = Error & {
+  api?: {
+    type: string;
+    extra: {retryable: false; recoveryCommand: string};
+  };
+  suggestions?: string[];
+};
+
+export function destinationPathForMaterialization(
+  destination: string,
+  workspaceRoot: string,
+): string {
+  return path.isAbsolute(destination) ? destination : path.resolve(workspaceRoot, destination);
+}
+
+export function withMaterializationPreflightRecovery(error: unknown): MaterializationPreflightError {
+  const recovered = (error instanceof Error ? error : new Error(String(error))) as MaterializationPreflightError;
+  recovered.message = [
+    `Materialization preflight failed before any approval was created: ${recovered.message}`,
+    `Recovery: ${MATERIALIZATION_PREFLIGHT_RECOVERY}`,
+  ].join('\n');
+  recovered.api = {
+    type: 'vault_materialization_preflight_failed',
+    extra: {
+      retryable: false,
+      recoveryCommand: MATERIALIZATION_PREFLIGHT_RECOVERY,
+    },
+  };
+  recovered.suggestions = [MATERIALIZATION_PREFLIGHT_RECOVERY];
+  return recovered;
+}
+
 function assertMatchesLocal(
   record: MaterializationRecord,
   expected: Omit<
@@ -64,7 +99,10 @@ export default class VaultMaterializeRun extends BaseCommand {
     ...BaseCommand.baseFlags,
     entry: Flags.string({required: true}),
     field: Flags.string({required: true}),
-    destination: Flags.string({required: true}),
+    destination: Flags.string({
+      required: true,
+      description: 'Destination path; relative paths resolve inside --workspace-root before approval',
+    }),
     'workspace-root': Flags.string({
       description: 'Absolute local workspace root containing the destination',
     }),
@@ -98,16 +136,24 @@ export default class VaultMaterializeRun extends BaseCommand {
       owner.owner,
     );
     const vaultEntryId = source.entry.id;
+    const destinationPath = destinationPathForMaterialization(
+      flags.destination,
+      root.workspaceRoot,
+    );
     const policyAllowsTrackedException =
       process.env.SIFT_ALLOW_TRACKED_SECRET_MATERIALIZATION === 'true';
     const precondition = await inspectMaterializationDestination({
-      destinationPath: flags.destination,
+      destinationPath,
       workspaceRoot: root.workspaceRoot,
       trackedFileException: flags['tracked-exception'],
       policyAllowsTrackedException,
+    }).catch(error => {
+      throw withMaterializationPreflightRecovery(error);
     });
     if (!precondition.expectedAbsence && !flags.overwrite) {
-      throw new Error('Existing destination requires --overwrite and exact approved digest');
+      throw withMaterializationPreflightRecovery(
+        new Error('Existing destination requires --overwrite and exact approved digest'),
+      );
     }
     const runner = await createMaterializerRunner(
       flags['api-url'] ?? process.env.SIFT_API_URL ?? DEFAULT_API_URL,
@@ -119,7 +165,7 @@ export default class VaultMaterializeRun extends BaseCommand {
     const runnerProofTimestamp = new Date().toISOString();
     const local = {
       source: {vaultEntryId, credentialField: flags.field},
-      destinationPath: flags.destination,
+      destinationPath,
       workspaceRoot: root.workspaceRoot,
       requestedMode: flags.mode as '0400' | '0600',
       expectedAbsence: precondition.expectedAbsence,
@@ -136,7 +182,7 @@ export default class VaultMaterializeRun extends BaseCommand {
       ? createMaterializationRunnerProofBinding({
         vaultEntryId,
         credentialField: flags.field,
-        destinationPath: flags.destination,
+        destinationPath,
         workspaceRoot: root.workspaceRoot,
         requestedMode: flags.mode as '0400' | '0600',
         expectedAbsence: precondition.expectedAbsence,
@@ -166,7 +212,7 @@ export default class VaultMaterializeRun extends BaseCommand {
           contextContractVersion: owner.contextContractVersion,
           vaultEntryId,
           credentialField: flags.field,
-          destinationPath: flags.destination,
+          destinationPath,
           workspaceRoot: root.workspaceRoot,
           requestedMode: flags.mode,
           expectedAbsence: precondition.expectedAbsence,
@@ -212,7 +258,7 @@ export default class VaultMaterializeRun extends BaseCommand {
       requested.approvalUrl,
       requested.materialization.approvalId,
     )}`);
-    this.log(`Plaintext destination: ${flags.destination} (${flags.mode})`);
+    this.log(`Plaintext destination: ${destinationPath} (${flags.mode})`);
     this.log('Approve this exact destination-bound request in the first-party Siftable browser.');
 
     let plaintext = '';
@@ -261,7 +307,7 @@ export default class VaultMaterializeRun extends BaseCommand {
         sourceField: flags.field,
         runnerFingerprint: runner.fingerprint,
         materializerDigest: runner.materializerDigest,
-        destinationPath: flags.destination,
+        destinationPath,
         workspaceRoot: root.workspaceRoot,
         mode: flags.mode as '0400' | '0600',
         expectedAbsence: precondition.expectedAbsence,
@@ -282,7 +328,7 @@ export default class VaultMaterializeRun extends BaseCommand {
       );
       const receipt: MaterializationReceipt = await materializeApprovedPlaintext({
         plaintext,
-        destinationPath: flags.destination,
+        destinationPath,
         workspaceRoot: root.workspaceRoot,
         mode: flags.mode as '0400' | '0600',
         expectedAbsence: precondition.expectedAbsence,
