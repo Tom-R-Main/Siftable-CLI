@@ -17,6 +17,10 @@ import RelationshipPlaybookRecommendationsCreate from '../../src/commands/relati
 import RelationshipGeneratedAssetsGenerate from '../../src/commands/relationships/generated-assets/generate.js';
 import RelationshipGeneratedAssetsReview from '../../src/commands/relationships/generated-assets/review.js';
 import RelationshipGeneratedAssetsDraft from '../../src/commands/relationships/generated-assets/draft.js';
+import RelationshipGeneratedAssetsReviewHistory from '../../src/commands/relationships/generated-assets/review-history.js';
+import RelationshipGeneratedAssetsUsageList from '../../src/commands/relationships/generated-assets/usage-list.js';
+import RelationshipGeneratedAssetsUsageRecord from '../../src/commands/relationships/generated-assets/usage-record.js';
+import RelationshipSourceAssetsShow from '../../src/commands/relationships/source-assets/show.js';
 
 function command<T>(constructor: new (...args: never[]) => T): T {
   return Object.create(constructor.prototype) as T;
@@ -201,5 +205,46 @@ describe('relationship CLI-first adapters', () => {
     expect(apiRequest.mock.calls[1][1]).toBe('/api/v1/relationship-playbooks/generated-assets/asset-1/draft');
     expect(result.action.proposal.id).toBe('proposal-1');
     expect(existsSync('src/commands/relationships/generated-assets/send.ts')).toBe(false);
+  });
+
+  test('exact source versions, review history, usage, and outcome links remain headless', async () => {
+    const sourceShow = command(RelationshipSourceAssetsShow);
+    const reviewHistory = command(RelationshipGeneratedAssetsReviewHistory);
+    const usageList = command(RelationshipGeneratedAssetsUsageList);
+    const usageRecord = command(RelationshipGeneratedAssetsUsageRecord);
+    const apiRequest = jest.fn()
+      .mockResolvedValueOnce({sourceAsset: {snapshot: {sourceAssetVersionId: 'source-1', version: 4}}})
+      .mockResolvedValueOnce({reviews: [{reviewId: 'review-1', decision: 'approved'}]})
+      .mockResolvedValueOnce({usage: [{usageId: 'usage-1', kind: 'exported'}]})
+      .mockResolvedValueOnce({usage: {usageId: 'usage-2', kind: 'outcome_linked', outcomeRef: 'won:deal-1'}});
+    for (const instance of [sourceShow, reviewHistory, usageList]) {
+      (instance as any).parse = jest.fn().mockResolvedValue({args: {id: 'asset-1'}, flags: {}});
+      (instance as any).apiRequest = apiRequest;
+      (instance as any).jsonEnabled = () => true;
+    }
+    (usageRecord as any).parse = jest.fn().mockResolvedValue({
+      args: {id: 'asset-1'},
+      flags: {kind: 'outcome_linked', outcome: 'won:deal-1', 'idempotency-key': 'usage-outcome-0001', yes: true},
+    });
+    (usageRecord as any).apiRequest = apiRequest;
+    (usageRecord as any).confirmAction = jest.fn().mockResolvedValue(true);
+    (usageRecord as any).jsonEnabled = () => true;
+
+    await sourceShow.run();
+    await reviewHistory.run();
+    await usageList.run();
+    await usageRecord.run();
+
+    expect(apiRequest.mock.calls.map((call) => call[1])).toEqual([
+      '/api/v1/relationship-playbooks/source-assets/asset-1',
+      '/api/v1/relationship-playbooks/generated-assets/asset-1/reviews',
+      '/api/v1/relationship-playbooks/generated-assets/asset-1/usage',
+      '/api/v1/relationship-playbooks/generated-assets/asset-1/usage',
+    ]);
+    expect(apiRequest.mock.calls[3][2]).toMatchObject({
+      method: 'POST',
+      idempotencyKey: 'usage-outcome-0001',
+      body: {kind: 'outcome_linked', outcomeRef: 'won:deal-1', idempotencyKey: 'usage-outcome-0001'},
+    });
   });
 });
