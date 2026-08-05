@@ -1,7 +1,7 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../../lib/base-command.js';
 import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from '../../../lib/vault-owner-context.js';
-import {withMaterializationRecovery} from '../materialization-source.js';
+import {withMaterializationRecovery} from '../../../lib/vaultMaterializationSource.js';
 
 export default class VaultMaterializeRevoke extends BaseCommand {
   static description = 'Revoke a pending destination-bound Vault materialization';

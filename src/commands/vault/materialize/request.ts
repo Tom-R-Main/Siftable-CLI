@@ -10,7 +10,7 @@ import {
   type SafeMaterializationSource,
   withMaterializationRecovery,
   withMaterializationSourceRecovery,
-} from '../materialization-source.js';
+} from '../../../lib/vaultMaterializationSource.js';
 
 export default class VaultMaterializeRequest extends BaseCommand {
   static description = 'Request human approval for one destination-bound Vault materialization';

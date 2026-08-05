@@ -28,6 +28,13 @@
     "prepublishOnly": "npm run build",
     "prepack": "npm run manifest && npm run verify:package"
   },
+  "nx": {
+    "targets": {
+      "test:vitest": {
+        "dependsOn": ["build"]
+      }
+    }
+  },
   "oclif": {
     "bin": "sift",
     "dirname": "siftable",

@@ -13,7 +13,7 @@ import {
   withMaterializationFailureRecovery,
   withMaterializationRecovery,
   withMaterializationSourceRecovery,
-} from '../materialization-source.js';
+} from '../../../lib/vaultMaterializationSource.js';
 
 function command<T>(constructor: {prototype: T}): T {
   return Object.create(constructor.prototype) as T;

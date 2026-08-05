@@ -117,6 +117,20 @@ describe('environment manifest contract', () => {
     delete instance.owners.personal;
     expect(new Validator(schema, '2020-12', false).validate(instance).valid).toBe(false);
   });
+
+  it('keeps published schema constraints aligned with runtime alias and documentation rules', () => {
+    const schemaPath = path.resolve(process.cwd(), '../../schemas/vault-environment-manifest.v1.json');
+    const schema = JSON.parse(readFileSync(schemaPath, 'utf8'));
+    const validator = new Validator(schema, '2020-12', false);
+    const invalidAlias = parse(validManifest) as {owners: Record<string, unknown>};
+    invalidAlias.owners['invalid alias'] = invalidAlias.owners.personal;
+    delete invalidAlias.owners.personal;
+    expect(validator.validate(invalidAlias).valid).toBe(false);
+
+    const invalidDocumentation = parse(validManifest) as {members: Array<Record<string, unknown>>};
+    invalidDocumentation.members[0].documentation = 'line one\nline two';
+    expect(validator.validate(invalidDocumentation).valid).toBe(false);
+  });
 });
 
 describe('environment owner resolution', () => {

@@ -28,10 +28,6 @@ beforeAll(async () => {
   vi.stubEnv('GIT_CONFIG_GLOBAL', '/dev/null');
   vi.stubEnv('GIT_CONFIG_NOSYSTEM', '1');
   vi.stubEnv('XDG_CONFIG_HOME', isolatedGitConfigHome);
-  execFileSync('npm', ['exec', '--', 'nx', 'run', '@siftable/cli:build', '--skip-nx-cache'], {
-    cwd: repositoryRoot,
-    stdio: 'pipe',
-  });
 }, 120_000);
 
 afterAll(async () => {

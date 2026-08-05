@@ -2,7 +2,7 @@ import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
 import {renderTable} from '../../lib/output.js';
 import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from '../../lib/vault-owner-context.js';
-import type {SafeMaterializationSource} from './materialization-source.js';
+import type {SafeMaterializationSource} from '../../lib/vaultMaterializationSource.js';
 
 export default class VaultSearch extends BaseCommand {
   static description = 'Search Vault entry metadata (exact safe field names resolve during materialization; values are never returned)';

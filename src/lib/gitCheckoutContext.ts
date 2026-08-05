@@ -36,9 +36,23 @@ export async function runReadOnlyGit(
     });
     return {stdout: result.stdout, stderr: result.stderr, exitCode: 0};
   } catch (error) {
-    const failure = error as Error & {stdout?: string; stderr?: string; code?: number};
-    if (typeof failure.code !== 'number') throw error;
-    return {stdout: failure.stdout ?? '', stderr: failure.stderr ?? '', exitCode: failure.code};
+    const failure = error as Error & {
+      stdout?: string;
+      stderr?: string;
+      code?: number | string | null;
+      killed?: boolean;
+      signal?: NodeJS.Signals | null;
+    };
+    if (typeof failure.code === 'number') {
+      return {stdout: failure.stdout ?? '', stderr: failure.stderr ?? '', exitCode: failure.code};
+    }
+    if (failure.code === 'ENOENT') {
+      return {stdout: failure.stdout ?? '', stderr: failure.stderr ?? '', exitCode: 127};
+    }
+    if (failure.killed || failure.signal !== undefined && failure.signal !== null) {
+      return {stdout: failure.stdout ?? '', stderr: failure.stderr ?? '', exitCode: 124};
+    }
+    throw error;
   }
 }
 
@@ -53,8 +67,8 @@ export type GitCheckoutContext =
       superprojectRoot: string | null;
     };
 
-async function revParse(cwd: string, flag: string): Promise<string | null> {
-  const result = await runReadOnlyGit(cwd, ['rev-parse', flag]);
+async function revParse(cwd: string, flag: string, environment: NodeJS.ProcessEnv): Promise<string | null> {
+  const result = await runReadOnlyGit(cwd, ['rev-parse', flag], environment);
   return result.exitCode === 0 ? result.stdout.trim() : null;
 }
 
@@ -62,20 +76,23 @@ function absoluteFrom(cwd: string, value: string): string {
   return path.normalize(path.isAbsolute(value) ? value : path.resolve(cwd, value));
 }
 
-export async function resolveGitCheckout(cwd: string): Promise<GitCheckoutContext> {
-  const bare = await revParse(cwd, '--is-bare-repository');
+export async function resolveGitCheckout(
+  cwd: string,
+  environment: NodeJS.ProcessEnv = {},
+): Promise<GitCheckoutContext> {
+  const bare = await revParse(cwd, '--is-bare-repository', environment);
   if (bare === null) return {kind: 'not_a_repository'};
-  const gitDirValue = await revParse(cwd, '--git-dir');
+  const gitDirValue = await revParse(cwd, '--git-dir', environment);
   if (!gitDirValue) return {kind: 'not_a_repository'};
   const gitDir = absoluteFrom(cwd, gitDirValue);
   if (bare === 'true') return {kind: 'bare', gitDir};
 
-  const checkoutRootValue = await revParse(cwd, '--show-toplevel');
-  const commonGitDirValue = await revParse(cwd, '--git-common-dir');
+  const checkoutRootValue = await revParse(cwd, '--show-toplevel', environment);
+  const commonGitDirValue = await revParse(cwd, '--git-common-dir', environment);
   if (!checkoutRootValue || !commonGitDirValue) return {kind: 'not_a_repository'};
   const checkoutRoot = absoluteFrom(cwd, checkoutRootValue);
   const commonGitDir = absoluteFrom(cwd, commonGitDirValue);
-  const superprojectValue = await revParse(cwd, '--show-superproject-working-tree');
+  const superprojectValue = await revParse(cwd, '--show-superproject-working-tree', environment);
   const superprojectRoot = superprojectValue ? absoluteFrom(cwd, superprojectValue) : null;
   return {
     kind: superprojectRoot ? 'submodule' : (gitDir === commonGitDir ? 'main_worktree' : 'linked_worktree'),

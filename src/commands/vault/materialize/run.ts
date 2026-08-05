@@ -25,7 +25,7 @@ import {
   withMaterializationFailureRecovery,
   withMaterializationRecovery,
   withMaterializationSourceRecovery,
-} from '../materialization-source.js';
+} from '../../../lib/vaultMaterializationSource.js';
 
 interface MaterializationRecord {
   id: string;

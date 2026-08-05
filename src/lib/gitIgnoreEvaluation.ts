@@ -24,9 +24,11 @@ function parseIgnoreRule(checkoutRoot: string, output: string): IgnoreRule | nul
   if (!record) return null;
   const tab = record.indexOf('\t');
   const provenance = tab >= 0 ? record.slice(0, tab) : record;
-  const match = /^(.*):(\d+):(.*)$/.exec(provenance);
+  const match = /^(.*?):(\d+):(.*)$/.exec(provenance);
   if (!match) return null;
   const source = match[1];
+  const line = Number(match[2]);
+  const pattern = match[3];
   const absoluteSource = path.isAbsolute(source) ? path.normalize(source) : path.resolve(checkoutRoot, source);
   const relative = path.relative(checkoutRoot, absoluteSource);
   const sourceKind = relative === '.git/info/exclude' || /(?:^|[/\\])\.git[/\\]info[/\\]exclude$/.test(absoluteSource)
@@ -34,7 +36,7 @@ function parseIgnoreRule(checkoutRoot: string, output: string): IgnoreRule | nul
     : (!relative.startsWith('..') && !path.isAbsolute(relative) && path.basename(absoluteSource) === '.gitignore')
       ? 'repository'
       : 'global';
-  return {source: absoluteSource, line: Number(match[2]), pattern: match[3], sourceKind};
+  return {source: absoluteSource, line, pattern, sourceKind};
 }
 
 export async function evaluateGitIgnore(

@@ -72,6 +72,17 @@ describe('environment checkout safety', () => {
     expect(await evaluateGitIgnore(root, 'tracked.env')).toMatchObject({tracked: true, covered: false});
   });
 
+  it('preserves repository provenance when an ignore pattern contains a colon-delimited number', async () => {
+    const root = await fixture();
+    await writeFile(path.join(root, '.gitignore'), 'logs/:123:/\n');
+    const ignored = await evaluateGitIgnore(root, 'logs/:123:/service.env');
+    expect(ignored).toMatchObject({
+      covered: true,
+      strength: 'strong',
+      rule: {sourceKind: 'repository', pattern: 'logs/:123:/'},
+    });
+  });
+
   it('honors a winning negation and rejects case-fold collisions', async () => {
     const root = await fixture();
     await writeFile(path.join(root, '.gitignore'), '.runtime/*\n!.runtime/allowed.env\n');
@@ -127,5 +138,10 @@ describe('environment checkout safety', () => {
   it('allowlists read-only Git primitives', async () => {
     const root = await fixture();
     await expect(runReadOnlyGit(root, ['add', '.'])).rejects.toThrow('read-only allowlist');
+  });
+
+  it('degrades deterministically when Git is unavailable', async () => {
+    const root = await fixture();
+    expect(await resolveGitCheckout(root, {PATH: '/sift/no-git'})).toEqual({kind: 'not_a_repository'});
   });
 });

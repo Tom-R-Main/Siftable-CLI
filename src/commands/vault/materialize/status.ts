@@ -1,7 +1,7 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../../lib/base-command.js';
 import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from '../../../lib/vault-owner-context.js';
-import {withMaterializationRecovery} from '../materialization-source.js';
+import {withMaterializationRecovery} from '../../../lib/vaultMaterializationSource.js';
 
 interface MaterializationStatusRecord extends Record<string, unknown> {
   id: string;
