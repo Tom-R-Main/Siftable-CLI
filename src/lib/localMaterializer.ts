@@ -311,6 +311,34 @@ export function createMaterializationCredentialBinding(input: {
   });
 }
 
+export function createMaterializationBundleCredentialBinding(input: {
+  materializationId: string;
+  bundleDigest: string;
+  runnerFingerprint: string;
+  materializerDigest: string;
+  destinationPath: string;
+  workspaceRoot: string;
+  mode: '0400' | '0600';
+  expectedAbsence: boolean;
+  observedStateBinding?: string;
+  purpose: string;
+  nonce: string;
+}): string {
+  return canonicalJson({
+    materializationId: input.materializationId,
+    bundleDigest: input.bundleDigest,
+    runnerFingerprint: input.runnerFingerprint,
+    materializerDigest: input.materializerDigest,
+    destinationPath: input.destinationPath,
+    workspaceRoot: input.workspaceRoot,
+    mode: input.mode,
+    expectedAbsence: String(input.expectedAbsence),
+    observedStateBinding: input.observedStateBinding ?? 'none',
+    purposeDigest: createHash('sha256').update(input.purpose).digest('hex'),
+    nonce: input.nonce,
+  });
+}
+
 export function decryptMaterializationEnvelope(
   envelope: ExecutionGrantEnvelope,
   privateKey: KeyObject,
@@ -325,6 +353,34 @@ export function decryptMaterializationEnvelope(
   const value = decrypted.fields[field];
   decrypted.fields[field] = '';
   return value;
+}
+
+export function decryptMaterializationBundleEnvelope(
+  envelope: ExecutionGrantEnvelope,
+  privateKey: KeyObject,
+  binding: string,
+  expectedNames: readonly string[],
+): Buffer[] {
+  const decrypted = decryptExecutionGrantEnvelope(envelope, privateKey, binding);
+  const names = Object.keys(decrypted.fields);
+  const values: Buffer[] = [];
+  try {
+    if (decrypted.kind !== 'vault_materialization_bundle_plaintext'
+      || JSON.stringify(names) !== JSON.stringify(expectedNames)) {
+      throw new Error('Materialization bundle envelope does not match the approved ordered member set');
+    }
+    for (const name of expectedNames) {
+      const value = decrypted.fields[name];
+      if (!value) throw new Error('Materialization bundle member is missing or malformed');
+      values.push(Buffer.from(value, 'utf8'));
+    }
+    return values;
+  } catch (error) {
+    for (const value of values) value.fill(0);
+    throw error;
+  } finally {
+    for (const name of names) decrypted.fields[name] = '';
+  }
 }
 
 async function verifyPrecondition(input: {
@@ -356,7 +412,7 @@ async function verifyPrecondition(input: {
 }
 
 export async function materializeApprovedPlaintext(input: {
-  plaintext: string;
+  plaintext: string | Buffer;
   destinationPath: string;
   workspaceRoot: string;
   mode: '0400' | '0600';
@@ -364,6 +420,7 @@ export async function materializeApprovedPlaintext(input: {
   expectedDestinationDigest?: string;
   trackedFileException: boolean;
   policyAllowsTrackedException: boolean;
+  riskPolicyAcknowledged?: boolean;
   beforeCommit?: () => Promise<void>;
   onCommitted?: () => void;
   onCleanup?: (succeeded: boolean) => void;
@@ -372,15 +429,20 @@ export async function materializeApprovedPlaintext(input: {
   if (!requestedMode) throw new Error('Unsupported materialization mode');
   await validateMaterializationPath(input);
   const policy = await gitPathPolicy(input.workspaceRoot, input.destinationPath);
-  if ((policy.tracked || policy.riskPolicyMatch)
-    && (!input.trackedFileException || !input.policyAllowsTrackedException)) {
-    throw new Error('Destination is tracked by Git or matches secret-risk policy');
+  const trackedExceptionAllowed = input.trackedFileException && input.policyAllowsTrackedException;
+  if (policy.tracked && !trackedExceptionAllowed) {
+    throw new Error('Destination is tracked by Git; choose an untracked runtime path');
+  }
+  if (policy.riskPolicyMatch && !input.riskPolicyAcknowledged && !trackedExceptionAllowed) {
+    throw new Error('Destination matches the secret-risk path policy without explicit acknowledgement');
   }
   await verifyPrecondition(input);
   const parent = path.dirname(input.destinationPath);
   const tempDir = await mkdtemp(path.join(parent, '.sift-materialize-'));
   const tempPath = path.join(tempDir, `payload-${randomBytes(8).toString('hex')}`);
-  const bytes = Buffer.from(input.plaintext, 'utf8');
+  const bytes = typeof input.plaintext === 'string'
+    ? Buffer.from(input.plaintext, 'utf8')
+    : Buffer.from(input.plaintext);
   let cleanupSucceeded = false;
   let receipt: Omit<MaterializationReceipt, 'cleanupSucceeded'> | undefined;
   try {
