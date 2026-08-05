@@ -22,7 +22,7 @@ export default class CodeMemoryEvents extends BaseCommand {
 
     const events = response.data?.events ?? [];
     if (!this.jsonEnabled()) {
-      renderTable(events, [
+      renderTable(events as Array<Record<string, unknown>>, [
         {key: 'createdAt', header: 'When'},
         {key: 'eventType', header: 'Event'},
         {key: 'actorType', header: 'Actor'},
