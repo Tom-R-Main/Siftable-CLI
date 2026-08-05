@@ -41,6 +41,22 @@ members:
 `;
 
 describe('environment manifest contract', () => {
+  it('requires an explicit managed destination mode in parser and schema [AC6]', () => {
+    const parsed = parseEnvironmentManifest(validManifest.replace('mode: "0600"', ''));
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) return;
+    expect(parsed.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({path: '$.members[0].destination.mode'}),
+    ]));
+
+    const schemaPath = path.resolve(process.cwd(), '../../schemas/vault-environment-manifest.v1.json');
+    const schema = JSON.parse(readFileSync(schemaPath, 'utf8'));
+    const instance = parse(validManifest) as {members: Array<{destination: Record<string, unknown>}>};
+    delete instance.members[0].destination.mode;
+    expect(new Validator(schema, '2020-12', false).validate(instance).valid).toBe(false);
+    expect(schema.$defs.destination.properties.mode.enum).toEqual(['0400', '0600']);
+  });
+
   it('parses unknown YAML once into strict discriminated value-free types [AC1]', () => {
     const result = parseEnvironmentManifest(validManifest);
     expect(result.ok).toBe(true);

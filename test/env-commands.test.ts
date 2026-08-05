@@ -7,6 +7,13 @@ import EnvStatus from '../src/commands/env/status.js';
 import EnvDiff from '../src/commands/env/diff.js';
 import EnvCheck from '../src/commands/env/check.js';
 import EnvExample from '../src/commands/env/example.js';
+import EnvPull from '../src/commands/env/pull.js';
+import {classifyEnvironmentEndpoint} from '../src/lib/envPullCommand.js';
+import {
+  buildEnvironmentBundleContract,
+  materializeManagedEnvironmentBundle,
+  writeManagedEnvironmentBundleReceipt,
+} from '../src/lib/environmentBundle.js';
 import {inspectEnvironmentContract} from '../src/lib/environmentCommand.js';
 import {renderEnvExample} from '../src/lib/environmentExample.js';
 import {parseEnvironmentManifest} from '../src/lib/environmentManifest.js';
@@ -171,7 +178,7 @@ describe('offline env commands', () => {
     expect(EnvCheck.description).toMatch(/contract/i);
   });
 
-  it('discovers exactly the four supported env commands through the real CLI help boundary', () => {
+  it('discovers pull with the four offline commands through the real CLI help boundary', () => {
     const result = spawnSync(process.execPath, ['packages/exf-cli/bin/run.js', 'env', '--help'], {
       cwd: repositoryRoot,
       encoding: 'utf8',
@@ -181,6 +188,7 @@ describe('offline env commands', () => {
     expect(result.stdout).toContain('env diff');
     expect(result.stdout).toContain('env check');
     expect(result.stdout).toContain('env example');
+    expect(result.stdout).toContain('env pull');
     expect(`${result.stdout}\n${result.stderr}`).not.toMatch(/env(?::| )offline-command/);
 
     const removed = spawnSync(process.execPath, ['packages/exf-cli/bin/run.js', 'env', 'offline-command', '--help'], {
@@ -189,6 +197,72 @@ describe('offline env commands', () => {
     });
     expect(removed.status).not.toBe(0);
     expect(`${removed.stdout}\n${removed.stderr}`).toMatch(/not found|nonexistent/i);
+
+    const pull = spawnSync(process.execPath, ['packages/exf-cli/bin/run.js', 'env', 'pull', '--help'], {
+      cwd: repositoryRoot,
+      encoding: 'utf8',
+    });
+    expect(pull.status).toBe(0);
+    expect(pull.stdout).toContain('--endpoint-class');
+  });
+
+  it('keeps pull explicitly development-scoped with replacement consent', () => {
+    expect(Object.keys(EnvPull.flags)).toEqual(expect.arrayContaining([
+      'token', 'api-url', 'checkout-root', 'destination', 'purpose', 'replace', 'endpoint-class',
+    ]));
+    expect(EnvPull.description).toMatch(/Production, CI, shared-host.*broker/i);
+    expect(EnvPull.flags['endpoint-class'].required).toBe(true);
+
+    const legacy = spawnSync(process.execPath, [
+      'packages/exf-cli/bin/run.js', 'vault', 'materialize', 'environment', '--help',
+    ], {cwd: repositoryRoot, encoding: 'utf8'});
+    expect(legacy.status).toBe(0);
+  });
+
+  it('fails closed on missing classes and known CI/shared-host signals before requests', () => {
+    expect(() => classifyEnvironmentEndpoint(undefined, {})).toThrow('explicit --endpoint-class');
+    expect(classifyEnvironmentEndpoint('development', {})).toBe('development');
+    expect(() => classifyEnvironmentEndpoint('development', {GITHUB_ACTIONS: 'true'}))
+      .toThrow('detected ci');
+    expect(() => classifyEnvironmentEndpoint('development', {CODESPACES: 'true'}))
+      .toThrow('detected shared_host');
+    expect(() => classifyEnvironmentEndpoint('production', {})).toThrow('sift grants run --help');
+  });
+
+  it('returns already-current without creating or consuming an approval', async () => {
+    const root = await gitCheckout('.runtime/\n');
+    const parsed = parseEnvironmentManifest(manifest);
+    if (!parsed.ok) throw new Error('test manifest did not parse');
+    await mkdir(path.join(root, '.runtime'));
+    const contract = buildEnvironmentBundleContract(parsed.manifest, root, '.runtime/service.env');
+    const receipt = await materializeManagedEnvironmentBundle({
+      contract,
+      values: [Buffer.from('synthetic-token')],
+      expectedAbsence: true,
+    });
+    await writeManagedEnvironmentBundleReceipt(contract, receipt);
+    const statusAfterPull = await inspectEnvironmentContract(root);
+    expect(statusAfterPull.members).toEqual([
+      expect.objectContaining({name: 'TOKEN', state: 'managed_current'}),
+    ]);
+    const fetch = vi.fn(() => { throw new Error('approval request must not be created'); });
+    vi.stubGlobal('fetch', fetch);
+
+    const result = await runCommand([
+      'env', 'pull',
+      '--checkout-root', root,
+      '--purpose', 'Use the current managed development environment',
+      '--endpoint-class', 'development',
+      '--token', 'synthetic-token',
+      '--json',
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      state: 'managed_current',
+      destination: '.runtime/service.env',
+      approvalConsumed: false,
+    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('keeps env example JSON output machine-parseable without dotenv preview text', async () => {
