@@ -10,6 +10,10 @@ module.exports = {
     '<rootDir>/test/commands/interactive.chat-agent.test.ts',
     '<rootDir>/test/commands/vault-containment.test.ts',
     '<rootDir>/test/commands/vault-scopes.test.ts',
+    '<rootDir>/test/env-commands.test.ts',
+    '<rootDir>/test/environmentCheckoutSafety.test.ts',
+    '<rootDir>/test/environmentManifest.test.ts',
+    '<rootDir>/test/environmentState.test.ts',
   ],
   modulePathIgnorePatterns: ['<rootDir>/dist/'],
   moduleNameMapper: {
