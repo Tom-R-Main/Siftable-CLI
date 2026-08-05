@@ -1,5 +1,4 @@
 import {execFileSync, spawnSync} from 'node:child_process';
-import {existsSync} from 'node:fs';
 import {chmod, mkdtemp, mkdir, realpath, rm, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
@@ -21,24 +20,16 @@ import {runCommand} from './helpers/mock-api.js';
 
 const roots: string[] = [];
 const repositoryRoot = path.resolve(process.cwd(), '../..');
-const cliDistPath = path.join(repositoryRoot, 'packages', 'exf-cli', 'dist');
-let cliDistCreatedByTests = false;
 
 beforeAll(() => {
-  const cliDistExistedBeforeTests = existsSync(cliDistPath);
-  try {
-    execFileSync('npm', ['exec', '--', 'nx', 'run', '@siftable/cli:build', '--skip-nx-cache'], {
-      cwd: repositoryRoot,
-      stdio: 'pipe',
-    });
-  } finally {
-    cliDistCreatedByTests = !cliDistExistedBeforeTests && existsSync(cliDistPath);
-  }
+  execFileSync('npm', ['exec', '--', 'nx', 'run', '@siftable/cli:build', '--skip-nx-cache'], {
+    cwd: repositoryRoot,
+    stdio: 'pipe',
+  });
 }, 120_000);
 
-afterAll(async () => {
+afterAll(() => {
   vi.unstubAllGlobals();
-  if (cliDistCreatedByTests) await rm(cliDistPath, {recursive: true, force: true});
 });
 
 afterEach(async () => {
