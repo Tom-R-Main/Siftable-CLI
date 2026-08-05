@@ -1,5 +1,4 @@
 import {Flags} from '@oclif/core';
-import path from 'node:path';
 import {BaseCommand} from '../../../lib/base-command.js';
 import {createDotenvSourceBinding, parseDotenvImport} from '../../../lib/dotenvImport.js';
 import {

@@ -67,10 +67,21 @@ export async function resolveDotenvImportCheckoutRoot(
   sourcePath: string,
   explicitCheckoutRoot?: string,
 ): Promise<string> {
-  const inferred = explicitCheckoutRoot
-    ? path.resolve(explicitCheckoutRoot)
-    : findCheckoutRoot(path.dirname(sourcePath)) ?? findCheckoutRoot() ?? process.cwd();
-  return realpath(inferred);
+  const resolvedSource = await realpath(path.resolve(sourcePath));
+  const sourceCheckout = findCheckoutRoot(path.dirname(resolvedSource));
+  if (!explicitCheckoutRoot) {
+    return realpath(sourceCheckout ?? findCheckoutRoot() ?? process.cwd());
+  }
+
+  const explicit = await realpath(path.resolve(explicitCheckoutRoot));
+  const relativeSource = path.relative(explicit, resolvedSource);
+  if (relativeSource === '' || relativeSource.startsWith('..') || path.isAbsolute(relativeSource)) {
+    throw new Error('--checkout-root must contain the explicit dotenv source.');
+  }
+  if (sourceCheckout && await realpath(sourceCheckout) !== explicit) {
+    throw new Error('--checkout-root must be the checkout that contains the explicit dotenv source.');
+  }
+  return explicit;
 }
 
 export async function writeDotenvImportPlanArtifact(

@@ -30,6 +30,9 @@
   },
   "nx": {
     "targets": {
+      "test": {
+        "dependsOn": ["test:vitest"]
+      },
       "test:vitest": {
         "dependsOn": ["build"]
       }

@@ -65,8 +65,10 @@ describe('sift env import plan/apply', () => {
     const secret = 'synthetic-secret-never-plan';
     await writeFile(source, `TOKEN=${secret}\n`);
     let requestBody: Record<string, unknown> | undefined;
+    let requestHeaders: HeadersInit | undefined;
     vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requestHeaders = init?.headers;
       const entries = requestBody.entries as Array<Record<string, unknown>>;
       return response(201, {plan: {
         id: '22222222-2222-4222-8222-222222222222',
@@ -97,6 +99,7 @@ describe('sift env import plan/apply', () => {
     expect(result.result).toMatchObject({kind: 'sift.vault.dotenv-import-plan'});
     expect(JSON.parse(result.stdout)).toMatchObject({kind: 'sift.vault.dotenv-import-plan'});
     expect(JSON.stringify(requestBody)).not.toContain(secret);
+    expect((requestHeaders as Record<string, string>)['Idempotency-Key']).toMatch(/^[A-Za-z0-9_.:-]{8,128}$/);
     expect(result.stdout).not.toContain(secret);
     expect(await readFile(planFile, 'utf8')).not.toContain(secret);
     expect(await readFile(source, 'utf8')).toBe(`TOKEN=${secret}\n`);
@@ -211,6 +214,16 @@ members:
       '--checkout-root', managedRoot, '--owner', 'personal', '--token', 'synthetic-token', '--json',
     ]);
     expect(managed.exitCode).not.toBe(0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    const unrelatedRoot = await checkout();
+    const bypass = await runCommand([
+      'env', 'import', 'plan', '--source', managedSource,
+      '--plan-file', path.join(managedRoot, 'bypass.plan.json'),
+      '--checkout-root', unrelatedRoot, '--owner', 'personal',
+      '--token', 'synthetic-token', '--json',
+    ]);
+    expect(bypass.exitCode).not.toBe(0);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
