@@ -49,6 +49,16 @@ describe('governed environment bundles', () => {
       .rejects.toThrow('tracked by Git');
   });
 
+  it('requires repository ignore coverage for the lock sidecar as well as the destination', async () => {
+    const root = await mkdtemp(path.join(await realpath(tmpdir()), 'sift-env-bundle-'));
+    roots.push(root);
+    execFileSync('git', ['init', '--quiet'], {cwd: root});
+    await writeFile(path.join(root, '.gitignore'), '.runtime/.env.local\n');
+    const contract = buildEnvironmentBundleContract(manifest, root, '.runtime/.env.local');
+    await expect(assertManagedEnvironmentBundleGitSafety(contract))
+      .rejects.toThrow('lock sidecar');
+  });
+
   it('binds and invalidates the exact ordered entry and field set', () => {
     const first = buildEnvironmentBundleContract(manifest, '/workspace', '.runtime/.env.local');
     const reordered = buildEnvironmentBundleContract({...manifest, members: [...manifest.members].reverse()}, '/workspace', '.runtime/.env.local');

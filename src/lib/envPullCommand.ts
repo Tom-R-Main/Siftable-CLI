@@ -44,6 +44,17 @@ interface BundleMaterializationRecord {
 const RECOVERY_COMMAND = 'sift env pull --help';
 const BROKER_COMMAND = 'sift grants run --help';
 
+function sameBundleMembers(
+  left: BundleMaterializationRecord['bundleMembers'],
+  right: BundleMaterializationRecord['bundleMembers'],
+): boolean {
+  return left.length === right.length && left.every((member, index) => (
+    member.name === right[index]?.name
+    && member.vaultEntryId === right[index]?.vaultEntryId
+    && member.credentialField === right[index]?.credentialField
+  ));
+}
+
 export type EnvironmentEndpointClass =
   | 'development'
   | 'production'
@@ -206,7 +217,7 @@ export default class EnvPull extends BaseCommand {
       credentialField: member.field,
     }));
     if (requested.materialization.bundleDigest !== contract.memberSetDigest
-      || JSON.stringify(requested.materialization.bundleMembers) !== JSON.stringify(expectedMembers)
+      || !sameBundleMembers(requested.materialization.bundleMembers, expectedMembers)
       || requested.materialization.destinationPath !== contract.destinationPath
       || requested.materialization.workspaceRoot !== contract.checkoutRoot
       || requested.materialization.requestedMode !== contract.mode
@@ -270,7 +281,7 @@ export default class EnvPull extends BaseCommand {
       });
       redeemed = true;
       if (redemption.materialization.bundleDigest !== contract.memberSetDigest
-        || JSON.stringify(redemption.materialization.bundleMembers) !== JSON.stringify(expectedMembers)) {
+        || !sameBundleMembers(redemption.materialization.bundleMembers, expectedMembers)) {
         this.error('Bundle membership changed after approval.');
       }
       const credentialBinding = createMaterializationBundleCredentialBinding({
@@ -321,7 +332,7 @@ export default class EnvPull extends BaseCommand {
             requestNonce: nonce,
             destinationState: 'written',
             mode: receipt.mode,
-            cleanupSucceeded: true,
+            cleanupSucceeded,
           },
         },
       );

@@ -268,13 +268,18 @@ export async function assertManagedEnvironmentBundleGitSafety(
     if (error instanceof Error && error.message === 'Managed environment destination is tracked by Git') throw error;
   }
   try {
-    await execFileAsync(
-      'git',
-      ['-c', 'core.excludesFile=/dev/null', 'check-ignore', '-q', '--', contract.relativeDestination],
-      options,
-    );
+    for (const ignoredPath of [
+      contract.relativeDestination,
+      `${contract.relativeDestination}.sift-lock`,
+    ]) {
+      await execFileAsync(
+        'git',
+        ['-c', 'core.excludesFile=/dev/null', 'check-ignore', '-q', '--', ignoredPath],
+        options,
+      );
+    }
   } catch {
-    throw new Error('Managed environment destination must be ignored by repository policy');
+    throw new Error('Managed environment destination and lock sidecar must be ignored by repository policy');
   }
 }
 
