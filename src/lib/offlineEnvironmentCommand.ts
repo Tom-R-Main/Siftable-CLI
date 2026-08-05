@@ -1,7 +1,7 @@
 import {Command, Flags} from '@oclif/core';
 import path from 'node:path';
-import {inspectEnvironmentContract, type EnvironmentInspectionReport} from '../../lib/environmentCommand.js';
-import {findCheckoutRoot} from '../../lib/workspace-context.js';
+import {inspectEnvironmentContract, type EnvironmentInspectionReport} from './environmentCommand.js';
+import {findCheckoutRoot} from './workspace-context.js';
 
 export const checkoutRootFlag = Flags.string({
   description: 'Exact Git checkout root containing .sift/environment.yaml',

@@ -1,6 +1,6 @@
 import {Flags} from '@oclif/core';
 import type {EnvironmentInspectionReport} from '../../lib/environmentCommand.js';
-import {checkoutRootFlag, OfflineEnvironmentCommand} from './offline-command.js';
+import {checkoutRootFlag, OfflineEnvironmentCommand} from '../../lib/offlineEnvironmentCommand.js';
 
 export default class EnvCheck extends OfflineEnvironmentCommand {
   static summary = 'Validate the environment contract for local or CI use';

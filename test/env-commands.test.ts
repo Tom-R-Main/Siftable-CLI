@@ -16,20 +16,28 @@ import {
   writeEnvironmentReceiptLedger,
   type EnvironmentMemberState,
 } from '../src/lib/environmentState.js';
+import * as environmentState from '../src/lib/environmentState.js';
 import {runCommand} from './helpers/mock-api.js';
 
 const roots: string[] = [];
 const repositoryRoot = path.resolve(process.cwd(), '../..');
+let isolatedGitConfigHome: string | undefined;
 
-beforeAll(() => {
+beforeAll(async () => {
+  isolatedGitConfigHome = await mkdtemp(path.join(tmpdir(), 'sift-env-git-config-'));
+  vi.stubEnv('GIT_CONFIG_GLOBAL', '/dev/null');
+  vi.stubEnv('GIT_CONFIG_NOSYSTEM', '1');
+  vi.stubEnv('XDG_CONFIG_HOME', isolatedGitConfigHome);
   execFileSync('npm', ['exec', '--', 'nx', 'run', '@siftable/cli:build', '--skip-nx-cache'], {
     cwd: repositoryRoot,
     stdio: 'pipe',
   });
 }, 120_000);
 
-afterAll(() => {
+afterAll(async () => {
+  vi.unstubAllEnvs();
   vi.unstubAllGlobals();
+  if (isolatedGitConfigHome) await rm(isolatedGitConfigHome, {recursive: true, force: true});
 });
 
 afterEach(async () => {
@@ -109,7 +117,7 @@ async function statusCheckout(state: EnvironmentMemberState): Promise<string> {
 }
 
 describe('offline env commands', () => {
-  it('reports manifest/example drift, non-Git and unignored findings without network access [AC7]', async () => {
+  it('reports manifest/example drift, non-Git and unignored findings without network access', async () => {
     const root = await checkout();
     const fetch = vi.fn(() => { throw new Error('network forbidden'); });
     vi.stubGlobal('fetch', fetch);
@@ -121,15 +129,25 @@ describe('offline env commands', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('fails closed for malformed manifests and checkout escape [AC7]', async () => {
+  it('keeps an unsafe member visible without inspecting destination metadata', async () => {
     const root = await checkout();
     await writeFile(path.join(root, '.sift', 'environment.yaml'), manifest.replace('.runtime/service.env', '../outside'));
+    const destinationStat = vi.spyOn(environmentState, 'statEnvironmentDestination');
     const report = await inspectEnvironmentContract(root);
     expect(report.ok).toBe(false);
     expect(report.findings.map(finding => finding.code)).toContain('checkout_escape');
+    expect(report.members).toEqual([
+      expect.objectContaining({name: 'TOKEN', destination: '../outside', state: 'unmanaged'}),
+    ]);
+    expect(destinationStat).not.toHaveBeenCalled();
+
+    const safeRoot = await gitCheckout('.runtime/\n');
+    await writeCurrentExample(safeRoot);
+    await inspectEnvironmentContract(safeRoot);
+    expect(destinationStat).toHaveBeenCalledWith(path.join(safeRoot, '.runtime', 'service.env'));
   });
 
-  it('fails on tracked and unignored destinations without changing the index [AC4] [AC7]', async () => {
+  it('fails on tracked and unignored destinations without changing the index', async () => {
     const trackedRoot = await checkout();
     execFileSync('git', ['init', '-q'], {cwd: trackedRoot});
     await mkdir(path.join(trackedRoot, '.runtime'));
@@ -147,7 +165,7 @@ describe('offline env commands', () => {
       .toContain('unignored_destination');
   });
 
-  it('keeps flags offline and teaches the contract-first flow [AC10]', () => {
+  it('keeps flags offline and teaches the contract-first flow', () => {
     for (const command of [EnvStatus, EnvDiff, EnvCheck, EnvExample]) {
       expect(Object.keys(command.flags)).not.toEqual(expect.arrayContaining(['token', 'api-url']));
       const prose = `${command.description ?? ''} ${(command as {summary?: string}).summary ?? ''}`;
@@ -157,7 +175,7 @@ describe('offline env commands', () => {
     expect(EnvCheck.description).toMatch(/contract/i);
   });
 
-  it('discovers every built env command through the real CLI help boundary [AC10] [AC11]', () => {
+  it('discovers exactly the four supported env commands through the real CLI help boundary', () => {
     const result = spawnSync(process.execPath, ['packages/exf-cli/bin/run.js', 'env', '--help'], {
       cwd: repositoryRoot,
       encoding: 'utf8',
@@ -167,6 +185,14 @@ describe('offline env commands', () => {
     expect(result.stdout).toContain('env diff');
     expect(result.stdout).toContain('env check');
     expect(result.stdout).toContain('env example');
+    expect(`${result.stdout}\n${result.stderr}`).not.toMatch(/env(?::| )offline-command/);
+
+    const removed = spawnSync(process.execPath, ['packages/exf-cli/bin/run.js', 'env', 'offline-command', '--help'], {
+      cwd: repositoryRoot,
+      encoding: 'utf8',
+    });
+    expect(removed.status).not.toBe(0);
+    expect(`${removed.stdout}\n${removed.stderr}`).toMatch(/not found|nonexistent/i);
   });
 
   it.each([
@@ -191,7 +217,7 @@ describe('offline env commands', () => {
       await writeCurrentExample(root, escaping);
       return root;
     }],
-  ])('fails both command boundaries with value-free output for %s [AC7]', async (_label, makeRoot) => {
+  ])('fails both command boundaries with value-free output for %s', async (_label, makeRoot) => {
     for (const argv of [['env', 'diff'], ['env', 'check', '--ci']]) {
       const root = await makeRoot();
       const result = await runCommand([...argv, '--checkout-root', root]);
@@ -200,7 +226,7 @@ describe('offline env commands', () => {
     }
   });
 
-  it('reports strong winning ignore provenance at the command and report boundary [AC4]', async () => {
+  it('reports strong winning ignore provenance at the command and report boundary', async () => {
     const root = await gitCheckout('.runtime/\n');
     await writeCurrentExample(root);
     const report = await inspectEnvironmentContract(root);
@@ -225,7 +251,7 @@ describe('offline env commands', () => {
     'modified_locally',
     'unmanaged',
     'managed_unknown_freshness',
-  ])('reports %s through the real status command boundary [AC6]', async state => {
+  ])('reports %s through the real status command boundary', async state => {
     const root = await statusCheckout(state);
     const command = await runCommand(['env', 'status', '--checkout-root', root]);
     expect(command.exitCode).toBe(0);

@@ -104,12 +104,15 @@ export async function readEnvironmentReceiptLedger(checkoutRoot: string): Promis
   let text: string;
   try {
     text = await readFile(ledgerPath, 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
+  } catch {
+    return null;
   }
-  const parsed = JSON.parse(text) as unknown;
-  return isReceiptLedger(parsed) ? parsed : null;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return isReceiptLedger(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function writeEnvironmentReceiptLedger(

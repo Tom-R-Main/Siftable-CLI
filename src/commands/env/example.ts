@@ -3,7 +3,7 @@ import path from 'node:path';
 import {Flags} from '@oclif/core';
 import {renderEnvExample} from '../../lib/environmentExample.js';
 import {loadEnvironmentManifest} from '../../lib/environmentCommand.js';
-import {checkoutRootFlag, OfflineEnvironmentCommand} from './offline-command.js';
+import {checkoutRootFlag, OfflineEnvironmentCommand} from '../../lib/offlineEnvironmentCommand.js';
 
 export default class EnvExample extends OfflineEnvironmentCommand {
   static summary = 'Generate a deterministic names-and-placeholders-only example';

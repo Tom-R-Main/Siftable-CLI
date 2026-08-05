@@ -1,5 +1,5 @@
 import type {EnvironmentInspectionReport} from '../../lib/environmentCommand.js';
-import {checkoutRootFlag, OfflineEnvironmentCommand} from './offline-command.js';
+import {checkoutRootFlag, OfflineEnvironmentCommand} from '../../lib/offlineEnvironmentCommand.js';
 
 export default class EnvStatus extends OfflineEnvironmentCommand {
   static summary = 'Report value-free local environment state';

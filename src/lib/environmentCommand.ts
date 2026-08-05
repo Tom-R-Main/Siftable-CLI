@@ -71,18 +71,25 @@ async function memberReports(
   checkoutRoot: string,
   manifest: EnvironmentManifest,
   rawManifest: string,
+  safeDestinations: ReadonlySet<string>,
 ): Promise<EnvironmentMemberReport[]> {
   const ledger = await readEnvironmentReceiptLedger(checkoutRoot);
   const fingerprint = manifestFingerprint(rawManifest);
   return Promise.all(manifest.members.map(async member => {
     const receipt = ledger?.receipts.find(candidate => candidate.name === member.name
       && candidate.destination === member.destination.path);
-    const destination = await statEnvironmentDestination(path.join(checkoutRoot, member.destination.path));
+    const state = safeDestinations.has(member.destination.path)
+      ? classifyEnvironmentMember(
+        receipt,
+        await statEnvironmentDestination(path.join(checkoutRoot, member.destination.path)),
+        fingerprint,
+      )
+      : 'unmanaged';
     return {
       name: member.name,
       destination: member.destination.path,
       mode: member.destination.mode,
-      state: classifyEnvironmentMember(receipt, destination, fingerprint),
+      state,
       ...(member.kind === 'vault_field' ? (() => {
         const resolution = resolveManifestOwner(member.owner, manifest.owners);
         return resolution.ok ? {owner: resolution.owner, authorization: 'not_established' as const} : {};
@@ -120,9 +127,11 @@ export async function inspectEnvironmentContract(
   }
 
   const destinations = [...new Set(parsed.manifest.members.map(member => member.destination.path))].sort();
+  const safeDestinations = new Set<string>();
   for (const destination of destinations) {
     try {
       await assertDestinationSafeBeforeApproval(checkoutRoot, destination);
+      safeDestinations.add(destination);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       findings.push({
@@ -156,7 +165,7 @@ export async function inspectEnvironmentContract(
       message: example.reason === 'missing' ? '.env.example is missing.' : '.env.example differs from the contract.',
     });
   }
-  const members = await memberReports(checkoutRoot, parsed.manifest, rawManifest);
+  const members = await memberReports(checkoutRoot, parsed.manifest, rawManifest, safeDestinations);
   return {
     schema_version: 1,
     manifest: 'valid',

@@ -2,12 +2,26 @@ import {execFileSync} from 'node:child_process';
 import {lstat, mkdir, mkdtemp, realpath, rm, symlink, writeFile, chmod} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {afterEach, describe, expect, it} from 'vitest';
+import {afterAll, afterEach, beforeAll, describe, expect, it, vi} from 'vitest';
 import {assertDestinationSafeBeforeApproval} from '../src/lib/environmentCheckoutSafety.js';
 import {resolveGitCheckout, runReadOnlyGit} from '../src/lib/gitCheckoutContext.js';
 import {evaluateGitIgnore} from '../src/lib/gitIgnoreEvaluation.js';
 
 const cleanup: string[] = [];
+let isolatedGitConfigHome: string | undefined;
+
+beforeAll(async () => {
+  isolatedGitConfigHome = await mkdtemp(path.join(tmpdir(), 'sift-env-git-config-'));
+  vi.stubEnv('GIT_CONFIG_GLOBAL', '/dev/null');
+  vi.stubEnv('GIT_CONFIG_NOSYSTEM', '1');
+  vi.stubEnv('XDG_CONFIG_HOME', isolatedGitConfigHome);
+});
+
+afterAll(async () => {
+  vi.unstubAllEnvs();
+  if (isolatedGitConfigHome) await rm(isolatedGitConfigHome, {recursive: true, force: true});
+});
+
 afterEach(async () => Promise.all(cleanup.splice(0).map(item => rm(item, {recursive: true, force: true}))));
 
 async function fixture(): Promise<string> {
@@ -24,14 +38,14 @@ async function fixture(): Promise<string> {
 
 describe('environment checkout safety', () => {
   it.each(['../escape', '/tmp/escape', '.git/config', 'nested/.git/file', 'bad\\path', 'e\u0301.env'])
-  ('rejects adversarial destination %s before approval [AC3] [AC5]', async destination => {
+  ('rejects adversarial destination %s before approval', async destination => {
     const root = await fixture();
     await expect(assertDestinationSafeBeforeApproval(root, destination)).rejects.toMatchObject({
       name: 'EnvironmentCheckoutSafetyError',
     });
   });
 
-  it('rejects symlinked and writable ancestors [AC3]', async () => {
+  it('rejects symlinked and writable ancestors', async () => {
     const root = await fixture();
     const outside = await realpath(await mkdtemp(path.join(tmpdir(), 'sift-env-outside-')));
     cleanup.push(outside);
@@ -42,7 +56,7 @@ describe('environment checkout safety', () => {
     await expect(assertDestinationSafeBeforeApproval(root, 'writable/secret')).rejects.toMatchObject({code: 'writable_ancestor'});
   });
 
-  it('reports the effective winning ignore rule and tracked failure without index mutation [AC4]', async () => {
+  it('reports the effective winning ignore rule and tracked failure without index mutation', async () => {
     const root = await fixture();
     await mkdir(path.join(root, '.runtime'));
     const index = path.join(root, '.git', 'index');
@@ -58,7 +72,7 @@ describe('environment checkout safety', () => {
     expect(await evaluateGitIgnore(root, 'tracked.env')).toMatchObject({tracked: true, covered: false});
   });
 
-  it('honors a winning negation and rejects case-fold collisions [AC4] [AC5]', async () => {
+  it('honors a winning negation and rejects case-fold collisions', async () => {
     const root = await fixture();
     await writeFile(path.join(root, '.gitignore'), '.runtime/*\n!.runtime/allowed.env\n');
     await mkdir(path.join(root, '.runtime'));
@@ -68,7 +82,7 @@ describe('environment checkout safety', () => {
       .rejects.toMatchObject({code: 'case_collision'});
   });
 
-  it('does not classify an NFD on-disk spelling of the same NFC segment as a case collision [AC5]', async () => {
+  it('does not classify an NFD on-disk spelling of the same NFC segment as a case collision', async () => {
     const root = await fixture();
     await writeFile(path.join(root, 'e\u0301.env'), 'placeholder');
     await expect(assertDestinationSafeBeforeApproval(root, '\u00e9.env')).resolves.toMatchObject({
@@ -76,7 +90,7 @@ describe('environment checkout safety', () => {
     });
   });
 
-  it('marks global-only ignores weak [AC4] [AC5]', async () => {
+  it('marks an explicitly configured global-only ignore weak', async () => {
     const root = await fixture();
     await writeFile(path.join(root, '.gitignore'), '');
     const globalIgnore = path.join(root, 'global-ignore');
@@ -89,7 +103,7 @@ describe('environment checkout safety', () => {
       .toMatchObject({covered: true, strength: 'weak'});
   });
 
-  it('classifies main, linked, submodule, bare, and non-Git contexts deterministically [AC5]', async () => {
+  it('classifies main, linked, submodule, bare, and non-Git contexts deterministically', async () => {
     const root = await fixture();
     expect(await resolveGitCheckout(root)).toMatchObject({kind: 'main_worktree'});
     const linked = `${root}-linked`;
@@ -110,7 +124,7 @@ describe('environment checkout safety', () => {
     expect(await resolveGitCheckout(path.join(parent, 'child'))).toMatchObject({kind: 'submodule'});
   });
 
-  it('allowlists read-only Git primitives [AC4]', async () => {
+  it('allowlists read-only Git primitives', async () => {
     const root = await fixture();
     await expect(runReadOnlyGit(root, ['add', '.'])).rejects.toThrow('read-only allowlist');
   });
