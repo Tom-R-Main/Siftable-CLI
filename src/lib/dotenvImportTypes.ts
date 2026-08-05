@@ -13,6 +13,7 @@ export interface DotenvImportPlanItem extends ValueFreeDotenvImportEntry {
   duplicateClass: DotenvDuplicateClass;
   conflictClass: DotenvImportConflictClass;
   proposedAction: DotenvImportAction;
+  targetName: string;
   targetSlug: string;
   existingEntryId: string | null;
   existingEntryType: string | null;

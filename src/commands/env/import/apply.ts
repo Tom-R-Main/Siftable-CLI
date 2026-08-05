@@ -54,7 +54,11 @@ export default class EnvImportApply extends BaseCommand {
           planDigest: artifact.plan.planDigest,
           sourceNonce: artifact.plan.sourceNonce,
           sourceDigest: rebound.sourceDigest,
-          entries: parsed.entries.map(({sourceIndex, key, value}) => ({sourceIndex, key, value})),
+          entries: parsed.entries.map(({sourceIndex, key, value}) => {
+            const action = plannedByIndex.get(sourceIndex)!.proposedAction;
+            const writesValue = action === 'create' || action === 'rename' || action === 'overwrite';
+            return {sourceIndex, key, value: writesValue ? value : ''};
+          }),
         },
       },
     );

@@ -116,7 +116,8 @@ describe('sift env import plan/apply', () => {
     const source = path.join(root, 'input.env');
     const planFile = path.join(root, 'review.plan.json');
     const secret = 'synthetic-apply-only';
-    await writeFile(source, `TOKEN=${secret}\n`);
+    const skippedSecret = 'synthetic-stays-local';
+    await writeFile(source, `TOKEN=${secret}\nSKIPPED=${skippedSecret}\n`);
     let applyBody: Record<string, unknown> | undefined;
     let planned: Record<string, unknown> | undefined;
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -128,7 +129,14 @@ describe('sift env import plan/apply', () => {
           id: '22222222-2222-4222-8222-222222222222', dialect: body.dialect,
           ownerType: 'user', ownerId: '11111111-1111-4111-8111-111111111111', projectId: null,
           sourceNonce: body.sourceNonce, sourceDigest: body.sourceDigest, planDigest: 'd'.repeat(64),
-          items: entries.map((entry) => ({...entry, conflictClass: 'none', proposedAction: 'create', targetSlug: 'token', existingEntryId: null})),
+          items: entries.map((entry, index) => ({
+            ...entry,
+            conflictClass: index === 0 ? 'none' : 'source_duplicate',
+            proposedAction: index === 0 ? 'create' : 'skip',
+            targetName: entry.key,
+            targetSlug: index === 0 ? 'token' : 'skipped',
+            existingEntryId: null,
+          })),
           status: 'active', expiresAt: '2026-08-05T22:00:00.000Z',
         };
         return response(201, {plan: planned});
@@ -137,8 +145,11 @@ describe('sift env import plan/apply', () => {
       return response(200, {receipt: {
         planId: planned!.id, planDigest: planned!.planDigest, importId: '33333333-3333-4333-8333-333333333333',
         ownerType: 'user', ownerId: planned!.ownerId, projectId: null,
-        createdCount: 1, updatedCount: 0, keptCount: 0, skippedCount: 0,
-        entries: [{sourceIndex: 0, key: 'TOKEN', action: 'create', slug: 'token', entryId: '44444444-4444-4444-8444-444444444444', field: 'value'}],
+        createdCount: 1, updatedCount: 0, keptCount: 0, skippedCount: 1,
+        entries: [
+          {sourceIndex: 0, key: 'TOKEN', action: 'create', slug: 'token', entryId: '44444444-4444-4444-8444-444444444444', field: 'value'},
+          {sourceIndex: 1, key: 'SKIPPED', action: 'skip', slug: 'skipped', entryId: null, field: 'value'},
+        ],
       }});
     }));
     const planResult = await runCommand([
@@ -155,8 +166,15 @@ describe('sift env import plan/apply', () => {
       importId: '33333333-3333-4333-8333-333333333333',
     });
     expect(JSON.stringify(applyBody)).toContain(secret);
+    expect(JSON.stringify(applyBody)).not.toContain(skippedSecret);
+    expect((applyBody!.entries as Array<{sourceIndex: number; key: string; value: string}>)).toContainEqual({
+      sourceIndex: 1,
+      key: 'SKIPPED',
+      value: '',
+    });
     expect(applyResult.stdout).not.toContain(secret);
-    expect(await readFile(source, 'utf8')).toBe(`TOKEN=${secret}\n`);
+    expect(applyResult.stdout).not.toContain(skippedSecret);
+    expect(await readFile(source, 'utf8')).toBe(`TOKEN=${secret}\nSKIPPED=${skippedSecret}\n`);
   });
 
   it('rejects changed and Sift-managed sources before an apply or plan request', async () => {
