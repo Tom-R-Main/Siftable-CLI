@@ -167,9 +167,21 @@ describe('sift env import plan/apply', () => {
     });
     expect(JSON.stringify(applyBody)).toContain(secret);
     expect(JSON.stringify(applyBody)).not.toContain(skippedSecret);
-    expect((applyBody!.entries as Array<{sourceIndex: number; key: string; value: string}>)).toContainEqual({
+    expect((applyBody!.entries as Array<{
+      sourceIndex: number;
+      key: string;
+      valuePresent: boolean;
+      value: string;
+    }>)).toContainEqual({sourceIndex: 0, key: 'TOKEN', valuePresent: true, value: secret});
+    expect((applyBody!.entries as Array<{
+      sourceIndex: number;
+      key: string;
+      valuePresent: boolean;
+      value: string;
+    }>)).toContainEqual({
       sourceIndex: 1,
       key: 'SKIPPED',
+      valuePresent: false,
       value: '',
     });
     expect(applyResult.stdout).not.toContain(secret);

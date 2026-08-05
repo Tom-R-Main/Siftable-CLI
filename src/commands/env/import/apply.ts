@@ -57,7 +57,7 @@ export default class EnvImportApply extends BaseCommand {
           entries: parsed.entries.map(({sourceIndex, key, value}) => {
             const action = plannedByIndex.get(sourceIndex)!.proposedAction;
             const writesValue = action === 'create' || action === 'rename' || action === 'overwrite';
-            return {sourceIndex, key, value: writesValue ? value : ''};
+            return {sourceIndex, key, valuePresent: writesValue, value: writesValue ? value : ''};
           }),
         },
       },
