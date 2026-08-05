@@ -14,6 +14,8 @@ module.exports = {
     '<rootDir>/test/environmentCheckoutSafety.test.ts',
     '<rootDir>/test/environmentManifest.test.ts',
     '<rootDir>/test/environmentState.test.ts',
+    '<rootDir>/test/dotenvImport.test.ts',
+    '<rootDir>/test/dotenvImportCommands.test.ts',
   ],
   modulePathIgnorePatterns: ['<rootDir>/dist/'],
   moduleNameMapper: {
