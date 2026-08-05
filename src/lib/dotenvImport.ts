@@ -1,6 +1,8 @@
 import {createHash, randomBytes} from 'node:crypto';
 
 export const SIFT_DOTENV_DIALECT = 'sift-dotenv-v1' as const;
+export const MAX_DOTENV_IMPORT_BYTES = 128 * 1024;
+export const MAX_DOTENV_IMPORT_ENTRIES = 500;
 
 export type DotenvDuplicateClass = 'none' | 'source_duplicate_first' | 'source_duplicate_later';
 
@@ -185,8 +187,8 @@ function unquotedValue(text: string, index: number): {value: string; index: numb
 }
 
 export function parseDotenvImport(raw: Buffer): ParsedDotenvImport {
-  if (raw.length > 10_000_000) {
-    throw new DotenvImportParseError('source_too_large', 1, 1, 'Source exceeds the 10 MB import limit');
+  if (raw.length > MAX_DOTENV_IMPORT_BYTES) {
+    throw new DotenvImportParseError('source_too_large', 1, 1, 'Source exceeds the 128 KiB import limit');
   }
   let text = decodeUtf8(raw);
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
@@ -200,6 +202,7 @@ export function parseDotenvImport(raw: Buffer): ParsedDotenvImport {
       index += 1;
       column += 1;
     }
+    if (index >= text.length) break;
     if (text[index] === '\r' || text[index] === '\n') {
       if (text[index] === '\r' && text[index + 1] === '\n') index += 2;
       else index += 1;
@@ -277,6 +280,11 @@ export function parseDotenvImport(raw: Buffer): ParsedDotenvImport {
       column: keyColumn,
       duplicateClass: 'none',
     });
+    if (entries.length > MAX_DOTENV_IMPORT_ENTRIES) {
+      throw new DotenvImportParseError(
+        'too_many_entries', keyLine, keyColumn, 'Source exceeds the 500-entry import limit',
+      );
+    }
   }
 
   const occurrences = new Map<string, number[]>();

@@ -88,4 +88,12 @@ describe('Sift dotenv import dialect', () => {
     expect(() => parse(Buffer.from([0x54, 0x4F, 0x4B, 0x45, 0x4E, 0x3D, 0xC3, 0x28])))
       .toThrowError(expect.objectContaining({code: 'invalid_utf8', line: 1, column: 1}));
   });
+
+  it('accepts CR-only records and ignores a trailing whitespace-only final record', () => {
+    const parsed = parseDotenvImport(Buffer.from('FIRST=one\rSECOND=two\r   '));
+    expect(parsed.entries).toEqual([
+      expect.objectContaining({key: 'FIRST', value: 'one', line: 1}),
+      expect.objectContaining({key: 'SECOND', value: 'two', line: 2}),
+    ]);
+  });
 });

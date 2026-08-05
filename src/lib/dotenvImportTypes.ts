@@ -15,6 +15,7 @@ export interface DotenvImportPlanItem extends ValueFreeDotenvImportEntry {
   proposedAction: DotenvImportAction;
   targetSlug: string;
   existingEntryId: string | null;
+  existingEntryType: string | null;
 }
 
 export interface DotenvImportPlanResponse {

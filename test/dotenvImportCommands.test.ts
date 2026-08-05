@@ -23,7 +23,7 @@ async function runCommand(argv: string[]): Promise<{stdout: string; error?: Erro
   try {
     const config = await Config.load({root: path.join(__dirname, '..')});
     const CommandClass = argv[2] === 'apply' ? EnvImportApply : EnvImportPlan;
-    result = await new CommandClass(argv.slice(3), config).run();
+    result = await CommandClass.run(argv.slice(3), config);
     exitCode = typeof process.exitCode === 'number' ? process.exitCode : Number(process.exitCode ?? 0);
   } catch (caught) {
     error = caught as Error;
@@ -95,6 +95,7 @@ describe('sift env import plan/apply', () => {
     ]);
     expect(result.exitCode).toBe(0);
     expect(result.result).toMatchObject({kind: 'sift.vault.dotenv-import-plan'});
+    expect(JSON.parse(result.stdout)).toMatchObject({kind: 'sift.vault.dotenv-import-plan'});
     expect(JSON.stringify(requestBody)).not.toContain(secret);
     expect(result.stdout).not.toContain(secret);
     expect(await readFile(planFile, 'utf8')).not.toContain(secret);
@@ -147,6 +148,9 @@ describe('sift env import plan/apply', () => {
       '--checkout-root', root, '--owner', 'personal', '--token', 'synthetic-token', '--json',
     ]);
     expect(applyResult.exitCode).toBe(0);
+    expect(JSON.parse(applyResult.stdout)).toMatchObject({
+      importId: '33333333-3333-4333-8333-333333333333',
+    });
     expect(JSON.stringify(applyBody)).toContain(secret);
     expect(applyResult.stdout).not.toContain(secret);
     expect(await readFile(source, 'utf8')).toBe(`TOKEN=${secret}\n`);

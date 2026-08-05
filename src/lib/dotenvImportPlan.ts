@@ -3,6 +3,7 @@ import {lstat, open, realpath} from 'node:fs/promises';
 import path from 'node:path';
 import {loadEnvironmentManifest} from './environmentCommand.js';
 import type {DotenvImportPlanItem} from './dotenvImportTypes.js';
+import {findCheckoutRoot} from './workspace-context.js';
 
 export interface DotenvImportPlanArtifact {
   schemaVersion: 1;
@@ -46,13 +47,30 @@ export async function assertDotenvSourceIsNotManaged(sourcePath: string, checkou
     if (error instanceof Error && error.message.startsWith('.sift/environment.yaml is absent')) return;
     throw error;
   }
-  const source = path.resolve(sourcePath);
-  const managedDestinations = new Set(manifest.members.map((member) => (
-    path.resolve(checkoutRoot, member.destination.path)
-  )));
+  const source = await realpath(path.resolve(sourcePath));
+  const managedDestinations = new Set<string>();
+  for (const member of manifest.members) {
+    const destination = path.resolve(checkoutRoot, member.destination.path);
+    try {
+      managedDestinations.add(await realpath(destination));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      managedDestinations.add(destination);
+    }
+  }
   if (managedDestinations.has(source)) {
     throw new Error('Sift-managed environment files cannot be used as import sources. Import an explicitly maintained source file instead.');
   }
+}
+
+export async function resolveDotenvImportCheckoutRoot(
+  sourcePath: string,
+  explicitCheckoutRoot?: string,
+): Promise<string> {
+  const inferred = explicitCheckoutRoot
+    ? path.resolve(explicitCheckoutRoot)
+    : findCheckoutRoot(path.dirname(sourcePath)) ?? findCheckoutRoot() ?? process.cwd();
+  return realpath(inferred);
 }
 
 export async function writeDotenvImportPlanArtifact(

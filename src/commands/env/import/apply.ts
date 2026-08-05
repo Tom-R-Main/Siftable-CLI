@@ -1,5 +1,4 @@
 import {Flags} from '@oclif/core';
-import {realpath} from 'node:fs/promises';
 import path from 'node:path';
 import {BaseCommand} from '../../../lib/base-command.js';
 import {createDotenvSourceBinding, parseDotenvImport} from '../../../lib/dotenvImport.js';
@@ -7,6 +6,7 @@ import {
   assertDotenvSourceIsNotManaged,
   readDotenvImportPlanArtifact,
   readExplicitDotenvSource,
+  resolveDotenvImportCheckoutRoot,
 } from '../../../lib/dotenvImportPlan.js';
 import type {DotenvImportApplyResponse} from '../../../lib/dotenvImportTypes.js';
 import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from '../../../lib/vault-owner-context.js';
@@ -24,8 +24,8 @@ export default class EnvImportApply extends BaseCommand {
 
   async run(): Promise<DotenvImportApplyResponse['receipt']> {
     const {flags} = await this.parse(EnvImportApply);
-    const checkoutRoot = await realpath(path.resolve(flags['checkout-root'] ?? process.cwd()));
     const source = await readExplicitDotenvSource(flags.source);
+    const checkoutRoot = await resolveDotenvImportCheckoutRoot(source.path, flags['checkout-root']);
     await assertDotenvSourceIsNotManaged(source.path, checkoutRoot);
     const artifact = await readDotenvImportPlanArtifact(flags['plan-file']);
     const parsed = parseDotenvImport(source.raw);

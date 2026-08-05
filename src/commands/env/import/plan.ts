@@ -1,5 +1,4 @@
 import {Flags} from '@oclif/core';
-import {realpath} from 'node:fs/promises';
 import path from 'node:path';
 import {BaseCommand} from '../../../lib/base-command.js';
 import {
@@ -10,6 +9,7 @@ import {
 import {
   assertDotenvSourceIsNotManaged,
   readExplicitDotenvSource,
+  resolveDotenvImportCheckoutRoot,
   writeDotenvImportPlanArtifact,
   type DotenvImportPlanArtifact,
 } from '../../../lib/dotenvImportPlan.js';
@@ -49,8 +49,8 @@ export default class EnvImportPlan extends BaseCommand {
 
   async run(): Promise<DotenvImportPlanArtifact> {
     const {flags} = await this.parse(EnvImportPlan);
-    const checkoutRoot = await realpath(path.resolve(flags['checkout-root'] ?? process.cwd()));
     const source = await readExplicitDotenvSource(flags.source);
+    const checkoutRoot = await resolveDotenvImportCheckoutRoot(source.path, flags['checkout-root']);
     await assertDotenvSourceIsNotManaged(source.path, checkoutRoot);
     const parsed = parseDotenvImport(source.raw);
     const sourceBinding = createDotenvSourceBinding(source.raw);
@@ -87,7 +87,7 @@ export default class EnvImportPlan extends BaseCommand {
     if (!this.jsonEnabled()) {
       this.log(`Plan ${response.plan.id} (${response.plan.items.length} entries) → ${path.resolve(flags['plan-file'])}`);
       for (const item of response.plan.items) {
-        this.log(`${item.sourceIndex}\t${item.key}\t${item.conflictClass}\t${item.proposedAction}\t${item.targetSlug}`);
+        this.log(`${item.sourceIndex}\t${item.key}\t${item.conflictClass}\t${item.existingEntryType ?? '-'}\t${item.proposedAction}\t${item.targetSlug}`);
       }
       this.log(`Apply only after review: sift env import apply --source ${JSON.stringify(flags.source)} --plan-file ${JSON.stringify(flags['plan-file'])}`);
     }
