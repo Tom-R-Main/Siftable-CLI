@@ -18,7 +18,7 @@ export default class EnvExample extends OfflineEnvironmentCommand {
     const checkoutRoot = this.resolveCheckoutRoot(flags['checkout-root']);
     const rendered = renderEnvExample(await loadEnvironmentManifest(checkoutRoot));
     if (!flags.write) {
-      this.log(rendered.trimEnd());
+      if (!this.jsonEnabled()) this.log(rendered.trimEnd());
       return {written: false, path: null};
     }
     const outputPath = path.join(checkoutRoot, '.env.example');

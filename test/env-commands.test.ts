@@ -191,6 +191,14 @@ describe('offline env commands', () => {
     expect(`${removed.stdout}\n${removed.stderr}`).toMatch(/not found|nonexistent/i);
   });
 
+  it('keeps env example JSON output machine-parseable without dotenv preview text', async () => {
+    const root = await checkout();
+    const result = await runCommand(['env', 'example', '--checkout-root', root, '--json']);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({written: false, path: null});
+    expect(result.stdout).not.toContain('TOKEN=');
+  });
+
   it.each([
     ['example drift', async () => gitCheckout('.runtime/\n')],
     ['tracked destination', async () => {
