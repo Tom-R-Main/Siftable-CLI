@@ -27,6 +27,10 @@ export abstract class WorkActionCommand extends BaseCommand {
     'verification-results': Flags.string({
       description: 'Verification evidence JSON array: [{"command","exitCode","output"?}]',
     }),
+    'memory-decision': Flags.string({
+      description:
+        'Durable code-memory decision JSON (required on agent complete/review): {"decision":"store"|"skip","rationale":"...","fact"?,"category"?,"repositoryId"?,"filePath"?,"paths"?,"evidenceChunkIds"?,"sourceCommit"?,"confidence"?}',
+    }),
   };
 
   protected async runWorkAction(command: typeof WorkActionCommand, action: string, extra: Record<string, unknown> = {}): Promise<unknown> {
@@ -41,6 +45,9 @@ export abstract class WorkActionCommand extends BaseCommand {
     if (action === 'cancel' && Boolean(flags.owner) !== Boolean(flags['claim-token'])) {
       this.error('cancel requires --owner and --claim-token together for active work; omit both only for queued/blocked cancellation.');
     }
+    if ((action === 'complete' || action === 'review') && flags.owner && flags['claim-token'] && !flags['memory-decision']) {
+      this.error(`${action} under an active claim requires --memory-decision JSON (store or skip with rationale).`);
+    }
     const client = await this.client(flags);
     const response = await client.transitionWorkItem(args.id, action, {
       claimOwner: flags.owner,
@@ -51,6 +58,10 @@ export abstract class WorkActionCommand extends BaseCommand {
       verificationResults: this.parseJsonFlag<NonNullable<TransitionWorkItemInput['verificationResults']>>(
         flags['verification-results'],
         'verification-results',
+      ),
+      durableMemory: this.parseJsonFlag<NonNullable<TransitionWorkItemInput['durableMemory']>>(
+        flags['memory-decision'],
+        'memory-decision',
       ),
       blockedReason: flags.reason,
       failureReason: flags.reason,

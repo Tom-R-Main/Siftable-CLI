@@ -90,6 +90,11 @@ export default class WorkerRun extends BaseCommand {
       claimToken,
       resultSummary: summary,
       artifactRefs: artifacts,
+      // Local worker runs do not inspect the diff for durable facts; explicit skip keeps the boundary honest.
+      durableMemory: {
+        decision: 'skip',
+        rationale: 'Local worker run did not evaluate durable code-memory capture',
+      },
     });
     this.handleApiError(review);
     const reviewed = this.unwrapOne(review, 'workItem');

@@ -536,6 +536,7 @@ describe('work commands', () => {
         return input.claimOwner === 'codex-test'
           && input.claimToken === 'claim-token'
           && input.resultSummary === 'Tests passed'
+          && input.durableMemory?.decision === 'skip'
           && Array.isArray(input.artifactRefs)
           && input.artifactRefs[0]?.path === 'packages/exf-cli/test/commands/agents-work.test.ts';
       })
@@ -561,6 +562,8 @@ describe('work commands', () => {
       'Tests passed',
       '--artifacts',
       '[{"path":"packages/exf-cli/test/commands/agents-work.test.ts"}]',
+      '--memory-decision',
+      '{"decision":"skip","rationale":"No durable fact from this CLI fixture"}',
       '--token',
       'sift_pat_test',
       '--json',
