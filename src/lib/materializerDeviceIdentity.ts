@@ -10,7 +10,7 @@ import {
   type KeyObject,
 } from 'node:crypto';
 import {spawn} from 'node:child_process';
-import {constants as fsConstants} from 'node:fs';
+import {constants as fsConstants, type Stats} from 'node:fs';
 import {chmod, lstat, mkdir, open, readFile, rename, rm} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import path from 'node:path';
@@ -40,6 +40,19 @@ export interface MaterializerDeviceIdentity {
 export interface MaterializerIdentityStore {
   read(account: string): Promise<Buffer | null>;
   write(account: string, value: Buffer): Promise<void>;
+}
+
+/**
+ * Identifies the generated endpoint credential, not the surrounding hardware.
+ * Re-exporting through SPKI makes equivalent PEM encodings hash identically
+ * while preserving fingerprints already produced from Sift-generated keys.
+ */
+export function fingerprintMaterializerPublicKey(publicKeyPem: string): string {
+  const canonicalPublicKeyPem = createPublicKey(publicKeyPem)
+    .export({type: 'spki', format: 'pem'})
+    .toString()
+    .trim();
+  return createHash('sha256').update(canonicalPublicKeyPem).digest('hex');
 }
 
 export function buildMacOsKeychainWriteCommand(
@@ -236,6 +249,109 @@ function decryptPrivateKey(state: StoredIdentity, wrappingKey: Buffer): Buffer {
   ]);
 }
 
+async function removePathIfSameFile(filePath: string, expected: Stats): Promise<void> {
+  try {
+    const current = await lstat(filePath);
+    if (current.dev === expected.dev && current.ino === expected.ino) {
+      await rm(filePath);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
+
+async function tryAcquireLinuxLock(lockPath: string): Promise<(() => Promise<void>) | null> {
+  const lockHandle = await open(
+    lockPath,
+    fsConstants.O_CREAT | fsConstants.O_RDWR | (fsConstants.O_NOFOLLOW ?? 0),
+    0o600,
+  );
+  let child;
+  try {
+    await lockHandle.chmod(0o600);
+    const openedStat = await lockHandle.stat();
+    const current = await lstat(lockPath);
+    if (current.dev !== openedStat.dev || current.ino !== openedStat.ino) {
+      throw new Error('Vault materializer identity lock ownership changed before acquisition');
+    }
+    child = spawn(
+      '/bin/sh',
+      [
+        '-c',
+        'flock -n -E 75 3 || exit $?; printf "sift-lock-ready\\n"; IFS= read -r _ || true',
+      ],
+      {
+        stdio: ['pipe', 'pipe', 'pipe', lockHandle.fd],
+        env: {PATH: '/usr/bin:/bin'},
+      },
+    );
+  } finally {
+    await lockHandle.close();
+  }
+  const childStdin = child.stdin;
+  const childStdout = child.stdout;
+  const childStderr = child.stderr;
+  if (!childStdin || !childStdout || !childStderr) {
+    child.kill('SIGTERM');
+    throw new Error('Vault materializer identity lock helper did not expose required pipes');
+  }
+  let output = '';
+  let stderr = '';
+  let spawnError: Error | null = null;
+  let stdinError: Error | null = null;
+  childStderr.on('data', chunk => {
+    stderr = `${stderr}${chunk.toString()}`.slice(-512);
+  });
+  childStdin.on('error', error => {
+    stdinError = error;
+  });
+  const ready = new Promise<'ready' | 'closed'>(resolve => {
+    childStdout.on('data', chunk => {
+      output += chunk.toString();
+      if (output.includes('sift-lock-ready\n')) resolve('ready');
+    });
+    child.once('error', error => {
+      spawnError = error;
+      resolve('closed');
+    });
+    child.once('close', () => resolve('closed'));
+  });
+  const closed = new Promise<{code: number | null; signal: NodeJS.Signals | null}>(resolve => {
+    child.once('close', (code, signal) => resolve({code, signal}));
+  });
+  const outcome = await Promise.race([
+    ready,
+    delay(LOCK_WAIT_MILLISECONDS).then(() => 'timeout' as const),
+  ]);
+  if (outcome === 'timeout') {
+    child.kill('SIGTERM');
+    childStdin.end();
+    await closed;
+    throw new Error('Vault materializer identity lock helper did not become ready');
+  }
+  if (outcome === 'closed') {
+    const result = await closed;
+    if (spawnError) {
+      throw new Error('Vault materializer identity on Linux requires the util-linux flock command');
+    }
+    if (result.code === 75) return null;
+    const detail = stderr.trim() ? `: ${stderr.trim()}` : '';
+    throw new Error(
+      `Vault materializer identity lock helper exited with ${result.signal ?? `code ${result.code ?? 'unknown'}`}${detail}`,
+    );
+  }
+  return async () => {
+    childStdin.end();
+    const result = await closed;
+    if (result.code !== 0 || stdinError) {
+      const detail = stderr.trim() ? `: ${stderr.trim()}` : '';
+      throw new Error(
+        `Vault materializer identity lock helper exited with ${result.signal ?? `code ${result.code ?? 'unknown'}`}${detail}`,
+      );
+    }
+  };
+}
+
 async function acquireLock(lockPath: string): Promise<() => Promise<void>> {
   const startedAt = Date.now();
   while (true) {
@@ -263,16 +379,36 @@ async function acquireLock(lockPath: string): Promise<() => Promise<void>> {
       await delay(100);
       continue;
     }
+    if (process.platform === 'linux') {
+      const release = await tryAcquireLinuxLock(lockPath);
+      if (release) return release;
+      if (Date.now() - startedAt >= LOCK_WAIT_MILLISECONDS) {
+        throw new Error('Another Siftable process is preparing the Vault materializer identity');
+      }
+      await delay(100);
+      continue;
+    }
+
     try {
       const handle = await open(
         lockPath,
         fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY,
         0o600,
       );
-      await handle.writeFile(String(process.pid));
-      await handle.close();
+      let ownedStat: Stats;
+      try {
+        await handle.writeFile(String(process.pid));
+        await handle.sync();
+        ownedStat = await handle.stat();
+        const current = await lstat(lockPath);
+        if (current.dev !== ownedStat.dev || current.ino !== ownedStat.ino) {
+          throw new Error('Vault materializer identity lock ownership changed during acquisition');
+        }
+      } finally {
+        await handle.close();
+      }
       return async () => {
-        await rm(lockPath, {force: true});
+        await removePathIfSameFile(lockPath, ownedStat);
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
@@ -343,7 +479,7 @@ function materializeIdentity(
     return {
       publicKeyPem,
       privateKey,
-      fingerprint: createHash('sha256').update(publicKeyPem.trim()).digest('hex'),
+      fingerprint: fingerprintMaterializerPublicKey(publicKeyPem),
     };
   } finally {
     privateKeyPem.fill(0);
@@ -404,7 +540,7 @@ export async function loadOrCreateMaterializerDeviceIdentity(input: {
       return {
         publicKeyPem,
         privateKey: pair.privateKey,
-        fingerprint: createHash('sha256').update(publicKeyPem.trim()).digest('hex'),
+        fingerprint: fingerprintMaterializerPublicKey(publicKeyPem),
       };
     } finally {
       privateKeyPem.fill(0);

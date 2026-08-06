@@ -1,10 +1,13 @@
-import {readFile, readdir, realpath, stat, writeFile} from 'node:fs/promises';
+import {spawn} from 'node:child_process';
+import {once} from 'node:events';
+import {open, readFile, readdir, realpath, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {mkdtemp, rm} from 'node:fs/promises';
-import {afterEach, describe, expect, it} from 'vitest';
+import {afterEach, describe, expect, it, vi} from 'vitest';
 import {
   buildMacOsKeychainWriteCommand,
+  fingerprintMaterializerPublicKey,
   loadOrCreateMaterializerDeviceIdentity,
   type MaterializerIdentityStore,
 } from './materializerDeviceIdentity.js';
@@ -31,12 +34,26 @@ async function temporaryDirectory(): Promise<string> {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(temporaryDirectories.splice(0).map(directory => (
     rm(directory, {recursive: true, force: true})
   )));
 });
 
 describe('materializer device identity', () => {
+  it('fingerprints the canonical public key rather than its text encoding', async () => {
+    const stateDirectory = await temporaryDirectory();
+    const identity = await loadOrCreateMaterializerDeviceIdentity({
+      apiUrl: 'https://siftable.io',
+      stateDirectory,
+      store: new MemoryIdentityStore(),
+    });
+
+    expect(fingerprintMaterializerPublicKey(
+      identity.publicKeyPem.replaceAll('\n', '\r\n'),
+    )).toBe(identity.fingerprint);
+  });
+
   it('keeps Keychain secret data in interpreter stdin instead of process arguments', () => {
     const account = 'a'.repeat(64);
     const value = Buffer.from('11'.repeat(32), 'hex');
@@ -116,7 +133,7 @@ describe('materializer device identity', () => {
     expect(store.values.size).toBe(2);
   });
 
-  it('recovers a lock left behind by a process that no longer exists', async () => {
+  it.runIf(process.platform === 'linux')('uses the kernel lock even when its file already exists', async () => {
     const stateDirectory = await temporaryDirectory();
     const store = new MemoryIdentityStore();
     const account = 'https://siftable.io';
@@ -137,4 +154,52 @@ describe('materializer device identity', () => {
       fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
     }));
   });
+
+  it.runIf(process.platform === 'linux')('serializes concurrent identity preparation', async () => {
+    const stateDirectory = await temporaryDirectory();
+    const store = new MemoryIdentityStore();
+    const input = {apiUrl: 'https://siftable.io', stateDirectory, store};
+
+    const [first, second] = await Promise.all([
+      loadOrCreateMaterializerDeviceIdentity(input),
+      loadOrCreateMaterializerDeviceIdentity(input),
+    ]);
+
+    expect(second.fingerprint).toBe(first.fingerprint);
+    expect(store.values.size).toBe(1);
+  });
+
+  it.runIf(process.platform === 'linux')('releases the kernel lock when its holder crashes', async () => {
+    const stateDirectory = await temporaryDirectory();
+    const store = new MemoryIdentityStore();
+    const account = 'https://siftable.io';
+    const originHash = await import('node:crypto').then(({createHash}) => (
+      createHash('sha256').update(new URL(account).origin).digest('hex')
+    ));
+    const lockPath = path.join(stateDirectory, `${originHash}.json.lock`);
+    const lockHandle = await open(lockPath, 'a+', 0o600);
+    const holder = spawn(
+      '/bin/sh',
+      ['-c', 'flock -n -E 75 3 || exit $?; printf "ready\\n"; IFS= read -r _ || true'],
+      {stdio: ['pipe', 'pipe', 'pipe', lockHandle.fd], env: {PATH: '/usr/bin:/bin'}},
+    );
+    await lockHandle.close();
+    await new Promise<void>((resolve, reject) => {
+      holder.once('error', reject);
+      holder.stdout.on('data', chunk => {
+        if (chunk.toString().includes('ready\n')) resolve();
+      });
+    });
+    holder.kill('SIGKILL');
+    await once(holder, 'close');
+
+    await expect(loadOrCreateMaterializerDeviceIdentity({
+      apiUrl: account,
+      stateDirectory,
+      store,
+    })).resolves.toEqual(expect.objectContaining({
+      fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+    }));
+  });
+
 });

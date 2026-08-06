@@ -25,7 +25,10 @@ import path from 'node:path';
 import {promisify} from 'node:util';
 import type {ExecutionGrantEnvelope} from './localExecutionRunner.js';
 import {decryptExecutionGrantEnvelope} from './localExecutionRunner.js';
-import {loadOrCreateMaterializerDeviceIdentity} from './materializerDeviceIdentity.js';
+import {
+  fingerprintMaterializerPublicKey,
+  loadOrCreateMaterializerDeviceIdentity,
+} from './materializerDeviceIdentity.js';
 
 const execFileAsync = promisify(execFile);
 const SAFE_MODES = new Map([['0400', 0o400], ['0600', 0o600]]);
@@ -208,7 +211,7 @@ export async function createMaterializerRunner(
     return {
       publicKeyPem,
       privateKey: pair.privateKey,
-      fingerprint: createHash('sha256').update(publicKeyPem.trim()).digest('hex'),
+      fingerprint: fingerprintMaterializerPublicKey(publicKeyPem),
       materializerDigest,
       sessionEligible: false,
     };
