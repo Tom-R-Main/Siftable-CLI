@@ -9,7 +9,10 @@ import EnvCheck from '../src/commands/env/check.js';
 import EnvExample from '../src/commands/env/example.js';
 import EnvPull from '../src/commands/env/pull.js';
 import EnvRm from '../src/commands/env/rm.js';
-import {classifyEnvironmentEndpoint} from '../src/lib/envPullCommand.js';
+import {
+  classifyEnvironmentEndpoint,
+  isEnvironmentRefreshUnavailable,
+} from '../src/lib/envPullCommand.js';
 import {
   buildEnvironmentBundleContract,
   materializeManagedEnvironmentBundle,
@@ -238,6 +241,15 @@ describe('offline env commands', () => {
     expect(() => classifyEnvironmentEndpoint('production', {})).toThrow('sift grants run --help');
   });
 
+  it('treats only network/server unavailability as unknown freshness', () => {
+    expect(isEnvironmentRefreshUnavailable(Object.assign(new TypeError('fetch failed'), {
+      cause: {code: 'ENETUNREACH'},
+    }))).toBe(true);
+    expect(isEnvironmentRefreshUnavailable({statusCode: 503})).toBe(true);
+    expect(isEnvironmentRefreshUnavailable(new TypeError('invalid URL'))).toBe(false);
+    expect(isEnvironmentRefreshUnavailable({statusCode: 401})).toBe(false);
+  });
+
   it('reports unknown freshness when an existing managed file cannot reach the server', async () => {
     const root = await gitCheckout('.runtime/\n');
     const parsed = parseEnvironmentManifest(manifest);
@@ -258,7 +270,9 @@ describe('offline env commands', () => {
     expect(statusAfterPull.members).toEqual([
       expect.objectContaining({name: 'TOKEN', state: 'managed_current'}),
     ]);
-    const fetch = vi.fn(() => { throw new TypeError('offline'); });
+    const fetch = vi.fn(() => {
+      throw Object.assign(new TypeError('offline'), {cause: {code: 'ENETUNREACH'}});
+    });
     vi.stubGlobal('fetch', fetch);
 
     const result = await runCommand([
@@ -303,6 +317,7 @@ describe('offline env commands', () => {
       removed: true,
       destination: '.runtime/service.env',
       plaintextRecallPossible: false,
+      plaintextRemnantsMayRemain: true,
     });
     expect(result.stdout).not.toContain('synthetic-token');
     expect(await statEnvironmentDestination(contract.destinationPath)).toEqual({exists: false});

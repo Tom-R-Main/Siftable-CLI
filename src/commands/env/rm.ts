@@ -21,6 +21,7 @@ export default class EnvRm extends OfflineEnvironmentCommand {
     removed: true;
     destination: string;
     plaintextRecallPossible: false;
+    plaintextRemnantsMayRemain: true;
   }> {
     const {flags} = await this.parse(EnvRm);
     const checkoutRoot = this.resolveCheckoutRoot(flags['checkout-root']);
@@ -35,11 +36,15 @@ export default class EnvRm extends OfflineEnvironmentCommand {
     const contract = buildEnvironmentBundleContract(manifest, path.resolve(checkoutRoot), destination);
     const receipt = await readManagedEnvironmentBundleReceipt(contract);
     const removed = await removeManagedEnvironmentBundle(contract, receipt);
-    const result = {...removed, plaintextRecallPossible: false as const};
+    const result = {
+      ...removed,
+      plaintextRecallPossible: false as const,
+      plaintextRemnantsMayRemain: true as const,
+    };
     if (!this.jsonEnabled()) {
       this.log(`Removed ${result.destination}.`);
-      this.warn('Future pulls remain governed. Copies, backups, logs, and values already retained by processes may remain.');
     }
+    this.warn('Future pulls remain governed. Copies, backups, logs, and values already retained by processes may remain.');
     return result;
   }
 }

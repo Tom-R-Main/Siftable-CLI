@@ -46,6 +46,26 @@ interface BundleMaterializationRecord {
 
 const RECOVERY_COMMAND = 'sift env pull --help';
 const BROKER_COMMAND = 'sift grants run --help';
+const NETWORK_UNAVAILABLE_CODES = new Set([
+  'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ENETUNREACH', 'ENOTFOUND',
+  'EHOSTUNREACH', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET',
+]);
+
+export function isEnvironmentRefreshUnavailable(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const candidate = error as {
+    code?: unknown;
+    statusCode?: unknown;
+    cause?: {code?: unknown};
+  };
+  if ([502, 503, 504].includes(Number(candidate.statusCode))) return true;
+  const code = typeof candidate.cause?.code === 'string'
+    ? candidate.cause.code
+    : typeof candidate.code === 'string'
+      ? candidate.code
+      : undefined;
+  return Boolean(code && NETWORK_UNAVAILABLE_CODES.has(code));
+}
 
 function sameBundleMembers(
   left: BundleMaterializationRecord['bundleMembers'],
@@ -229,12 +249,12 @@ export default class EnvPull extends BaseCommand {
       });
     } catch (error) {
       runner.privateKey = null;
-      if (managedRefresh && error instanceof TypeError) {
+      if (managedRefresh && isEnvironmentRefreshUnavailable(error)) {
         const result = {
           state: 'managed_unknown_freshness',
           destination: contract.relativeDestination,
           memberSetDigest: contract.memberSetDigest,
-          lastCheckedAt: previousReceipt?.lastCheckedAt ?? null,
+          lastCheckedAt: previousReceipt?.lastCheckedAt ?? previousReceipt?.writtenAt ?? null,
           approvalConsumed: false,
         };
         if (!this.jsonEnabled()) {
