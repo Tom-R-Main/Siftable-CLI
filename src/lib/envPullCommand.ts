@@ -182,6 +182,7 @@ export default class EnvPull extends BaseCommand {
         runnerPublicKeyFingerprint: runner.fingerprint,
         materializerDigest: runner.materializerDigest,
         runnerProofTimestamp,
+        vaultOwner: owner.owner,
       })
       : null;
     const first = contract.members[0]!;

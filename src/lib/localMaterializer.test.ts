@@ -22,6 +22,7 @@ import {promisify} from 'node:util';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {
   createMaterializerRunner,
+  createMaterializationBundleRunnerProofBinding,
   createMaterializationCredentialBinding,
   createMaterializationRunnerProofBinding,
   inspectMaterializationDestination,
@@ -312,6 +313,36 @@ describe('local Vault materializer', () => {
       destinationPath: '/workspace/runtime/other',
     })).not.toBe(binding);
     expect(signature).not.toContain('BEGIN PRIVATE KEY');
+  });
+
+  it('uses the exact canonical bundle proof contract shared with the server', () => {
+    const binding = createMaterializationBundleRunnerProofBinding({
+      bundleDigest: 'c'.repeat(64),
+      destinationPath: '/workspace/.env.local',
+      workspaceRoot: '/workspace',
+      requestedMode: '0600',
+      expectedAbsence: true,
+      overwriteConsent: false,
+      purpose: 'Write the governed development environment',
+      requestNonce: 'n'.repeat(32),
+      runnerPublicKeyFingerprint: 'a'.repeat(64),
+      materializerDigest: 'b'.repeat(64),
+      runnerProofTimestamp: '2026-08-06T00:00:00.000Z',
+      vaultOwner: 'personal',
+    });
+
+    expect(binding).toBe(
+      '{"bundleDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",'
+      + '"destinationPath":"/workspace/.env.local","expectedAbsence":"true",'
+      + '"materializerDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",'
+      + '"observedStateBinding":"none","overwriteConsent":"false",'
+      + '"plaintextDisclosureAcknowledged":"true",'
+      + '"purposeDigest":"03c2901f52fa9f55accc29067f9dbc44417caf36b0990edda0d002459c11af81",'
+      + '"requestedMode":"0600","requestNonce":"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",'
+      + '"runnerProofTimestamp":"2026-08-06T00:00:00.000Z",'
+      + '"runnerPublicKeyFingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
+      + '"vaultOwner":"personal","workspaceRoot":"/workspace"}',
+    );
   });
 
   it('keeps approve-once materialization available without an OS-backed identity', async () => {

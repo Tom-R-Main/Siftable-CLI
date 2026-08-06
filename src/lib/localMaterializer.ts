@@ -275,6 +275,7 @@ export function createMaterializationBundleRunnerProofBinding(input: {
   runnerPublicKeyFingerprint: string;
   materializerDigest: string;
   runnerProofTimestamp: string;
+  vaultOwner: string;
 }): string {
   return canonicalJson({
     bundleDigest: input.bundleDigest,
@@ -290,6 +291,7 @@ export function createMaterializationBundleRunnerProofBinding(input: {
     runnerPublicKeyFingerprint: input.runnerPublicKeyFingerprint,
     materializerDigest: input.materializerDigest,
     runnerProofTimestamp: input.runnerProofTimestamp,
+    vaultOwner: input.vaultOwner,
   });
 }
 
