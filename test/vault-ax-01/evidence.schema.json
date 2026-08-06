@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "workItemId", "base", "securityBoundary", "criteria", "preflight"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "workItemId": {"type": "string", "format": "uuid"},
+    "base": {"type": "object"},
+    "securityBoundary": {"type": "object"},
+    "criteria": {
+      "type": "array",
+      "minItems": 13,
+      "maxItems": 13,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["criterion", "disposition", "artifacts"],
+        "properties": {
+          "criterion": {"type": "integer", "minimum": 1, "maximum": 13},
+          "disposition": {"enum": ["unmeasured", "passed", "failed", "failed_preflight", "unsupported"]},
+          "artifacts": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "preflight": {"type": "object"}
+  }
+}

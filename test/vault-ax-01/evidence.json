@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "workItemId": "df47f7b2-55a7-4ffb-bd78-b51fd39967a2",
+  "base": {
+    "commit": "4ee9ad1f",
+    "pullRequest": 139,
+    "stateAtStart": "open",
+    "requiresPostMergeReverification": true
+  },
+  "securityBoundary": {
+    "endpointIdentifier": "sha256-canonical-spki",
+    "possessionProof": "rsa-pss-domain-separated-request",
+    "rfc7638Thumbprint": false,
+    "hostMetadataIsIdentity": false,
+    "callerDeclaredSurfaceIsAuthority": false
+  },
+  "criteria": [
+    {"criterion": 1, "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 2, "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 3, "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 4, "disposition": "failed_preflight", "artifacts": ["exf-app/src/routes/vaultMaterializations.ts"]},
+    {"criterion": 5, "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 6, "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 7, "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 8, "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 9, "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 10, "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 11, "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 12, "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 13, "disposition": "unmeasured", "artifacts": []}
+  ],
+  "preflight": {
+    "currentCliVersion": "0.5.37",
+    "environmentCommands": ["check", "diff", "example", "pull", "rm", "status"],
+    "clientBinariesAvailable": ["codex", "kimi", "opencode", "sift"],
+    "mcpRedeemBoundary": {
+      "status": "failed",
+      "reason": "request surface is caller supplied and is not bound to authentication provenance"
+    }
+  }
+}
