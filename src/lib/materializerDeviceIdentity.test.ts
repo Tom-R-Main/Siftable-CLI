@@ -1,6 +1,6 @@
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-import {readFile, readdir, realpath, stat, writeFile} from 'node:fs/promises';
+import {open, readFile, readdir, realpath, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {mkdtemp, rm} from 'node:fs/promises';
@@ -177,11 +177,13 @@ describe('materializer device identity', () => {
       createHash('sha256').update(new URL(account).origin).digest('hex')
     ));
     const lockPath = path.join(stateDirectory, `${originHash}.json.lock`);
+    const lockHandle = await open(lockPath, 'a+', 0o600);
     const holder = spawn(
-      'flock',
-      ['-n', '-E', '75', lockPath, '/bin/sh', '-c', 'printf "ready\\n"; sleep 30'],
-      {stdio: ['ignore', 'pipe', 'pipe'], env: {PATH: '/usr/bin:/bin'}},
+      '/bin/sh',
+      ['-c', 'flock -n -E 75 3 || exit $?; printf "ready\\n"; sleep 30'],
+      {stdio: ['ignore', 'pipe', 'pipe', lockHandle.fd], env: {PATH: '/usr/bin:/bin'}},
     );
+    await lockHandle.close();
     await new Promise<void>((resolve, reject) => {
       holder.once('error', reject);
       holder.stdout.on('data', chunk => {

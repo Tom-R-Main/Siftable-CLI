@@ -275,8 +275,11 @@ async function tryAcquireLinuxLock(lockPath: string): Promise<(() => Promise<voi
       throw new Error('Vault materializer identity lock ownership changed before acquisition');
     }
     child = spawn(
-      'flock',
-      ['-n', '-E', '75', '3', '/bin/sh', '-c', 'printf "sift-lock-ready\\n"; IFS= read -r _ || true'],
+      '/bin/sh',
+      [
+        '-c',
+        'flock -n -E 75 3 || exit $?; printf "sift-lock-ready\\n"; IFS= read -r _ || true',
+      ],
       {
         stdio: ['pipe', 'pipe', 'pipe', lockHandle.fd],
         env: {PATH: '/usr/bin:/bin'},
