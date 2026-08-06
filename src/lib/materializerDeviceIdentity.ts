@@ -11,7 +11,7 @@ import {
 } from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {constants as fsConstants, type Stats} from 'node:fs';
-import {chmod, lstat, mkdir, open, readFile, readdir, rename, rm, rmdir} from 'node:fs/promises';
+import {chmod, lstat, mkdir, open, readFile, rename, rm} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -249,64 +249,58 @@ function decryptPrivateKey(state: StoredIdentity, wrappingKey: Buffer): Buffer {
   ]);
 }
 
-async function acquireStaleRecoveryLease(
-  lockPath: string,
-  staleLock: Stats,
-): Promise<(() => Promise<void>) | null> {
-  const directory = path.dirname(lockPath);
-  const prefix = `${path.basename(lockPath)}.recovery.${staleLock.dev}.${staleLock.ino}.`;
-  const startedAt = process.hrtime.bigint();
-  const markerName = `${prefix}${startedAt}-${process.pid}-${randomBytes(12).toString('hex')}`;
-  const markerPath = path.join(directory, markerName);
-  await mkdir(markerPath, {mode: 0o700});
-  const release = async () => {
-    await rmdir(markerPath).catch(error => {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    });
-  };
-
+async function removePathIfSameFile(filePath: string, expected: Stats): Promise<void> {
   try {
-    const liveMarkers: Array<{name: string; startedAt: bigint}> = [];
-    for (const entry of await readdir(directory, {withFileTypes: true})) {
-      if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue;
-      const ownerMatch = entry.name.slice(prefix.length).match(/^(\d+)-(\d+)-[0-9a-f]{24}$/);
-      if (!ownerMatch) {
-        throw new Error('Vault materializer identity recovery marker has an invalid owner');
-      }
-      const ownerStartedAt = BigInt(ownerMatch[1]);
-      const ownerPid = Number(ownerMatch[2]);
-      let ownerIsLive = true;
-      try {
-        process.kill(ownerPid, 0);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
-        ownerIsLive = false;
-      }
-      const candidatePath = path.join(directory, entry.name);
-      if (!ownerIsLive) {
-        await rmdir(candidatePath).catch(error => {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-        });
-        continue;
-      }
-      liveMarkers.push({name: entry.name, startedAt: ownerStartedAt});
+    const current = await lstat(filePath);
+    if (current.dev === expected.dev && current.ino === expected.ino) {
+      await rm(filePath);
     }
-    liveMarkers.sort((left, right) => (
-      left.startedAt < right.startedAt
-        ? -1
-        : left.startedAt > right.startedAt
-          ? 1
-          : left.name.localeCompare(right.name)
-    ));
-    if (liveMarkers[0]?.name !== markerName) {
-      await release();
-      return null;
-    }
-    return release;
   } catch (error) {
-    await release();
-    throw error;
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
+}
+
+async function tryAcquireLinuxLock(lockPath: string): Promise<(() => Promise<void>) | null> {
+  const child = spawn(
+    'flock',
+    ['-n', lockPath, '/bin/sh', '-c', 'printf "sift-lock-ready\\n"; IFS= read -r _'],
+    {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {PATH: '/usr/bin:/bin'},
+    },
+  );
+  let output = '';
+  let spawnError: Error | null = null;
+  const ready = new Promise<boolean>(resolve => {
+    child.stdout.on('data', chunk => {
+      output += chunk.toString();
+      if (output.includes('sift-lock-ready\n')) resolve(true);
+    });
+    child.once('error', error => {
+      spawnError = error;
+      resolve(false);
+    });
+    child.once('close', () => resolve(false));
+  });
+  const closed = new Promise<number | null>(resolve => {
+    child.once('close', code => resolve(code));
+  });
+  if (!await ready) {
+    const exitCode = await closed;
+    if (spawnError) {
+      throw new Error('Vault materializer identity on Linux requires the util-linux flock command');
+    }
+    if (exitCode === 1) return null;
+    throw new Error(`Vault materializer identity lock helper exited with code ${exitCode ?? 'unknown'}`);
+  }
+  await chmod(lockPath, 0o600);
+  return async () => {
+    child.stdin.end();
+    const exitCode = await closed;
+    if (exitCode !== 0 && exitCode !== 1) {
+      throw new Error(`Vault materializer identity lock helper exited with code ${exitCode ?? 'unknown'}`);
+    }
+  };
 }
 
 async function acquireLock(lockPath: string): Promise<() => Promise<void>> {
@@ -336,6 +330,16 @@ async function acquireLock(lockPath: string): Promise<() => Promise<void>> {
       await delay(100);
       continue;
     }
+    if (process.platform === 'linux') {
+      const release = await tryAcquireLinuxLock(lockPath);
+      if (release) return release;
+      if (Date.now() - startedAt >= LOCK_WAIT_MILLISECONDS) {
+        throw new Error('Another Siftable process is preparing the Vault materializer identity');
+      }
+      await delay(100);
+      continue;
+    }
+
     try {
       const handle = await open(
         lockPath,
@@ -355,68 +359,11 @@ async function acquireLock(lockPath: string): Promise<() => Promise<void>> {
         await handle.close();
       }
       return async () => {
-        try {
-          const current = await lstat(lockPath);
-          if (current.dev === ownedStat.dev && current.ino === ownedStat.ino) {
-            await rm(lockPath);
-          }
-        } catch (releaseError) {
-          if ((releaseError as NodeJS.ErrnoException).code !== 'ENOENT') throw releaseError;
-        }
+        await removePathIfSameFile(lockPath, ownedStat);
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
         throw new Error('Another Siftable process is preparing the Vault materializer identity');
-      }
-      let staleLock = false;
-      try {
-        const handle = await open(
-          lockPath,
-          fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
-        );
-        try {
-          const before = await handle.stat();
-          const rawPid = (await handle.readFile('utf8')).trim();
-          if (rawPid.length > 0 && !/^\d+$/.test(rawPid)) {
-            throw new Error('Vault materializer identity lock has an invalid owner');
-          }
-          if (rawPid.length > 0) {
-            const ownerPid = Number(rawPid);
-            if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0) {
-              throw new Error('Vault materializer identity lock has an invalid owner');
-            }
-            try {
-              process.kill(ownerPid, 0);
-            } catch (killError) {
-              if ((killError as NodeJS.ErrnoException).code !== 'ESRCH') throw killError;
-              const releaseRecovery = await acquireStaleRecoveryLease(lockPath, before);
-              if (releaseRecovery) {
-                try {
-                  const current = await lstat(lockPath);
-                  if (current.dev === before.dev && current.ino === before.ino) {
-                    await rm(lockPath);
-                    staleLock = true;
-                  }
-                } finally {
-                  await releaseRecovery();
-                }
-              }
-            }
-          }
-        } finally {
-          await handle.close();
-        }
-      } catch (lockError) {
-        if ((lockError as NodeJS.ErrnoException).code === 'ENOENT') continue;
-        if ((lockError as NodeJS.ErrnoException).code === 'ELOOP') {
-          throw new Error('Vault materializer identity lock must not be a symlink');
-        }
-        if (lockError instanceof Error && lockError.message.startsWith('Vault materializer identity lock')) {
-          throw lockError;
-        }
-      }
-      if (staleLock) {
-        continue;
       }
       if (Date.now() - startedAt >= LOCK_WAIT_MILLISECONDS) {
         throw new Error('Another Siftable process is preparing the Vault materializer identity');

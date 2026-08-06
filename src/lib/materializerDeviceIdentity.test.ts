@@ -131,8 +131,7 @@ describe('materializer device identity', () => {
     expect(store.values.size).toBe(2);
   });
 
-  it('recovers a lock left behind by a process that no longer exists', async () => {
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+  it.runIf(process.platform === 'linux')('uses the kernel lock even when its file already exists', async () => {
     const stateDirectory = await temporaryDirectory();
     const store = new MemoryIdentityStore();
     const account = 'https://siftable.io';
@@ -154,28 +153,4 @@ describe('materializer device identity', () => {
     }));
   });
 
-  it('recovers when a previous recovery process crashed', async () => {
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
-    const stateDirectory = await temporaryDirectory();
-    const store = new MemoryIdentityStore();
-    const account = 'https://siftable.io';
-    const originHash = await import('node:crypto').then(({createHash}) => (
-      createHash('sha256').update(new URL(account).origin).digest('hex')
-    ));
-    const lockPath = path.join(stateDirectory, `${originHash}.json.lock`);
-    await writeFile(lockPath, '2147483647', {mode: 0o600});
-    const lockStat = await stat(lockPath);
-    await import('node:fs/promises').then(({mkdir}) => mkdir(
-      `${lockPath}.recovery.${lockStat.dev}.${lockStat.ino}.100-2147483647-${'a'.repeat(24)}`,
-      {mode: 0o700},
-    ));
-
-    await expect(loadOrCreateMaterializerDeviceIdentity({
-      apiUrl: account,
-      stateDirectory,
-      store,
-    })).resolves.toEqual(expect.objectContaining({
-      fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
-    }));
-  });
 });
