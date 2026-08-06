@@ -180,8 +180,8 @@ describe('materializer device identity', () => {
     const lockHandle = await open(lockPath, 'a+', 0o600);
     const holder = spawn(
       '/bin/sh',
-      ['-c', 'flock -n -E 75 3 || exit $?; printf "ready\\n"; sleep 30'],
-      {stdio: ['ignore', 'pipe', 'pipe', lockHandle.fd], env: {PATH: '/usr/bin:/bin'}},
+      ['-c', 'flock -n -E 75 3 || exit $?; printf "ready\\n"; IFS= read -r _ || true'],
+      {stdio: ['pipe', 'pipe', 'pipe', lockHandle.fd], env: {PATH: '/usr/bin:/bin'}},
     );
     await lockHandle.close();
     await new Promise<void>((resolve, reject) => {
