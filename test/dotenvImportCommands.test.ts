@@ -5,6 +5,7 @@ import {Config} from '@oclif/core';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import EnvImportApply from '../src/commands/env/import/apply.js';
 import EnvImportPlan from '../src/commands/env/import/plan.js';
+import {MAX_DOTENV_IMPORT_PLAN_BYTES} from '../src/lib/dotenvImportPlan.js';
 
 const roots: string[] = [];
 
@@ -96,8 +97,14 @@ describe('sift env import plan/apply', () => {
       '--checkout-root', root, '--owner', 'personal', '--token', 'synthetic-token', '--json',
     ]);
     expect(result.exitCode).toBe(0);
-    expect(result.result).toMatchObject({kind: 'sift.vault.dotenv-import-plan'});
-    expect(JSON.parse(result.stdout)).toMatchObject({kind: 'sift.vault.dotenv-import-plan'});
+    expect(result.result).toMatchObject({
+      kind: 'sift.vault.dotenv-import-plan',
+      applyIdempotencyKey: expect.stringMatching(/^[A-Za-z0-9_.:-]{8,128}$/),
+    });
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      kind: 'sift.vault.dotenv-import-plan',
+      applyIdempotencyKey: expect.stringMatching(/^[A-Za-z0-9_.:-]{8,128}$/),
+    });
     expect(JSON.stringify(requestBody)).not.toContain(secret);
     expect((requestHeaders as Record<string, string>)['Idempotency-Key']).toMatch(/^[A-Za-z0-9_.:-]{8,128}$/);
     expect(result.stdout).not.toContain(secret);
@@ -119,6 +126,7 @@ describe('sift env import plan/apply', () => {
     const skippedSecret = 'synthetic-stays-local';
     await writeFile(source, `TOKEN=${secret}\nSKIPPED=${skippedSecret}\n`);
     let applyBody: Record<string, unknown> | undefined;
+    let applyHeaders: HeadersInit | undefined;
     let planned: Record<string, unknown> | undefined;
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input));
@@ -142,6 +150,7 @@ describe('sift env import plan/apply', () => {
         return response(201, {plan: planned});
       }
       applyBody = body;
+      applyHeaders = init?.headers;
       return response(200, {receipt: {
         planId: planned!.id, planDigest: planned!.planDigest, importId: '33333333-3333-4333-8333-333333333333',
         ownerType: 'user', ownerId: planned!.ownerId, projectId: null,
@@ -162,6 +171,8 @@ describe('sift env import plan/apply', () => {
       '--checkout-root', root, '--owner', 'personal', '--token', 'synthetic-token', '--json',
     ]);
     expect(applyResult.exitCode).toBe(0);
+    const artifact = JSON.parse(await readFile(planFile, 'utf8')) as {applyIdempotencyKey: string};
+    expect((applyHeaders as Record<string, string>)['Idempotency-Key']).toBe(artifact.applyIdempotencyKey);
     expect(JSON.parse(applyResult.stdout)).toMatchObject({
       importId: '33333333-3333-4333-8333-333333333333',
     });
@@ -278,6 +289,25 @@ members:
     const result = await runCommand([
       'env', 'import', 'plan', '--source', source,
       '--plan-file', path.join(root, 'oversized.plan.json'),
+      '--checkout-root', root, '--owner', 'personal',
+      '--token', 'synthetic-token', '--json',
+    ]);
+
+    expect(result.exitCode).not.toBe(0);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects oversized plan artifacts before making an apply request', async () => {
+    const root = await checkout();
+    const source = path.join(root, 'input.env');
+    const planFile = path.join(root, 'oversized.plan.json');
+    await writeFile(source, 'TOKEN=synthetic\n');
+    await writeFile(planFile, Buffer.alloc(MAX_DOTENV_IMPORT_PLAN_BYTES + 1, 0x41));
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+
+    const result = await runCommand([
+      'env', 'import', 'apply', '--source', source, '--plan-file', planFile,
       '--checkout-root', root, '--owner', 'personal',
       '--token', 'synthetic-token', '--json',
     ]);

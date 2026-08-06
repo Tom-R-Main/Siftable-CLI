@@ -50,6 +50,7 @@ export default class EnvImportApply extends BaseCommand {
       `/api/v1/vault/import-plans/${encodeURIComponent(artifact.plan.id)}/apply`,
       {
         method: 'POST',
+        idempotencyKey: artifact.applyIdempotencyKey,
         body: {
           planDigest: artifact.plan.planDigest,
           sourceNonce: artifact.plan.sourceNonce,

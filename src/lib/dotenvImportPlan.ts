@@ -6,9 +6,12 @@ import {DotenvImportParseError, MAX_DOTENV_IMPORT_BYTES} from './dotenvImport.js
 import type {DotenvImportPlanItem} from './dotenvImportTypes.js';
 import {findCheckoutRoot} from './workspace-context.js';
 
+export const MAX_DOTENV_IMPORT_PLAN_BYTES = 512 * 1024;
+
 export interface DotenvImportPlanArtifact {
   schemaVersion: 1;
   kind: 'sift.vault.dotenv-import-plan';
+  applyIdempotencyKey: string;
   plan: {
     id: string;
     dialect: 'sift-dotenv-v1';
@@ -130,12 +133,26 @@ export async function readDotenvImportPlanArtifact(filename: string): Promise<Do
       || openedStat.dev !== pathStat.dev || openedStat.ino !== pathStat.ino) {
       throw new Error('Dotenv import plan must be a stable regular non-symlink file.');
     }
-    raw = await handle.readFile('utf8');
+    if (openedStat.size > MAX_DOTENV_IMPORT_PLAN_BYTES) {
+      throw new Error('Dotenv import plan exceeds the 512 KiB artifact limit.');
+    }
+    const bounded = Buffer.allocUnsafe(MAX_DOTENV_IMPORT_PLAN_BYTES + 1);
+    let offset = 0;
+    while (offset < bounded.length) {
+      const {bytesRead} = await handle.read(bounded, offset, bounded.length - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    if (offset > MAX_DOTENV_IMPORT_PLAN_BYTES) {
+      throw new Error('Dotenv import plan exceeds the 512 KiB artifact limit.');
+    }
+    raw = bounded.subarray(0, offset).toString('utf8');
   } finally {
     await handle.close();
   }
   const parsed = JSON.parse(raw) as DotenvImportPlanArtifact;
   if (parsed?.schemaVersion !== 1 || parsed.kind !== 'sift.vault.dotenv-import-plan'
+    || !/^[A-Za-z0-9_.:-]{8,128}$/.test(parsed.applyIdempotencyKey)
     || parsed.plan?.dialect !== 'sift-dotenv-v1' || parsed.plan.status !== 'active'
     || !Array.isArray(parsed.plan.items)) {
     throw new Error('Dotenv import plan artifact is invalid or unsupported.');

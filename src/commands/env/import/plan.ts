@@ -81,6 +81,7 @@ export default class EnvImportPlan extends BaseCommand {
     const artifact: DotenvImportPlanArtifact = {
       schemaVersion: 1,
       kind: 'sift.vault.dotenv-import-plan',
+      applyIdempotencyKey: this.idempotencyKey(),
       plan: response.plan,
     };
     await writeDotenvImportPlanArtifact(flags['plan-file'], artifact);
