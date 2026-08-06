@@ -278,7 +278,7 @@ describe('offline env commands', () => {
     const result = await runCommand([
       'env', 'pull',
       '--checkout-root', root,
-      '--purpose', 'Use the current managed development environment',
+      '--purpose', '  Use the current managed development environment  ',
       '--endpoint-class', 'development',
       '--token', 'synthetic-token',
       '--json',
@@ -291,6 +291,9 @@ describe('offline env commands', () => {
       approvalConsumed: false,
     });
     expect(fetch).toHaveBeenCalledTimes(1);
+    const request = fetch.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(request.body as string).purpose)
+      .toBe('Use the current managed development environment');
   });
 
   it('removes only the exact recognized managed file and emits no secret bytes', async () => {

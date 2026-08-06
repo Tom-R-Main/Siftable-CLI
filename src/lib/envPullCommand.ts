@@ -163,6 +163,7 @@ export default class EnvPull extends BaseCommand {
     });
     if (owner.owner !== ownerName) this.error('Manifest owner and selected Vault owner do not match.');
     const apiFlags = vaultApiFlags(flags, owner);
+    const purpose = flags.purpose.trim();
 
     const previousReceipt = await readManagedEnvironmentBundleReceipt(contract);
     const inspection = await inspectManagedEnvironmentBundle(contract, previousReceipt);
@@ -197,7 +198,7 @@ export default class EnvPull extends BaseCommand {
         expectedAbsence,
         observedStateBinding,
         overwriteConsent: !expectedAbsence && (flags.replace || managedRefresh),
-        purpose: flags.purpose,
+        purpose,
         requestNonce: nonce,
         runnerPublicKeyFingerprint: runner.fingerprint,
         materializerDigest: runner.materializerDigest,
@@ -235,7 +236,7 @@ export default class EnvPull extends BaseCommand {
         trackedFileException: false,
         riskyPathAcknowledged: true,
         plaintextDisclosureAcknowledged: true,
-        purpose: flags.purpose,
+        purpose,
         requestNonce: nonce,
         runnerPublicKeyPem: runner.publicKeyPem,
         runnerPublicKeyFingerprint: runner.fingerprint,
@@ -348,7 +349,7 @@ export default class EnvPull extends BaseCommand {
         mode: contract.mode,
         expectedAbsence,
         observedStateBinding,
-        purpose: flags.purpose,
+        purpose,
         nonce,
       });
       if (redemption.binding !== credentialBinding) this.error('Bundle credential binding is invalid.');
