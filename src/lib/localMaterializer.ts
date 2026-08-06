@@ -286,6 +286,7 @@ export function createMaterializationBundleRunnerProofBinding(input: {
     observedStateBinding: input.observedStateBinding ?? 'none',
     overwriteConsent: String(input.overwriteConsent),
     plaintextDisclosureAcknowledged: 'true',
+    proofContext: 'sift.vault.materialization.bundle.v1',
     purposeDigest: createHash('sha256').update(input.purpose).digest('hex'),
     requestNonce: input.requestNonce,
     runnerPublicKeyFingerprint: input.runnerPublicKeyFingerprint,

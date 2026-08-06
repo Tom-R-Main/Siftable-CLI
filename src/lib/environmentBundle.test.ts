@@ -207,6 +207,41 @@ describe('governed environment bundles', () => {
     await expect(readFile(contract.destinationPath)).rejects.toMatchObject({code: 'ENOENT'});
   });
 
+  it('serializes concurrent writers and never leaves a partial bundle or live lock', async () => {
+    const root = await mkdtemp(path.join(await realpath(tmpdir()), 'sift-env-bundle-'));
+    roots.push(root);
+    await prepareCheckout(root);
+    await mkdir(path.join(root, '.runtime'));
+    const contract = buildEnvironmentBundleContract(manifest, root, '.runtime/.env.local');
+    const firstValues = [Buffer.from('first-user'), Buffer.from('first-password')];
+    const secondValues = [Buffer.from('second-user'), Buffer.from('second-password')];
+
+    const results = await Promise.allSettled([
+      materializeManagedEnvironmentBundle({
+        contract,
+        values: firstValues,
+        expectedAbsence: true,
+      }),
+      materializeManagedEnvironmentBundle({
+        contract,
+        values: secondValues,
+        expectedAbsence: true,
+      }),
+    ]);
+
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(result => result.status === 'rejected')).toHaveLength(1);
+    const contents = await readFile(contract.destinationPath, 'utf8');
+    expect(contents).toMatch(
+      /API_USER="(first|second)-user"\nAPI_PASSWORD="\1-password"/,
+    );
+    expect(contents.includes('first-user') && contents.includes('second-user')).toBe(false);
+    expect(firstValues.every(value => value.every(byte => byte === 0))).toBe(true);
+    expect(secondValues.every(value => value.every(byte => byte === 0))).toBe(true);
+    await expect(readFile(`${contract.destinationPath}.sift-lock`))
+      .rejects.toMatchObject({code: 'ENOENT'});
+  });
+
   it('reports modified_locally and requires replacement consent bound to the observed file', async () => {
     const root = await mkdtemp(path.join(await realpath(tmpdir()), 'sift-env-bundle-'));
     roots.push(root);

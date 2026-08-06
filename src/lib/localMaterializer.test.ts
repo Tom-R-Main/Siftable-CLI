@@ -337,6 +337,7 @@ describe('local Vault materializer', () => {
       + '"materializerDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",'
       + '"observedStateBinding":"none","overwriteConsent":"false",'
       + '"plaintextDisclosureAcknowledged":"true",'
+      + '"proofContext":"sift.vault.materialization.bundle.v1",'
       + '"purposeDigest":"03c2901f52fa9f55accc29067f9dbc44417caf36b0990edda0d002459c11af81",'
       + '"requestedMode":"0600","requestNonce":"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",'
       + '"runnerProofTimestamp":"2026-08-06T00:00:00.000Z",'
