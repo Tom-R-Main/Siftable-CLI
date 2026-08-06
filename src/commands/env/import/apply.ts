@@ -25,7 +25,7 @@ export default class EnvImportApply extends BaseCommand {
     const {flags} = await this.parse(EnvImportApply);
     const source = await readExplicitDotenvSource(flags.source);
     const checkoutRoot = await resolveDotenvImportCheckoutRoot(source.path, flags['checkout-root']);
-    await assertDotenvSourceIsNotManaged(source.path, checkoutRoot);
+    await assertDotenvSourceIsNotManaged(source, checkoutRoot);
     const artifact = await readDotenvImportPlanArtifact(flags['plan-file']);
     const parsed = parseDotenvImport(source.raw);
     const rebound = createDotenvSourceBinding(source.raw, artifact.plan.sourceNonce);

@@ -1,11 +1,15 @@
-import {link, mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
+import {link, mkdtemp, mkdir, readFile, realpath, rename, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {Config} from '@oclif/core';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import EnvImportApply from '../src/commands/env/import/apply.js';
 import EnvImportPlan from '../src/commands/env/import/plan.js';
-import {MAX_DOTENV_IMPORT_PLAN_BYTES} from '../src/lib/dotenvImportPlan.js';
+import {
+  assertDotenvSourceIsNotManaged,
+  MAX_DOTENV_IMPORT_PLAN_BYTES,
+  readExplicitDotenvSource,
+} from '../src/lib/dotenvImportPlan.js';
 
 const roots: string[] = [];
 
@@ -86,6 +90,8 @@ describe('sift env import plan/apply', () => {
           proposedAction: 'create',
           targetSlug: 'token',
           existingEntryId: null,
+          existingEntryType: null,
+          existingValueRevision: null,
         })),
         status: 'active',
         expiresAt: '2026-08-05T22:00:00.000Z',
@@ -118,6 +124,50 @@ describe('sift env import plan/apply', () => {
     expect(second.exitCode).not.toBe(0);
   });
 
+  it('prints a copyable apply command with the exact owner and checkout root', async () => {
+    const root = await checkout();
+    const source = path.join(root, 'input.env');
+    const planFile = path.join(root, 'review.plan.json');
+    const workspaceId = '55555555-5555-4555-8555-555555555555';
+    await writeFile(source, 'TOKEN=synthetic\n');
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const entries = body.entries as Array<Record<string, unknown>>;
+      return response(201, {plan: {
+        id: '22222222-2222-4222-8222-222222222222',
+        dialect: body.dialect,
+        ownerType: 'workspace',
+        ownerId: workspaceId,
+        projectId: null,
+        sourceNonce: body.sourceNonce,
+        sourceDigest: body.sourceDigest,
+        planDigest: 'f'.repeat(64),
+        items: entries.map((entry) => ({
+          ...entry,
+          conflictClass: 'none',
+          proposedAction: 'create',
+          targetName: entry.key,
+          targetSlug: 'token',
+          existingEntryId: null,
+          existingEntryType: null,
+          existingValueRevision: null,
+        })),
+        status: 'active',
+        expiresAt: '2026-08-05T22:00:00.000Z',
+      }});
+    }));
+
+    const result = await runCommand([
+      'env', 'import', 'plan', '--source', source, '--plan-file', planFile,
+      '--checkout-root', root, '--owner', `workspace:${workspaceId}`,
+      '--token', 'synthetic-token',
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(`--checkout-root ${JSON.stringify(await realpath(root))}`);
+    expect(result.stdout).toContain(`--owner ${JSON.stringify(`workspace:${workspaceId}`)}`);
+  });
+
   it('re-reads the explicit source and sends values only to exact-plan apply', async () => {
     const root = await checkout();
     const source = path.join(root, 'input.env');
@@ -144,6 +194,8 @@ describe('sift env import plan/apply', () => {
             targetName: entry.key,
             targetSlug: index === 0 ? 'token' : 'skipped',
             existingEntryId: null,
+            existingEntryType: null,
+            existingValueRevision: null,
           })),
           status: 'active', expiresAt: '2026-08-05T22:00:00.000Z',
         };
@@ -213,7 +265,15 @@ describe('sift env import plan/apply', () => {
         id: '22222222-2222-4222-8222-222222222222', dialect: body.dialect,
         ownerType: 'user', ownerId: '11111111-1111-4111-8111-111111111111', projectId: null,
         sourceNonce: body.sourceNonce, sourceDigest: body.sourceDigest, planDigest: 'e'.repeat(64),
-        items: entries.map((entry) => ({...entry, conflictClass: 'none', proposedAction: 'create', targetSlug: 'token', existingEntryId: null})),
+        items: entries.map((entry) => ({
+          ...entry,
+          conflictClass: 'none',
+          proposedAction: 'create',
+          targetSlug: 'token',
+          existingEntryId: null,
+          existingEntryType: null,
+          existingValueRevision: null,
+        })),
         status: 'active', expiresAt: '2026-08-05T22:00:00.000Z',
       };
       return response(201, {plan: planned});
@@ -277,6 +337,18 @@ members:
     ]);
     expect(bypass.exitCode).not.toBe(0);
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a source pathname replaced after the source snapshot was opened', async () => {
+    const root = await checkout();
+    const source = path.join(root, 'input.env');
+    await writeFile(source, 'TOKEN=first\n');
+    const snapshot = await readExplicitDotenvSource(source);
+    await rename(source, path.join(root, 'original.env'));
+    await writeFile(source, 'TOKEN=second\n');
+
+    await expect(assertDotenvSourceIsNotManaged(snapshot, root))
+      .rejects.toThrow('changed before its managed-file check');
   });
 
   it('rejects oversized sources before making a plan request', async () => {

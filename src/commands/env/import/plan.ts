@@ -51,7 +51,7 @@ export default class EnvImportPlan extends BaseCommand {
     const {flags} = await this.parse(EnvImportPlan);
     const source = await readExplicitDotenvSource(flags.source);
     const checkoutRoot = await resolveDotenvImportCheckoutRoot(source.path, flags['checkout-root']);
-    await assertDotenvSourceIsNotManaged(source.path, checkoutRoot);
+    await assertDotenvSourceIsNotManaged(source, checkoutRoot);
     const parsed = parseDotenvImport(source.raw);
     const sourceBinding = createDotenvSourceBinding(source.raw);
     const owner = resolveVaultOwnerContext({owner: flags.owner, workspace: flags.workspace});
@@ -90,7 +90,7 @@ export default class EnvImportPlan extends BaseCommand {
       for (const item of response.plan.items) {
         this.log(`${item.sourceIndex}\t${item.key}\t${item.conflictClass}\t${item.existingEntryType ?? '-'}\t${item.proposedAction}\t${item.targetSlug}`);
       }
-      this.log(`Apply only after review: sift env import apply --source ${JSON.stringify(flags.source)} --plan-file ${JSON.stringify(flags['plan-file'])}`);
+      this.log(`Apply only after review: sift env import apply --source ${JSON.stringify(flags.source)} --plan-file ${JSON.stringify(flags['plan-file'])} --checkout-root ${JSON.stringify(checkoutRoot)} --owner ${JSON.stringify(owner.owner)}`);
     }
     return artifact;
   }

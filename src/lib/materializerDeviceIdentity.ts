@@ -11,7 +11,7 @@ import {
 } from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {constants as fsConstants} from 'node:fs';
-import {chmod, lstat, mkdir, open, readFile, rename, rm} from 'node:fs/promises';
+import {chmod, lstat, mkdir, open, readFile, rename, rm, rmdir} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -40,6 +40,19 @@ export interface MaterializerDeviceIdentity {
 export interface MaterializerIdentityStore {
   read(account: string): Promise<Buffer | null>;
   write(account: string, value: Buffer): Promise<void>;
+}
+
+/**
+ * Identifies the generated endpoint credential, not the surrounding hardware.
+ * Re-exporting through SPKI makes equivalent PEM encodings hash identically
+ * while preserving fingerprints already produced from Sift-generated keys.
+ */
+export function fingerprintMaterializerPublicKey(publicKeyPem: string): string {
+  const canonicalPublicKeyPem = createPublicKey(publicKeyPem)
+    .export({type: 'spki', format: 'pem'})
+    .toString()
+    .trim();
+  return createHash('sha256').update(canonicalPublicKeyPem).digest('hex');
 }
 
 export function buildMacOsKeychainWriteCommand(
@@ -269,10 +282,27 @@ async function acquireLock(lockPath: string): Promise<() => Promise<void>> {
         fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY,
         0o600,
       );
-      await handle.writeFile(String(process.pid));
-      await handle.close();
+      let ownedStat;
+      try {
+        await handle.writeFile(String(process.pid));
+        await handle.sync();
+        ownedStat = await handle.stat();
+        const current = await lstat(lockPath);
+        if (current.dev !== ownedStat.dev || current.ino !== ownedStat.ino) {
+          throw new Error('Vault materializer identity lock ownership changed during acquisition');
+        }
+      } finally {
+        await handle.close();
+      }
       return async () => {
-        await rm(lockPath, {force: true});
+        try {
+          const current = await lstat(lockPath);
+          if (current.dev === ownedStat.dev && current.ino === ownedStat.ino) {
+            await rm(lockPath);
+          }
+        } catch (releaseError) {
+          if ((releaseError as NodeJS.ErrnoException).code !== 'ENOENT') throw releaseError;
+        }
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
@@ -287,19 +317,38 @@ async function acquireLock(lockPath: string): Promise<() => Promise<void>> {
         try {
           const before = await handle.stat();
           const rawPid = (await handle.readFile('utf8')).trim();
-          if (!/^\d+$/.test(rawPid)) {
+          if (rawPid.length > 0 && !/^\d+$/.test(rawPid)) {
             throw new Error('Vault materializer identity lock has an invalid owner');
           }
-          const ownerPid = Number(rawPid);
-          if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0) {
-            throw new Error('Vault materializer identity lock has an invalid owner');
-          }
-          try {
-            process.kill(ownerPid, 0);
-          } catch (killError) {
-            if ((killError as NodeJS.ErrnoException).code !== 'ESRCH') throw killError;
-            const current = await lstat(lockPath);
-            staleLock = current.dev === before.dev && current.ino === before.ino;
+          if (rawPid.length > 0) {
+            const ownerPid = Number(rawPid);
+            if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0) {
+              throw new Error('Vault materializer identity lock has an invalid owner');
+            }
+            try {
+              process.kill(ownerPid, 0);
+            } catch (killError) {
+              if ((killError as NodeJS.ErrnoException).code !== 'ESRCH') throw killError;
+              const recoveryPath = `${lockPath}.recovery`;
+              let recoveryOwned = false;
+              try {
+                await mkdir(recoveryPath, {mode: 0o700});
+                recoveryOwned = true;
+              } catch (recoveryError) {
+                if ((recoveryError as NodeJS.ErrnoException).code !== 'EEXIST') throw recoveryError;
+              }
+              if (recoveryOwned) {
+                try {
+                  const current = await lstat(lockPath);
+                  if (current.dev === before.dev && current.ino === before.ino) {
+                    await rm(lockPath);
+                    staleLock = true;
+                  }
+                } finally {
+                  await rmdir(recoveryPath).catch(() => undefined);
+                }
+              }
+            }
           }
         } finally {
           await handle.close();
@@ -382,7 +431,7 @@ function materializeIdentity(
     return {
       publicKeyPem,
       privateKey,
-      fingerprint: createHash('sha256').update(publicKeyPem.trim()).digest('hex'),
+      fingerprint: fingerprintMaterializerPublicKey(publicKeyPem),
     };
   } finally {
     privateKeyPem.fill(0);
@@ -443,7 +492,7 @@ export async function loadOrCreateMaterializerDeviceIdentity(input: {
       return {
         publicKeyPem,
         privateKey: pair.privateKey,
-        fingerprint: createHash('sha256').update(publicKeyPem.trim()).digest('hex'),
+        fingerprint: fingerprintMaterializerPublicKey(publicKeyPem),
       };
     } finally {
       privateKeyPem.fill(0);

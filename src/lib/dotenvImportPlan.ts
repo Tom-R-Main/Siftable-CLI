@@ -8,6 +8,13 @@ import {findCheckoutRoot} from './workspace-context.js';
 
 export const MAX_DOTENV_IMPORT_PLAN_BYTES = 512 * 1024;
 
+export interface DotenvSourceSnapshot {
+  path: string;
+  raw: Buffer;
+  device: number;
+  inode: number;
+}
+
 export interface DotenvImportPlanArtifact {
   schemaVersion: 1;
   kind: 'sift.vault.dotenv-import-plan';
@@ -27,8 +34,13 @@ export interface DotenvImportPlanArtifact {
   };
 }
 
-export async function readExplicitDotenvSource(sourcePath: string): Promise<{path: string; raw: Buffer}> {
-  const requested = path.resolve(sourcePath);
+export async function readExplicitDotenvSource(sourcePath: string): Promise<DotenvSourceSnapshot> {
+  const unresolved = path.resolve(sourcePath);
+  const unresolvedStat = await lstat(unresolved);
+  if (unresolvedStat.isSymbolicLink() || !unresolvedStat.isFile()) {
+    throw new Error('Dotenv import source must be an explicitly named regular non-symlink file.');
+  }
+  const requested = await realpath(unresolved);
   const handle = await open(requested, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const openedStat = await handle.stat();
@@ -50,13 +62,31 @@ export async function readExplicitDotenvSource(sourcePath: string): Promise<{pat
     if (offset > MAX_DOTENV_IMPORT_BYTES) {
       throw new DotenvImportParseError('source_too_large', 1, 1, 'Source exceeds the 128 KiB import limit');
     }
-    return {path: await realpath(requested), raw: bounded.subarray(0, offset)};
+    const finalPathStat = await lstat(requested);
+    if (finalPathStat.isSymbolicLink() || !finalPathStat.isFile()
+      || finalPathStat.dev !== openedStat.dev || finalPathStat.ino !== openedStat.ino) {
+      throw new Error('Dotenv import source changed while it was being read.');
+    }
+    return {
+      path: requested,
+      raw: bounded.subarray(0, offset),
+      device: openedStat.dev,
+      inode: openedStat.ino,
+    };
   } finally {
     await handle.close();
   }
 }
 
-export async function assertDotenvSourceIsNotManaged(sourcePath: string, checkoutRoot: string): Promise<void> {
+export async function assertDotenvSourceIsNotManaged(
+  source: Pick<DotenvSourceSnapshot, 'path' | 'device' | 'inode'>,
+  checkoutRoot: string,
+): Promise<void> {
+  const sourceStat = await lstat(source.path);
+  if (sourceStat.isSymbolicLink() || !sourceStat.isFile()
+    || sourceStat.dev !== source.device || sourceStat.ino !== source.inode) {
+    throw new Error('Dotenv import source changed before its managed-file check completed.');
+  }
   let manifest;
   try {
     manifest = await loadEnvironmentManifest(checkoutRoot);
@@ -64,8 +94,6 @@ export async function assertDotenvSourceIsNotManaged(sourcePath: string, checkou
     if (error instanceof Error && error.message.startsWith('.sift/environment.yaml is absent')) return;
     throw error;
   }
-  const source = await realpath(path.resolve(sourcePath));
-  const sourceStat = await stat(source);
   const managedDestinations = new Set<string>();
   const managedIdentities = new Set<string>();
   for (const member of manifest.members) {
@@ -79,7 +107,7 @@ export async function assertDotenvSourceIsNotManaged(sourcePath: string, checkou
       managedDestinations.add(destination);
     }
   }
-  if (managedDestinations.has(source) || managedIdentities.has(`${sourceStat.dev}:${sourceStat.ino}`)) {
+  if (managedDestinations.has(source.path) || managedIdentities.has(`${source.device}:${source.inode}`)) {
     throw new Error('Sift-managed environment files cannot be used as import sources. Import an explicitly maintained source file instead.');
   }
 }

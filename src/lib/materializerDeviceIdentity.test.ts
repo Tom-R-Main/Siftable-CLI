@@ -5,6 +5,7 @@ import {mkdtemp, rm} from 'node:fs/promises';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
   buildMacOsKeychainWriteCommand,
+  fingerprintMaterializerPublicKey,
   loadOrCreateMaterializerDeviceIdentity,
   type MaterializerIdentityStore,
 } from './materializerDeviceIdentity.js';
@@ -37,6 +38,19 @@ afterEach(async () => {
 });
 
 describe('materializer device identity', () => {
+  it('fingerprints the canonical public key rather than its text encoding', async () => {
+    const stateDirectory = await temporaryDirectory();
+    const identity = await loadOrCreateMaterializerDeviceIdentity({
+      apiUrl: 'https://siftable.io',
+      stateDirectory,
+      store: new MemoryIdentityStore(),
+    });
+
+    expect(fingerprintMaterializerPublicKey(
+      identity.publicKeyPem.replaceAll('\n', '\r\n'),
+    )).toBe(identity.fingerprint);
+  });
+
   it('keeps Keychain secret data in interpreter stdin instead of process arguments', () => {
     const account = 'a'.repeat(64);
     const value = Buffer.from('11'.repeat(32), 'hex');
