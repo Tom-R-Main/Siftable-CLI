@@ -35,6 +35,13 @@ beforeAll(async () => {
   vi.stubEnv('GIT_CONFIG_GLOBAL', '/dev/null');
   vi.stubEnv('GIT_CONFIG_NOSYSTEM', '1');
   vi.stubEnv('XDG_CONFIG_HOME', isolatedGitConfigHome);
+  for (const signal of [
+    'CI', 'GITHUB_ACTIONS', 'GITLAB_CI', 'BUILDKITE', 'CIRCLECI', 'TF_BUILD',
+    'JENKINS_URL', 'TEAMCITY_VERSION', 'BITBUCKET_BUILD_NUMBER',
+    'CODESPACES', 'GITPOD_WORKSPACE_ID', 'REPL_ID',
+  ]) {
+    vi.stubEnv(signal, 'false');
+  }
 }, 120_000);
 
 afterAll(async () => {

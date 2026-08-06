@@ -278,6 +278,45 @@ async function acquireLock(lockPath: string): Promise<() => Promise<void>> {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
         throw new Error('Another Siftable process is preparing the Vault materializer identity');
       }
+      let staleLock = false;
+      try {
+        const handle = await open(
+          lockPath,
+          fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
+        );
+        try {
+          const before = await handle.stat();
+          const rawPid = (await handle.readFile('utf8')).trim();
+          if (!/^\d+$/.test(rawPid)) {
+            throw new Error('Vault materializer identity lock has an invalid owner');
+          }
+          const ownerPid = Number(rawPid);
+          if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0) {
+            throw new Error('Vault materializer identity lock has an invalid owner');
+          }
+          try {
+            process.kill(ownerPid, 0);
+          } catch (killError) {
+            if ((killError as NodeJS.ErrnoException).code !== 'ESRCH') throw killError;
+            const current = await lstat(lockPath);
+            staleLock = current.dev === before.dev && current.ino === before.ino;
+          }
+        } finally {
+          await handle.close();
+        }
+      } catch (lockError) {
+        if ((lockError as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        if ((lockError as NodeJS.ErrnoException).code === 'ELOOP') {
+          throw new Error('Vault materializer identity lock must not be a symlink');
+        }
+        if (lockError instanceof Error && lockError.message.startsWith('Vault materializer identity lock')) {
+          throw lockError;
+        }
+      }
+      if (staleLock) {
+        await rm(lockPath, {force: true});
+        continue;
+      }
       if (Date.now() - startedAt >= LOCK_WAIT_MILLISECONDS) {
         throw new Error('Another Siftable process is preparing the Vault materializer identity');
       }
