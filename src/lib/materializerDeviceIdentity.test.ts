@@ -2,7 +2,7 @@ import {readFile, readdir, realpath, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {mkdtemp, rm} from 'node:fs/promises';
-import {afterEach, describe, expect, it} from 'vitest';
+import {afterEach, describe, expect, it, vi} from 'vitest';
 import {
   buildMacOsKeychainWriteCommand,
   fingerprintMaterializerPublicKey,
@@ -32,6 +32,7 @@ async function temporaryDirectory(): Promise<string> {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(temporaryDirectories.splice(0).map(directory => (
     rm(directory, {recursive: true, force: true})
   )));
@@ -131,6 +132,7 @@ describe('materializer device identity', () => {
   });
 
   it('recovers a lock left behind by a process that no longer exists', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     const stateDirectory = await temporaryDirectory();
     const store = new MemoryIdentityStore();
     const account = 'https://siftable.io';
@@ -142,6 +144,31 @@ describe('materializer device identity', () => {
       '2147483647',
       {mode: 0o600},
     );
+
+    await expect(loadOrCreateMaterializerDeviceIdentity({
+      apiUrl: account,
+      stateDirectory,
+      store,
+    })).resolves.toEqual(expect.objectContaining({
+      fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+    }));
+  });
+
+  it('recovers when a previous recovery process crashed', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    const stateDirectory = await temporaryDirectory();
+    const store = new MemoryIdentityStore();
+    const account = 'https://siftable.io';
+    const originHash = await import('node:crypto').then(({createHash}) => (
+      createHash('sha256').update(new URL(account).origin).digest('hex')
+    ));
+    const lockPath = path.join(stateDirectory, `${originHash}.json.lock`);
+    await writeFile(lockPath, '2147483647', {mode: 0o600});
+    const lockStat = await stat(lockPath);
+    await import('node:fs/promises').then(({mkdir}) => mkdir(
+      `${lockPath}.recovery.${lockStat.dev}.${lockStat.ino}.100-2147483647-${'a'.repeat(24)}`,
+      {mode: 0o700},
+    ));
 
     await expect(loadOrCreateMaterializerDeviceIdentity({
       apiUrl: account,

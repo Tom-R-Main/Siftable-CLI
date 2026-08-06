@@ -10,8 +10,8 @@ import {
   type KeyObject,
 } from 'node:crypto';
 import {spawn} from 'node:child_process';
-import {constants as fsConstants} from 'node:fs';
-import {chmod, lstat, mkdir, open, readFile, rename, rm, rmdir} from 'node:fs/promises';
+import {constants as fsConstants, type Stats} from 'node:fs';
+import {chmod, lstat, mkdir, open, readFile, readdir, rename, rm, rmdir} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -249,6 +249,66 @@ function decryptPrivateKey(state: StoredIdentity, wrappingKey: Buffer): Buffer {
   ]);
 }
 
+async function acquireStaleRecoveryLease(
+  lockPath: string,
+  staleLock: Stats,
+): Promise<(() => Promise<void>) | null> {
+  const directory = path.dirname(lockPath);
+  const prefix = `${path.basename(lockPath)}.recovery.${staleLock.dev}.${staleLock.ino}.`;
+  const startedAt = process.hrtime.bigint();
+  const markerName = `${prefix}${startedAt}-${process.pid}-${randomBytes(12).toString('hex')}`;
+  const markerPath = path.join(directory, markerName);
+  await mkdir(markerPath, {mode: 0o700});
+  const release = async () => {
+    await rmdir(markerPath).catch(error => {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    });
+  };
+
+  try {
+    const liveMarkers: Array<{name: string; startedAt: bigint}> = [];
+    for (const entry of await readdir(directory, {withFileTypes: true})) {
+      if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue;
+      const ownerMatch = entry.name.slice(prefix.length).match(/^(\d+)-(\d+)-[0-9a-f]{24}$/);
+      if (!ownerMatch) {
+        throw new Error('Vault materializer identity recovery marker has an invalid owner');
+      }
+      const ownerStartedAt = BigInt(ownerMatch[1]);
+      const ownerPid = Number(ownerMatch[2]);
+      let ownerIsLive = true;
+      try {
+        process.kill(ownerPid, 0);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+        ownerIsLive = false;
+      }
+      const candidatePath = path.join(directory, entry.name);
+      if (!ownerIsLive) {
+        await rmdir(candidatePath).catch(error => {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        });
+        continue;
+      }
+      liveMarkers.push({name: entry.name, startedAt: ownerStartedAt});
+    }
+    liveMarkers.sort((left, right) => (
+      left.startedAt < right.startedAt
+        ? -1
+        : left.startedAt > right.startedAt
+          ? 1
+          : left.name.localeCompare(right.name)
+    ));
+    if (liveMarkers[0]?.name !== markerName) {
+      await release();
+      return null;
+    }
+    return release;
+  } catch (error) {
+    await release();
+    throw error;
+  }
+}
+
 async function acquireLock(lockPath: string): Promise<() => Promise<void>> {
   const startedAt = Date.now();
   while (true) {
@@ -282,7 +342,7 @@ async function acquireLock(lockPath: string): Promise<() => Promise<void>> {
         fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY,
         0o600,
       );
-      let ownedStat;
+      let ownedStat: Stats;
       try {
         await handle.writeFile(String(process.pid));
         await handle.sync();
@@ -329,15 +389,8 @@ async function acquireLock(lockPath: string): Promise<() => Promise<void>> {
               process.kill(ownerPid, 0);
             } catch (killError) {
               if ((killError as NodeJS.ErrnoException).code !== 'ESRCH') throw killError;
-              const recoveryPath = `${lockPath}.recovery`;
-              let recoveryOwned = false;
-              try {
-                await mkdir(recoveryPath, {mode: 0o700});
-                recoveryOwned = true;
-              } catch (recoveryError) {
-                if ((recoveryError as NodeJS.ErrnoException).code !== 'EEXIST') throw recoveryError;
-              }
-              if (recoveryOwned) {
+              const releaseRecovery = await acquireStaleRecoveryLease(lockPath, before);
+              if (releaseRecovery) {
                 try {
                   const current = await lstat(lockPath);
                   if (current.dev === before.dev && current.ino === before.ino) {
@@ -345,7 +398,7 @@ async function acquireLock(lockPath: string): Promise<() => Promise<void>> {
                     staleLock = true;
                   }
                 } finally {
-                  await rmdir(recoveryPath).catch(() => undefined);
+                  await releaseRecovery();
                 }
               }
             }
@@ -363,7 +416,6 @@ async function acquireLock(lockPath: string): Promise<() => Promise<void>> {
         }
       }
       if (staleLock) {
-        await rm(lockPath, {force: true});
         continue;
       }
       if (Date.now() - startedAt >= LOCK_WAIT_MILLISECONDS) {
