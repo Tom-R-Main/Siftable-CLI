@@ -1,7 +1,8 @@
 import {constants} from 'node:fs';
-import {lstat, open, realpath} from 'node:fs/promises';
+import {lstat, open, realpath, stat} from 'node:fs/promises';
 import path from 'node:path';
 import {loadEnvironmentManifest} from './environmentCommand.js';
+import {DotenvImportParseError, MAX_DOTENV_IMPORT_BYTES} from './dotenvImport.js';
 import type {DotenvImportPlanItem} from './dotenvImportTypes.js';
 import {findCheckoutRoot} from './workspace-context.js';
 
@@ -33,7 +34,20 @@ export async function readExplicitDotenvSource(sourcePath: string): Promise<{pat
       || openedStat.dev !== pathStat.dev || openedStat.ino !== pathStat.ino) {
       throw new Error('Dotenv import source must be an explicitly named stable regular non-symlink file.');
     }
-    return {path: await realpath(requested), raw: await handle.readFile()};
+    if (openedStat.size > MAX_DOTENV_IMPORT_BYTES) {
+      throw new DotenvImportParseError('source_too_large', 1, 1, 'Source exceeds the 128 KiB import limit');
+    }
+    const bounded = Buffer.allocUnsafe(MAX_DOTENV_IMPORT_BYTES + 1);
+    let offset = 0;
+    while (offset < bounded.length) {
+      const {bytesRead} = await handle.read(bounded, offset, bounded.length - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    if (offset > MAX_DOTENV_IMPORT_BYTES) {
+      throw new DotenvImportParseError('source_too_large', 1, 1, 'Source exceeds the 128 KiB import limit');
+    }
+    return {path: await realpath(requested), raw: bounded.subarray(0, offset)};
   } finally {
     await handle.close();
   }
@@ -48,17 +62,21 @@ export async function assertDotenvSourceIsNotManaged(sourcePath: string, checkou
     throw error;
   }
   const source = await realpath(path.resolve(sourcePath));
+  const sourceStat = await stat(source);
   const managedDestinations = new Set<string>();
+  const managedIdentities = new Set<string>();
   for (const member of manifest.members) {
     const destination = path.resolve(checkoutRoot, member.destination.path);
     try {
       managedDestinations.add(await realpath(destination));
+      const destinationStat = await stat(destination);
+      managedIdentities.add(`${destinationStat.dev}:${destinationStat.ino}`);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       managedDestinations.add(destination);
     }
   }
-  if (managedDestinations.has(source)) {
+  if (managedDestinations.has(source) || managedIdentities.has(`${sourceStat.dev}:${sourceStat.ino}`)) {
     throw new Error('Sift-managed environment files cannot be used as import sources. Import an explicitly maintained source file instead.');
   }
 }

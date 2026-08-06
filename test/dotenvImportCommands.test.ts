@@ -1,4 +1,4 @@
-import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
+import {link, mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {Config} from '@oclif/core';
@@ -246,6 +246,17 @@ members:
     expect(managed.exitCode).not.toBe(0);
     expect(fetch).toHaveBeenCalledTimes(1);
 
+    const hardLinkSource = path.join(managedRoot, 'managed-hardlink.env');
+    await link(managedSource, hardLinkSource);
+    const managedHardLink = await runCommand([
+      'env', 'import', 'plan', '--source', hardLinkSource,
+      '--plan-file', path.join(managedRoot, 'managed-hardlink.plan.json'),
+      '--checkout-root', managedRoot, '--owner', 'personal',
+      '--token', 'synthetic-token', '--json',
+    ]);
+    expect(managedHardLink.exitCode).not.toBe(0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+
     const unrelatedRoot = await checkout();
     const bypass = await runCommand([
       'env', 'import', 'plan', '--source', managedSource,
@@ -255,5 +266,23 @@ members:
     ]);
     expect(bypass.exitCode).not.toBe(0);
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects oversized sources before making a plan request', async () => {
+    const root = await checkout();
+    const source = path.join(root, 'oversized.env');
+    await writeFile(source, Buffer.alloc((128 * 1024) + 1, 0x41));
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+
+    const result = await runCommand([
+      'env', 'import', 'plan', '--source', source,
+      '--plan-file', path.join(root, 'oversized.plan.json'),
+      '--checkout-root', root, '--owner', 'personal',
+      '--token', 'synthetic-token', '--json',
+    ]);
+
+    expect(result.exitCode).not.toBe(0);
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
