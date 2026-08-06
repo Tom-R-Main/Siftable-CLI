@@ -14,8 +14,10 @@ const forbiddenEvidence = [
   /ciphertext/i,
   /private.?key/i,
   /fixture.?value/i,
-  /\/Users\//,
-  /\/home\//,
+  /\/(?:Users|home|var|etc|tmp|private)\//,
+  /~\/(?:\.config|\.local|\.ssh)\//,
+  /[A-Za-z]:\\Users\\/,
+  /(?:^|["'])\.\.\//,
 ];
 
 describe('VAULT-AX-01 evidence contract', () => {
@@ -24,6 +26,21 @@ describe('VAULT-AX-01 evidence contract', () => {
     expect(result.valid).toBe(true);
     expect(evidence.criteria.map((criterion: {criterion: number}) => criterion.criterion))
       .toEqual(Array.from({length: 13}, (_, index) => index + 1));
+    expect(evidence.criteria.map((criterion: {slug: string}) => criterion.slug)).toEqual([
+      'complete-trajectory',
+      'cli-compatibility',
+      'cross-client-discovery',
+      'mcp-redemption-boundary',
+      'request-storm-dedupe',
+      'changed-field-set-refusal',
+      'no-secret-output',
+      'workspace-integrity-and-state',
+      'approval-to-removal-e2e',
+      'actionable-failure-recovery',
+      'ai-gateway-separation',
+      'evidence-bundle',
+      'focused-tests',
+    ]);
   });
 
   it('contains no credential shapes, plaintext markers, or absolute auth paths', () => {

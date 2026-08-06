@@ -15,19 +15,19 @@
     "callerDeclaredSurfaceIsAuthority": false
   },
   "criteria": [
-    {"criterion": 1, "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 2, "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 3, "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 4, "disposition": "failed_preflight", "artifacts": ["exf-app/src/routes/vaultMaterializations.ts"]},
-    {"criterion": 5, "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 6, "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 7, "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 8, "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 9, "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 10, "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 11, "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 12, "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 13, "disposition": "unmeasured", "artifacts": []}
+    {"criterion": 1, "slug": "complete-trajectory", "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 2, "slug": "cli-compatibility", "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 3, "slug": "cross-client-discovery", "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 4, "slug": "mcp-redemption-boundary", "disposition": "failed_preflight", "artifacts": ["exf-app/src/routes/vaultMaterializations.ts"]},
+    {"criterion": 5, "slug": "request-storm-dedupe", "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 6, "slug": "changed-field-set-refusal", "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 7, "slug": "no-secret-output", "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 8, "slug": "workspace-integrity-and-state", "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 9, "slug": "approval-to-removal-e2e", "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 10, "slug": "actionable-failure-recovery", "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 11, "slug": "ai-gateway-separation", "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 12, "slug": "evidence-bundle", "disposition": "unmeasured", "artifacts": []},
+    {"criterion": 13, "slug": "focused-tests", "disposition": "unmeasured", "artifacts": []}
   ],
   "preflight": {
     "currentCliVersion": "0.5.37",

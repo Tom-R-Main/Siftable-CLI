@@ -36,12 +36,17 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["criterion", "disposition", "artifacts"],
+        "required": ["criterion", "slug", "disposition", "artifacts"],
         "properties": {
           "criterion": {"type": "integer", "minimum": 1, "maximum": 13},
+          "slug": {"type": "string", "pattern": "^[a-z][a-z0-9-]+$"},
           "disposition": {"enum": ["unmeasured", "passed", "failed", "failed_preflight", "unsupported"]},
-          "artifacts": {"type": "array", "items": {"type": "string"}}
-        }
+          "artifacts": {"type": "array", "items": {"type": "string", "pattern": "^(https://[^\\s]+|[A-Za-z0-9][A-Za-z0-9._/-]*)$"}}
+        },
+        "allOf": [{
+          "if": {"properties": {"disposition": {"enum": ["passed", "failed"]}}, "required": ["disposition"]},
+          "then": {"properties": {"artifacts": {"minItems": 1}}}
+        }]
       }
     },
     "preflight": {
