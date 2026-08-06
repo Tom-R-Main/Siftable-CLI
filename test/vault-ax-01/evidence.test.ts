@@ -42,4 +42,20 @@ describe('VAULT-AX-01 evidence contract', () => {
       callerDeclaredSurfaceIsAuthority: false,
     });
   });
+
+  it('pins the stacked base, complete command surface, and failed MCP preflight', () => {
+    expect(evidence.base).toEqual({
+      commit: '4ee9ad1f1917c853a728961af3659a238d9d3792',
+      pullRequest: 139,
+      stateAtStart: 'open',
+      requiresPostMergeReverification: true,
+    });
+    expect(evidence.preflight.environmentCommands).toEqual([
+      'check', 'diff', 'example', 'import apply', 'import plan', 'pull', 'rm', 'status',
+    ]);
+    expect(evidence.preflight.mcpRedeemBoundary).toEqual({
+      status: 'failed',
+      reason: 'request surface is caller supplied and is not bound to authentication provenance',
+    });
+  });
 });

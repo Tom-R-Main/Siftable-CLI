@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "workItemId": "df47f7b2-55a7-4ffb-bd78-b51fd39967a2",
   "base": {
-    "commit": "4ee9ad1f",
+    "commit": "4ee9ad1f1917c853a728961af3659a238d9d3792",
     "pullRequest": 139,
     "stateAtStart": "open",
     "requiresPostMergeReverification": true
@@ -31,7 +31,7 @@
   ],
   "preflight": {
     "currentCliVersion": "0.5.37",
-    "environmentCommands": ["check", "diff", "example", "pull", "rm", "status"],
+    "environmentCommands": ["check", "diff", "example", "import apply", "import plan", "pull", "rm", "status"],
     "clientBinariesAvailable": ["codex", "kimi", "opencode", "sift"],
     "mcpRedeemBoundary": {
       "status": "failed",

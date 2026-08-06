@@ -6,8 +6,29 @@
   "properties": {
     "schemaVersion": {"const": 1},
     "workItemId": {"type": "string", "format": "uuid"},
-    "base": {"type": "object"},
-    "securityBoundary": {"type": "object"},
+    "base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "pullRequest", "stateAtStart", "requiresPostMergeReverification"],
+      "properties": {
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "pullRequest": {"type": "integer", "minimum": 1},
+        "stateAtStart": {"enum": ["open", "merged", "closed"]},
+        "requiresPostMergeReverification": {"const": true}
+      }
+    },
+    "securityBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endpointIdentifier", "possessionProof", "rfc7638Thumbprint", "hostMetadataIsIdentity", "callerDeclaredSurfaceIsAuthority"],
+      "properties": {
+        "endpointIdentifier": {"const": "sha256-canonical-spki"},
+        "possessionProof": {"const": "rsa-pss-domain-separated-request"},
+        "rfc7638Thumbprint": {"const": false},
+        "hostMetadataIsIdentity": {"const": false},
+        "callerDeclaredSurfaceIsAuthority": {"const": false}
+      }
+    },
     "criteria": {
       "type": "array",
       "minItems": 13,
@@ -23,6 +44,24 @@
         }
       }
     },
-    "preflight": {"type": "object"}
+    "preflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["currentCliVersion", "environmentCommands", "clientBinariesAvailable", "mcpRedeemBoundary"],
+      "properties": {
+        "currentCliVersion": {"type": "string"},
+        "environmentCommands": {"type": "array", "minItems": 8, "uniqueItems": true, "items": {"type": "string"}},
+        "clientBinariesAvailable": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "mcpRedeemBoundary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "reason"],
+          "properties": {
+            "status": {"const": "failed"},
+            "reason": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    }
   }
 }
