@@ -261,44 +261,90 @@ async function removePathIfSameFile(filePath: string, expected: Stats): Promise<
 }
 
 async function tryAcquireLinuxLock(lockPath: string): Promise<(() => Promise<void>) | null> {
-  const child = spawn(
-    'flock',
-    ['-n', lockPath, '/bin/sh', '-c', 'printf "sift-lock-ready\\n"; IFS= read -r _'],
-    {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: {PATH: '/usr/bin:/bin'},
-    },
+  const lockHandle = await open(
+    lockPath,
+    fsConstants.O_CREAT | fsConstants.O_RDWR | (fsConstants.O_NOFOLLOW ?? 0),
+    0o600,
   );
+  let child;
+  try {
+    await lockHandle.chmod(0o600);
+    const openedStat = await lockHandle.stat();
+    const current = await lstat(lockPath);
+    if (current.dev !== openedStat.dev || current.ino !== openedStat.ino) {
+      throw new Error('Vault materializer identity lock ownership changed before acquisition');
+    }
+    child = spawn(
+      'flock',
+      ['-n', '-E', '75', '3', '/bin/sh', '-c', 'printf "sift-lock-ready\\n"; IFS= read -r _ || true'],
+      {
+        stdio: ['pipe', 'pipe', 'pipe', lockHandle.fd],
+        env: {PATH: '/usr/bin:/bin'},
+      },
+    );
+  } finally {
+    await lockHandle.close();
+  }
+  const childStdin = child.stdin;
+  const childStdout = child.stdout;
+  const childStderr = child.stderr;
+  if (!childStdin || !childStdout || !childStderr) {
+    child.kill('SIGTERM');
+    throw new Error('Vault materializer identity lock helper did not expose required pipes');
+  }
   let output = '';
+  let stderr = '';
   let spawnError: Error | null = null;
-  const ready = new Promise<boolean>(resolve => {
-    child.stdout.on('data', chunk => {
+  let stdinError: Error | null = null;
+  childStderr.on('data', chunk => {
+    stderr = `${stderr}${chunk.toString()}`.slice(-512);
+  });
+  childStdin.on('error', error => {
+    stdinError = error;
+  });
+  const ready = new Promise<'ready' | 'closed'>(resolve => {
+    childStdout.on('data', chunk => {
       output += chunk.toString();
-      if (output.includes('sift-lock-ready\n')) resolve(true);
+      if (output.includes('sift-lock-ready\n')) resolve('ready');
     });
     child.once('error', error => {
       spawnError = error;
-      resolve(false);
+      resolve('closed');
     });
-    child.once('close', () => resolve(false));
+    child.once('close', () => resolve('closed'));
   });
-  const closed = new Promise<number | null>(resolve => {
-    child.once('close', code => resolve(code));
+  const closed = new Promise<{code: number | null; signal: NodeJS.Signals | null}>(resolve => {
+    child.once('close', (code, signal) => resolve({code, signal}));
   });
-  if (!await ready) {
-    const exitCode = await closed;
+  const outcome = await Promise.race([
+    ready,
+    delay(LOCK_WAIT_MILLISECONDS).then(() => 'timeout' as const),
+  ]);
+  if (outcome === 'timeout') {
+    child.kill('SIGTERM');
+    childStdin.end();
+    await closed;
+    throw new Error('Vault materializer identity lock helper did not become ready');
+  }
+  if (outcome === 'closed') {
+    const result = await closed;
     if (spawnError) {
       throw new Error('Vault materializer identity on Linux requires the util-linux flock command');
     }
-    if (exitCode === 1) return null;
-    throw new Error(`Vault materializer identity lock helper exited with code ${exitCode ?? 'unknown'}`);
+    if (result.code === 75) return null;
+    const detail = stderr.trim() ? `: ${stderr.trim()}` : '';
+    throw new Error(
+      `Vault materializer identity lock helper exited with ${result.signal ?? `code ${result.code ?? 'unknown'}`}${detail}`,
+    );
   }
-  await chmod(lockPath, 0o600);
   return async () => {
-    child.stdin.end();
-    const exitCode = await closed;
-    if (exitCode !== 0 && exitCode !== 1) {
-      throw new Error(`Vault materializer identity lock helper exited with code ${exitCode ?? 'unknown'}`);
+    childStdin.end();
+    const result = await closed;
+    if (result.code !== 0 || stdinError) {
+      const detail = stderr.trim() ? `: ${stderr.trim()}` : '';
+      throw new Error(
+        `Vault materializer identity lock helper exited with ${result.signal ?? `code ${result.code ?? 'unknown'}`}${detail}`,
+      );
     }
   };
 }

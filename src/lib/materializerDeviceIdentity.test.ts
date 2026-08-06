@@ -1,3 +1,5 @@
+import {spawn} from 'node:child_process';
+import {once} from 'node:events';
 import {readFile, readdir, realpath, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
@@ -143,6 +145,51 @@ describe('materializer device identity', () => {
       '2147483647',
       {mode: 0o600},
     );
+
+    await expect(loadOrCreateMaterializerDeviceIdentity({
+      apiUrl: account,
+      stateDirectory,
+      store,
+    })).resolves.toEqual(expect.objectContaining({
+      fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+    }));
+  });
+
+  it.runIf(process.platform === 'linux')('serializes concurrent identity preparation', async () => {
+    const stateDirectory = await temporaryDirectory();
+    const store = new MemoryIdentityStore();
+    const input = {apiUrl: 'https://siftable.io', stateDirectory, store};
+
+    const [first, second] = await Promise.all([
+      loadOrCreateMaterializerDeviceIdentity(input),
+      loadOrCreateMaterializerDeviceIdentity(input),
+    ]);
+
+    expect(second.fingerprint).toBe(first.fingerprint);
+    expect(store.values.size).toBe(1);
+  });
+
+  it.runIf(process.platform === 'linux')('releases the kernel lock when its holder crashes', async () => {
+    const stateDirectory = await temporaryDirectory();
+    const store = new MemoryIdentityStore();
+    const account = 'https://siftable.io';
+    const originHash = await import('node:crypto').then(({createHash}) => (
+      createHash('sha256').update(new URL(account).origin).digest('hex')
+    ));
+    const lockPath = path.join(stateDirectory, `${originHash}.json.lock`);
+    const holder = spawn(
+      'flock',
+      ['-n', '-E', '75', lockPath, '/bin/sh', '-c', 'printf "ready\\n"; sleep 30'],
+      {stdio: ['ignore', 'pipe', 'pipe'], env: {PATH: '/usr/bin:/bin'}},
+    );
+    await new Promise<void>((resolve, reject) => {
+      holder.once('error', reject);
+      holder.stdout.on('data', chunk => {
+        if (chunk.toString().includes('ready\n')) resolve();
+      });
+    });
+    holder.kill('SIGKILL');
+    await once(holder, 'close');
 
     await expect(loadOrCreateMaterializerDeviceIdentity({
       apiUrl: account,
