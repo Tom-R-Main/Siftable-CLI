@@ -46,6 +46,8 @@ export interface ManagedEnvironmentBundleReceipt {
   mode: EnvironmentFileMode;
   memberSetDigest: string;
   writtenAt: string;
+  lastCheckedAt?: string;
+  sourceVersionDigest?: string;
   stat: {device: number; inode: number; mode: number; mtimeMs: number; ctimeMs: number};
 }
 
@@ -80,7 +82,10 @@ interface ManagedEnvironmentBundleLedger {
 function isReceipt(value: unknown): value is ManagedEnvironmentBundleReceipt {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const receipt = value as Record<string, unknown>;
-  const allowed = ['schemaVersion', 'destination', 'mode', 'memberSetDigest', 'writtenAt', 'stat'];
+  const allowed = [
+    'schemaVersion', 'destination', 'mode', 'memberSetDigest', 'writtenAt',
+    'lastCheckedAt', 'sourceVersionDigest', 'stat',
+  ];
   if (Object.keys(receipt).some(key => !allowed.includes(key))) return false;
   const stat = receipt.stat as Record<string, unknown> | undefined;
   return receipt.schemaVersion === 1
@@ -88,6 +93,10 @@ function isReceipt(value: unknown): value is ManagedEnvironmentBundleReceipt {
     && (receipt.mode === '0400' || receipt.mode === '0600')
     && typeof receipt.memberSetDigest === 'string' && DIGEST_PATTERN.test(receipt.memberSetDigest)
     && typeof receipt.writtenAt === 'string'
+    && ((receipt.lastCheckedAt === undefined && receipt.sourceVersionDigest === undefined)
+      || (typeof receipt.lastCheckedAt === 'string'
+        && typeof receipt.sourceVersionDigest === 'string'
+        && DIGEST_PATTERN.test(receipt.sourceVersionDigest)))
     && typeof stat === 'object' && stat !== null
     && Object.keys(stat).sort().join(',') === 'ctimeMs,device,inode,mode,mtimeMs'
     && Object.values(stat).every(item => typeof item === 'number' && Number.isFinite(item));
@@ -569,6 +578,76 @@ export async function materializeManagedEnvironmentBundle(input: {
   } finally {
     rendered?.fill(0);
     for (const value of input.values) value.fill(0);
+    if (lock) await releaseEnvironmentLock(lockPath, lock);
+  }
+}
+
+export async function removeManagedEnvironmentBundle(
+  contract: EnvironmentBundleContract,
+  receipt: ManagedEnvironmentBundleReceipt | undefined,
+): Promise<{removed: true; destination: string}> {
+  if (!receipt || receipt.destination !== contract.relativeDestination
+    || receipt.memberSetDigest !== contract.memberSetDigest || receipt.mode !== contract.mode) {
+    throw new Error('Refusing to remove a destination without its exact managed bundle receipt');
+  }
+  const lockPath = `${contract.destinationPath}.sift-lock`;
+  let lock: Awaited<ReturnType<typeof acquireEnvironmentLock>> | undefined;
+  try {
+    await validateMaterializationPath({
+      destinationPath: contract.destinationPath,
+      workspaceRoot: contract.checkoutRoot,
+    });
+    lock = await acquireEnvironmentLock(lockPath);
+    const inspection = await inspectManagedEnvironmentBundle(contract, receipt);
+    if (inspection.state !== 'managed_current') {
+      throw new Error(`Refusing to remove ${inspection.state} destination`);
+    }
+    const expectedDigest = privateObservedEnvironmentDigest(inspection);
+    const currentDigest = await privateDestinationDigest(contract.destinationPath);
+    if (!privateDigestEquals(expectedDigest, currentDigest)) {
+      throw new Error('Managed destination changed before removal');
+    }
+    const current = await lstat(contract.destinationPath);
+    if (!current.isFile() || current.isSymbolicLink()
+      || current.dev !== receipt.stat.device || current.ino !== receipt.stat.inode) {
+      throw new Error('Managed destination identity changed before removal');
+    }
+    await rm(contract.destinationPath);
+    if (await inspectDestinationState(contract.destinationPath)) {
+      throw new Error('Managed destination still exists after removal');
+    }
+
+    const directory = path.join(contract.checkoutRoot, '.sift');
+    const ledgerPath = path.join(directory, 'environment-bundle-state.json');
+    const existingText = await readFile(ledgerPath, 'utf8').catch(() => '');
+    let receipts: ManagedEnvironmentBundleReceipt[] = [];
+    try {
+      const parsed = JSON.parse(existingText) as Partial<ManagedEnvironmentBundleLedger>;
+      if (parsed.schemaVersion === 1 && Array.isArray(parsed.receipts)) receipts = parsed.receipts.filter(isReceipt);
+    } catch {
+      receipts = [];
+    }
+    receipts = receipts.filter(item => item.destination !== contract.relativeDestination);
+    const temporaryPath = path.join(directory, `.environment-bundle-state.${randomUUID()}.tmp`);
+    const handle = await open(temporaryPath, 'wx', 0o600);
+    try {
+      await handle.writeFile(`${JSON.stringify({schemaVersion: 1, receipts}, null, 2)}\n`, 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(temporaryPath, ledgerPath);
+
+    const legacyLedger = await readEnvironmentReceiptLedger(contract.checkoutRoot);
+    if (legacyLedger) {
+      const selectedKeys = new Set(contract.members.map(member => `${member.name}\u0000${contract.relativeDestination}`));
+      await writeEnvironmentReceiptLedger(contract.checkoutRoot, {
+        schema_version: 1,
+        receipts: legacyLedger.receipts.filter(item => !selectedKeys.has(`${item.name}\u0000${item.destination}`)),
+      });
+    }
+    return {removed: true, destination: contract.relativeDestination};
+  } finally {
     if (lock) await releaseEnvironmentLock(lockPath, lock);
   }
 }

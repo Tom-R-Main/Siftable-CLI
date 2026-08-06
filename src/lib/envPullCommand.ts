@@ -17,10 +17,12 @@ import {assertDestinationSafeBeforeApproval} from './environmentCheckoutSafety.j
 import {loadEnvironmentManifest} from './environmentCommand.js';
 import {
   createMaterializationArtifactBinding,
+  createMaterializationBundleRunnerProofBinding,
   createMaterializationBundleCredentialBinding,
   createMaterializerRunner,
   decryptMaterializationBundleEnvelope,
   decryptMaterializationEnvelope,
+  signMaterializationRunnerProof,
 } from './localMaterializer.js';
 import type {ExecutionGrantEnvelope} from './localExecutionRunner.js';
 import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from './vault-owner-context.js';
@@ -32,6 +34,7 @@ interface BundleMaterializationRecord {
   bundleMembers: Array<{name: string; vaultEntryId: string; credentialField: string}>;
   bundleDigest: string;
   valueVersionState: 'unchanged' | 'rotated_since_approval' | 'unknown';
+  sourceVersionDigest: string | null;
   endpointClass: EnvironmentEndpointClass;
   destinationPath: string;
   workspaceRoot: string;
@@ -143,18 +146,8 @@ export default class EnvPull extends BaseCommand {
 
     const previousReceipt = await readManagedEnvironmentBundleReceipt(contract);
     const inspection = await inspectManagedEnvironmentBundle(contract, previousReceipt);
-    if (inspection.state === 'managed_current') {
-      await writeManagedEnvironmentBundleReceipt(contract, previousReceipt!);
-      const result = {
-        state: 'managed_current',
-        destination: contract.relativeDestination,
-        memberSetDigest: contract.memberSetDigest,
-        approvalConsumed: false,
-      };
-      if (!this.jsonEnabled()) this.log(`Already current: ${contract.relativeDestination}`);
-      return result;
-    }
-    if (inspection.state !== 'absent' && !flags.replace) {
+    const managedRefresh = inspection.state === 'managed_current';
+    if (inspection.state !== 'absent' && !managedRefresh && !flags.replace) {
       this.error(`${inspection.state}: use --replace to consent to replacing the exact observed managed file.`, {
         suggestions: [RECOVERY_COMMAND],
       });
@@ -174,15 +167,34 @@ export default class EnvPull extends BaseCommand {
     );
     if (!runner.privateKey) this.error('Vault materializer device identity is unavailable.');
     const nonce = randomBytes(32).toString('base64url');
+    const runnerProofTimestamp = new Date().toISOString();
+    const runnerProofBinding = runner.sessionEligible
+      ? createMaterializationBundleRunnerProofBinding({
+        bundleDigest: contract.memberSetDigest,
+        destinationPath: contract.destinationPath,
+        workspaceRoot: contract.checkoutRoot,
+        requestedMode: contract.mode,
+        expectedAbsence,
+        observedStateBinding,
+        overwriteConsent: !expectedAbsence && (flags.replace || managedRefresh),
+        purpose: flags.purpose,
+        requestNonce: nonce,
+        runnerPublicKeyFingerprint: runner.fingerprint,
+        materializerDigest: runner.materializerDigest,
+        runnerProofTimestamp,
+      })
+      : null;
     const first = contract.members[0]!;
-    const requested = await this.apiRequest<{
+    let requested: {
       materialization: BundleMaterializationRecord;
       artifactEnvelope: ExecutionGrantEnvelope;
       artifactBinding: string;
       approvalUrl: string;
-    }>(apiFlags, '/api/v1/vault/materializations', {
-      method: 'POST',
-      body: {
+    };
+    try {
+      requested = await this.apiRequest(apiFlags, '/api/v1/vault/materializations', {
+        method: 'POST',
+        body: {
         surface: 'cli',
         contextContractVersion: owner.contextContractVersion,
         vaultEntryId: first.entryId,
@@ -198,7 +210,7 @@ export default class EnvPull extends BaseCommand {
         requestedMode: contract.mode,
         expectedAbsence,
         observedStateBinding,
-        overwriteConsent: !expectedAbsence && flags.replace,
+        overwriteConsent: !expectedAbsence && (flags.replace || managedRefresh),
         trackedFileException: false,
         riskyPathAcknowledged: true,
         plaintextDisclosureAcknowledged: true,
@@ -207,9 +219,30 @@ export default class EnvPull extends BaseCommand {
         runnerPublicKeyPem: runner.publicKeyPem,
         runnerPublicKeyFingerprint: runner.fingerprint,
         materializerDigest: runner.materializerDigest,
+        ...(runnerProofBinding ? {
+          runnerProofTimestamp,
+          runnerProof: signMaterializationRunnerProof(runnerProofBinding, runner.privateKey),
+        } : {}),
         endpointClass,
-      },
-    });
+        },
+      });
+    } catch (error) {
+      runner.privateKey = null;
+      if (managedRefresh && error instanceof TypeError) {
+        const result = {
+          state: 'managed_unknown_freshness',
+          destination: contract.relativeDestination,
+          memberSetDigest: contract.memberSetDigest,
+          lastCheckedAt: previousReceipt?.lastCheckedAt ?? null,
+          approvalConsumed: false,
+        };
+        if (!this.jsonEnabled()) {
+          this.log(`Freshness unknown while offline: ${contract.relativeDestination}`);
+        }
+        return result;
+      }
+      throw error;
+    }
 
     const expectedMembers = contract.members.map(member => ({
       name: member.name,
@@ -304,13 +337,13 @@ export default class EnvPull extends BaseCommand {
         credentialBinding,
         contract.members.map(member => member.name),
       );
-      const receipt = await materializeManagedEnvironmentBundle({
+      const writtenReceipt = await materializeManagedEnvironmentBundle({
         contract,
         values,
         expectedAbsence,
         expectedDestinationState,
         expectedDestinationDigest,
-        replacementConsentState: flags.replace ? expectedDestinationState : undefined,
+        replacementConsentState: flags.replace || managedRefresh ? expectedDestinationState : undefined,
         onCommitted: () => {
           localWriteCompleted = true;
         },
@@ -318,6 +351,14 @@ export default class EnvPull extends BaseCommand {
           cleanupSucceeded = succeeded;
         },
       });
+      if (!redemption.materialization.sourceVersionDigest) {
+        this.error('Server omitted the value-free source version receipt.');
+      }
+      const receipt = {
+        ...writtenReceipt,
+        lastCheckedAt: new Date().toISOString(),
+        sourceVersionDigest: redemption.materialization.sourceVersionDigest,
+      };
       await writeManagedEnvironmentBundleReceipt(contract, receipt);
       const written = await inspectManagedEnvironmentBundle(contract, receipt);
       if (written.state !== 'managed_current') this.error('Managed destination failed post-write verification.');

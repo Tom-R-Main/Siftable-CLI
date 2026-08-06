@@ -11,6 +11,9 @@ import {
   inspectManagedEnvironmentBundle,
   materializeManagedEnvironmentBundle,
   privateObservedEnvironmentDigest,
+  readManagedEnvironmentBundleReceipt,
+  removeManagedEnvironmentBundle,
+  writeManagedEnvironmentBundleReceipt,
 } from './environmentBundle.js';
 import type {EnvironmentManifest} from './environmentManifest.js';
 
@@ -30,6 +33,28 @@ afterEach(async () => Promise.all(roots.splice(0).map(root => rm(root, {recursiv
 async function prepareCheckout(root: string): Promise<void> {
   execFileSync('git', ['init', '--quiet'], {cwd: root});
   await writeFile(path.join(root, '.gitignore'), '.runtime/\n');
+  await mkdir(path.join(root, '.sift'));
+  await writeFile(path.join(root, '.sift', 'environment.yaml'), `
+schema_version: 1
+kind: sift.environment.contract
+owners:
+  personal: {owner_type: personal, owner_id: self}
+members:
+  - name: API_USER
+    kind: vault_field
+    owner: personal
+    entry_id: 11111111-1111-4111-8111-111111111111
+    field: username
+    sensitivity: confidential
+    destination: {path: .runtime/.env.local, mode: "0600"}
+  - name: API_PASSWORD
+    kind: vault_field
+    owner: personal
+    entry_id: 22222222-2222-4222-8222-222222222222
+    field: password
+    sensitivity: secret
+    destination: {path: .runtime/.env.local, mode: "0600"}
+`);
 }
 
 describe('governed environment bundles', () => {
@@ -96,6 +121,54 @@ describe('governed environment bundles', () => {
     expect(onCommitted).toHaveBeenCalledTimes(1);
     expect(onCleanup).toHaveBeenCalledWith(true);
     expect(receipt.memberSetDigest).toBe(contract.memberSetDigest);
+  });
+
+  it('persists only value-free refresh metadata and removes the exact managed file', async () => {
+    const root = await mkdtemp(path.join(await realpath(tmpdir()), 'sift-env-bundle-'));
+    roots.push(root);
+    await prepareCheckout(root);
+    await mkdir(path.join(root, '.runtime'));
+    const contract = buildEnvironmentBundleContract(manifest, root, '.runtime/.env.local');
+    const written = await materializeManagedEnvironmentBundle({
+      contract,
+      values: [Buffer.from('synthetic-user'), Buffer.from('synthetic-password')],
+      expectedAbsence: true,
+    });
+    const receipt = {
+      ...written,
+      lastCheckedAt: '2026-08-06T00:00:00.000Z',
+      sourceVersionDigest: 'a'.repeat(64),
+    };
+    await writeManagedEnvironmentBundleReceipt(contract, receipt);
+    const restored = await readManagedEnvironmentBundleReceipt(contract);
+    expect(restored).toEqual(receipt);
+    expect(JSON.stringify(restored)).not.toContain('synthetic-');
+
+    await expect(removeManagedEnvironmentBundle(contract, restored)).resolves.toEqual({
+      removed: true,
+      destination: '.runtime/.env.local',
+    });
+    await expect(readFile(contract.destinationPath)).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(readManagedEnvironmentBundleReceipt(contract)).resolves.toBeUndefined();
+  });
+
+  it('refuses removal after local content or file identity changes', async () => {
+    const root = await mkdtemp(path.join(await realpath(tmpdir()), 'sift-env-bundle-'));
+    roots.push(root);
+    await prepareCheckout(root);
+    await mkdir(path.join(root, '.runtime'));
+    const contract = buildEnvironmentBundleContract(manifest, root, '.runtime/.env.local');
+    const receipt = await materializeManagedEnvironmentBundle({
+      contract,
+      values: [Buffer.from('synthetic-user'), Buffer.from('synthetic-password')],
+      expectedAbsence: true,
+    });
+    await writeManagedEnvironmentBundleReceipt(contract, receipt);
+    await writeFile(contract.destinationPath, '# locally replaced\n');
+
+    await expect(removeManagedEnvironmentBundle(contract, receipt))
+      .rejects.toThrow(/modified_locally|changed/i);
+    expect(await readFile(contract.destinationPath, 'utf8')).toBe('# locally replaced\n');
   });
 
   it('clears every resolved buffer when the approved member set no longer matches', async () => {
