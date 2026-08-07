@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "workItemId", "base", "securityBoundary", "criteria", "preflight"],
+  "required": ["schemaVersion", "workItemId", "base", "securityBoundary", "criteria", "preflight", "verificationRuns"],
   "properties": {
     "schemaVersion": {"const": 1},
     "workItemId": {"type": "string", "format": "uuid"},
@@ -14,16 +14,17 @@
         "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         "pullRequest": {"type": "integer", "minimum": 1},
         "stateAtStart": {"enum": ["open", "merged", "closed"]},
-        "requiresPostMergeReverification": {"const": true}
+        "requiresPostMergeReverification": {"const": false}
       }
     },
     "securityBoundary": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["endpointIdentifier", "possessionProof", "rfc7638Thumbprint", "hostMetadataIsIdentity", "callerDeclaredSurfaceIsAuthority"],
+      "required": ["endpointIdentifier", "possessionProof", "redemptionAuthority", "rfc7638Thumbprint", "hostMetadataIsIdentity", "callerDeclaredSurfaceIsAuthority"],
       "properties": {
         "endpointIdentifier": {"const": "sha256-canonical-spki"},
         "possessionProof": {"const": "rsa-pss-domain-separated-request"},
+        "redemptionAuthority": {"const": "runner-encrypted-artifact-plus-server-route"},
         "rfc7638Thumbprint": {"const": false},
         "hostMetadataIsIdentity": {"const": false},
         "callerDeclaredSurfaceIsAuthority": {"const": false}
@@ -52,9 +53,19 @@
     "preflight": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["currentCliVersion", "environmentCommands", "clientBinariesAvailable", "mcpRedeemBoundary"],
+      "required": ["currentCliVersion", "previousCli", "environmentCommands", "clientBinariesAvailable", "mcpRedeemBoundary"],
       "properties": {
         "currentCliVersion": {"type": "string"},
+        "previousCli": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "result", "command"],
+          "properties": {
+            "version": {"type": "string"},
+            "result": {"const": "upgrade_before_state"},
+            "command": {"const": "npm install -g @siftable/cli@latest"}
+          }
+        },
         "environmentCommands": {"type": "array", "minItems": 8, "uniqueItems": true, "items": {"type": "string"}},
         "clientBinariesAvailable": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
         "mcpRedeemBoundary": {
@@ -62,8 +73,29 @@
           "additionalProperties": false,
           "required": ["status", "reason"],
           "properties": {
-            "status": {"const": "failed"},
+            "status": {"const": "passed"},
             "reason": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "verificationRuns": {
+      "type": "array",
+      "minItems": 7,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "command", "result", "summary", "artifacts", "metrics"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]+$"},
+          "command": {"type": "string", "minLength": 1},
+          "result": {"enum": ["passed", "baseline_failed"]},
+          "summary": {"type": "string", "minLength": 1},
+          "artifacts": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$"}},
+          "metrics": {
+            "type": "object",
+            "additionalProperties": {"type": ["string", "number", "boolean"]}
           }
         }
       }

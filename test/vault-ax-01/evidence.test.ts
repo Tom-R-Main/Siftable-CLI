@@ -54,25 +54,55 @@ describe('VAULT-AX-01 evidence contract', () => {
     expect(evidence.securityBoundary).toMatchObject({
       endpointIdentifier: 'sha256-canonical-spki',
       possessionProof: 'rsa-pss-domain-separated-request',
+      redemptionAuthority: 'runner-encrypted-artifact-plus-server-route',
       rfc7638Thumbprint: false,
       hostMetadataIsIdentity: false,
       callerDeclaredSurfaceIsAuthority: false,
     });
   });
 
-  it('pins the stacked base, complete command surface, and failed MCP preflight', () => {
+  it('pins the merged base, complete command surface, and passed MCP boundary', () => {
     expect(evidence.base).toEqual({
-      commit: '4ee9ad1f1917c853a728961af3659a238d9d3792',
+      commit: 'c0765f27993abc8e80f8ca30c2a5b2f82a713fc8',
       pullRequest: 139,
-      stateAtStart: 'open',
-      requiresPostMergeReverification: true,
+      stateAtStart: 'merged',
+      requiresPostMergeReverification: false,
     });
     expect(evidence.preflight.environmentCommands).toEqual([
       'check', 'diff', 'example', 'import apply', 'import plan', 'pull', 'rm', 'status',
     ]);
-    expect(evidence.preflight.mcpRedeemBoundary).toEqual({
-      status: 'failed',
-      reason: 'request surface is caller supplied and is not bound to authentication provenance',
+    expect(evidence.preflight.previousCli).toEqual({
+      version: '0.5.37',
+      result: 'upgrade_before_state',
+      command: 'npm install -g @siftable/cli@latest',
+    });
+    expect(evidence.preflight.mcpRedeemBoundary.status).toBe('passed');
+  });
+
+  it('records the real request-storm result and the unrelated baseline diagnostic separately', () => {
+    expect(evidence.criteria.every((criterion: {disposition: string}) => (
+      criterion.disposition === 'passed'
+    ))).toBe(true);
+    const concurrency = evidence.verificationRuns.find(
+      (run: {id: string}) => run.id === 'runtime-role-concurrency',
+    );
+    expect(concurrency).toMatchObject({
+      result: 'passed',
+      metrics: {
+        requests: 50,
+        approvals: 1,
+        notifications: 1,
+        inAppDeliveries: 1,
+        supersedeAudits: 49,
+        revoked: 49,
+      },
+    });
+    const typecheck = evidence.verificationRuns.find(
+      (run: {id: string}) => run.id === 'workspace-typecheck',
+    );
+    expect(typecheck).toMatchObject({
+      result: 'baseline_failed',
+      metrics: {unrelatedDiagnostics: 2},
     });
   });
 });

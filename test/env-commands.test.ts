@@ -251,6 +251,7 @@ describe('offline env commands', () => {
   });
 
   it('reports unknown freshness when an existing managed file cannot reach the server', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     const root = await gitCheckout('.runtime/\n');
     const parsed = parseEnvironmentManifest(manifest);
     if (!parsed.ok) throw new Error('test manifest did not parse');
@@ -292,8 +293,10 @@ describe('offline env commands', () => {
     });
     expect(fetch).toHaveBeenCalledTimes(1);
     const request = fetch.mock.calls[0]?.[1] as RequestInit;
-    expect(JSON.parse(request.body as string).purpose)
-      .toBe('Use the current managed development environment');
+    expect(JSON.parse(request.body as string)).toMatchObject({
+      clientVersion: '0.5.38',
+      purpose: 'Use the current managed development environment',
+    });
   });
 
   it('removes only the exact recognized managed file and emits no secret bytes', async () => {

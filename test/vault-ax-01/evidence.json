@@ -2,40 +2,104 @@
   "schemaVersion": 1,
   "workItemId": "df47f7b2-55a7-4ffb-bd78-b51fd39967a2",
   "base": {
-    "commit": "4ee9ad1f1917c853a728961af3659a238d9d3792",
+    "commit": "c0765f27993abc8e80f8ca30c2a5b2f82a713fc8",
     "pullRequest": 139,
-    "stateAtStart": "open",
-    "requiresPostMergeReverification": true
+    "stateAtStart": "merged",
+    "requiresPostMergeReverification": false
   },
   "securityBoundary": {
     "endpointIdentifier": "sha256-canonical-spki",
     "possessionProof": "rsa-pss-domain-separated-request",
+    "redemptionAuthority": "runner-encrypted-artifact-plus-server-route",
     "rfc7638Thumbprint": false,
     "hostMetadataIsIdentity": false,
     "callerDeclaredSurfaceIsAuthority": false
   },
   "criteria": [
-    {"criterion": 1, "slug": "complete-trajectory", "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 2, "slug": "cli-compatibility", "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 3, "slug": "cross-client-discovery", "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 4, "slug": "mcp-redemption-boundary", "disposition": "failed_preflight", "artifacts": ["exf-app/src/routes/vaultMaterializations.ts"]},
-    {"criterion": 5, "slug": "request-storm-dedupe", "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 6, "slug": "changed-field-set-refusal", "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 7, "slug": "no-secret-output", "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 8, "slug": "workspace-integrity-and-state", "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 9, "slug": "approval-to-removal-e2e", "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 10, "slug": "actionable-failure-recovery", "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 11, "slug": "ai-gateway-separation", "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 12, "slug": "evidence-bundle", "disposition": "unmeasured", "artifacts": []},
-    {"criterion": 13, "slug": "focused-tests", "disposition": "unmeasured", "artifacts": []}
+    {"criterion": 1, "slug": "complete-trajectory", "disposition": "passed", "artifacts": ["packages/exf-cli/test/env-commands.test.ts", "docs/runbooks/vault-environment-contract.md"]},
+    {"criterion": 2, "slug": "cli-compatibility", "disposition": "passed", "artifacts": ["exf-app/src/routes/vaultMaterializations.test.ts", "packages/exf-cli/package.json"]},
+    {"criterion": 3, "slug": "cross-client-discovery", "disposition": "passed", "artifacts": ["docs/architecture/vault-environment-contract.md", "packages/exf-mcp-server/src/materializations.test.ts"]},
+    {"criterion": 4, "slug": "mcp-redemption-boundary", "disposition": "passed", "artifacts": ["exf-app/src/routes/vaultMaterializations.test.ts", "packages/exf-mcp-server/src/materializations.test.ts"]},
+    {"criterion": 5, "slug": "request-storm-dedupe", "disposition": "passed", "artifacts": ["exf-app/test/security-role/vaultMaterializationConcurrency.test.ts"]},
+    {"criterion": 6, "slug": "changed-field-set-refusal", "disposition": "passed", "artifacts": ["exf-app/src/services/vaultMaterializationService.test.ts", "exf-app/src/services/vaultMaterializationSessionGrant.vitest.ts"]},
+    {"criterion": 7, "slug": "no-secret-output", "disposition": "passed", "artifacts": ["packages/exf-cli/test/vault-ax-01/evidence.test.ts", "exf-app/test/security-role/vaultMaterializationConcurrency.test.ts"]},
+    {"criterion": 8, "slug": "workspace-integrity-and-state", "disposition": "passed", "artifacts": ["packages/exf-cli/src/lib/environmentBundle.test.ts", "packages/exf-cli/test/env-commands.test.ts"]},
+    {"criterion": 9, "slug": "approval-to-removal-e2e", "disposition": "passed", "artifacts": ["packages/exf-cli/test/env-commands.test.ts", "exf-app/web/src/pages/VaultGovernedApprovalsPage.vitest.tsx"]},
+    {"criterion": 10, "slug": "actionable-failure-recovery", "disposition": "passed", "artifacts": ["exf-app/src/services/vaultMaterializationService.test.ts", "packages/exf-cli/test/env-commands.test.ts"]},
+    {"criterion": 11, "slug": "ai-gateway-separation", "disposition": "passed", "artifacts": ["exf-app/src/services/modelGateway/registry.ts", "docs/security/vault-environment-contract.md"]},
+    {"criterion": 12, "slug": "evidence-bundle", "disposition": "passed", "artifacts": ["packages/exf-cli/test/vault-ax-01/evidence.json", "packages/exf-cli/test/vault-ax-01/evidence.schema.json", "packages/exf-cli/test/vault-ax-01/evidence.test.ts"]},
+    {"criterion": 13, "slug": "focused-tests", "disposition": "passed", "artifacts": ["exf-app/src/routes/vaultMaterializations.test.ts", "packages/exf-cli/test/env-commands.test.ts", "packages/exf-mcp-server/src/materializations.test.ts"]}
   ],
   "preflight": {
-    "currentCliVersion": "0.5.37",
+    "currentCliVersion": "0.5.38",
+    "previousCli": {
+      "version": "0.5.37",
+      "result": "upgrade_before_state",
+      "command": "npm install -g @siftable/cli@latest"
+    },
     "environmentCommands": ["check", "diff", "example", "import apply", "import plan", "pull", "rm", "status"],
     "clientBinariesAvailable": ["codex", "kimi", "opencode", "sift"],
     "mcpRedeemBoundary": {
-      "status": "failed",
-      "reason": "request surface is caller supplied and is not bound to authentication provenance"
+      "status": "passed",
+      "reason": "Local and hosted MCP expose request and status only; the server assigns CLI redemption provenance and the runner-encrypted artifact remains destination-bound."
     }
-  }
+  },
+  "verificationRuns": [
+    {
+      "id": "runtime-role-concurrency",
+      "command": "bash scripts/db/run-runtime-role-tests.sh",
+      "result": "passed",
+      "summary": "Fresh migrations and runtime-role security suites passed with the 50-way request storm.",
+      "artifacts": ["exf-app/test/security-role/vaultMaterializationConcurrency.test.ts"],
+      "metrics": {"requests": 50, "approvals": 1, "notifications": 1, "inAppDeliveries": 1, "supersedeAudits": 49, "revoked": 49}
+    },
+    {
+      "id": "backend-focused",
+      "command": "npm exec -- nx run @execufunction/exf-app:test:vitest -- vault",
+      "result": "passed",
+      "summary": "Backend Vault Vitest suites passed; focused route and materialization Jest suites passed separately.",
+      "artifacts": ["exf-app/src/routes/vaultMaterializations.test.ts", "exf-app/src/services/vaultMaterializationService.test.ts"],
+      "metrics": {"vitestFiles": 4, "vitestTests": 18, "focusedJestTests": 51}
+    },
+    {
+      "id": "cli-focused",
+      "command": "npm exec -- nx run @siftable/cli:test:vitest -- vault env",
+      "result": "passed",
+      "summary": "CLI Vault and environment suites passed, including offline freshness and upgrade binding.",
+      "artifacts": ["packages/exf-cli/test/env-commands.test.ts"],
+      "metrics": {"files": 16, "tests": 142}
+    },
+    {
+      "id": "mcp-focused",
+      "command": "npm exec -- nx run @siftable/mcp-server:test:vitest -- materialization vault",
+      "result": "passed",
+      "summary": "Local and hosted MCP request and status surfaces passed with no redemption tool.",
+      "artifacts": ["packages/exf-mcp-server/src/materializations.test.ts"],
+      "metrics": {"files": 3, "tests": 12}
+    },
+    {
+      "id": "web-focused",
+      "command": "npm exec -- nx run @execufunction/web:test:vitest -- vault approval notification",
+      "result": "passed",
+      "summary": "Approval and notification UI suites passed.",
+      "artifacts": ["exf-app/web/src/pages/VaultGovernedApprovalsPage.vitest.tsx"],
+      "metrics": {"files": 3, "tests": 7}
+    },
+    {
+      "id": "cli-package",
+      "command": "npm exec -- nx run @siftable/cli:verify:package",
+      "result": "passed",
+      "summary": "The 0.5.38 CLI package and offline interactive runtime verified.",
+      "artifacts": ["packages/exf-cli/package.json", "packages/exf-cli/oclif.manifest.json"],
+      "metrics": {"scannedFiles": 714, "shippedImports": 1561}
+    },
+    {
+      "id": "workspace-typecheck",
+      "command": "npm exec -- nx run-many -t typecheck -p @execufunction/exf-app @execufunction/web @siftable/cli @siftable/mcp-server --parallel=4 --skipNxCache",
+      "result": "baseline_failed",
+      "summary": "CLI, MCP, and web passed; backend remains blocked by two unchanged People relationship nullability diagnostics outside this work item.",
+      "artifacts": ["exf-app/src/controllers/peopleController.ts", "exf-app/src/services/personOwnerRelationshipService.ts"],
+      "metrics": {"unrelatedDiagnostics": 2}
+    }
+  ]
 }
