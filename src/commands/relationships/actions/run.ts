@@ -92,14 +92,25 @@ export default class RelationshipsActionsRun extends BaseCommand {
         input,
       }, flags['idempotency-key']);
       this.handleApiError(response);
-      result = this.unwrapOne(response, 'execution');
+      result = (response.data ?? {}) as Record<string, unknown>;
     }
     if (!this.jsonEnabled()) {
-      renderDetail([
+      const execution = (result.execution ?? result) as Record<string, unknown>;
+      const proposal = result.proposal as Record<string, unknown> | undefined;
+      const outcome = result.outcome as Record<string, unknown> | undefined;
+      const outcomeResult = outcome?.result as Record<string, unknown> | undefined;
+      const outcomeDetail = outcomeResult?.detail as Record<string, unknown> | undefined;
+      const rows: Array<[string, unknown]> = [
         ['Action', args.id],
         ['Entity', entityInput ?? '-'],
-        ['Status', result.status ?? result.outcome ?? '-'],
-      ]);
+        ['Status', execution.status ?? outcome?.status ?? '-'],
+      ];
+      if (proposal?.id) rows.push(['Proposal', proposal.id]);
+      const destination = proposal?.destination as Record<string, unknown> | undefined;
+      if (destination?.senderAccountId) rows.push(['Sender account', destination.senderAccountId]);
+      if (destination?.senderEmailAddress) rows.push(['From', destination.senderEmailAddress]);
+      if (outcomeDetail?.approvalUrl) rows.push(['Approval', outcomeDetail.approvalUrl]);
+      renderDetail(rows);
     }
     return result;
   }

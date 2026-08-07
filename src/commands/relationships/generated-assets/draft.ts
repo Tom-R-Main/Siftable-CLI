@@ -8,7 +8,7 @@ export default class RelationshipGeneratedAssetsDraft extends BaseCommand {
   static args = { id: Args.string({ description: 'Generated outreach/follow-up asset UUID', required: true }) };
   static flags = {
     ...BaseCommand.baseFlags,
-    file: Flags.string({ description: 'Exact destination and idempotency JSON file', required: true }),
+    file: Flags.string({ description: 'Exact senderAccountId, destination, optional edits, and idempotency JSON file', required: true }),
     yes: Flags.boolean({ description: 'Confirm proposal creation' }),
   };
 
@@ -25,6 +25,7 @@ export default class RelationshipGeneratedAssetsDraft extends BaseCommand {
       ['Asset', args.id],
       ['Action', 'relationship.communication.draft'],
       ['State', 'private proposal; separate send approval required'],
+      ['Next', 'sift relationships proposals request-approval <proposal-id> --idempotency-key <stable-key>'],
     ]);
     return response;
   }

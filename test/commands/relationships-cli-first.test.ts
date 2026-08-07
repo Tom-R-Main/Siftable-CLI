@@ -10,6 +10,7 @@ import RelationshipSequencesPause from '../../src/commands/relationships/sequenc
 import RelationshipSequencesResume from '../../src/commands/relationships/sequences/resume.js';
 import RelationshipSequencesDryRun from '../../src/commands/relationships/sequences/dry-run.js';
 import RelationshipProposalsRequestApproval from '../../src/commands/relationships/proposals/request-approval.js';
+import RelationshipEmailAccountsList from '../../src/commands/relationships/email-accounts/list.js';
 import RelationshipPlaybooksCreate from '../../src/commands/relationships/playbooks/create.js';
 import RelationshipPlaybooksReview from '../../src/commands/relationships/playbooks/review.js';
 import RelationshipDiagnosesCreate from '../../src/commands/relationships/diagnoses/create.js';
@@ -41,7 +42,12 @@ describe('relationship CLI-first adapters', () => {
     const instance = command(RelationshipActionsRun);
     const runRelationshipAction = jest.fn().mockResolvedValue({
       statusCode: 200,
-      data: {execution: {id: 'execution-1', outcome: 'proposed'}},
+      data: {
+        execution: {id: 'execution-1', status: 'verified'},
+        proposal: {id: 'proposal-1', status: 'pending'},
+        outcome: {status: 'proposed'},
+        replay: false,
+      },
     });
     (instance as any).parse = jest.fn().mockResolvedValue({
       args: {id: 'relationship.communication.send'},
@@ -52,13 +58,18 @@ describe('relationship CLI-first adapters', () => {
     (instance as any).unwrapOne = (response: any, key: string) => response.data[key];
     (instance as any).jsonEnabled = () => true;
 
-    await instance.run();
+    const result = await instance.run();
 
     expect(runRelationshipAction).toHaveBeenCalledWith(
       'relationship.communication.send',
       {input: {personId: 'person-1'}},
       'stable-action-001',
     );
+    expect(result).toMatchObject({
+      execution: {id: 'execution-1'},
+      proposal: {id: 'proposal-1'},
+      replay: false,
+    });
     expect((RelationshipActionsRun.flags['idempotency-key'] as {required?: boolean}).required).toBe(true);
   });
 
@@ -89,6 +100,21 @@ describe('relationship CLI-first adapters', () => {
     expect(RelationshipActionsDryRun.flags).not.toHaveProperty('execute-locally');
   });
 
+  test('email account discovery returns only explicit usable sender choices', async () => {
+    const instance = command(RelationshipEmailAccountsList);
+    const accounts = [
+      {id: 'account-1', label: 'Work', emailAddress: 'work@example.com', provider: 'gmail', status: 'active', syncEnabled: true},
+      {id: 'account-2', label: 'Paused', emailAddress: 'paused@example.com', provider: 'gmail', status: 'active', syncEnabled: false},
+      {id: 'account-3', label: 'Broken', emailAddress: 'broken@example.com', provider: 'imap', status: 'error', syncEnabled: true},
+    ];
+    (instance as any).parse = jest.fn().mockResolvedValue({flags: {}});
+    (instance as any).apiRequest = jest.fn().mockResolvedValue({accounts});
+    (instance as any).jsonEnabled = () => true;
+
+    await expect(instance.run()).resolves.toEqual([accounts[0]]);
+    expect((instance as any).apiRequest).toHaveBeenCalledWith({}, '/api/v1/email/accounts');
+  });
+
   test('every write and server-side preview requires a caller-owned idempotency key', async () => {
     const commands = [
       RelationshipActionsRun,
@@ -110,7 +136,11 @@ describe('relationship CLI-first adapters', () => {
     const instance = command(RelationshipProposalsRequestApproval);
     const requestRelationshipProposalApproval = jest.fn().mockResolvedValue({
       statusCode: 200,
-      data: {proposal: {id: 'proposal-1'}, approval: {id: 'approval-1', status: 'pending'}},
+      data: {
+        proposal: {id: 'proposal-1'},
+        approval: {id: 'approval-1', status: 'pending'},
+        approvalUrl: 'https://siftable.io/app/vault/approvals?approval=approval-1',
+      },
     });
     (instance as any).parse = jest.fn().mockResolvedValue({
       args: {id: 'proposal-1'},
@@ -122,7 +152,10 @@ describe('relationship CLI-first adapters', () => {
 
     const result = await instance.run();
 
-    expect(result).toMatchObject({approval: {id: 'approval-1', status: 'pending'}});
+    expect(result).toMatchObject({
+      approval: {id: 'approval-1', status: 'pending'},
+      approvalUrl: 'https://siftable.io/app/vault/approvals?approval=approval-1',
+    });
     expect(requestRelationshipProposalApproval).toHaveBeenCalledWith(
       'proposal-1',
       {purpose: 'Send follow-up'},
@@ -194,7 +227,17 @@ describe('relationship CLI-first adapters', () => {
     (review as any).apiRequest = apiRequest;
     (review as any).confirmAction = jest.fn().mockResolvedValue(true);
     (review as any).jsonEnabled = () => true;
-    (draft as any).parse = jest.fn().mockResolvedValue({args: {id: 'asset-1'}, flags: {file: jsonFile('draft.json', {destination: {channel: 'email', to: ['buyer@example.com']}, idempotencyKey: 'draft-1'}), yes: true}});
+    (draft as any).parse = jest.fn().mockResolvedValue({
+      args: {id: 'asset-1'},
+      flags: {
+        file: jsonFile('draft.json', {
+          senderAccountId: '55555555-5555-4555-8555-555555555555',
+          destination: {channel: 'email', to: ['buyer@example.com']},
+          idempotencyKey: 'draft-1',
+        }),
+        yes: true,
+      },
+    });
     (draft as any).apiRequest = apiRequest;
     (draft as any).confirmAction = jest.fn().mockResolvedValue(true);
     (draft as any).jsonEnabled = () => true;

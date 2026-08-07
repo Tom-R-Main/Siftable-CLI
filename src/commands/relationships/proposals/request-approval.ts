@@ -27,6 +27,8 @@ export default class RelationshipProposalsRequestApproval extends BaseCommand {
     if (!this.jsonEnabled()) {
       const approval = (result as Record<string, unknown>).approval as Record<string, unknown> | undefined;
       this.log(`Approval requested: ${approval?.id ?? 'pending'}`);
+      const approvalUrl = (result as Record<string, unknown>).approvalUrl;
+      if (typeof approvalUrl === 'string') this.log(`Review: ${approvalUrl}`);
       this.log('Approve or deny in the first-party Siftable browser. This CLI cannot approve or consume it.');
     }
     return result;
