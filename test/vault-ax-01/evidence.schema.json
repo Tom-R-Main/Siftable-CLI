@@ -24,7 +24,7 @@
       "properties": {
         "endpointIdentifier": {"const": "sha256-canonical-spki"},
         "possessionProof": {"const": "rsa-pss-domain-separated-request"},
-        "redemptionAuthority": {"const": "runner-encrypted-artifact-plus-server-route"},
+        "redemptionAuthority": {"const": "fresh-runner-possession-proof-plus-encrypted-artifact"},
         "rfc7638Thumbprint": {"const": false},
         "hostMetadataIsIdentity": {"const": false},
         "callerDeclaredSurfaceIsAuthority": {"const": false}

@@ -1,9 +1,11 @@
-import {readFileSync} from 'node:fs';
+import {existsSync, readFileSync} from 'node:fs';
 import path from 'node:path';
 import {Validator} from '@cfworker/json-schema';
 import {describe, expect, it} from 'vitest';
 
-const fixtureDirectory = path.resolve(import.meta.dirname);
+const sourceDirectory = path.resolve(import.meta.dirname);
+const fixtureDirectory = path.resolve(sourceDirectory, '../../test/vault-ax-01');
+const repoRoot = path.resolve(sourceDirectory, '../../../..');
 const evidence = JSON.parse(readFileSync(path.join(fixtureDirectory, 'evidence.json'), 'utf8'));
 const schema = JSON.parse(readFileSync(path.join(fixtureDirectory, 'evidence.schema.json'), 'utf8'));
 
@@ -50,11 +52,21 @@ describe('VAULT-AX-01 evidence contract', () => {
     }
   });
 
+  it('references only evidence artifacts that exist in the checkout', () => {
+    const artifacts = [
+      ...evidence.criteria.flatMap((criterion: {artifacts: string[]}) => criterion.artifacts),
+      ...evidence.verificationRuns.flatMap((run: {artifacts: string[]}) => run.artifacts),
+    ].filter((artifact: string) => !artifact.startsWith('https://'));
+    expect([...new Set(artifacts)].filter(artifact => (
+      !existsSync(path.resolve(repoRoot, artifact))
+    ))).toEqual([]);
+  });
+
   it('records identity as possession proof rather than host detection', () => {
     expect(evidence.securityBoundary).toMatchObject({
       endpointIdentifier: 'sha256-canonical-spki',
       possessionProof: 'rsa-pss-domain-separated-request',
-      redemptionAuthority: 'runner-encrypted-artifact-plus-server-route',
+      redemptionAuthority: 'fresh-runner-possession-proof-plus-encrypted-artifact',
       rfc7638Thumbprint: false,
       hostMetadataIsIdentity: false,
       callerDeclaredSurfaceIsAuthority: false,
@@ -72,7 +84,7 @@ describe('VAULT-AX-01 evidence contract', () => {
       'check', 'diff', 'example', 'import apply', 'import plan', 'pull', 'rm', 'status',
     ]);
     expect(evidence.preflight.previousCli).toEqual({
-      version: '0.5.37',
+      version: '0.5.38',
       result: 'upgrade_before_state',
       command: 'npm install -g @siftable/cli@latest',
     });

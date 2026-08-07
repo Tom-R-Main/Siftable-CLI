@@ -24,6 +24,7 @@ import {
   decryptMaterializationEnvelope,
   signMaterializationRunnerProof,
 } from './localMaterializer.js';
+import {createMaterializationRedemptionProofBinding} from './environmentBundleCompatibility.js';
 import type {ExecutionGrantEnvelope} from './localExecutionRunner.js';
 import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from './vault-owner-context.js';
 import {assertCanonicalApprovalUrl} from './vaultMaterializationSource.js';
@@ -219,6 +220,7 @@ export default class EnvPull extends BaseCommand {
         body: {
           surface: 'cli',
           clientVersion: this.config.version,
+          materializationContractVersion: 2,
           contextContractVersion: owner.contextContractVersion,
           vaultEntryId: first.entryId,
           credentialField: first.field,
@@ -319,6 +321,15 @@ export default class EnvPull extends BaseCommand {
         await delay(2_000);
       }
       if (approvalStatus !== 'approved') this.error('Materialization approval timed out.');
+      const redemptionProofTimestamp = new Date().toISOString();
+      const redemptionProofBinding = createMaterializationRedemptionProofBinding({
+        artifact,
+        approvalId: requested.materialization.approvalId,
+        runnerFingerprint: runner.fingerprint,
+        materializerDigest: runner.materializerDigest,
+        requestNonce: nonce,
+        runnerProofTimestamp: redemptionProofTimestamp,
+      });
       const redemption = await this.apiRequest<{
         materialization: BundleMaterializationRecord;
         envelope: ExecutionGrantEnvelope;
@@ -332,6 +343,9 @@ export default class EnvPull extends BaseCommand {
           runnerFingerprint: runner.fingerprint,
           materializerDigest: runner.materializerDigest,
           requestNonce: nonce,
+          runnerPublicKeyPem: runner.publicKeyPem,
+          runnerProofTimestamp: redemptionProofTimestamp,
+          runnerProof: signMaterializationRunnerProof(redemptionProofBinding, runner.privateKey),
         },
       });
       redeemed = true;

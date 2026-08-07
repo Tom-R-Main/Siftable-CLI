@@ -14,6 +14,7 @@ import {
   signMaterializationRunnerProof,
   type MaterializationReceipt,
 } from '../../../lib/localMaterializer.js';
+import {createMaterializationRedemptionProofBinding} from '../../../lib/environmentBundleCompatibility.js';
 import type {ExecutionGrantEnvelope} from '../../../lib/localExecutionRunner.js';
 import {resolveMaterializationRoot} from '../../../lib/materialization-root.js';
 import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from '../../../lib/vault-owner-context.js';
@@ -228,6 +229,8 @@ export default class VaultMaterializeRun extends BaseCommand {
           method: 'POST',
           body: {
             surface: 'cli',
+            clientVersion: this.config.version,
+            materializationContractVersion: 2,
             contextContractVersion: owner.contextContractVersion,
             vaultEntryId,
             credentialField: flags.field,
@@ -354,6 +357,15 @@ export default class VaultMaterializeRun extends BaseCommand {
           },
         );
       }
+      const redemptionProofTimestamp = new Date().toISOString();
+      const redemptionProofBinding = createMaterializationRedemptionProofBinding({
+        artifact,
+        approvalId: requested.materialization.approvalId,
+        runnerFingerprint: runner.fingerprint,
+        materializerDigest: runner.materializerDigest,
+        requestNonce: nonce,
+        runnerProofTimestamp: redemptionProofTimestamp,
+      });
       const redeemed = await withMaterializationRecovery(
         () => this.apiRequest<{
           materialization: MaterializationRecord;
@@ -372,6 +384,9 @@ export default class VaultMaterializeRun extends BaseCommand {
               runnerFingerprint: runner.fingerprint,
               materializerDigest: runner.materializerDigest,
               requestNonce: nonce,
+              runnerPublicKeyPem: runner.publicKeyPem,
+              runnerProofTimestamp: redemptionProofTimestamp,
+              runnerProof: signMaterializationRunnerProof(redemptionProofBinding, signingPrivateKey),
             },
           },
         ),

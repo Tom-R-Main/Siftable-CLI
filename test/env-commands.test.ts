@@ -1,5 +1,5 @@
 import {execFileSync, spawnSync} from 'node:child_process';
-import {chmod, mkdtemp, mkdir, realpath, rm, stat, writeFile} from 'node:fs/promises';
+import {chmod, mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {afterAll, afterEach, beforeAll, describe, expect, it, vi} from 'vitest';
@@ -294,7 +294,8 @@ describe('offline env commands', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     const request = fetch.mock.calls[0]?.[1] as RequestInit;
     expect(JSON.parse(request.body as string)).toMatchObject({
-      clientVersion: '0.5.38',
+      clientVersion: '0.5.39',
+      materializationContractVersion: 2,
       purpose: 'Use the current managed development environment',
     });
   });
@@ -327,6 +328,44 @@ describe('offline env commands', () => {
     });
     expect(result.stdout).not.toContain('synthetic-token');
     expect(await statEnvironmentDestination(contract.destinationPath)).toEqual({exists: false});
+  });
+
+  it('refuses a changed manifest field set before network approval or local writes', async () => {
+    const root = await gitCheckout('.runtime/\n');
+    const parsed = parseEnvironmentManifest(manifest);
+    if (!parsed.ok) throw new Error('test manifest did not parse');
+    await mkdir(path.join(root, '.runtime'));
+    const originalContract = buildEnvironmentBundleContract(
+      parsed.manifest,
+      root,
+      '.runtime/service.env',
+    );
+    const receipt = await materializeManagedEnvironmentBundle({
+      contract: originalContract,
+      values: [Buffer.from('synthetic-token')],
+      expectedAbsence: true,
+    });
+    await writeManagedEnvironmentBundleReceipt(originalContract, receipt);
+    const before = await readFile(originalContract.destinationPath);
+    const changedManifest = `${manifest.trimEnd()}\n  - name: SECOND_TOKEN\n    kind: vault_field\n    owner: personal\n    entry_id: 33333333-3333-4333-8333-333333333333\n    field: value\n    sensitivity: secret\n    destination: {path: .runtime/service.env, mode: "0600"}\n`;
+    await writeFile(path.join(root, '.sift', 'environment.yaml'), changedManifest);
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+
+    const result = await runCommand([
+      'env', 'pull',
+      '--checkout-root', root,
+      '--purpose', 'Refresh the exact managed development environment',
+      '--endpoint-class', 'development',
+      '--token', 'synthetic-token',
+      '--json',
+    ]);
+
+    expect(result.exitCode).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain('managed_stale');
+    expect(`${result.stdout}\n${result.stderr}`).toContain('--replace');
+    expect(fetch).not.toHaveBeenCalled();
+    expect(await readFile(originalContract.destinationPath)).toEqual(before);
   });
 
   it('keeps env example JSON output machine-parseable without dotenv preview text', async () => {
