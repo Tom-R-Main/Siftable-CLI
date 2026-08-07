@@ -8,7 +8,11 @@ import EnvDiff from '../src/commands/env/diff.js';
 import EnvCheck from '../src/commands/env/check.js';
 import EnvExample from '../src/commands/env/example.js';
 import EnvPull from '../src/commands/env/pull.js';
-import {classifyEnvironmentEndpoint} from '../src/lib/envPullCommand.js';
+import EnvRm from '../src/commands/env/rm.js';
+import {
+  classifyEnvironmentEndpoint,
+  isEnvironmentRefreshUnavailable,
+} from '../src/lib/envPullCommand.js';
 import {
   buildEnvironmentBundleContract,
   materializeManagedEnvironmentBundle,
@@ -176,7 +180,7 @@ describe('offline env commands', () => {
   });
 
   it('keeps flags offline and teaches the contract-first flow', () => {
-    for (const command of [EnvStatus, EnvDiff, EnvCheck, EnvExample]) {
+    for (const command of [EnvStatus, EnvDiff, EnvCheck, EnvExample, EnvRm]) {
       expect(Object.keys(command.flags)).not.toEqual(expect.arrayContaining(['token', 'api-url']));
       const prose = `${command.description ?? ''} ${(command as {summary?: string}).summary ?? ''}`;
       expect(prose).not.toMatch(/vault read|auth.file|commit.*ciphertext|secret.*stdout/i);
@@ -196,6 +200,7 @@ describe('offline env commands', () => {
     expect(result.stdout).toContain('env check');
     expect(result.stdout).toContain('env example');
     expect(result.stdout).toContain('env pull');
+    expect(result.stdout).toContain('env rm');
     expect(`${result.stdout}\n${result.stderr}`).not.toMatch(/env(?::| )offline-command/);
 
     const removed = spawnSync(process.execPath, ['packages/exf-cli/bin/run.js', 'env', 'offline-command', '--help'], {
@@ -236,7 +241,62 @@ describe('offline env commands', () => {
     expect(() => classifyEnvironmentEndpoint('production', {})).toThrow('sift grants run --help');
   });
 
-  it('returns already-current without creating or consuming an approval', async () => {
+  it('treats only network/server unavailability as unknown freshness', () => {
+    expect(isEnvironmentRefreshUnavailable(Object.assign(new TypeError('fetch failed'), {
+      cause: {code: 'ENETUNREACH'},
+    }))).toBe(true);
+    expect(isEnvironmentRefreshUnavailable({statusCode: 503})).toBe(true);
+    expect(isEnvironmentRefreshUnavailable(new TypeError('invalid URL'))).toBe(false);
+    expect(isEnvironmentRefreshUnavailable({statusCode: 401})).toBe(false);
+  });
+
+  it('reports unknown freshness when an existing managed file cannot reach the server', async () => {
+    const root = await gitCheckout('.runtime/\n');
+    const parsed = parseEnvironmentManifest(manifest);
+    if (!parsed.ok) throw new Error('test manifest did not parse');
+    await mkdir(path.join(root, '.runtime'));
+    const contract = buildEnvironmentBundleContract(parsed.manifest, root, '.runtime/service.env');
+    const receipt = await materializeManagedEnvironmentBundle({
+      contract,
+      values: [Buffer.from('synthetic-token')],
+      expectedAbsence: true,
+    });
+    await writeManagedEnvironmentBundleReceipt(contract, {
+      ...receipt,
+      lastCheckedAt: '2026-08-06T00:00:00.000Z',
+      sourceVersionDigest: 'a'.repeat(64),
+    });
+    const statusAfterPull = await inspectEnvironmentContract(root);
+    expect(statusAfterPull.members).toEqual([
+      expect.objectContaining({name: 'TOKEN', state: 'managed_current'}),
+    ]);
+    const fetch = vi.fn(() => {
+      throw Object.assign(new TypeError('offline'), {cause: {code: 'ENETUNREACH'}});
+    });
+    vi.stubGlobal('fetch', fetch);
+
+    const result = await runCommand([
+      'env', 'pull',
+      '--checkout-root', root,
+      '--purpose', '  Use the current managed development environment  ',
+      '--endpoint-class', 'development',
+      '--token', 'synthetic-token',
+      '--json',
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      state: 'managed_unknown_freshness',
+      destination: '.runtime/service.env',
+      lastCheckedAt: '2026-08-06T00:00:00.000Z',
+      approvalConsumed: false,
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const request = fetch.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(request.body as string).purpose)
+      .toBe('Use the current managed development environment');
+  });
+
+  it('removes only the exact recognized managed file and emits no secret bytes', async () => {
     const root = await gitCheckout('.runtime/\n');
     const parsed = parseEnvironmentManifest(manifest);
     if (!parsed.ok) throw new Error('test manifest did not parse');
@@ -248,28 +308,22 @@ describe('offline env commands', () => {
       expectedAbsence: true,
     });
     await writeManagedEnvironmentBundleReceipt(contract, receipt);
-    const statusAfterPull = await inspectEnvironmentContract(root);
-    expect(statusAfterPull.members).toEqual([
-      expect.objectContaining({name: 'TOKEN', state: 'managed_current'}),
-    ]);
-    const fetch = vi.fn(() => { throw new Error('approval request must not be created'); });
-    vi.stubGlobal('fetch', fetch);
 
     const result = await runCommand([
-      'env', 'pull',
+      'env', 'rm',
       '--checkout-root', root,
-      '--purpose', 'Use the current managed development environment',
-      '--endpoint-class', 'development',
-      '--token', 'synthetic-token',
+      '--yes',
       '--json',
     ]);
     expect(result.exitCode).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      state: 'managed_current',
+    expect(JSON.parse(result.stdout)).toEqual({
+      removed: true,
       destination: '.runtime/service.env',
-      approvalConsumed: false,
+      plaintextRecallPossible: false,
+      plaintextRemnantsMayRemain: true,
     });
-    expect(fetch).not.toHaveBeenCalled();
+    expect(result.stdout).not.toContain('synthetic-token');
+    expect(await statEnvironmentDestination(contract.destinationPath)).toEqual({exists: false});
   });
 
   it('keeps env example JSON output machine-parseable without dotenv preview text', async () => {

@@ -27401,6 +27401,58 @@
         "recommendations",
         "show.js"
       ]
+    },
+    "env:rm": {
+      "aliases": [],
+      "args": {},
+      "description": "Removes only a recognized managed file after exact contract, path, file-identity, and content-stability checks. It cannot erase copies, backups, logs, or values retained by processes.",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "checkout-root": {
+          "description": "Exact Git checkout root containing .sift/environment.yaml",
+          "name": "checkout-root",
+          "hasDynamicHelp": false,
+          "helpValue": "path",
+          "multiple": false,
+          "type": "option"
+        },
+        "destination": {
+          "description": "Exact relative destination when the manifest declares more than one bundle",
+          "name": "destination",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "yes": {
+          "description": "Confirm removal of the exact recognized managed file",
+          "name": "yes",
+          "required": true,
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "env:rm",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "summary": "Remove one exact Sift-managed local environment file",
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "env",
+        "rm.js"
+      ]
     }
   },
   "version": "0.5.37"

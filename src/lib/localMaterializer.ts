@@ -262,6 +262,40 @@ export function createMaterializationRunnerProofBinding(input: {
   });
 }
 
+export function createMaterializationBundleRunnerProofBinding(input: {
+  bundleDigest: string;
+  destinationPath: string;
+  workspaceRoot: string;
+  requestedMode: '0400' | '0600';
+  expectedAbsence: boolean;
+  observedStateBinding?: string;
+  overwriteConsent: boolean;
+  purpose: string;
+  requestNonce: string;
+  runnerPublicKeyFingerprint: string;
+  materializerDigest: string;
+  runnerProofTimestamp: string;
+  vaultOwner: string;
+}): string {
+  return canonicalJson({
+    bundleDigest: input.bundleDigest,
+    destinationPath: input.destinationPath,
+    workspaceRoot: input.workspaceRoot,
+    requestedMode: input.requestedMode,
+    expectedAbsence: String(input.expectedAbsence),
+    observedStateBinding: input.observedStateBinding ?? 'none',
+    overwriteConsent: String(input.overwriteConsent),
+    plaintextDisclosureAcknowledged: 'true',
+    proofContext: 'sift.vault.materialization.bundle.v1',
+    purposeDigest: createHash('sha256').update(input.purpose).digest('hex'),
+    requestNonce: input.requestNonce,
+    runnerPublicKeyFingerprint: input.runnerPublicKeyFingerprint,
+    materializerDigest: input.materializerDigest,
+    runnerProofTimestamp: input.runnerProofTimestamp,
+    vaultOwner: input.vaultOwner,
+  });
+}
+
 export function signMaterializationRunnerProof(
   binding: string,
   privateKey: KeyObject,
