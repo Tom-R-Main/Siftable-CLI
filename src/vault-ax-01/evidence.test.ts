@@ -89,6 +89,13 @@ describe('VAULT-AX-01 evidence contract', () => {
       command: 'npm install -g @siftable/cli@latest',
     });
     expect(evidence.preflight.mcpRedeemBoundary.status).toBe('passed');
+    const cliFocused = evidence.verificationRuns.find(
+      (run: {id: string}) => run.id === 'cli-focused',
+    );
+    expect(cliFocused).toMatchObject({
+      result: 'passed',
+      metrics: {files: 5, tests: 55, skipped: 3},
+    });
   });
 
   it('records the real request-storm result and the unrelated baseline diagnostic separately', () => {

@@ -70,6 +70,8 @@ export default class VaultMaterializeRequest extends BaseCommand {
           method: 'POST',
           body: {
             surface: 'cli',
+            clientVersion: this.config.version,
+            materializationContractVersion: 2,
             contextContractVersion: owner.contextContractVersion,
             vaultEntryId: source.entry.id,
             credentialField: flags.field,

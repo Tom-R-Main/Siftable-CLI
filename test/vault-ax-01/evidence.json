@@ -17,7 +17,7 @@
   },
   "criteria": [
     {"criterion": 1, "slug": "complete-trajectory", "disposition": "passed", "artifacts": ["exf-app/test/security-role/vaultMaterializationTrajectory.test.ts", "docs/runbooks/vault-environment-contract.md"]},
-    {"criterion": 2, "slug": "cli-compatibility", "disposition": "passed", "artifacts": ["exf-app/src/routes/vaultMaterializations.test.ts", "packages/exf-cli/package.json"]},
+    {"criterion": 2, "slug": "cli-compatibility", "disposition": "passed", "artifacts": ["exf-app/src/routes/vaultMaterializations.test.ts", "packages/exf-cli/src/commands/vault/materialize/materialize.test.ts", "packages/exf-cli/package.json"]},
     {"criterion": 3, "slug": "cross-client-discovery", "disposition": "passed", "artifacts": ["docs/architecture/vault-environment-contract.md", "packages/exf-mcp-server/src/materializations.test.ts"]},
     {"criterion": 4, "slug": "mcp-redemption-boundary", "disposition": "passed", "artifacts": ["exf-app/src/routes/vaultMaterializations.test.ts", "packages/exf-mcp-server/src/materializations.test.ts"]},
     {"criterion": 5, "slug": "request-storm-dedupe", "disposition": "passed", "artifacts": ["exf-app/test/security-role/vaultMaterializationConcurrency.test.ts"]},
@@ -28,7 +28,7 @@
     {"criterion": 10, "slug": "actionable-failure-recovery", "disposition": "passed", "artifacts": ["exf-app/src/services/vaultMaterializationService.test.ts", "packages/exf-cli/test/env-commands.test.ts"]},
     {"criterion": 11, "slug": "ai-gateway-separation", "disposition": "passed", "artifacts": ["exf-app/src/services/modelGateway/registry.ts", "docs/security/vault-environment-contract.md"]},
     {"criterion": 12, "slug": "evidence-bundle", "disposition": "passed", "artifacts": ["packages/exf-cli/test/vault-ax-01/evidence.json", "packages/exf-cli/test/vault-ax-01/evidence.schema.json", "packages/exf-cli/src/vault-ax-01/evidence.test.ts"]},
-    {"criterion": 13, "slug": "focused-tests", "disposition": "passed", "artifacts": ["exf-app/src/routes/vaultMaterializations.test.ts", "packages/exf-cli/test/env-commands.test.ts", "packages/exf-mcp-server/src/materializations.test.ts"]}
+    {"criterion": 13, "slug": "focused-tests", "disposition": "passed", "artifacts": ["exf-app/src/routes/vaultMaterializations.test.ts", "packages/exf-cli/src/commands/vault/materialize/materialize.test.ts", "packages/exf-cli/test/env-commands.test.ts", "packages/exf-mcp-server/src/materializations.test.ts"]}
   ],
   "preflight": {
     "currentCliVersion": "0.5.39",
@@ -71,11 +71,11 @@
     },
     {
       "id": "cli-focused",
-      "command": "npm exec -- nx run @siftable/cli:test:vitest -- env-commands vault-ax-01",
+      "command": "npm exec -- nx run @siftable/cli:test:vitest -- env-commands vault-ax-01 materialize",
       "result": "passed",
       "summary": "CLI Vault and environment suites passed, including exact changed-field refusal, offline freshness, and upgrade binding.",
-      "artifacts": ["packages/exf-cli/test/env-commands.test.ts"],
-      "metrics": {"files": 2, "tests": 29}
+      "artifacts": ["packages/exf-cli/src/commands/vault/materialize/materialize.test.ts", "packages/exf-cli/test/env-commands.test.ts"],
+      "metrics": {"files": 5, "tests": 55, "skipped": 3}
     },
     {
       "id": "cli-default-jest",

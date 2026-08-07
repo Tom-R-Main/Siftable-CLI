@@ -71,6 +71,7 @@ describe('Vault materialization CLI surface', () => {
       'materializer-digest': 'b'.repeat(64),
     }});
     (request as any).apiRequest = requestApi;
+    (request as any).config = {version: '0.5.39'};
     (request as any).jsonEnabled = () => false;
     const requestLog = vi.fn();
     (request as any).log = requestLog;
@@ -83,6 +84,8 @@ describe('Vault materialization CLI surface', () => {
       '/api/v1/vault/materializations',
       expect.objectContaining({body: expect.objectContaining({
         surface: 'cli',
+        clientVersion: '0.5.39',
+        materializationContractVersion: 2,
         contextContractVersion: 1,
         destinationPath: '/workspace/runtime/credential',
         workspaceRoot: '/workspace',
@@ -177,6 +180,7 @@ describe('Vault materialization CLI surface', () => {
       'materializer-digest': 'b'.repeat(64),
     }});
     (request as any).apiRequest = requestApi;
+    (request as any).config = {version: '0.5.39'};
     (request as any).jsonEnabled = () => true;
     await request.run();
     expect(requestApi).toHaveBeenCalledWith(
@@ -216,6 +220,7 @@ describe('Vault materialization CLI surface', () => {
       'materializer-digest': 'b'.repeat(64),
     }});
     (request as any).apiRequest = requestApi;
+    (request as any).config = {version: '0.5.39'};
     (request as any).jsonEnabled = () => true;
     await request.run();
     expect(requestApi).toHaveBeenCalledWith(
