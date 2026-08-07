@@ -2,6 +2,7 @@ import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
 import {RESEARCH_RUNS} from '../../lib/research.js';
 import {renderDetail} from '../../lib/output.js';
+import {defaultWorkContractActions, requireBuiltWorkContract} from '../../lib/work-contract.js';
 
 export default class ResearchRun extends BaseCommand {
   static description = 'Create deterministic agent work for a research recipe';
@@ -30,22 +31,34 @@ export default class ResearchRun extends BaseCommand {
     const recipe = RESEARCH_RUNS[args.recipe];
     const extraContext = this.parseJsonInput<Record<string, unknown>>(flags.context, flags['context-file'], 'context') ?? {};
     const inputContext = {
+      ...extraContext,
       recipe: args.recipe,
       sourceDatasetId: flags['source-dataset'],
-      ...extraContext,
+      resourceScope: recipe.writeScope,
     };
+    const datasets = Array.isArray(recipe.writeScope.datasets) ? recipe.writeScope.datasets : [];
+    const entities = Array.isArray(recipe.writeScope.entities) ? recipe.writeScope.entities : [];
+    const include = [
+      ...datasets.map((dataset) => `datasets/${String(dataset)}`),
+      ...entities.map((entity) => `entities/${String(entity)}`),
+      ...(recipe.writeScope.graph === true ? ['graph/relationships'] : []),
+    ];
+    const allowedActions = defaultWorkContractActions('coding');
+    allowedActions.network = true;
+    const contract = requireBuiltWorkContract({
+      profile: 'coding',
+      acceptanceCriteria: recipe.acceptanceCriteria,
+      allowedActions,
+      writeScope: {include, exclude: []},
+      verificationCommands: recipe.verificationCommands,
+    });
     const payload = {
       title: recipe.title,
       prompt: recipe.prompt,
       assignedAlias: flags.agent,
       projectId: flags.project,
       inputContext,
-      acceptanceCriteria: recipe.acceptanceCriteria,
-      writeScope: {
-        ...recipe.writeScope,
-        sourceDatasetId: flags['source-dataset'],
-      },
-      verificationCommands: recipe.verificationCommands,
+      contract,
     };
 
     if (flags['dry-run']) {

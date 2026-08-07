@@ -106,6 +106,8 @@ describe('research commands', () => {
       'sources-ds',
       '--project',
       'project-1',
+      '--context',
+      JSON.stringify({resourceScope: {mode: 'unbounded'}, recipe: 'attacker-recipe', customMarker: 'preserved'}),
       '--dry-run',
       '--json',
     ]);
@@ -113,7 +115,17 @@ describe('research commands', () => {
     const parsed = JSON.parse(result.stdout);
     expect(parsed.dryRun).toBe(true);
     expect(parsed.workItem.inputContext.sourceDatasetId).toBe('sources-ds');
-    expect(parsed.workItem.writeScope.mode).toBe('diff-first');
+    expect(parsed.workItem.inputContext.resourceScope.mode).toBe('diff-first');
+    expect(parsed.workItem.inputContext.recipe).toBe('extract-people');
+    expect(parsed.workItem.inputContext.customMarker).toBe('preserved');
+    expect(parsed.workItem.contract).toMatchObject({
+      version: 1,
+      profile: 'coding',
+      authority: {allowedActions: {network: true}},
+      boundary: {writeScope: {include: expect.arrayContaining(['datasets/people', 'entities/person'])}},
+    });
+    expect(parsed.workItem).not.toHaveProperty('writeScope');
+    expect(parsed.workItem).not.toHaveProperty('acceptanceCriteria');
   });
 
   it('creates research work after confirmation', async () => {
@@ -124,8 +136,12 @@ describe('research commands', () => {
         return input.assignedAlias === 'researcher'
           && input.projectId === 'project-1'
           && input.inputContext.sourceDatasetId === 'sources-ds'
-          && input.acceptanceCriteria.length > 0
-          && input.verificationCommands.length > 0;
+          && input.contract.profile === 'coding'
+          && input.contract.outcome.acceptanceCriteria.length > 0
+          && input.contract.proof.verificationCommands.length > 0
+          && input.acceptanceCriteria === undefined
+          && input.writeScope === undefined
+          && input.verificationCommands === undefined;
       })
       .reply(200, {
         workItem: {id: 'work-1', title: 'Extract research people from sources'},

@@ -412,6 +412,295 @@ describe("sift work edit", () => {
   });
 });
 
+describe("sift work Contract V1 authoring", () => {
+  const validContract = {
+    version: 1,
+    profile: "coding",
+    outcome: {acceptanceCriteria: [{text: "Focused tests pass", met: false}]},
+    authority: {
+      allowedActions: {
+        read: true,
+        write: true,
+        test: true,
+        network: false,
+        vault: false,
+        deploy: false,
+        migrate: false,
+      },
+    },
+    boundary: {writeScope: {include: ["packages/exf-cli/src/**"], exclude: ["dist/**"]}},
+    proof: {verificationCommands: ["npm test --workspace @siftable/cli"]},
+  };
+
+  it("previews a normalized coding profile without authentication or raw contract JSON", async () => {
+    const result = await runCommand([
+      "work", "create",
+      "--title", "Bounded CLI work",
+      "--profile", "coding",
+      "--acceptance-criteria", "Focused tests pass;diff is scoped",
+      "--scope", "./packages/exf-cli/src/**",
+      "--exclude-scope", "dist/**",
+      "--verify", "npm test --workspace @siftable/cli",
+      "--dry-run",
+      "--json",
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const output = JSON.parse(result.stdout);
+    expect(output).toMatchObject({ok: true, dryRun: true});
+    expect(output.workItem).not.toHaveProperty("acceptanceCriteria");
+    expect(output.workItem.contract).toMatchObject({
+      version: 1,
+      profile: "coding",
+      boundary: {writeScope: {include: ["packages/exf-cli/src/**"], exclude: ["dist/**"]}},
+    });
+  });
+
+  it("authors an explicit read-only profile with an empty write boundary", async () => {
+    const result = await runCommand([
+      "work", "create",
+      "--title", "Read-only audit",
+      "--profile", "read-only",
+      "--acceptance-criteria", "Report cites inspected files",
+      "--dry-run",
+      "--json",
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const output = JSON.parse(result.stdout);
+    expect(output.workItem.contract).toMatchObject({
+      profile: "read_only",
+      authority: {allowedActions: {read: true, write: false, test: false}},
+      boundary: {writeScope: {include: [], exclude: []}},
+    });
+  });
+
+  it("returns stable structured violations for an incomplete noninteractive contract", async () => {
+    const result = await runCommand([
+      "work", "create",
+      "--title", "Invalid coding work",
+      "--profile", "coding",
+      "--acceptance-criteria", "Has an outcome",
+      "--dry-run",
+      "--no-input",
+      "--json",
+    ]);
+
+    expect(result.exitCode).not.toBe(0);
+    const error = JSON.parse(result.stdout).error as {code?: string; api?: Record<string, any>};
+    expect(error.code).toBe("work_contract_invalid");
+    expect(error.api?.extra?.violations).toEqual(expect.arrayContaining([
+      expect.objectContaining({path: "boundary.writeScope.include", code: "coding_scope_required"}),
+      expect.objectContaining({path: "proof.verificationCommands", code: "coding_verification_required"}),
+    ]));
+  });
+
+  it("returns structured violations when action overlays receive malformed JSON values", async () => {
+    const result = await runCommand([
+      "work", "create",
+      "--title", "Malformed action overlay",
+      "--profile", "coding",
+      "--acceptance-criteria", "Has an outcome",
+      "--allowed-actions", '"not-an-object"',
+      "--allow-network",
+      "--scope", "packages/exf-cli/src/**",
+      "--verify", "npm run typecheck --workspace @siftable/cli",
+      "--dry-run",
+      "--no-input",
+      "--json",
+    ]);
+
+    expect(result.exitCode).not.toBe(0);
+    const error = JSON.parse(result.stdout).error as {code?: string; api?: Record<string, any>};
+    expect(error.code).toBe("work_contract_invalid");
+    expect(error.api?.extra?.violations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: "authority.allowedActions",
+        code: "field_must_be_object",
+      }),
+    ]));
+  });
+
+  it("rejects profile-only scope and authority flags instead of silently creating legacy work", async () => {
+    const result = await runCommand([
+      "work", "create",
+      "--title", "Accidentally unprofiled work",
+      "--scope", "packages/exf-cli/src/**",
+      "--allow-network",
+      "--dry-run",
+      "--json",
+    ]);
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout).toContain("--scope, --exclude-scope, and --allow-* require --profile");
+  });
+
+  it.each([
+    {
+      label: "allowed actions",
+      flag: "--allowed-actions",
+      path: "authority.allowedActions",
+      extraFlags: ["--scope", "packages/exf-cli/src/**"],
+    },
+    {
+      label: "write scope",
+      flag: "--write-scope",
+      path: "boundary.writeScope",
+      extraFlags: [],
+    },
+  ])("treats explicit null $label as invalid rather than an omitted default", async ({flag, path, extraFlags}) => {
+    const result = await runCommand([
+      "work", "create",
+      "--title", "Null contract component",
+      "--profile", "coding",
+      "--acceptance-criteria", "Has an outcome",
+      flag, "null",
+      ...extraFlags,
+      "--verify", "npm run typecheck --workspace @siftable/cli",
+      "--dry-run",
+      "--no-input",
+      "--json",
+    ]);
+
+    expect(result.exitCode).not.toBe(0);
+    const error = JSON.parse(result.stdout).error as {code?: string; api?: Record<string, any>};
+    expect(error.code).toBe("work_contract_invalid");
+    expect(error.api?.extra?.violations).toEqual(expect.arrayContaining([
+      expect.objectContaining({path, code: "field_must_be_object"}),
+    ]));
+  });
+
+  it("loads an authoritative contract file and transmits no contradictory projections", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "sift-work-contract-"));
+    const contractPath = join(workspace, "contract.json");
+    try {
+      await writeFile(contractPath, JSON.stringify(validContract));
+      mockFetch()
+        .on("POST", "/api/v1/work-items")
+        .body((body) => {
+          const payload = body as Record<string, unknown>;
+          return JSON.stringify(payload.contract) === JSON.stringify(validContract)
+            && !Object.prototype.hasOwnProperty.call(payload, "acceptanceCriteria")
+            && !Object.prototype.hasOwnProperty.call(payload, "writeScope");
+        })
+        .reply(201, {workItem: {id: "work-bounded", title: "From file"}})
+        .install();
+
+      const result = await runCommand([
+        "work", "create",
+        "--title", "From file",
+        "--contract-file", contractPath,
+        "--token", "sift_pat_test",
+        "--json",
+      ]);
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout).workItem.id).toBe("work-bounded");
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
+  it("preserves server-originated Work Contract violations for JSON callers", async () => {
+    const violations = [{
+      path: "acceptanceCriteria",
+      code: "unsupported_field",
+      message: "acceptanceCriteria contradicts the authoritative top-level Work Contract V1 projection; remove the duplicate field.",
+    }];
+    mockFetch()
+      .on("POST", "/api/v1/work-items")
+      .reply(400, {
+        type: "work_contract_invalid",
+        title: "Invalid Work Contract V1",
+        status: 400,
+        detail: "Correct the reported Work Contract violations and retry.",
+        extra: {violations},
+      })
+      .install();
+
+    const result = await runCommand([
+      "work", "create",
+      "--title", "Server-invalid work",
+      "--contract", JSON.stringify(validContract),
+      "--token", "sift_pat_test",
+      "--no-input",
+      "--json",
+    ]);
+
+    expect(result.exitCode).not.toBe(0);
+    const error = JSON.parse(result.stdout).error as {code?: string; api?: Record<string, any>};
+    expect(error.code).toBe("work_contract_invalid");
+    expect(error.api).toMatchObject({
+      type: "work_contract_invalid",
+      extra: {violations},
+    });
+  });
+
+  it("checks both a local contract file and a fetched bounded work item", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "sift-work-contract-check-"));
+    const contractPath = join(workspace, "contract.json");
+    try {
+      await writeFile(contractPath, JSON.stringify(validContract));
+      const fileResult = await runCommand(["work", "contract", "check", "--file", contractPath, "--json"]);
+      expect(fileResult.exitCode).toBe(0);
+      expect(JSON.parse(fileResult.stdout)).toMatchObject({valid: true, classification: "bounded"});
+
+      mockFetch()
+        .on("GET", "/api/v1/work-items/work-bounded")
+        .reply(200, {
+          workItem: {
+            id: "work-bounded",
+            contractSummary: {classification: "bounded", version: 1, profile: "coding"},
+            acceptanceCriteria: validContract.outcome.acceptanceCriteria,
+            allowedActions: validContract.authority.allowedActions,
+            writeScope: validContract.boundary.writeScope,
+            verificationCommands: validContract.proof.verificationCommands,
+          },
+        })
+        .install();
+      const fetchedResult = await runCommand([
+        "work", "contract", "check", "work-bounded", "--token", "sift_pat_test", "--json",
+      ]);
+      expect(fetchedResult.exitCode).toBe(0);
+      expect(JSON.parse(fetchedResult.stdout)).toMatchObject({valid: true, source: {kind: "work_item"}});
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
+  it("validates a contract file as a closed raw envelope instead of extracting a nested contract", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "sift-work-contract-wrapper-"));
+    const contractPath = join(workspace, "contract.json");
+    try {
+      await writeFile(contractPath, JSON.stringify({
+        contract: validContract,
+        acceptanceCriteria: [{text: "Contradictory sibling", met: false}],
+      }));
+      const result = await runCommand(["work", "contract", "check", "--file", contractPath, "--json"]);
+
+      expect(result.exitCode).not.toBe(0);
+      const error = JSON.parse(result.stdout).error as {code?: string; api?: Record<string, any>};
+      expect(error.code).toBe("work_contract_invalid");
+      expect(error.api?.extra?.violations).toEqual(expect.arrayContaining([
+        expect.objectContaining({path: "contract", code: "contract_missing"}),
+      ]));
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
+  it.each([
+    ["research", ["research", "run", "extract-people", "--source-dataset", "sources-1", "--dry-run", "--json"]],
+    ["evidence", ["evidence", "extract", "--source-dataset", "sources-1", "--dry-run", "--json"]],
+  ])("emits an explicit compatible contract for the %s producer", async (_surface, argv) => {
+    const result = await runCommand(argv);
+    expect(result.exitCode).toBe(0);
+    const output = JSON.parse(result.stdout);
+    expect(output.workItem.contract).toMatchObject({version: 1, profile: "coding"});
+    expect(output.workItem).not.toHaveProperty("acceptanceCriteria");
+    expect(output.workItem.contract.boundary.writeScope.include.length).toBeGreaterThan(0);
+  });
+});
+
 describe("sift work revision orientation", () => {
   const workId = "22222222-2222-4222-8222-222222222222";
 

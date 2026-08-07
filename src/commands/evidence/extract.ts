@@ -2,6 +2,7 @@ import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
 import {buildEvidenceExtractionWork, EVIDENCE_PACKS, EvidencePack, parseEvidenceTargets} from '../../lib/evidence.js';
 import {renderDetail} from '../../lib/output.js';
+import {defaultWorkContractActions, requireBuiltWorkContract} from '../../lib/work-contract.js';
 
 export default class EvidenceExtract extends BaseCommand {
   static description = 'Create no-apply agent work for Evidence Graph candidate extraction';
@@ -39,22 +40,39 @@ export default class EvidenceExtract extends BaseCommand {
       projectId: flags.project,
       context: extraContext,
     });
+    const resourceScope = work.writeScope;
+    const datasets = Array.isArray(resourceScope.datasets) ? resourceScope.datasets : [];
+    const allowedActions = defaultWorkContractActions('coding');
+    allowedActions.network = true;
+    const contract = requireBuiltWorkContract({
+      profile: 'coding',
+      acceptanceCriteria: work.acceptanceCriteria,
+      allowedActions,
+      writeScope: {
+        include: [
+          ...datasets.map((dataset) => `datasets/${String(dataset)}`),
+          'evidence/diff-plans',
+          'evidence/proof-artifacts',
+        ],
+        exclude: ['evidence/durable-assertions', 'evidence/accepted-claims'],
+      },
+      verificationCommands: work.verificationCommands,
+    });
     const payload = {
       title: work.title,
       prompt: work.prompt,
       assignedAlias: flags.agent,
       projectId: flags.project,
       inputContext: {
+        ...extraContext,
         workflow: 'evidence_graph',
         pack: flags.pack,
         targets,
         sourceDatasetId: flags['source-dataset'],
         noApply: true,
-        ...extraContext,
+        resourceScope,
       },
-      acceptanceCriteria: work.acceptanceCriteria,
-      writeScope: work.writeScope,
-      verificationCommands: work.verificationCommands,
+      contract,
     };
 
     if (flags['dry-run']) {

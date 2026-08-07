@@ -16611,6 +16611,76 @@
           "multiple": false,
           "type": "option"
         },
+        "profile": {
+          "description": "Author a complete Work Contract V1 using the coding or read-only profile",
+          "name": "profile",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "coding",
+            "read-only",
+            "read_only"
+          ],
+          "type": "option"
+        },
+        "contract": {
+          "description": "Complete Work Contract V1 JSON",
+          "name": "contract",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "contract-file": {
+          "description": "Path to a complete Work Contract V1 JSON file",
+          "name": "contract-file",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "scope": {
+          "description": "Included workspace-relative write scope; repeat for multiple paths",
+          "name": "scope",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "exclude-scope": {
+          "description": "Excluded workspace-relative write scope; repeat for multiple paths",
+          "name": "exclude-scope",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "allow-network": {
+          "description": "Allow network access in the authored contract",
+          "name": "allow-network",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "allow-vault": {
+          "description": "Allow audited Vault access in the authored contract",
+          "name": "allow-vault",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "allow-deploy": {
+          "description": "Allow deployment in the authored contract",
+          "name": "allow-deploy",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "allow-migrate": {
+          "description": "Allow migrations in the authored contract",
+          "name": "allow-migrate",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Preview the normalized payload and contract without creating work",
+          "name": "dry-run",
+          "allowNo": false,
+          "type": "boolean"
+        },
         "depends-on": {
           "description": "Dependency JSON array: [{\"workItemId\":\"<uuid>\",\"requiredGate\"?:\"done\"|\"commands_passed\"}]",
           "name": "depends-on",
