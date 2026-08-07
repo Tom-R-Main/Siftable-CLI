@@ -22,7 +22,7 @@ export default class CrmOrganizationsList extends BaseCommand {
     const params = new URLSearchParams({limit: String(flags.limit)});
     if (flags.search) params.set('search', flags.search);
     const response = await this.apiRequest<{organizations: OrganizationSummary[]}>(
-      {token: flags.token, 'api-url': flags['api-url']},
+      {token: flags.token, 'api-url': flags['api-url'], workspace: flags.workspace},
       `/api/v1/organizations?${params.toString()}`,
     );
     const organizations = response.organizations.filter((organization) => organization.isWorkspace !== true);
