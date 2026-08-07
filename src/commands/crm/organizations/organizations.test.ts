@@ -6,7 +6,7 @@ function command<T>(constructor: {prototype: T}): T {
 }
 
 describe('CRM organization discovery', () => {
-  it('excludes workspace rows and does not send the selected tenant to CRM discovery', async () => {
+  it('excludes workspace shells and sends the selected tenant to CRM discovery', async () => {
     const instance = command(CrmOrganizationsList);
     const apiRequest = vi.fn().mockResolvedValue({
       organizations: [
@@ -21,7 +21,7 @@ describe('CRM organization discovery', () => {
     (instance as any).apiRequest = apiRequest;
     (instance as any).jsonEnabled = () => true;
     const result = await instance.run() as any;
-    expect(apiRequest.mock.calls[0][0]).not.toHaveProperty('workspace');
+    expect(apiRequest.mock.calls[0][0]).toMatchObject({workspace: 'workspace-1'});
     expect(result.organizations).toEqual([{id: 'crm-1', name: 'Customer', isWorkspace: false}]);
     expect(result.excludedWorkspaceCount).toBe(1);
   });
