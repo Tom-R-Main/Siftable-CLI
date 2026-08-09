@@ -60,6 +60,13 @@ describe('self-awareness commands', () => {
 
     expect(parsed.ok).toBe(true);
     expect(parsed.topics.some((topic: any) => topic.topic === 'datasets')).toBe(true);
+    expect(parsed.topics).toEqual(expect.arrayContaining([
+      expect.objectContaining({topic: 'vault', description: expect.stringMatching(/materialization/i)}),
+      expect.objectContaining({topic: 'env', description: expect.stringMatching(/Vault bundle/i)}),
+    ]));
+    expect(parsed.next).toEqual(expect.arrayContaining([
+      expect.stringMatching(/sift env --help.*sift vault materialize run/i),
+    ]));
     expect(parsed.recipeIds).toContain('research-source-ingest');
   });
 });

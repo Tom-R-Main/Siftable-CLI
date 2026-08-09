@@ -2,19 +2,18 @@ import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
-import VaultRead from '../../src/commands/vault/read.js';
 import { hydrateProviderKeyFromVault } from '../../interactive-tui/commands.js';
 import { createVaultTools as createSiftableVaultTools } from '../../interactive-tui/openfunction/providers/siftable/tools.js';
 import { createVaultTools as createExecuFunctionVaultTools } from '../../interactive-tui/openfunction/providers/execufunction/tools.js';
 
-describe('sift vault read containment', () => {
-  it('retires the command through the real Oclif runner and generated manifest', () => {
+describe('Vault plaintext containment', () => {
+  it('omits the legacy read command from the real Oclif runner and generated manifest', () => {
     const manifest = JSON.parse(
       readFileSync(path.resolve(process.cwd(), 'oclif.manifest.json'), 'utf8')
     ) as { commands: Record<string, { description?: string }> };
     const result = spawnSync(
       process.execPath,
-      [path.resolve(process.cwd(), 'bin/run.js'), 'vault', 'read', 'must-not-leak'],
+      [path.resolve(process.cwd(), 'bin/run.js'), 'vault', 'read', 'legacy-entry'],
       {
         cwd: process.cwd(),
         encoding: 'utf8',
@@ -27,27 +26,31 @@ describe('sift vault read containment', () => {
     );
     const output = `${result.stdout}\n${result.stderr}`;
 
-    expect(result.status).toBe(1);
-    expect(output).toContain('Vault plaintext output is retired');
-    expect(output).toContain('first-party Siftable web Vault');
+    expect(result.status).not.toBe(0);
+    expect(output).toMatch(/command vault:read:legacy-entry not found/i);
     expect(output).not.toContain('sift_pat_must_not_leak');
-    expect(output).not.toContain('must-not-leak');
-    expect(manifest.commands['vault:read']?.description).toContain('Retired');
+    expect(manifest.commands['vault:read']).toBeUndefined();
   });
 
-  it('fails with migration guidance before creating an API request', async () => {
-    global.fetch = vi.fn();
-    const command = Object.create(VaultRead.prototype) as VaultRead;
-    vi.spyOn(command as unknown as { parse: () => Promise<unknown> }, 'parse')
-      .mockResolvedValue({ args: { id: 'secret-slug' }, flags: {} });
-    vi.spyOn(command as unknown as { error: (message: string) => never }, 'error')
-      .mockImplementation((message: string) => {
-        throw new Error(message);
-      });
+  it('advertises governed single-field and environment materialization', () => {
+    const vault = spawnSync(
+      process.execPath,
+      [path.resolve(process.cwd(), 'bin/run.js'), 'vault', '--help'],
+      {cwd: process.cwd(), encoding: 'utf8'},
+    );
+    const materialize = spawnSync(
+      process.execPath,
+      [path.resolve(process.cwd(), 'bin/run.js'), 'vault', 'materialize', '--help'],
+      {cwd: process.cwd(), encoding: 'utf8'},
+    );
+    const output = `${vault.stdout}\n${vault.stderr}\n${materialize.stdout}\n${materialize.stderr}`;
 
-    await expect(command.run()).rejects.toThrow('Vault plaintext output is retired');
-    await expect(command.run()).rejects.toThrow('first-party Siftable web Vault');
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(vault.status).toBe(0);
+    expect(materialize.status).toBe(0);
+    expect(output).toContain('vault materialize');
+    expect(output).toContain('vault materialize run');
+    expect(output).toContain('vault materialize environment');
+    expect(output).not.toContain('vault read');
   });
 
   it('does not advertise raw decrypt in either interactive agent registry', () => {

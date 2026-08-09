@@ -170,13 +170,31 @@ The most-used surface, grouped by domain. Run `sift --help` or `sift <topic> --h
 | `sift code memory delete <id>` | Delete a stored fact |
 
 ### Vault
+
+For managed `.env` files, prefer the contract flow: commit `.sift/environment.yaml`, keep the destination ignored, and let a human or agent run `sift env pull` when the environment is needed. Pull is demand-triggered rather than polled in the background. Use `sift vault materialize run` for an a la carte field. For an explicitly local-authoritative dotenv source, use the reviewed `sift env push plan` / `sift env push apply` flow; a pull-managed destination cannot be pushed back blindly.
+
 | Command | Description |
 |---------|-------------|
 | `sift vault list` | List vault entries (metadata only) |
 | `sift vault create` | Store an encrypted secret |
-| `sift vault read <id>` | Retired; use first-party web reveal until brokered use and approved materialization ship |
 | `sift vault search <query>` | Search vault entries |
+| `sift vault materialize run` | Request approval and write one Vault field to one exact local destination |
+| `sift vault materialize environment` | Materialize one declared environment bundle (same governed flow as `sift env pull`) |
 | `sift vault update <id>` | Update entry metadata |
+
+### Environment contracts
+
+| Command | Description |
+|---------|-------------|
+| `sift env check` | Validate `.sift/environment.yaml` offline without reading values |
+| `sift env diff` | Show value-free contract and checkout-safety drift |
+| `sift env example` | Generate a deterministic names-and-placeholders-only `.env.example` |
+| `sift env push plan` | Create a value-free plan for an explicitly named local-authoritative dotenv source |
+| `sift env push apply` | Apply one exact reviewed dotenv push plan atomically |
+| `sift env import plan`, `sift env import apply` | Compatibility spellings for the reviewed push flow |
+| `sift env pull` | Pull one approved Vault bundle into its declared development environment file |
+| `sift env status` | Report value-free managed environment state and freshness |
+| `sift env rm` | Remove one exact recognized Sift-managed local environment file |
 
 ### Documents
 | Command | Description |

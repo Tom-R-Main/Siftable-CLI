@@ -20,7 +20,8 @@ const TOPICS = [
   {topic: 'graph', description: 'Entity graph search and neighborhoods'},
   {topic: 'codebase', description: 'Code indexing and semantic search'},
   {topic: 'code memory', description: 'Code memory and facts'},
-  {topic: 'vault', description: 'Secrets vault'},
+  {topic: 'vault', description: 'Vault metadata and governed destination-bound materialization'},
+  {topic: 'env', description: 'Declarative environment contracts and governed Vault bundle pulls'},
   {topic: 'skills', description: 'Installable Siftable skillpacks'},
   {topic: 'recipes', description: 'Built-in research workflow recipes'},
   {topic: 'research', description: 'Research workflow planning and orchestration'},
@@ -46,6 +47,7 @@ export default class Commands extends BaseCommand {
       next: [
         'Run `sift doctor --json` to verify local auth and API configuration.',
         'Run `sift capabilities --json` to see what is ready, partial, or planned.',
+        'Run `sift env --help` for managed .env contracts and governed refresh; use `sift vault materialize run` for an a la carte field.',
         'Run `sift skills list --json` to see installable Siftable skillpacks.',
         'Run `sift recipes list --json` to pick a deterministic workflow.',
       ],

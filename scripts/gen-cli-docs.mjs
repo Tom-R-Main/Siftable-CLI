@@ -44,7 +44,9 @@ const TOPIC_INTROS = {
   organizations: 'Organizations and companies.', people: 'People and contacts.',
   projects: 'Project management.', recipes: 'Built-in research workflow recipes.',
   research: 'Research workflow planning and orchestration.', skills: 'Installable Siftable skillpacks.',
-  tasks: 'Human planning tasks.', timeline: 'Timeline facts and narratives.', vault: 'Secrets vault.',
+  tasks: 'Human planning tasks.', timeline: 'Timeline facts and narratives.',
+  vault: 'Vault metadata and governed destination-bound materialization.',
+  env: 'Declarative environment contracts and governed Vault bundle materialization.',
   work: 'Executable agent work queue.', worker: 'Local executable work runners.',
 };
 

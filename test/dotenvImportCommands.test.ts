@@ -5,6 +5,8 @@ import {Config} from '@oclif/core';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import EnvImportApply from '../src/commands/env/import/apply.js';
 import EnvImportPlan from '../src/commands/env/import/plan.js';
+import EnvPushApply from '../src/commands/env/push/apply.js';
+import EnvPushPlan from '../src/commands/env/push/plan.js';
 import {
   assertDotenvSourceIsNotManaged,
   MAX_DOTENV_IMPORT_PLAN_BYTES,
@@ -63,6 +65,11 @@ function response(status: number, payload: unknown): Response {
 }
 
 describe('sift env import plan/apply', () => {
+  it('exposes the reviewed import flow under the obvious env push spelling', () => {
+    expect(EnvPushPlan).toBe(EnvImportPlan);
+    expect(EnvPushApply).toBe(EnvImportApply);
+  });
+
   it('keeps values local during planning and writes a value-free exclusive artifact', async () => {
     const root = await checkout();
     const source = path.join(root, 'input.env');

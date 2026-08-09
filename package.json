@@ -119,18 +119,24 @@
       "code:memory": {
         "description": "Code memory and facts"
       },
-    "vault": {
-      "description": "Secrets vault"
-    },
-    "env": {
-      "description": "Value-free declarative environment contracts"
-    },
-    "capabilities": {
-      "description": "Server-brokered Vault capabilities"
-    },
-    "grants": {
-      "description": "Ephemeral provider credentials for reviewed local execution"
-    },
+      "vault": {
+        "description": "Vault metadata and governed destination-bound materialization"
+      },
+      "vault:materialize": {
+        "description": "Materialize approved Vault fields or environment bundles to exact local destinations"
+      },
+      "env": {
+        "description": "Declarative environment contracts and governed Vault bundle materialization"
+      },
+      "env:push": {
+        "description": "Review and atomically push an explicit local-authoritative dotenv source into Vault"
+      },
+      "capabilities": {
+        "description": "Server-brokered Vault capabilities"
+      },
+      "grants": {
+        "description": "Ephemeral provider credentials for reviewed local execution"
+      },
       "datasets": {
         "description": "Structured datasets"
       },

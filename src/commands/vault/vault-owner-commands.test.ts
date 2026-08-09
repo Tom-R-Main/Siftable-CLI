@@ -1,6 +1,5 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import VaultList from './list.js';
-import VaultRead from './read.js';
 import VaultSearch from './search.js';
 
 function command<T>(constructor: {prototype: T}): T {
@@ -15,18 +14,6 @@ afterEach(() => {
 });
 
 describe('Vault owner-scoped commands', () => {
-  it('routes retired plaintext reads directly to the supported governed flow', async () => {
-    const read = command(VaultRead);
-    (read as any).parse = vi.fn().mockResolvedValue({args: {id: 'entry-1'}, flags: {}});
-    (read as any).error = vi.fn((message: string) => {
-      throw new Error(message);
-    });
-
-    await expect(read.run()).rejects.toThrow('sift vault materialize run --help');
-    await expect(read.run()).rejects.toThrow('first-party Siftable web Vault');
-    await expect(read.run()).rejects.toThrow('Do not use generic `sift approvals request`');
-  });
-
   it('lets --owner personal override an ambient workspace without unioning results', async () => {
     process.env.SIFT_WORKSPACE_ID = 'workspace-env';
     const list = command(VaultList);
