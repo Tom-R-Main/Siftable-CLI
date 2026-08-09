@@ -137,6 +137,8 @@ function vendorPlatformPackages(tempRoot) {
     const packRoot = join(tempRoot, platform);
     const extractRoot = join(packRoot, 'extract');
     mkdirSync(extractRoot, {recursive: true});
+    // An outer `npm pack --dry-run` exports npm_config_dry_run=true to lifecycle
+    // scripts. Override it so this nested pack still creates the archive we verify.
     const packed = JSON.parse(run('npm', [
       'pack',
       `${packageName}@${OPENTUI_VERSION}`,
@@ -144,6 +146,7 @@ function vendorPlatformPackages(tempRoot) {
       packRoot,
       '--json',
       '--ignore-scripts',
+      '--dry-run=false',
     ]));
     if (packed.length !== 1 || packed[0].integrity !== expectedIntegrity) {
       fail(`${packageName} integrity drifted from the reviewed ${OPENTUI_VERSION} artifact`);

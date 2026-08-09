@@ -294,7 +294,7 @@ describe('offline env commands', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     const request = fetch.mock.calls[0]?.[1] as RequestInit;
     expect(JSON.parse(request.body as string)).toMatchObject({
-      clientVersion: '0.5.39',
+      clientVersion: expect.stringMatching(/^\d+\.\d+\.\d+(?:-.+)?$/),
       materializationContractVersion: 2,
       purpose: 'Use the current managed development environment',
     });
