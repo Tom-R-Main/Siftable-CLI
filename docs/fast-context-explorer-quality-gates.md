@@ -140,7 +140,7 @@ Implementation tasks:
 
 Fixture repo requirements:
 - Nested package: `packages/exf-cli`.
-- Unrelated app path: `apps/best-edit`.
+- Unrelated app path: `apps/editorial-workbench`.
 - Generated/ignored dirs: `node_modules`, `dist`, `.git`, `.zig-cache`, `zig-out`.
 - Hidden safe files and env-like files.
 - Tests and source files with overlapping terms.
@@ -221,7 +221,7 @@ Implementation tasks:
 
 Deterministic tests:
 - From `packages/exf-cli`, `how does our cli work?` ranks CLI files before unrelated apps.
-- `apps/best-edit/*` never appears in top candidates for the CLI prompt.
+- `apps/editorial-workbench/*` never appears in top candidates for the CLI prompt.
 - `queries.length === 0` produces low evidence, not primary candidates.
 - Package-local `package.json`, command files, and `interactive-tui` files receive cwd boost.
 

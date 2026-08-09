@@ -145,7 +145,7 @@ describe('interactive repo explorer preflight', () => {
 
   it('biases deterministic candidates toward the current package cwd', async () => {
     await mkdir(join(root, 'packages', 'exf-cli', 'src'), {recursive: true});
-    await mkdir(join(root, 'apps', 'best-edit', 'src'), {recursive: true});
+    await mkdir(join(root, 'apps', 'editorial-workbench', 'src'), {recursive: true});
     await writeFile(
       join(root, 'packages', 'exf-cli', 'package.json'),
       '{"name":"@siftable/cli","bin":{"sift":"./bin/run.js"}}\n',
@@ -162,7 +162,7 @@ describe('interactive repo explorer preflight', () => {
       'utf8',
     );
     await writeFile(
-      join(root, 'apps', 'best-edit', 'src', 'App.tsx'),
+      join(root, 'apps', 'editorial-workbench', 'src', 'App.tsx'),
       'export function App() { return "cli work unrelated"; }\n',
       'utf8',
     );
@@ -178,7 +178,7 @@ describe('interactive repo explorer preflight', () => {
 
       expect(report.queriesRun).toEqual(expect.arrayContaining(['cli work']));
       expect(topPaths).toContain('packages/exf-cli/src/commands.ts');
-      expect(topPaths).not.toContain('apps/best-edit/src/App.tsx');
+      expect(topPaths).not.toContain('apps/editorial-workbench/src/App.tsx');
     } finally {
       if (previousCwd === undefined) delete process.env.SIFT_USER_CWD;
       else process.env.SIFT_USER_CWD = previousCwd;

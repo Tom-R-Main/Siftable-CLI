@@ -50,7 +50,7 @@ export const EXPLORER_EVAL_FIXTURES: ExplorerEvalFixture[] = [
   {
     prompt: 'how does our cli work?',
     expectedFiles: ['packages/exf-cli/package.json', 'packages/exf-cli/src', 'packages/exf-cli/interactive-tui'],
-    forbiddenTopFiles: ['apps/best-edit'],
+    forbiddenTopFiles: ['apps/editorial-workbench'],
   },
   {
     prompt: 'why does Explorer show duplicate blocks?',
@@ -63,7 +63,7 @@ export const EXPLORER_EVAL_FIXTURES: ExplorerEvalFixture[] = [
   {
     prompt: 'where is command routing?',
     expectedFiles: ['packages/exf-cli/interactive-tui/commands.ts', 'packages/exf-cli/src/commands'],
-    forbiddenTopFiles: ['apps/best-edit'],
+    forbiddenTopFiles: ['apps/editorial-workbench'],
   },
   {
     prompt: 'where is repo_explorer injected?',

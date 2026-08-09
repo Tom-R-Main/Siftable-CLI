@@ -66,7 +66,7 @@ describe('repo explorer eval scoring', () => {
     expect(scoreCandidateFiles([
       'packages/exf-cli/package.json',
       'packages/exf-cli/interactive-tui/index.tsx',
-      'apps/best-edit/src/App.tsx',
+      'apps/editorial-workbench/src/App.tsx',
       'packages/exf-cli/src/commands/work.ts',
     ], fixture)).toEqual({
       precision: 0.75,
