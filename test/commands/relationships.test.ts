@@ -1,4 +1,7 @@
 import {BaseCommand} from '../../src/lib/base-command';
+import RelationshipsComposerShow from '../../src/commands/relationships/composer/show';
+import RelationshipsComposerConfirm from '../../src/commands/relationships/composer/confirm';
+import RelationshipsComposerBindSender from '../../src/commands/relationships/composer/bind-sender';
 import {installIsolatedConfigDirHooks} from '../helpers/config-env';
 import {mockFetch, restoreFetch, runCommand} from '../helpers/mock-api';
 
@@ -21,6 +24,10 @@ const snapshot = {
   gates: [{code: 'citations_present', status: 'passed', reason: 'One exact citation is available.'}],
 };
 const recommendation = {snapshot, state: 'pending_review', latestReview: null, executedAt: null};
+
+function command<T>(constructor: new (...args: never[]) => T): T {
+  return Object.create(constructor.prototype) as T;
+}
 
 describe('relationship intelligence commands', () => {
   it('composes a structured brief and lists or shows immutable recommendations', async () => {
@@ -106,6 +113,44 @@ describe('relationship intelligence commands', () => {
 
     expect(JSON.parse(listed.stdout)[0].id).toBe('relationship.next_action.set');
     expect(JSON.parse(run.stdout).status).toBe('applied');
+  });
+
+  it('resumes and advances the same durable composer session without a GUI', async () => {
+    const sessionId = '55555555-5555-4555-8555-555555555555';
+    const senderId = '66666666-6666-4666-8666-666666666666';
+    const session = {
+      id: sessionId,
+      phase: 'brief',
+      version: 2,
+      senderAccountId: null,
+      evidence: [{ rank: 1, decision: 'included', label: 'Atlas pilot recap' }],
+    };
+    const show = command(RelationshipsComposerShow);
+    const confirm = command(RelationshipsComposerConfirm);
+    const bind = command(RelationshipsComposerBindSender);
+    const apiRequest = jest.fn()
+      .mockResolvedValueOnce({ session })
+      .mockResolvedValueOnce({ session: { ...session, phase: 'draft', version: 3, draft: { revisionId: recommendationId, revision: 1 } } })
+      .mockResolvedValueOnce({ session: { ...session, phase: 'draft', version: 4, senderAccountId: senderId } });
+    (show as any).parse = jest.fn().mockResolvedValue({ args: { id: sessionId }, flags: {} });
+    (show as any).apiRequest = apiRequest;
+    (show as any).jsonEnabled = () => true;
+    (confirm as any).parse = jest.fn().mockResolvedValue({ args: { id: sessionId }, flags: { 'expected-version': 2, yes: true } });
+    (confirm as any).apiRequest = apiRequest;
+    (confirm as any).confirmAction = jest.fn().mockResolvedValue(true);
+    (confirm as any).jsonEnabled = () => true;
+    (bind as any).parse = jest.fn().mockResolvedValue({ args: { id: sessionId }, flags: { 'expected-version': 3, sender: senderId } });
+    (bind as any).apiRequest = apiRequest;
+    (bind as any).jsonEnabled = () => true;
+
+    await expect(show.run()).resolves.toMatchObject({ phase: 'brief' });
+    await expect(confirm.run()).resolves.toMatchObject({ phase: 'draft', draft: { revision: 1 } });
+    await expect(bind.run()).resolves.toMatchObject({ senderAccountId: senderId });
+    expect(apiRequest.mock.calls.map((call) => call[1])).toEqual([
+      `/api/v1/relationships/composer-sessions/${sessionId}`,
+      `/api/v1/relationships/composer-sessions/${sessionId}/confirm-brief`,
+      `/api/v1/relationships/composer-sessions/${sessionId}/sender`,
+    ]);
   });
 });
 
