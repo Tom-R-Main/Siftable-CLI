@@ -21,6 +21,7 @@
     "bench:tui-actions": "tsx scripts/bench-tui-actions.ts",
     "explorer:eval": "tsx scripts/eval-repo-explorer.ts",
     "test": "jest",
+    "test:jest": "jest",
     "test:vitest": "vitest run --config vitest.config.ts",
     "native:release": "cd interactive-tui && bash scripts/build-native-release.sh",
     "verify:test-typecheck-boundaries": "node scripts/verify-test-typecheck-boundaries.mjs",
