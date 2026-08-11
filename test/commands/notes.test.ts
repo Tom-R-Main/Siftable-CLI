@@ -45,11 +45,49 @@ describe('notes commands', () => {
     it('searches notes', async () => {
       mockFetch()
         .on('GET', '/api/v1/notes/search')
-        .reply(200, {results: [fixtures.note({score: 0.95})]})
+        .reply(200, {results: [{
+          noteId: 'note-search-001',
+          title: 'Test note',
+          noteType: 'note',
+          projectId: 'project-001',
+          snippet: 'Test content',
+          score: 0.95,
+          source: 'fulltext',
+          contentLength: 12,
+          truncated: false,
+        }]})
         .install();
 
       const result = await runCommand(['notes', 'search', 'test', '--token', 'exf_pat_test']);
       expect(result.stdout).toContain('Test note');
+      expect(result.stdout).toContain('note-search-001');
+      expect(result.stdout).not.toContain('undefined');
+    });
+
+    it('preserves the canonical API search shape in JSON output', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/notes/search')
+        .reply(200, {results: [{
+          noteId: 'note-search-001',
+          title: 'Test note',
+          noteType: 'note',
+          projectId: 'project-001',
+          snippet: 'Test content',
+          score: 0.95,
+          source: 'fulltext',
+          contentLength: 12,
+          truncated: false,
+        }]})
+        .install();
+
+      const result = await runCommand([
+        'notes', 'search', 'test', '--token', 'exf_pat_test', '--json',
+      ]);
+      expect(JSON.parse(result.stdout)[0]).toEqual(expect.objectContaining({
+        noteId: 'note-search-001',
+        projectId: 'project-001',
+        source: 'fulltext',
+      }));
     });
   });
 
