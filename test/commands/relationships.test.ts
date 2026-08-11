@@ -6,6 +6,10 @@ import RelationshipsComposerEvaluate from '../../src/commands/relationships/comp
 import RelationshipsComposerFindingAction from '../../src/commands/relationships/composer/finding-action';
 import RelationshipsComposerHistory from '../../src/commands/relationships/composer/history';
 import RelationshipsComposerReview from '../../src/commands/relationships/composer/review';
+import RelationshipsComposerRequestApproval from '../../src/commands/relationships/composer/request-approval';
+import RelationshipsComposerResolveIdentity from '../../src/commands/relationships/composer/resolve-identity';
+import RelationshipsComposerRequestChanges from '../../src/commands/relationships/composer/request-changes';
+import RelationshipsComposerApproverEdit from '../../src/commands/relationships/composer/approver-edit';
 import {installIsolatedConfigDirHooks} from '../helpers/config-env';
 import {mockFetch, restoreFetch, runCommand} from '../helpers/mock-api';
 
@@ -136,6 +140,10 @@ describe('relationship intelligence commands', () => {
     const findingAction = command(RelationshipsComposerFindingAction);
     const history = command(RelationshipsComposerHistory);
     const review = command(RelationshipsComposerReview);
+    const requestApproval = command(RelationshipsComposerRequestApproval);
+    const resolveIdentity = command(RelationshipsComposerResolveIdentity);
+    const requestChanges = command(RelationshipsComposerRequestChanges);
+    const approverEdit = command(RelationshipsComposerApproverEdit);
     const findingId = '77777777-7777-4777-8777-777777777777';
     const coached = { ...session, phase: 'draft', version: 4, findings: [{ id: findingId, status: 'active' }], reviewGate: { eligible: false } };
     const accepted = { ...coached, version: 5, findings: [{ id: findingId, status: 'accepted' }], reviewGate: { eligible: true } };
@@ -146,7 +154,33 @@ describe('relationship intelligence commands', () => {
       .mockResolvedValueOnce({ session: accepted })
       .mockResolvedValueOnce({ session: { ...accepted, coachingHistory: [{ action: 'accepted' }] } })
       .mockResolvedValueOnce({ session: { ...accepted, phase: 'review', version: 6 } })
-      .mockResolvedValueOnce({ session: { ...accepted, version: 7, senderAccountId: senderId } });
+      .mockResolvedValueOnce({ session: { ...accepted, version: 7, senderAccountId: senderId } })
+      .mockResolvedValueOnce({ session: {
+        ...accepted,
+        phase: 'review',
+        version: 8,
+        review: {
+          digest: 'a'.repeat(64),
+          approval: {
+            id: '88888888-8888-4888-8888-888888888888',
+            status: 'pending',
+            approvalUrl: '/settings/security/approvals/88888888-8888-4888-8888-888888888888',
+          },
+        },
+      } })
+      .mockResolvedValueOnce({ session: {
+        ...accepted,
+        phase: 'review',
+        version: 9,
+        review: { digest: 'a'.repeat(64), identityCollision: { status: 'resolved' } },
+      } })
+      .mockResolvedValueOnce({ session: { ...accepted, phase: 'draft', version: 10 } })
+      .mockResolvedValueOnce({ session: {
+        ...accepted,
+        phase: 'draft',
+        version: 11,
+        draft: { revisionId: recommendationId, revision: 2 },
+      } });
     (show as any).parse = jest.fn().mockResolvedValue({ args: { id: sessionId }, flags: {} });
     (show as any).apiRequest = apiRequest;
     (show as any).jsonEnabled = () => true;
@@ -171,6 +205,40 @@ describe('relationship intelligence commands', () => {
     (bind as any).parse = jest.fn().mockResolvedValue({ args: { id: sessionId }, flags: { 'expected-version': 6, sender: senderId } });
     (bind as any).apiRequest = apiRequest;
     (bind as any).jsonEnabled = () => true;
+    (requestApproval as any).parse = jest.fn().mockResolvedValue({
+      args: { id: sessionId },
+      flags: { 'expected-version': 7, 'idempotency-key': 'composer-review-0001', yes: true },
+    });
+    (requestApproval as any).apiRequest = apiRequest;
+    (requestApproval as any).confirmAction = jest.fn().mockResolvedValue(true);
+    (requestApproval as any).jsonEnabled = () => true;
+    (resolveIdentity as any).parse = jest.fn().mockResolvedValue({
+      args: { id: sessionId },
+      flags: { 'expected-version': 8, candidate: entityId, decision: 'same_person', yes: true },
+    });
+    (resolveIdentity as any).apiRequest = apiRequest;
+    (resolveIdentity as any).confirmAction = jest.fn().mockResolvedValue(true);
+    (resolveIdentity as any).jsonEnabled = () => true;
+    (requestChanges as any).parse = jest.fn().mockResolvedValue({
+      args: { id: sessionId },
+      flags: { 'expected-version': 9, reason: 'Clarify timing.', yes: true },
+    });
+    (requestChanges as any).apiRequest = apiRequest;
+    (requestChanges as any).confirmAction = jest.fn().mockResolvedValue(true);
+    (requestChanges as any).jsonEnabled = () => true;
+    (approverEdit as any).parse = jest.fn().mockResolvedValue({
+      args: { id: sessionId },
+      flags: {
+        'expected-version': 10,
+        subject: 'Updated subject',
+        body: 'Preserved full message with one attributed edit.',
+        reason: 'Use an exact day.',
+        yes: true,
+      },
+    });
+    (approverEdit as any).apiRequest = apiRequest;
+    (approverEdit as any).confirmAction = jest.fn().mockResolvedValue(true);
+    (approverEdit as any).jsonEnabled = () => true;
 
     await expect(show.run()).resolves.toMatchObject({ phase: 'brief' });
     await expect(confirm.run()).resolves.toMatchObject({ phase: 'draft', draft: { revision: 1 } });
@@ -179,6 +247,14 @@ describe('relationship intelligence commands', () => {
     await expect(history.run()).resolves.toEqual([{ action: 'accepted' }]);
     await expect(review.run()).resolves.toMatchObject({ phase: 'review' });
     await expect(bind.run()).resolves.toMatchObject({ senderAccountId: senderId });
+    await expect(requestApproval.run()).resolves.toMatchObject({
+      review: { approval: { status: 'pending' } },
+    });
+    await expect(resolveIdentity.run()).resolves.toMatchObject({
+      review: { identityCollision: { status: 'resolved' } },
+    });
+    await expect(requestChanges.run()).resolves.toMatchObject({ phase: 'draft' });
+    await expect(approverEdit.run()).resolves.toMatchObject({ draft: { revision: 2 } });
     expect(apiRequest.mock.calls.map((call) => call[1])).toEqual([
       `/api/v1/relationships/composer-sessions/${sessionId}`,
       `/api/v1/relationships/composer-sessions/${sessionId}/confirm-brief`,
@@ -187,6 +263,10 @@ describe('relationship intelligence commands', () => {
       `/api/v1/relationships/composer-sessions/${sessionId}`,
       `/api/v1/relationships/composer-sessions/${sessionId}/review`,
       `/api/v1/relationships/composer-sessions/${sessionId}/sender`,
+      `/api/v1/relationships/composer-sessions/${sessionId}/approval-requests`,
+      `/api/v1/relationships/composer-sessions/${sessionId}/identity-resolution`,
+      `/api/v1/relationships/composer-sessions/${sessionId}/request-changes`,
+      `/api/v1/relationships/composer-sessions/${sessionId}/approver-edit`,
     ]);
   });
 });
