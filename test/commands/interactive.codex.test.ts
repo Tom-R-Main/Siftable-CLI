@@ -379,7 +379,7 @@ describe('model catalog + reasoning effort', () => {
     expect(findModelChoice('nano')?.model).toBe('openai/gpt-5.4-nano');
   });
 
-  it('catalogues Grok 4.5 and resolves catalogue-compatible aliases through OpenRouter', async () => {
+  it('catalogues Grok 4.6 and resolves current and retired aliases through OpenRouter', async () => {
     const config = jest.fn(async (input: {provider?: string; model?: string; effort?: string}) => ({
       provider: input.provider ?? 'openrouter',
       model: input.model ?? 'x',
@@ -388,16 +388,17 @@ describe('model catalog + reasoning effort', () => {
     const {ctx, messages} = buildCtx({config});
 
     expect(findModelChoice('grok')).toMatchObject({
-      id: 'openrouter/x-ai/grok-4.5',
+      id: 'openrouter/x-ai/grok-4.6',
       provider: 'openrouter',
-      model: 'x-ai/grok-4.5',
+      model: 'x-ai/grok-4.6',
     });
-    expect(findModelChoice('grok-4-5')?.model).toBe('x-ai/grok-4.5');
-    expect(findModelChoice('openrouter:x-ai/grok-4.5')?.model).toBe('x-ai/grok-4.5');
+    expect(findModelChoice('grok-4-6')?.model).toBe('x-ai/grok-4.6');
+    expect(findModelChoice('grok-4-5')?.model).toBe('x-ai/grok-4.6');
+    expect(findModelChoice('openrouter:x-ai/grok-4.5')?.model).toBe('x-ai/grok-4.6');
 
     await runInteractiveCommand(ctx, '/model grok-45 high');
-    expect(config).toHaveBeenCalledWith({provider: 'openrouter', model: 'x-ai/grok-4.5', effort: 'high'});
-    expect(messages.at(-1)?.text).toContain('openrouter/x-ai/grok-4.5');
+    expect(config).toHaveBeenCalledWith({provider: 'openrouter', model: 'x-ai/grok-4.6', effort: 'high'});
+    expect(messages.at(-1)?.text).toContain('openrouter/x-ai/grok-4.6');
   });
 
   it('offers Kimi K3 and K2.6 while migrating retired K2 aliases to K2.6', async () => {
