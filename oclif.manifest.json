@@ -29081,6 +29081,103 @@
         "proposals",
         "show.js"
       ]
+    },
+    "relationships:contact-plan:inspect": {
+      "aliases": [],
+      "args": {
+        "person": {
+          "description": "Canonical person UUID",
+          "name": "person",
+          "required": true
+        }
+      },
+      "description": "Inspect one canonical person contact plan without mutating its source lifecycles",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "from": {
+          "description": "Inclusive ISO-8601 inspection window start",
+          "name": "from",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "to": {
+          "description": "Inclusive ISO-8601 inspection window end",
+          "name": "to",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "timezone": {
+          "description": "IANA display timezone",
+          "name": "timezone",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "limit": {
+          "description": "Maximum projected items",
+          "name": "limit",
+          "default": 100,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "relationships:contact-plan:inspect",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "relationships",
+        "contact-plan",
+        "inspect.js"
+      ]
     }
   },
   "version": "0.5.40"
