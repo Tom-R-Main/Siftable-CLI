@@ -241,6 +241,8 @@ export interface ChildSessionController {
   abandonChild(sessionId: number): {ok: boolean; reason?: string};
   /** Remove a recorded child or confirm its managed worktree is already absent. */
   teardownChild(record: ChildSessionRecord): {ok: boolean; reason?: string};
+  /** Remove the exact prepared worktree when session registration never completed. */
+  teardownLaunch(launch: ChildSessionLaunch): {ok: boolean; reason?: string};
   removeChild(
     sessionId: number,
     opts?: {deleteBranch?: boolean; force?: boolean},
@@ -845,6 +847,30 @@ export function createChildSessionController(
     return removeChild(adopted.session.sessionId, {deleteBranch: true, force: true});
   }
 
+  function teardownLaunch(launch: ChildSessionLaunch): {ok: boolean; reason?: string} {
+    try {
+      const expected = validateChildWorktreePath(launch.worktreePath, {
+        worktreesRoot,
+        repoRoot: launch.repoRoot,
+      });
+      const listed = listWorktrees(launch.repoRoot, runner).find((candidate) => {
+        const candidatePath = canonicalPath(candidate.path);
+        return candidatePath !== undefined && candidatePath === canonicalPath(expected);
+      });
+      if (!listed) return {ok: true};
+      if (listed.isPrimary || !listed.isSiftManaged || listed.branch !== launch.branch) {
+        return {
+          ok: false,
+          reason: `prepared child worktree path is occupied by a mismatched checkout: ${launch.worktreePath}`,
+        };
+      }
+      const cleanupFailure = cleanupWorktree(launch.repoRoot, expected);
+      return cleanupFailure ? {ok: false, reason: cleanupFailure} : {ok: true};
+    } catch (error) {
+      return {ok: false, reason: error instanceof Error ? error.message : String(error)};
+    }
+  }
+
   /** Internal worktree teardown that does not touch registry status (merge already did). */
   function removeChild_internal(
     rec: ChildSessionRecord,
@@ -912,6 +938,7 @@ export function createChildSessionController(
     rejectChild,
     abandonChild,
     teardownChild,
+    teardownLaunch,
     removeChild,
   };
 }

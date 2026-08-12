@@ -319,6 +319,55 @@ describe('childSessionController — contracted identity and recovery adoption',
     }
   });
 
+  it('tears down an exact prepared launch without a registered session', async () => {
+    const {repoRoot, worktreesRoot, cleanup} = await setupRepo();
+    try {
+      const input = {
+        title: contractedWork.title,
+        accessMode: 'read_write' as const,
+        writeScope: contractedWork.writeScope.include,
+        cwd: repoRoot,
+        work: contractedWork,
+      };
+      const controller = createChildSessionController({runner: git, worktreesRoot});
+      const launch = controller.resolveLaunch(input);
+      const spawned = controller.spawnOrAdoptChild(input, launch);
+      expect(spawned.ok).toBe(true);
+
+      expect(controller.teardownLaunch(launch)).toEqual({ok: true});
+      expect(listChildWorktrees(repoRoot, git)).toEqual([]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('refuses to tear down a deterministic path occupied by a different branch', async () => {
+    const {repoRoot, worktreesRoot, cleanup} = await setupRepo();
+    try {
+      const input = {
+        title: contractedWork.title,
+        accessMode: 'read_write' as const,
+        writeScope: contractedWork.writeScope.include,
+        cwd: repoRoot,
+        work: contractedWork,
+      };
+      const controller = createChildSessionController({runner: git, worktreesRoot});
+      const launch = controller.resolveLaunch(input);
+      const spawned = controller.spawnOrAdoptChild(input, launch);
+      expect(spawned.ok).toBe(true);
+      if (!spawned.ok) return;
+      expect(git(['branch', '-m', 'foreign-branch'], spawned.session.worktreePath).status).toBe(0);
+
+      const removed = controller.teardownLaunch(launch);
+
+      expect(removed.ok).toBe(false);
+      if (!removed.ok) expect(removed.reason).toContain('mismatched checkout');
+      await expect(stat(spawned.session.worktreePath)).resolves.toBeDefined();
+    } finally {
+      await cleanup();
+    }
+  });
+
   it('rejects a recovered worktree whose live head no longer descends from the prepared base', async () => {
     const {repoRoot, worktreesRoot, cleanup} = await setupRepo();
     try {

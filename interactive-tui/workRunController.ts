@@ -46,7 +46,7 @@ export interface WorkRunControllerOptions {
   client: WorkRunClient;
   childController: Pick<
     ChildSessionController,
-    "resolveLaunch" | "spawnOrAdoptChild" | "adoptChild" | "abandonChild" | "teardownChild"
+    "resolveLaunch" | "spawnOrAdoptChild" | "adoptChild" | "abandonChild" | "teardownChild" | "teardownLaunch"
   >;
   store: ChildSessionStore;
   cwd?: string;
@@ -472,6 +472,14 @@ export function createWorkRunController(
     if (pending.cleanup.worktree) {
       result.attempted.push("worktree");
       if (!pending.session) {
+        const removed = options.childController.teardownLaunch(pending.launch);
+        if (!removed.ok) {
+          result.failures.push({
+            step: "worktree",
+            reason: errorReason(removed.reason ?? "cleanup failed", secrets),
+          });
+          return result;
+        }
         pending = {...pending, cleanup: {...pending.cleanup, worktree: false}};
       } else {
         const removed = options.childController.teardownChild(pending.session);
@@ -526,7 +534,7 @@ export function createWorkRunController(
       phase: "cleanup_pending",
       session: input.session ?? record.session,
       cleanup: {
-        worktree: Boolean(input.session ?? record.session),
+        worktree: Boolean(input.session ?? record.session ?? input.worktreeCleanupFailure),
         lease: true,
       },
     };
@@ -929,15 +937,35 @@ export function createWorkRunController(
 
       let record: ActiveChildSessionRecoveryRecord;
       if (stored.phase === "claimed") {
-        const spawned = options.childController.spawnOrAdoptChild({
-          title: stored.work.title,
-          accessMode: stored.launch.accessMode,
-          writeScope: stored.launch.writeScope,
-          baseBranch: stored.launch.baseBranch,
-          cwd: stored.launch.repoRoot,
-          work: stored.work,
-        }, stored.launch);
-        if (!spawned.ok) {
+        let spawned: SpawnChildResult;
+        try {
+          spawned = options.childController.spawnOrAdoptChild({
+            title: stored.work.title,
+            accessMode: stored.launch.accessMode,
+            writeScope: stored.launch.writeScope,
+            baseBranch: stored.launch.baseBranch,
+            cwd: stored.launch.repoRoot,
+            work: stored.work,
+          }, stored.launch);
+        } catch (error) {
+          const cleanup = object(error);
+          const compensation = await compensate(stored, {
+            worktreeCleanupFailure: typeof cleanup?.cleanupFailure === "string"
+              ? cleanup.cleanupFailure
+              : undefined,
+          });
+          result.failed.push({
+            runId: stored.runId,
+            reason: errorReason(error, [
+              stored.credentials.claimOwner,
+              stored.credentials.claimToken,
+            ]),
+            compensation,
+          });
+          await lock.release();
+          continue;
+        }
+        if (spawned.ok === false) {
           const compensation = await compensate(stored, {
             worktreeCleanupFailure: spawned.cleanupFailure,
           });
@@ -983,7 +1011,7 @@ export function createWorkRunController(
           await lock.release();
           continue;
         }
-        if (!adopted.ok) {
+        if (adopted.ok === false) {
           result.failed.push({runId: record.runId, reason: adopted.reason});
           await lock.release();
           continue;

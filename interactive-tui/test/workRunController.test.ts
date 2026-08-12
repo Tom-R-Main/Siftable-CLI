@@ -1,7 +1,7 @@
 process.env.SIFT_NO_NATIVE = "1";
 
 import {afterEach, beforeEach, describe, expect, it} from "bun:test";
-import {mkdtemp, rm, stat, writeFile} from "node:fs/promises";
+import {mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import type {
@@ -166,13 +166,15 @@ function fakeClient(log: string[], options: {
 function fakeChildren(log: string[], options: {
   spawnFailure?: boolean;
   spawnCleanupFailure?: boolean;
+  spawnThrowOnce?: boolean;
   adoptFailure?: boolean;
   removeFailure?: boolean;
 } = {}) {
   let current: ChildSessionRecord | undefined;
+  let spawnCalls = 0;
   const controller: Pick<
     ChildSessionController,
-    "resolveLaunch" | "spawnOrAdoptChild" | "adoptChild" | "abandonChild" | "teardownChild"
+    "resolveLaunch" | "spawnOrAdoptChild" | "adoptChild" | "abandonChild" | "teardownChild" | "teardownLaunch"
   > = {
     resolveLaunch() {
       log.push("resolve-launch");
@@ -180,6 +182,8 @@ function fakeChildren(log: string[], options: {
     },
     spawnOrAdoptChild(input: SpawnChildInput) {
       log.push("spawn");
+      spawnCalls++;
+      if (options.spawnThrowOnce && spawnCalls === 1) throw new Error("spawn exploded");
       if (options.spawnCleanupFailure) {
         return {
           ok: false,
@@ -207,6 +211,11 @@ function fakeChildren(log: string[], options: {
       log.push("remove");
       if (options.removeFailure) return {ok: false, reason: "remove failed"};
       current = undefined;
+      return {ok: true};
+    },
+    teardownLaunch() {
+      log.push("remove-launch");
+      if (options.removeFailure) return {ok: false, reason: "remove failed"};
       return {ok: true};
     },
   };
@@ -243,6 +252,34 @@ async function store(log?: string[]) {
   const actual = createChildSessionStore({root, now: () => 123});
   return {root, store: log ? loggingStore(actual, log) : actual};
 }
+
+describe("childSessionStore run locks", () => {
+  it("preserves a fresh malformed lock, then reclaims it after the stale grace", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sift-work-lock-"));
+    tempRoots.push(root);
+    const runId = "a".repeat(64);
+    const lockPath = join(root, `.${runId}.lock`);
+    await writeFile(lockPath, "{", {encoding: "utf8", mode: 0o600});
+
+    const fresh = createChildSessionStore({
+      root,
+      now: () => Date.now(),
+      malformedLockStaleMs: 30_000,
+    });
+    expect(await fresh.acquire(runId)).toBeUndefined();
+    expect(await readFile(lockPath, "utf8")).toBe("{");
+
+    const stale = createChildSessionStore({
+      root,
+      now: () => Date.now() + 60_000,
+      malformedLockStaleMs: 30_000,
+    });
+    const acquired = await stale.acquire(runId);
+    expect(acquired).toBeDefined();
+    await acquired?.release();
+    await expect(readFile(lockPath, "utf8")).rejects.toMatchObject({code: "ENOENT"});
+  });
+});
 
 describe("workRunController contracted orchestration", () => {
   it("admits, claims, persists, then starts the exact work item", async () => {
@@ -678,6 +715,88 @@ describe("workRunController contracted orchestration", () => {
 });
 
 describe("workRunController recovery", () => {
+  it("contains a thrown spawn, releases its lock, and continues recovering siblings", async () => {
+    const log: string[] = [];
+    const stored = await store(log);
+    const firstRunId = stored.store.runIdFor("/repo", workItemId);
+    const siblingWork = {
+      ...identity(),
+      workItemId: "work-456",
+      title: "sibling work",
+      plan: {...identity().plan, planId: "plan-2"},
+    };
+    const siblingRunId = stored.store.runIdFor("/repo", siblingWork.workItemId);
+    await stored.store.put({
+      runId: firstRunId,
+      phase: "claimed",
+      updatedAtMs: 0,
+      work: identity(),
+      launch: launch(),
+      credentials: {claimOwner: owner, claimToken: token},
+    });
+    await stored.store.put({
+      runId: siblingRunId,
+      phase: "claimed",
+      updatedAtMs: 0,
+      work: siblingWork,
+      launch: launch(siblingWork),
+      credentials: {claimOwner: owner, claimToken: token},
+    });
+    log.length = 0;
+    const controller = createWorkRunController({
+      client: fakeClient(log),
+      childController: fakeChildren(log, {spawnThrowOnce: true}).controller,
+      store: stored.store,
+    });
+
+    const result = await controller.recoverWorkRuns();
+
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0]).toMatchObject({runId: firstRunId, reason: "spawn exploded"});
+    expect(result.recovered).toHaveLength(1);
+    expect(result.recovered[0].runId).toBe(siblingRunId);
+    const reacquired = await stored.store.acquire(firstRunId);
+    expect(reacquired).toBeDefined();
+    await reacquired?.release();
+    await controller.shutdown({preserveRuns: true});
+  });
+
+  it("retains and resumes deterministic worktree cleanup before session registration", async () => {
+    const log: string[] = [];
+    const stored = await store(log);
+    const runId = stored.store.runIdFor("/repo", workItemId);
+    await stored.store.put({
+      runId,
+      phase: "claimed",
+      updatedAtMs: 0,
+      work: identity(),
+      launch: launch(),
+      credentials: {claimOwner: owner, claimToken: token},
+    });
+    log.length = 0;
+    const failed = createWorkRunController({
+      client: fakeClient(log),
+      childController: fakeChildren(log, {spawnCleanupFailure: true}).controller,
+      store: stored.store,
+    });
+
+    expect((await failed.recoverWorkRuns()).failed).toHaveLength(1);
+    expect((await stored.store.loadAll()).records[0]).toMatchObject({
+      phase: "cleanup_pending",
+      cleanup: {worktree: true, lease: true},
+    });
+
+    log.length = 0;
+    const resumed = createWorkRunController({
+      client: fakeClient(log),
+      childController: fakeChildren(log).controller,
+      store: stored.store,
+    });
+    expect((await resumed.recoverWorkRuns()).failed).toEqual([]);
+    expect(log.indexOf("remove-launch")).toBeLessThan(log.indexOf(`release:${workItemId}`));
+    expect(await stored.store.listSafe()).toEqual([]);
+  });
+
   it("resumes a claimed journal through the exact prepared child", async () => {
     const log: string[] = [];
     const stored = await store(log);

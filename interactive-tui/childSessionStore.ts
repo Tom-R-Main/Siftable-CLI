@@ -1,4 +1,5 @@
 import {createHash, randomUUID} from "node:crypto";
+import type {Stats} from "node:fs";
 import {
   chmod,
   lstat,
@@ -9,7 +10,7 @@ import {
   rename,
   rm,
 } from "node:fs/promises";
-import type {FileHandle, Stats} from "node:fs/promises";
+import type {FileHandle} from "node:fs/promises";
 import {homedir, hostname} from "node:os";
 import {join} from "node:path";
 import type {ChildSessionRecord} from "./childSessionController";
@@ -107,9 +108,11 @@ export interface ChildSessionStore {
 export interface ChildSessionStoreOptions {
   root?: string;
   now?: () => number;
+  malformedLockStaleMs?: number;
 }
 
 const RUN_ID = /^[a-f0-9]{64}$/;
+const DEFAULT_MALFORMED_LOCK_STALE_MS = 30_000;
 
 function assertRunId(runId: string): void {
   if (!RUN_ID.test(runId)) throw new Error("invalid work-session recovery id");
@@ -292,6 +295,8 @@ export function createChildSessionStore(
 ): ChildSessionStore {
   const root = options.root ?? join(homedir(), ".siftable", "work-sessions");
   const now = options.now ?? Date.now;
+  const malformedLockStaleMs = options.malformedLockStaleMs
+    ?? DEFAULT_MALFORMED_LOCK_STALE_MS;
 
   async function ensureRoot(): Promise<void> {
     await mkdir(root, {recursive: true, mode: 0o700});
@@ -368,11 +373,12 @@ export function createChildSessionStore(
     const path = lockPath(runId);
     for (let attempt = 0; attempt < 2; attempt++) {
       let handle: FileHandle | undefined;
+      let created: Stats | undefined;
       try {
         handle = await open(path, "wx", 0o600);
+        created = await handle.stat();
         await handle.writeFile(JSON.stringify({pid: process.pid, host: hostname(), createdAtMs: now()}));
         await handle.sync();
-        const owned = await handle.stat();
         await handle.close();
         handle = undefined;
         await syncDirectory(root);
@@ -383,7 +389,7 @@ export function createChildSessionStore(
             released = true;
             try {
               const current = await lstat(path);
-              if (sameFile(current, owned)) {
+              if (sameFile(current, created)) {
                 await rm(path, {force: true});
                 await syncDirectory(root);
               }
@@ -394,15 +400,35 @@ export function createChildSessionStore(
         };
       } catch (error) {
         if (handle) await handle.close().catch(() => undefined);
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+          if (created) {
+            try {
+              const current = await lstat(path);
+              if (sameFile(current, created)) {
+                await rm(path, {force: true});
+                await syncDirectory(root);
+              }
+            } catch (cleanupError) {
+              if ((cleanupError as NodeJS.ErrnoException).code !== "ENOENT") throw cleanupError;
+            }
+          }
+          throw error;
+        }
         let owned: Stats;
         try {
           owned = await lstat(path);
-          const parsed = object(JSON.parse(await readFile(path, "utf8")));
+          let parsed: Record<string, unknown> | undefined;
+          try {
+            parsed = object(JSON.parse(await readFile(path, "utf8")));
+          } catch {
+            if (now() - owned.mtimeMs < malformedLockStaleMs) return undefined;
+          }
           const stale = parsed?.host === hostname()
             && typeof parsed.pid === "number"
             && !processIsAlive(parsed.pid);
-          if (!stale) return undefined;
+          const malformedAndStale = parsed === undefined
+            && now() - owned.mtimeMs >= malformedLockStaleMs;
+          if (!stale && !malformedAndStale) return undefined;
           const current = await lstat(path);
           if (sameFile(current, owned)) {
             await rm(path, {force: true});
