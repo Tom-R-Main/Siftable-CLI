@@ -190,8 +190,14 @@ describe("lane G — full /branches lifecycle on a real repo", () => {
 describe("contracted work-run lifecycle on a real repo", () => {
   it("starts only after the exact child worktree, registry session, and recovery record exist", async () => {
     const fx = await setupRepo();
+    let run: ReturnType<typeof createWorkRunController> | undefined;
     try {
       const log: string[] = [];
+      let startObservation: {
+        worktreeExists: boolean;
+        workItemId: string | undefined;
+        phase: string | undefined;
+      } | undefined;
       const controller = createChildSessionController({runner: git, worktreesRoot: fx.worktreesRoot});
       const actualStore = createChildSessionStore({root: join(fx.worktreesRoot, "recovery")});
       const store: ChildSessionStore = {
@@ -225,16 +231,19 @@ describe("contracted work-run lifecycle on a real repo", () => {
         async transitionWorkItem(id, action) {
           if (action === "start") {
             const child = controller.listChildSessions()[0];
-            expect(child).toBeDefined();
-            expect(existsSync(child.worktreePath)).toBe(true);
-            expect(getMergeMasterSession(child.sessionId)?.work?.workItemId).toBe(id);
-            expect((await store.listSafe())[0].phase).toBe("spawned");
+            startObservation = {
+              worktreeExists: child ? existsSync(child.worktreePath) : false,
+              workItemId: child
+                ? getMergeMasterSession(child.sessionId)?.work?.workItemId
+                : undefined,
+              phase: (await store.listSafe())[0]?.phase,
+            };
           }
           log.push(`${action}:${id}`);
           return {statusCode: 200, data: {workItem: {id, status: action === "release" ? "queued" : "running"}}};
         },
       };
-      const run = createWorkRunController({
+      run = createWorkRunController({
         client,
         childController: controller,
         store,
@@ -243,6 +252,11 @@ describe("contracted work-run lifecycle on a real repo", () => {
       });
 
       expect((await run.startContractedWork("work-real")).ok).toBe(true);
+      expect(startObservation).toEqual({
+        worktreeExists: true,
+        workItemId: "work-real",
+        phase: "spawned",
+      });
       expect(log).toEqual([
         "load:work-real",
         "plan:work-real",
@@ -252,6 +266,7 @@ describe("contracted work-run lifecycle on a real repo", () => {
         "persist:started",
       ]);
     } finally {
+      await run?.shutdown({preserveRuns: true});
       await fx.cleanup();
     }
   });

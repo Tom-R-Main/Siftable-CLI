@@ -17,6 +17,7 @@ import {
 } from '../interactive-tui/worktreeService';
 import {
   getMergeMasterSession,
+  getWorkIdentity,
   resetMergeMasterForTests,
   type MergeMasterWorkIdentity,
 } from '../interactive-tui/mergeMaster';
@@ -247,6 +248,8 @@ describe('childSessionController — contracted identity and recovery adoption',
       expect(getMergeMasterSession(result.session.sessionId)?.work).toEqual(contractedWork);
       expect(JSON.stringify(result.session)).not.toMatch(/claimToken|claimOwner/);
       expect(JSON.stringify(getMergeMasterSession(result.session.sessionId))).not.toMatch(/claimToken|claimOwner/);
+      expect(ctrl.removeChild(result.session.sessionId).ok).toBe(true);
+      expect(getWorkIdentity(result.session.sessionId)).toBeUndefined();
     } finally {
       await cleanup();
     }

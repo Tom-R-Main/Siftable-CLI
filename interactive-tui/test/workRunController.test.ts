@@ -1,7 +1,7 @@
 process.env.SIFT_NO_NATIVE = "1";
 
 import {afterEach, beforeEach, describe, expect, it} from "bun:test";
-import {mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
+import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import type {
@@ -106,6 +106,8 @@ function fakeClient(log: string[], options: {
   startFailure?: boolean;
   heartbeatFailure?: boolean;
   heartbeatHang?: boolean;
+  heartbeatGate?: Promise<void>;
+  onHeartbeatStart?: () => void;
   onHeartbeatAbort?: () => void;
   heartbeatStatus?: string;
   releaseFailure?: boolean;
@@ -142,6 +144,10 @@ function fakeClient(log: string[], options: {
       }
       if (action === "start" && options.startFailure) {
         return {statusCode: 409, error: "start rejected"};
+      }
+      if (action === "heartbeat") {
+        options.onHeartbeatStart?.();
+        await options.heartbeatGate;
       }
       if (action === "heartbeat" && options.heartbeatFailure) {
         return {statusCode: 409, error: "heartbeat rejected"};
@@ -253,6 +259,17 @@ async function store(log?: string[]) {
   return {root, store: log ? loggingStore(actual, log) : actual};
 }
 
+async function waitFor(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs = 1_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!await predicate()) {
+    if (Date.now() >= deadline) throw new Error("timed out waiting for test condition");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 describe("childSessionStore run locks", () => {
   it("preserves a fresh malformed lock, then reclaims it after the stale grace", async () => {
     const root = await mkdtemp(join(tmpdir(), "sift-work-lock-"));
@@ -278,6 +295,43 @@ describe("childSessionStore run locks", () => {
     expect(acquired).toBeDefined();
     await acquired?.release();
     await expect(readFile(lockPath, "utf8")).rejects.toMatchObject({code: "ENOENT"});
+  });
+
+  it("creates a recovery record exactly once under concurrent writers", async () => {
+    const stored = await store();
+    const runId = stored.store.runIdFor("/repo", workItemId);
+    const base: ChildSessionRecoveryRecord = {
+      runId,
+      phase: "claimed",
+      updatedAtMs: 0,
+      work: identity(),
+      launch: launch(),
+      credentials: {claimOwner: owner, claimToken: token},
+    };
+    const alternate: ChildSessionRecoveryRecord = {
+      ...base,
+      work: {...identity(), title: "alternate title"},
+    };
+
+    const results = await Promise.allSettled([
+      stored.store.putExclusive(base),
+      stored.store.putExclusive(alternate),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect((await stored.store.get(runId))?.work.title).toMatch(/authoritative title|alternate title/);
+  });
+
+  it("distinguishes unreadable recovery entries from malformed records", async () => {
+    const stored = await store();
+    const unreadableRunId = "b".repeat(64);
+    await mkdir(join(stored.root, `${unreadableRunId}.json`));
+
+    expect((await stored.store.loadAll()).failures).toEqual([{
+      runId: unreadableRunId,
+      reason: expect.stringContaining("could not be read"),
+    }]);
   });
 });
 
@@ -681,7 +735,7 @@ describe("workRunController contracted orchestration", () => {
     });
     expect((await controller.startContractedWork(workItemId)).ok).toBe(true);
 
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await waitFor(() => log.includes(`heartbeat:${workItemId}`));
 
     expect(log.filter((entry) => entry === `heartbeat:${workItemId}`).length).toBeGreaterThan(0);
     await controller.shutdown({preserveRuns: true});
@@ -706,11 +760,149 @@ describe("workRunController contracted orchestration", () => {
     clock = 500;
     setTimeout(() => { clock = 1_500; }, 8);
 
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await waitFor(() => log.includes("abandon"));
 
     expect(log).toContain("abandon");
     expect(aborted).toBe(true);
     expect((await stored.store.listSafe())[0].phase).toBe("quarantined");
+  });
+
+  it("retries a journal refresh failure without quarantining a renewed lease", async () => {
+    const log: string[] = [];
+    const stored = await store();
+    let armed = false;
+    let refreshAttempts = 0;
+    const flakyStore: ChildSessionStore = {
+      ...stored.store,
+      async put(record) {
+        if (armed && record.phase === "started") {
+          refreshAttempts++;
+          if (refreshAttempts === 1) throw new Error("journal temporarily unavailable");
+        }
+        await stored.store.put(record);
+      },
+    };
+    const controller = createWorkRunController({
+      client: fakeClient(log),
+      childController: fakeChildren(log).controller,
+      store: flakyStore,
+      ownerFactory: () => owner,
+      leaseSeconds: 3,
+      heartbeatIntervalMs: 5,
+      heartbeatTimeoutMs: 100,
+    });
+    expect((await controller.startContractedWork(workItemId)).ok).toBe(true);
+    armed = true;
+
+    await waitFor(() => refreshAttempts >= 2);
+
+    expect(log).not.toContain("abandon");
+    expect((await stored.store.get(stored.store.runIdFor("/repo", workItemId)))?.phase).toBe("started");
+    await controller.shutdown({preserveRuns: true});
+  });
+
+  it("holds ownership until a failed quarantine journal can be persisted", async () => {
+    const log: string[] = [];
+    const stored = await store();
+    let quarantineWrites = 0;
+    const failures: Array<{runId: string; reason: string}> = [];
+    const flakyStore: ChildSessionStore = {
+      ...stored.store,
+      async put(record) {
+        if (record.phase === "quarantined" && ++quarantineWrites === 1) {
+          throw new Error("quarantine journal unavailable");
+        }
+        await stored.store.put(record);
+      },
+    };
+    const controller = createWorkRunController({
+      client: fakeClient(log, {heartbeatFailure: true}),
+      childController: fakeChildren(log).controller,
+      store: flakyStore,
+      ownerFactory: () => owner,
+      leaseSeconds: 2,
+      heartbeatIntervalMs: 5,
+      heartbeatTimeoutMs: 100,
+      onLeaseFailure: (failure) => failures.push(failure),
+    });
+    expect((await controller.startContractedWork(workItemId)).ok).toBe(true);
+    const runId = stored.store.runIdFor("/repo", workItemId);
+
+    await waitFor(() => failures.some((failure) => failure.reason.includes("quarantine persistence failed")));
+    expect(await stored.store.acquire(runId)).toBeUndefined();
+
+    await controller.shutdown();
+
+    const released = await stored.store.acquire(runId);
+    expect(released).toBeDefined();
+    await released?.release();
+    expect((await stored.store.get(runId))?.phase).toBe("quarantined");
+  });
+
+  it("retries lock release without abandoning the quarantined child twice", async () => {
+    const log: string[] = [];
+    const stored = await store();
+    let releaseAttempts = 0;
+    const flakyStore: ChildSessionStore = {
+      ...stored.store,
+      async acquire(runId) {
+        const lock = await stored.store.acquire(runId);
+        if (!lock) return undefined;
+        return {
+          async release() {
+            releaseAttempts++;
+            if (releaseAttempts === 1) throw new Error("lock release unavailable");
+            await lock.release();
+          },
+        };
+      },
+    };
+    const controller = createWorkRunController({
+      client: fakeClient(log),
+      childController: fakeChildren(log).controller,
+      store: flakyStore,
+      ownerFactory: () => owner,
+      heartbeatIntervalMs: 10_000,
+    });
+    expect((await controller.startContractedWork(workItemId)).ok).toBe(true);
+
+    await expect(controller.shutdown()).rejects.toThrow("quarantine remains pending");
+    await controller.shutdown();
+
+    expect(log.filter((entry) => entry === "abandon")).toHaveLength(1);
+    expect(releaseAttempts).toBe(2);
+  });
+
+  it("waits for an in-flight heartbeat before releasing the run lock", async () => {
+    const log: string[] = [];
+    const stored = await store();
+    let heartbeatStarted = false;
+    let releaseHeartbeat!: () => void;
+    const heartbeatGate = new Promise<void>((resolve) => { releaseHeartbeat = resolve; });
+    const controller = createWorkRunController({
+      client: fakeClient(log, {
+        heartbeatGate,
+        onHeartbeatStart: () => { heartbeatStarted = true; },
+      }),
+      childController: fakeChildren(log).controller,
+      store: stored.store,
+      ownerFactory: () => owner,
+      leaseSeconds: 3,
+      heartbeatIntervalMs: 5,
+      heartbeatTimeoutMs: 500,
+    });
+    expect((await controller.startContractedWork(workItemId)).ok).toBe(true);
+    const runId = stored.store.runIdFor("/repo", workItemId);
+    await waitFor(() => heartbeatStarted);
+
+    const shuttingDown = controller.shutdown({preserveRuns: true});
+    expect(await stored.store.acquire(runId)).toBeUndefined();
+    releaseHeartbeat();
+    await shuttingDown;
+
+    const released = await stored.store.acquire(runId);
+    expect(released).toBeDefined();
+    await released?.release();
   });
 });
 
@@ -820,7 +1012,7 @@ describe("workRunController recovery", () => {
 
     expect(result.failed).toEqual([]);
     expect(result.recovered[0].phase).toBe("started");
-    expect(log).toEqual(["spawn", "put:spawned", "put:spawned", `start:${workItemId}`, "put:started"]);
+    expect(log).toEqual(["spawn", "put:spawned", `start:${workItemId}`, "put:started"]);
     await controller.shutdown({preserveRuns: true});
   });
 
@@ -938,7 +1130,7 @@ describe("workRunController recovery", () => {
 
     expect(result.failed).toEqual([]);
     expect(result.recovered[0].phase).toBe("started");
-    expect(log).toEqual(["adopt", "put:spawned", `start:${workItemId}`, "put:started"]);
+    expect(log).toEqual(["adopt", `start:${workItemId}`, "put:started"]);
     expect(JSON.stringify(result)).not.toMatch(/private-owner|private-token|claimOwner|claimToken/);
     expect((await stored.store.loadAll()).records[0].credentials).toEqual({
       claimOwner: owner,
@@ -971,7 +1163,6 @@ describe("workRunController recovery", () => {
     expect(result.recovered).toHaveLength(1);
     expect(log).toEqual([
       "adopt",
-      "put:spawned",
       `start:${workItemId}`,
       `heartbeat:${workItemId}`,
       "put:started",
@@ -1006,7 +1197,6 @@ describe("workRunController recovery", () => {
     expect(result.failed[0].reason).toContain("recover start work item failed");
     expect(log).toEqual([
       "adopt",
-      "put:spawned",
       `start:${workItemId}`,
       `heartbeat:${workItemId}`,
       "put:quarantined",

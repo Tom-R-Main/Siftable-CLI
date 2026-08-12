@@ -777,7 +777,7 @@ let backend: MergeMasterBackend | undefined;
 const childWriteScopes = new Map<number, { accessMode: MergeMasterAccessMode; scope: Set<string> }>();
 const childWorkIdentities = new Map<number, MergeMasterWorkIdentity>();
 
-function cloneWorkIdentity(identity: MergeMasterWorkIdentity): MergeMasterWorkIdentity {
+export function cloneWorkIdentity(identity: MergeMasterWorkIdentity): MergeMasterWorkIdentity {
   return {
     ...identity,
     contract: {...identity.contract},
@@ -835,6 +835,7 @@ export function transitionSessionStatus(sessionId: number, status: MergeMasterSt
   // work can be admitted. Only drop on a status the backend actually accepted.
   if (code === MM_OK && isTerminalStatus(status)) {
     childWriteScopes.delete(sessionId);
+    childWorkIdentities.delete(sessionId);
   }
   return code;
 }
@@ -861,6 +862,12 @@ export function listMergeMasterSessions(): MergeMasterSession[] {
 export function getWorkIdentity(sessionId: number): MergeMasterWorkIdentity | undefined {
   const identity = childWorkIdentities.get(sessionId);
   return identity ? cloneWorkIdentity(identity) : undefined;
+}
+
+/** Drop TypeScript sidecars when controller teardown removes its child record. */
+export function forgetChildSessionSidecars(sessionId: number): void {
+  childWriteScopes.delete(sessionId);
+  childWorkIdentities.delete(sessionId);
 }
 
 // ---------------------------------------------------------------------------

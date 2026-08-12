@@ -15,6 +15,7 @@ import {
   createParentSession,
   createGatedChildSession,
   evaluateChildAdmission,
+  getWorkIdentity,
   transitionSessionStatus,
   listMergeMasterSessions,
   resetMergeMasterForTests,
@@ -93,14 +94,25 @@ describe("Gate A admission", () => {
   });
 
   it("frees scope when the holding child reaches a terminal status", () => {
+    const work = {
+      workItemId: "work-a",
+      title: "bounded work",
+      contract: {classification: "bounded" as const, profile: "coding" as const, version: 1},
+      plan: {planId: "plan-a", planVersion: 1, state: "active" as const},
+      writeScope: {include: ["src/a.ts"], exclude: []},
+    };
     const first = createGatedChildSession(
-      child({ branch: "sift/a", worktreePath: "/repo/wt/a", writeScope: ["src/a.ts"] })
+      child({branch: "sift/a", worktreePath: "/repo/wt/a", writeScope: ["src/a.ts"], work})
     );
     expect(first.admitted).toBe(true);
     // While running, an overlapping candidate is blocked…
     expect(evaluateChildAdmission({ accessMode: "read_write", writeScope: ["src/a.ts"] }).admit).toBe(false);
     // …then the holder is abandoned (running → abandoned is terminal)…
-    if (first.admitted) transitionSessionStatus(first.sessionId, "abandoned");
+    if (first.admitted) {
+      expect(getWorkIdentity(first.sessionId)).toEqual(work);
+      transitionSessionStatus(first.sessionId, "abandoned");
+      expect(getWorkIdentity(first.sessionId)).toBeUndefined();
+    }
     // …and the scope is released.
     expect(evaluateChildAdmission({ accessMode: "read_write", writeScope: ["src/a.ts"] }).admit).toBe(true);
   });

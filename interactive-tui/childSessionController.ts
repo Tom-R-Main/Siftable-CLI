@@ -38,6 +38,7 @@ import {
   createGatedChildSession,
   createParentSession,
   evaluateChildAdmission,
+  forgetChildSessionSidecars,
   getMergeMasterSession,
   getWorkIdentity,
   isTerminalStatus,
@@ -438,20 +439,22 @@ export function createChildSessionController(
       return {ok: false, reason: error instanceof Error ? error.message : String(error)};
     }
     if (!existing) return spawnChild(input, launch);
+    const existingPath = canonicalPath(existing.path);
+    const launchPath = canonicalPath(launch.worktreePath);
     if (
       existing.isPrimary
       || existing.prunable
       || !existing.isSiftManaged
-      || canonicalPath(existing.path) !== canonicalPath(launch.worktreePath)
+      || existingPath === undefined
+      || launchPath === undefined
+      || existingPath !== launchPath
     ) {
       return {
         ok: false,
         reason: `prepared child branch is registered to a mismatched worktree: ${launch.branch}`,
       };
     }
-    return adoptChild({
-      sessionId: 1,
-      parentSessionId: 1,
+    return adoptPreparedChild({
       title: input.title,
       repoRoot: launch.repoRoot,
       branch: launch.branch,
@@ -467,7 +470,9 @@ export function createChildSessionController(
     });
   }
 
-  function adoptChild(record: ChildSessionRecord): SpawnChildResult {
+  function adoptPreparedChild(
+    record: Omit<ChildSessionRecord, "sessionId" | "parentSessionId">,
+  ): SpawnChildResult {
     let worktree;
     let canonicalRecordedPath: string;
     try {
@@ -493,10 +498,7 @@ export function createChildSessionController(
       };
     }
 
-    const canonicalWorktreePath = validateChildWorktreePath(realpathSync(worktree.path), {
-      worktreesRoot,
-      repoRoot: record.repoRoot,
-    });
+    const canonicalWorktreePath = canonicalRecordedPath;
     const baseCommit = resolveCommit(record.repoRoot, record.baseCommit, runner);
     const headCommit = resolveCommit(canonicalWorktreePath, "HEAD", runner);
     if (baseCommit !== record.baseCommit || !headCommit) {
@@ -543,6 +545,11 @@ export function createChildSessionController(
     };
     records.set(adopted.sessionId, adopted);
     return {ok: true, session: adopted};
+  }
+
+  function adoptChild(record: ChildSessionRecord): SpawnChildResult {
+    const {sessionId: _sessionId, parentSessionId: _parentSessionId, ...prepared} = record;
+    return adoptPreparedChild(prepared);
   }
 
   function listChildSessions(): ChildSessionView[] {
@@ -830,11 +837,15 @@ export function createChildSessionController(
         worktreesRoot,
         repoRoot: record.repoRoot,
       });
+      const canonicalExpected = canonicalPath(expected);
+      if (canonicalExpected === undefined) {
+        return {ok: false, reason: `recorded child worktree path cannot be resolved: ${record.worktreePath}`};
+      }
       listed = listWorktrees(record.repoRoot, runner).find((candidate) => {
         const candidatePath = canonicalPath(candidate.path);
         return !candidate.isPrimary
           && candidatePath !== undefined
-          && candidatePath === canonicalPath(expected)
+          && candidatePath === canonicalExpected
           && candidate.branch === record.branch;
       });
     } catch (error) {
@@ -853,9 +864,13 @@ export function createChildSessionController(
         worktreesRoot,
         repoRoot: launch.repoRoot,
       });
+      const canonicalExpected = canonicalPath(expected);
+      if (canonicalExpected === undefined) {
+        return {ok: false, reason: `prepared child worktree path cannot be resolved: ${launch.worktreePath}`};
+      }
       const listed = listWorktrees(launch.repoRoot, runner).find((candidate) => {
         const candidatePath = canonicalPath(candidate.path);
-        return candidatePath !== undefined && candidatePath === canonicalPath(expected);
+        return candidatePath !== undefined && candidatePath === canonicalExpected;
       });
       if (!listed) return {ok: true};
       if (listed.isPrimary || !listed.isSiftManaged || listed.branch !== launch.branch) {
@@ -919,6 +934,7 @@ export function createChildSessionController(
       transitionSessionStatus(sessionId, "abandoned", now());
     }
     records.delete(sessionId);
+    forgetChildSessionSidecars(sessionId);
     return {ok: true};
   }
 

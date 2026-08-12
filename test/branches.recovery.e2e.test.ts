@@ -321,6 +321,7 @@ describe("contracted work-run restart recovery", () => {
 
   it("re-associates a started run with the same work identity and no second claim or worktree", async () => {
     const fx = await setupRepo();
+    let freshRun: ReturnType<typeof createWorkRunController> | undefined;
     try {
       const counts = {claims: 0, starts: [] as Array<{id: string; owner?: string; token?: string}>};
       const store = createChildSessionStore({root: join(fx.worktreesRoot, "recovery")});
@@ -341,7 +342,7 @@ describe("contracted work-run restart recovery", () => {
 
       resetMergeMasterForTests();
       const freshController = createChildSessionController({runner: git, worktreesRoot: fx.worktreesRoot});
-      const freshRun = createWorkRunController({
+      freshRun = createWorkRunController({
         client: clientFor(counts),
         childController: freshController,
         store,
@@ -364,12 +365,14 @@ describe("contracted work-run restart recovery", () => {
         recovered.recovered[0].work,
       );
     } finally {
+      await freshRun?.shutdown({preserveRuns: true});
       await fx.cleanup();
     }
   });
 
   it("adopts a spawned run before retrying start with the stored exact lease", async () => {
     const fx = await setupRepo();
+    let recoveryRun: ReturnType<typeof createWorkRunController> | undefined;
     try {
       const counts = {claims: 0, starts: [] as Array<{id: string; owner?: string; token?: string}>};
       const store = createChildSessionStore({root: join(fx.worktreesRoot, "recovery")});
@@ -383,18 +386,19 @@ describe("contracted work-run restart recovery", () => {
       });
       expect((await firstRun.startContractedWork("work-recovery")).ok).toBe(true);
       const persisted = (await store.loadAll()).records[0];
-      await store.put({...persisted, phase: "spawned"});
       counts.starts.length = 0;
       await firstRun.shutdown({preserveRuns: true});
+      await store.put({...persisted, phase: "spawned"});
 
       resetMergeMasterForTests();
       const freshController = createChildSessionController({runner: git, worktreesRoot: fx.worktreesRoot});
-      const recovered = await createWorkRunController({
+      recoveryRun = createWorkRunController({
         client: clientFor(counts),
         childController: freshController,
         store,
         cwd: fx.repoRoot,
-      }).recoverWorkRuns();
+      });
+      const recovered = await recoveryRun.recoverWorkRuns();
 
       expect(recovered.failed).toEqual([]);
       expect(recovered.recovered[0].phase).toBe("started");
@@ -407,6 +411,7 @@ describe("contracted work-run restart recovery", () => {
       expect(listChildWorktrees(fx.repoRoot, git)).toHaveLength(1);
       expect((await store.loadAll()).records[0].phase).toBe("started");
     } finally {
+      await recoveryRun?.shutdown({preserveRuns: true});
       await fx.cleanup();
     }
   });

@@ -412,6 +412,9 @@ export function createWorkRunController(
     leaseExpiresAtMs: number;
     timer?: ReturnType<typeof setTimeout>;
     heartbeatRunning: boolean;
+    heartbeatPromise?: Promise<void>;
+    stopping: boolean;
+    childAbandoned: boolean;
   };
   const activeRuns = new Map<string, ActiveRun>();
 
@@ -421,6 +424,14 @@ export function createWorkRunController(
 
   function retryable(error: unknown): boolean {
     return error instanceof WorkRunError && error.retryable;
+  }
+
+  function notifyLeaseFailure(failure: {runId: string; reason: string}): void {
+    try {
+      options.onLeaseFailure?.(failure);
+    } catch {
+      // Observability callbacks must never break lease containment.
+    }
   }
 
   async function releaseLease(record: ChildSessionRecoveryRecord): Promise<void> {
@@ -563,10 +574,21 @@ export function createWorkRunController(
     record: ActiveChildSessionRecoveryRecord,
     lock: ChildSessionRunLock,
     reason: string,
-  ): Promise<void> {
-    const active = activeRuns.get(record.runId);
+  ): Promise<boolean> {
+    let active = activeRuns.get(record.runId);
+    if (!active) {
+      active = {
+        record,
+        lock,
+        leaseExpiresAtMs: now() + leaseMs,
+        heartbeatRunning: false,
+        stopping: true,
+        childAbandoned: false,
+      };
+      activeRuns.set(record.runId, active);
+    }
     if (active?.timer) clearTimeout(active.timer);
-    activeRuns.delete(record.runId);
+    active.stopping = true;
     const redactedReason = errorReason(reason, [
       record.credentials.claimOwner,
       record.credentials.claimToken,
@@ -578,17 +600,35 @@ export function createWorkRunController(
         quarantineReason: redactedReason,
       });
     } catch (error) {
-      options.onLeaseFailure?.({
+      notifyLeaseFailure({
         runId: record.runId,
         reason: `${redactedReason}; quarantine persistence failed: ${errorReason(error)}`,
       });
-      // Keep the lock held. Without a durable quarantine marker, allowing a
-      // second process to recover this run would violate single ownership.
-      return;
+      return false;
     }
-    options.childController.abandonChild(record.session.sessionId);
-    await lock.release();
-    options.onLeaseFailure?.({runId: record.runId, reason: redactedReason});
+    try {
+      if (!active.childAbandoned) {
+        const abandoned = options.childController.abandonChild(record.session.sessionId);
+        if (!abandoned.ok) {
+          notifyLeaseFailure({
+            runId: record.runId,
+            reason: `${redactedReason}; child quarantine failed: ${abandoned.reason ?? "unknown child"}`,
+          });
+          return false;
+        }
+        active.childAbandoned = true;
+      }
+      await lock.release();
+    } catch (error) {
+      notifyLeaseFailure({
+        runId: record.runId,
+        reason: `${redactedReason}; quarantine release failed: ${errorReason(error)}`,
+      });
+      return false;
+    }
+    if (activeRuns.get(record.runId) === active) activeRuns.delete(record.runId);
+    notifyLeaseFailure({runId: record.runId, reason: redactedReason});
+    return true;
   }
 
   async function heartbeatOnce(active: ActiveRun): Promise<void> {
@@ -613,7 +653,18 @@ export function createWorkRunController(
       "running",
     );
     active.leaseExpiresAtMs = now() + leaseMs;
-    await options.store.put(active.record);
+    try {
+      await options.store.put(active.record);
+    } catch (error) {
+      throw new WorkRunError(
+        "start",
+        `lease journal refresh failed: ${errorReason(error, [
+          active.record.credentials.claimOwner,
+          active.record.credentials.claimToken,
+        ])}`,
+        true,
+      );
+    }
   }
 
   function maintainLease(
@@ -625,26 +676,51 @@ export function createWorkRunController(
       lock,
       leaseExpiresAtMs: now() + leaseMs,
       heartbeatRunning: false,
+      stopping: false,
+      childAbandoned: false,
     };
     activeRuns.set(record.runId, active);
 
     const schedule = (delayMs: number) => {
-      active.timer = setTimeout(async () => {
-        if (activeRuns.get(record.runId) !== active || active.heartbeatRunning) return;
-        active.heartbeatRunning = true;
-        try {
-          await heartbeatOnce(active);
-          active.heartbeatRunning = false;
-          schedule(heartbeatIntervalMs);
-        } catch (error) {
-          active.heartbeatRunning = false;
-          const remainingMs = active.leaseExpiresAtMs - now();
-          if (retryable(error) && remainingMs > 1_000) {
-            schedule(Math.max(100, Math.min(5_000, Math.floor(remainingMs / 4))));
-            return;
+      active.timer = setTimeout(() => {
+        const cycle = (async () => {
+          if (
+            activeRuns.get(record.runId) !== active
+            || active.heartbeatRunning
+            || active.stopping
+          ) return;
+          active.heartbeatRunning = true;
+          try {
+            await heartbeatOnce(active);
+            if (!active.stopping) schedule(heartbeatIntervalMs);
+          } catch (error) {
+            if (active.stopping) return;
+            const remainingMs = active.leaseExpiresAtMs - now();
+            if (retryable(error) && remainingMs > 1_000) {
+              schedule(Math.max(100, Math.min(5_000, Math.floor(remainingMs / 4))));
+              return;
+            }
+            await quarantine(record, lock, errorReason(error));
+          } finally {
+            active.heartbeatRunning = false;
           }
-          await quarantine(record, lock, errorReason(error));
-        }
+        })();
+        active.heartbeatPromise = cycle;
+        void cycle.then(
+          () => {
+            if (active.heartbeatPromise === cycle) active.heartbeatPromise = undefined;
+          },
+          (error) => {
+            if (active.heartbeatPromise === cycle) active.heartbeatPromise = undefined;
+            notifyLeaseFailure({
+              runId: record.runId,
+              reason: `heartbeat containment failed: ${errorReason(error, [
+                record.credentials.claimOwner,
+                record.credentials.claimToken,
+              ])}`,
+            });
+          },
+        );
       }, Math.max(1, delayMs));
       active.timer.unref?.();
     };
@@ -984,7 +1060,10 @@ export function createWorkRunController(
           const compensation = await compensate(stored, {session: spawned.session});
           result.failed.push({
             runId: stored.runId,
-            reason: errorReason(error),
+            reason: errorReason(error, [
+              stored.credentials.claimOwner,
+              stored.credentials.claimToken,
+            ]),
             compensation,
           });
           await lock.release();
@@ -1037,7 +1116,6 @@ export function createWorkRunController(
             "running",
           );
         } else {
-          await options.store.put(record);
           await startOrConfirmRunning({
             client: options.client,
             workItemId: record.work.workItemId,
@@ -1065,14 +1143,34 @@ export function createWorkRunController(
   }
 
   async function shutdown(input: {preserveRuns?: boolean} = {}): Promise<void> {
+    const failures: string[] = [];
     for (const active of [...activeRuns.values()]) {
       if (active.timer) clearTimeout(active.timer);
+      active.stopping = true;
+      try {
+        await active.heartbeatPromise;
+      } catch (error) {
+        failures.push(`${active.record.runId}: heartbeat shutdown failed: ${errorReason(error, [
+          active.record.credentials.claimOwner,
+          active.record.credentials.claimToken,
+        ])}`);
+      }
+      if (activeRuns.get(active.record.runId) !== active) continue;
       if (input.preserveRuns) {
-        activeRuns.delete(active.record.runId);
-        await active.lock.release();
+        try {
+          await active.lock.release();
+          activeRuns.delete(active.record.runId);
+        } catch (error) {
+          failures.push(`${active.record.runId}: ${errorReason(error)}`);
+        }
         continue;
       }
-      await quarantine(active.record, active.lock, "work-run controller shut down");
+      if (!await quarantine(active.record, active.lock, "work-run controller shut down")) {
+        failures.push(`${active.record.runId}: quarantine remains pending`);
+      }
+    }
+    if (failures.length > 0) {
+      throw new Error(`work-run shutdown incomplete: ${failures.join("; ")}`);
     }
   }
 

@@ -2,6 +2,7 @@ import {createHash, randomUUID} from "node:crypto";
 import type {Stats} from "node:fs";
 import {
   chmod,
+  link,
   lstat,
   mkdir,
   open,
@@ -14,7 +15,11 @@ import type {FileHandle} from "node:fs/promises";
 import {homedir, hostname} from "node:os";
 import {join} from "node:path";
 import type {ChildSessionRecord} from "./childSessionController";
-import type {MergeMasterAccessMode, MergeMasterWorkIdentity} from "./mergeMaster";
+import {
+  cloneWorkIdentity,
+  type MergeMasterAccessMode,
+  type MergeMasterWorkIdentity,
+} from "./mergeMaster";
 
 export type ChildSessionRecoveryPhase =
   | "claimed"
@@ -235,18 +240,6 @@ function isRecord(value: unknown): value is ChildSessionRecoveryRecord {
     && typeof cleanup.lease === "boolean";
 }
 
-function cloneWorkIdentity(identity: MergeMasterWorkIdentity): MergeMasterWorkIdentity {
-  return {
-    ...identity,
-    contract: {...identity.contract},
-    plan: {...identity.plan},
-    writeScope: {
-      include: [...identity.writeScope.include],
-      exclude: [...identity.writeScope.exclude],
-    },
-  };
-}
-
 function safeRecord(record: ChildSessionRecoveryRecord): SafeChildSessionRecoveryRecord {
   const {credentials: _credentials, ...safe} = record;
   return {
@@ -320,14 +313,6 @@ export function createChildSessionStore(
     assertRunId(record.runId);
     await ensureRoot();
     const target = recordPath(record.runId);
-    if (exclusive) {
-      try {
-        await lstat(target);
-        throw new Error("work-session recovery record already exists");
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
-    }
     const temporary = join(root, `.${record.runId}.${process.pid}.${randomUUID()}.tmp`);
     let handle: FileHandle | undefined;
     try {
@@ -339,13 +324,17 @@ export function createChildSessionStore(
       handle = undefined;
       if (exclusive) {
         try {
-          await lstat(target);
-          throw new Error("work-session recovery record already exists");
+          await link(temporary, target);
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+            throw new Error("work-session recovery record already exists");
+          }
+          throw error;
         }
+        await rm(temporary, {force: true});
+      } else {
+        await rename(temporary, target);
       }
-      await rename(temporary, target);
       await chmod(target, 0o600);
       await syncDirectory(root);
     } catch (error) {
@@ -457,8 +446,20 @@ export function createChildSessionStore(
         const parsed = await readRecord(fileRunId);
         if (!parsed) throw new Error("invalid work-session recovery record");
         records.push(parsed);
-      } catch {
-        failures.push({runId: fileRunId, reason: "invalid work-session recovery record"});
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        const malformed = error instanceof SyntaxError
+          || (error instanceof Error && error.message === "invalid work-session recovery record");
+        failures.push({
+          runId: fileRunId,
+          reason: malformed
+            ? "invalid work-session recovery record"
+            : code
+              ? `work-session recovery record could not be read (${code})`
+              : `work-session recovery record could not be read: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+        });
       }
     }
     return {records, failures};
