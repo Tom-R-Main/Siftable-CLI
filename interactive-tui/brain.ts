@@ -327,9 +327,10 @@ async function runShellCommand(
 ): Promise<{command: string; cwd: string; exitCode: number | null; stdout: string; stderr: string; output: string; timedOut: boolean}> {
   const { spawn } = await import('node:child_process');
   const timeout = Math.max(1, Math.min(timeoutMs, COMMAND_MAX_TIMEOUT_MS));
+  const shell = process.env.SHELL || '/bin/sh';
 
   return await new Promise((resolve) => {
-    const proc = spawn(process.env.SHELL || 'zsh', ['-lc', command], {
+    const proc = spawn(shell, ['-lc', command], {
       cwd,
       env: process.env,
     });

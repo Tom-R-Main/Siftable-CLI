@@ -68,6 +68,7 @@ export async function runShellWithHeartbeats(input: {
   return new Promise((resolve, reject) => {
     const child = spawn(input.shell, ['-lc', input.command], {
       cwd: input.cwd,
+      detached: process.platform !== 'win32',
       env: input.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -76,8 +77,24 @@ export async function runShellWithHeartbeats(input: {
     let heartbeatRunning = false;
     let heartbeatPromise: Promise<void> | null = null;
     let heartbeatFailure: Error | undefined;
+    let forceKillTimer: NodeJS.Timeout | undefined;
     let leaseExpiresAtMs = Date.now() + input.leaseSeconds * 1000;
     const heartbeatTimeoutMs = input.heartbeatTimeoutMs ?? workerHeartbeatTimeoutMs(input.leaseSeconds);
+    const signalWorkerTree = (signal: NodeJS.Signals): void => {
+      if (child.pid === undefined) return;
+      if (process.platform === 'win32') {
+        child.kill(signal);
+        return;
+      }
+      try {
+        process.kill(-child.pid, signal);
+      } catch (error: unknown) {
+        const code = error && typeof error === 'object' && 'code' in error
+          ? String(error.code)
+          : '';
+        if (code !== 'ESRCH') child.kill(signal);
+      }
+    };
     child.stdout?.on('data', (chunk) => { stdoutTail = appendTail(stdoutTail, chunk); });
     child.stderr?.on('data', (chunk) => { stderrTail = appendTail(stderrTail, chunk); });
 
@@ -94,9 +111,9 @@ export async function runShellWithHeartbeats(input: {
         })
         .catch((error: unknown) => {
           heartbeatFailure = error instanceof Error ? error : new Error(String(error));
-          child.kill('SIGTERM');
-          const forceKill = setTimeout(() => child.kill('SIGKILL'), 1_000);
-          forceKill.unref();
+          signalWorkerTree('SIGTERM');
+          forceKillTimer = setTimeout(() => signalWorkerTree('SIGKILL'), 1_000);
+          forceKillTimer.unref();
         })
         .finally(() => {
           heartbeatRunning = false;
@@ -110,10 +127,12 @@ export async function runShellWithHeartbeats(input: {
 
     child.once('error', (error) => {
       clearInterval(timer);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
       reject(error);
     });
     child.once('close', async (code, signal) => {
       clearInterval(timer);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
       await heartbeatPromise;
       if (heartbeatFailure) {
         reject(new Error(`Worker lease heartbeat failed: ${heartbeatFailure.message}`));
