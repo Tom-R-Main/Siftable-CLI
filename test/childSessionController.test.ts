@@ -285,6 +285,72 @@ describe('childSessionController — contracted identity and recovery adoption',
     }
   });
 
+  it('adopts the deterministic prepared worktree left between Git creation and journal advancement', async () => {
+    const {repoRoot, worktreesRoot, cleanup} = await setupRepo();
+    try {
+      const input = {
+        title: contractedWork.title,
+        accessMode: 'read_write' as const,
+        writeScope: contractedWork.writeScope.include,
+        cwd: repoRoot,
+        work: contractedWork,
+      };
+      const firstSpy = spyRunner();
+      const first = createChildSessionController({runner: firstSpy.runner, worktreesRoot});
+      const prepared = first.resolveLaunch(input);
+      const spawned = first.spawnOrAdoptChild(input, prepared);
+      expect(spawned.ok).toBe(true);
+      expect(worktreeAdds(firstSpy.calls)).toBe(1);
+
+      resetMergeMasterForTests();
+      const recoverySpy = spyRunner();
+      const recovered = createChildSessionController({runner: recoverySpy.runner, worktreesRoot});
+      const adopted = recovered.spawnOrAdoptChild(input, prepared);
+
+      expect(adopted.ok).toBe(true);
+      expect(worktreeAdds(recoverySpy.calls)).toBe(0);
+      if (adopted.ok) {
+        expect(adopted.session.branch).toBe(prepared.branch);
+        expect(adopted.session.worktreePath).toBe(prepared.worktreePath);
+        expect(adopted.session.baseCommit).toBe(prepared.baseCommit);
+      }
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('rejects a recovered worktree whose live head no longer descends from the prepared base', async () => {
+    const {repoRoot, worktreesRoot, cleanup} = await setupRepo();
+    try {
+      const first = createChildSessionController({runner: git, worktreesRoot});
+      const spawned = first.spawnChild({
+        title: contractedWork.title,
+        accessMode: 'read_write',
+        writeScope: contractedWork.writeScope.include,
+        cwd: repoRoot,
+        work: contractedWork,
+      });
+      expect(spawned.ok).toBe(true);
+      if (!spawned.ok) return;
+      const child = spawned.session;
+      expect(git(['checkout', '--orphan', 'replacement'], child.worktreePath).status).toBe(0);
+      await writeFile(join(child.worktreePath, 'replacement.txt'), 'unrelated\n', 'utf8');
+      expect(git(['add', '.'], child.worktreePath).status).toBe(0);
+      expect(git(['commit', '-m', 'unrelated root'], child.worktreePath).status).toBe(0);
+      expect(git(['branch', '-D', child.branch], child.worktreePath).status).toBe(0);
+      expect(git(['branch', '-m', child.branch], child.worktreePath).status).toBe(0);
+
+      resetMergeMasterForTests();
+      const recovered = createChildSessionController({runner: git, worktreesRoot});
+      const adopted = recovered.adoptChild(child);
+
+      expect(adopted.ok).toBe(false);
+      if (!adopted.ok) expect(adopted.reason).toContain('no longer descends');
+    } finally {
+      await cleanup();
+    }
+  });
+
   it('adopts a recorded symlink path when Git reports the canonical worktree path', async () => {
     const {repoRoot, worktreesRoot, cleanup} = await setupRepo();
     try {

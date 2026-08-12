@@ -1,6 +1,7 @@
 import {createHash, randomUUID} from "node:crypto";
 import {
   chmod,
+  lstat,
   mkdir,
   open,
   readdir,
@@ -8,27 +9,74 @@ import {
   rename,
   rm,
 } from "node:fs/promises";
-import type {FileHandle} from "node:fs/promises";
-import {homedir} from "node:os";
+import type {FileHandle, Stats} from "node:fs/promises";
+import {homedir, hostname} from "node:os";
 import {join} from "node:path";
 import type {ChildSessionRecord} from "./childSessionController";
-import type {MergeMasterWorkIdentity} from "./mergeMaster";
+import type {MergeMasterAccessMode, MergeMasterWorkIdentity} from "./mergeMaster";
 
-export type ChildSessionRecoveryPhase = "spawned" | "started";
+export type ChildSessionRecoveryPhase =
+  | "claimed"
+  | "spawned"
+  | "started"
+  | "cleanup_pending"
+  | "quarantined";
 
-export interface ChildSessionRecoveryRecord {
+export interface ChildSessionLaunchRecord {
+  repoRoot: string;
+  baseBranch: string;
+  baseCommit: string;
+  seed: string;
+  branch: string;
+  worktreePath: string;
+  conversationKey: string;
+  accessMode: MergeMasterAccessMode;
+  writeScope: string[];
+}
+
+interface ChildSessionRecoveryBase {
   runId: string;
-  phase: ChildSessionRecoveryPhase;
   updatedAtMs: number;
   work: MergeMasterWorkIdentity;
-  session: ChildSessionRecord;
+  launch: ChildSessionLaunchRecord;
   credentials: {
     claimOwner: string;
     claimToken: string;
   };
 }
 
-export type SafeChildSessionRecoveryRecord = Omit<ChildSessionRecoveryRecord, "credentials">;
+export interface ClaimedChildSessionRecoveryRecord extends ChildSessionRecoveryBase {
+  phase: "claimed";
+  session?: undefined;
+}
+
+export interface ActiveChildSessionRecoveryRecord extends ChildSessionRecoveryBase {
+  phase: "spawned" | "started";
+  session: ChildSessionRecord;
+}
+
+export interface CleanupPendingChildSessionRecoveryRecord extends ChildSessionRecoveryBase {
+  phase: "cleanup_pending";
+  session?: ChildSessionRecord;
+  cleanup: {worktree: boolean; lease: boolean};
+}
+
+export interface QuarantinedChildSessionRecoveryRecord extends ChildSessionRecoveryBase {
+  phase: "quarantined";
+  session: ChildSessionRecord;
+  quarantineReason: string;
+}
+
+export type ChildSessionRecoveryRecord =
+  | ClaimedChildSessionRecoveryRecord
+  | ActiveChildSessionRecoveryRecord
+  | CleanupPendingChildSessionRecoveryRecord
+  | QuarantinedChildSessionRecoveryRecord;
+
+type WithoutCredentials<T> = T extends ChildSessionRecoveryRecord
+  ? Omit<T, "credentials">
+  : never;
+export type SafeChildSessionRecoveryRecord = WithoutCredentials<ChildSessionRecoveryRecord>;
 
 export interface ChildSessionRecoveryLoadFailure {
   /** Non-secret hash derived from the recovery filename. */
@@ -41,10 +89,17 @@ export interface ChildSessionRecoveryLoadResult {
   failures: ChildSessionRecoveryLoadFailure[];
 }
 
+export interface ChildSessionRunLock {
+  release(): Promise<void>;
+}
+
 export interface ChildSessionStore {
   runIdFor(repoRoot: string, workItemId: string): string;
   put(record: ChildSessionRecoveryRecord): Promise<void>;
+  putExclusive(record: ChildSessionRecoveryRecord): Promise<void>;
+  get(runId: string): Promise<ChildSessionRecoveryRecord | undefined>;
   remove(runId: string): Promise<void>;
+  acquire(runId: string): Promise<ChildSessionRunLock | undefined>;
   loadAll(): Promise<ChildSessionRecoveryLoadResult>;
   listSafe(): Promise<SafeChildSessionRecoveryRecord[]>;
 }
@@ -99,6 +154,26 @@ function isWorkIdentity(value: unknown): value is MergeMasterWorkIdentity {
     && stringArray(writeScope.exclude);
 }
 
+function isLaunchRecord(value: unknown): value is ChildSessionLaunchRecord {
+  const launch = object(value);
+  return typeof launch?.repoRoot === "string"
+    && launch.repoRoot.length > 0
+    && typeof launch.baseBranch === "string"
+    && launch.baseBranch.length > 0
+    && typeof launch.baseCommit === "string"
+    && launch.baseCommit.length > 0
+    && typeof launch.seed === "string"
+    && launch.seed.length > 0
+    && typeof launch.branch === "string"
+    && launch.branch.length > 0
+    && typeof launch.worktreePath === "string"
+    && launch.worktreePath.length > 0
+    && typeof launch.conversationKey === "string"
+    && launch.conversationKey.length > 0
+    && (launch.accessMode === "read_only" || launch.accessMode === "read_write")
+    && stringArray(launch.writeScope);
+}
+
 function isChildSessionRecord(value: unknown): value is ChildSessionRecord {
   const session = object(value);
   return typeof session?.sessionId === "number"
@@ -130,48 +205,86 @@ function isChildSessionRecord(value: unknown): value is ChildSessionRecord {
 function isRecord(value: unknown): value is ChildSessionRecoveryRecord {
   const record = object(value);
   const credentials = object(record?.credentials);
-  return typeof record?.runId === "string"
+  const common = typeof record?.runId === "string"
     && RUN_ID.test(record.runId)
-    && (record.phase === "spawned" || record.phase === "started")
     && typeof record.updatedAtMs === "number"
     && Number.isFinite(record.updatedAtMs)
     && isWorkIdentity(record.work)
-    && isChildSessionRecord(record.session)
+    && isLaunchRecord(record.launch)
     && typeof credentials?.claimOwner === "string"
     && credentials.claimOwner.length > 0
     && typeof credentials.claimToken === "string"
     && credentials.claimToken.length > 0;
+  if (!common) return false;
+  if (record.phase === "claimed") return record.session === undefined;
+  if (record.phase === "spawned" || record.phase === "started") {
+    return isChildSessionRecord(record.session);
+  }
+  if (record.phase === "quarantined") {
+    return isChildSessionRecord(record.session)
+      && typeof record.quarantineReason === "string"
+      && record.quarantineReason.length > 0;
+  }
+  const cleanup = object(record.cleanup);
+  return record.phase === "cleanup_pending"
+    && (record.session === undefined || isChildSessionRecord(record.session))
+    && typeof cleanup?.worktree === "boolean"
+    && typeof cleanup.lease === "boolean";
+}
+
+function cloneWorkIdentity(identity: MergeMasterWorkIdentity): MergeMasterWorkIdentity {
+  return {
+    ...identity,
+    contract: {...identity.contract},
+    plan: {...identity.plan},
+    writeScope: {
+      include: [...identity.writeScope.include],
+      exclude: [...identity.writeScope.exclude],
+    },
+  };
 }
 
 function safeRecord(record: ChildSessionRecoveryRecord): SafeChildSessionRecoveryRecord {
   const {credentials: _credentials, ...safe} = record;
   return {
     ...safe,
-    work: {
-      ...safe.work,
-      contract: {...safe.work.contract},
-      plan: {...safe.work.plan},
-      writeScope: {
-        include: [...safe.work.writeScope.include],
-        exclude: [...safe.work.writeScope.exclude],
-      },
-    },
-    session: {
-      ...safe.session,
-      writeScope: [...safe.session.writeScope],
-      work: safe.session.work
-        ? {
-            ...safe.session.work,
-            contract: {...safe.session.work.contract},
-            plan: {...safe.session.work.plan},
-            writeScope: {
-              include: [...safe.session.work.writeScope.include],
-              exclude: [...safe.session.work.writeScope.exclude],
-            },
-          }
-        : undefined,
-    },
-  };
+    work: cloneWorkIdentity(safe.work),
+    launch: {...safe.launch, writeScope: [...safe.launch.writeScope]},
+    session: safe.session
+      ? {
+          ...safe.session,
+          writeScope: [...safe.session.writeScope],
+          work: safe.session.work ? cloneWorkIdentity(safe.session.work) : undefined,
+        }
+      : undefined,
+  } as SafeChildSessionRecoveryRecord;
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  const directory = await open(path, "r");
+  try {
+    try {
+      await directory.sync();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EINVAL") throw error;
+    }
+  } finally {
+    await directory.close();
+  }
+}
+
+function sameFile(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function processIsAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid < 1) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 export function createChildSessionStore(
@@ -190,10 +303,26 @@ export function createChildSessionStore(
     return join(root, `${runId}.json`);
   }
 
-  async function put(record: ChildSessionRecoveryRecord): Promise<void> {
+  function lockPath(runId: string): string {
+    assertRunId(runId);
+    return join(root, `.${runId}.lock`);
+  }
+
+  async function writeRecord(
+    record: ChildSessionRecoveryRecord,
+    exclusive: boolean,
+  ): Promise<void> {
     assertRunId(record.runId);
     await ensureRoot();
     const target = recordPath(record.runId);
+    if (exclusive) {
+      try {
+        await lstat(target);
+        throw new Error("work-session recovery record already exists");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
     const temporary = join(root, `.${record.runId}.${process.pid}.${randomUUID()}.tmp`);
     let handle: FileHandle | undefined;
     try {
@@ -203,8 +332,17 @@ export function createChildSessionStore(
       await handle.sync();
       await handle.close();
       handle = undefined;
+      if (exclusive) {
+        try {
+          await lstat(target);
+          throw new Error("work-session recovery record already exists");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
       await rename(temporary, target);
       await chmod(target, 0o600);
+      await syncDirectory(root);
     } catch (error) {
       if (handle) await handle.close().catch(() => undefined);
       await rm(temporary, {force: true}).catch(() => undefined);
@@ -212,8 +350,72 @@ export function createChildSessionStore(
     }
   }
 
-  async function remove(runId: string): Promise<void> {
-    await rm(recordPath(runId), {force: true});
+  async function readRecord(runId: string): Promise<ChildSessionRecoveryRecord | undefined> {
+    try {
+      const parsed: unknown = JSON.parse(await readFile(recordPath(runId), "utf8"));
+      if (!isRecord(parsed) || parsed.runId !== runId) {
+        throw new Error("invalid work-session recovery record");
+      }
+      return parsed;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  }
+
+  async function acquire(runId: string): Promise<ChildSessionRunLock | undefined> {
+    await ensureRoot();
+    const path = lockPath(runId);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let handle: FileHandle | undefined;
+      try {
+        handle = await open(path, "wx", 0o600);
+        await handle.writeFile(JSON.stringify({pid: process.pid, host: hostname(), createdAtMs: now()}));
+        await handle.sync();
+        const owned = await handle.stat();
+        await handle.close();
+        handle = undefined;
+        await syncDirectory(root);
+        let released = false;
+        return {
+          async release() {
+            if (released) return;
+            released = true;
+            try {
+              const current = await lstat(path);
+              if (sameFile(current, owned)) {
+                await rm(path, {force: true});
+                await syncDirectory(root);
+              }
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            }
+          },
+        };
+      } catch (error) {
+        if (handle) await handle.close().catch(() => undefined);
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        let owned: Stats;
+        try {
+          owned = await lstat(path);
+          const parsed = object(JSON.parse(await readFile(path, "utf8")));
+          const stale = parsed?.host === hostname()
+            && typeof parsed.pid === "number"
+            && !processIsAlive(parsed.pid);
+          if (!stale) return undefined;
+          const current = await lstat(path);
+          if (sameFile(current, owned)) {
+            await rm(path, {force: true});
+            await syncDirectory(root);
+            continue;
+          }
+        } catch (staleError) {
+          if ((staleError as NodeJS.ErrnoException).code === "ENOENT") continue;
+          return undefined;
+        }
+      }
+    }
+    return undefined;
   }
 
   async function loadAll(): Promise<ChildSessionRecoveryLoadResult> {
@@ -226,11 +428,8 @@ export function createChildSessionStore(
     for (const name of names) {
       const fileRunId = name.slice(0, -".json".length);
       try {
-        const parsed: unknown = JSON.parse(await readFile(join(root, name), "utf8"));
-        if (!isRecord(parsed) || parsed.runId !== fileRunId) {
-          failures.push({runId: fileRunId, reason: "invalid work-session recovery record"});
-          continue;
-        }
+        const parsed = await readRecord(fileRunId);
+        if (!parsed) throw new Error("invalid work-session recovery record");
         records.push(parsed);
       } catch {
         failures.push({runId: fileRunId, reason: "invalid work-session recovery record"});
@@ -243,8 +442,14 @@ export function createChildSessionStore(
     runIdFor(repoRoot, workItemId) {
       return createHash("sha256").update(repoRoot).update("\0").update(workItemId).digest("hex");
     },
-    put,
-    remove,
+    put: (record) => writeRecord(record, false),
+    putExclusive: (record) => writeRecord(record, true),
+    get: readRecord,
+    async remove(runId) {
+      await rm(recordPath(runId), {force: true});
+      await syncDirectory(root);
+    },
+    acquire,
     loadAll,
     async listSafe() {
       return (await loadAll()).records.map(safeRecord);

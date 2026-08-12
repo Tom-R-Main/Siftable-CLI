@@ -314,7 +314,7 @@ describe("contracted work-run restart recovery", () => {
       },
       async transitionWorkItem(id, action, input) {
         if (action === "start") counts.starts.push({id, owner: input.claimOwner, token: input.claimToken});
-        return {statusCode: 200, data: {workItem: {id}}};
+        return {statusCode: 200, data: {workItem: {id, status: action === "release" ? "queued" : "running"}}};
       },
     };
   }
@@ -337,6 +337,7 @@ describe("contracted work-run restart recovery", () => {
       expect(counts.claims).toBe(1);
       expect(counts.starts).toHaveLength(1);
       expect(listChildWorktrees(fx.repoRoot, git)).toHaveLength(1);
+      await firstRun.shutdown({preserveRuns: true});
 
       resetMergeMasterForTests();
       const freshController = createChildSessionController({runner: git, worktreesRoot: fx.worktreesRoot});
@@ -384,6 +385,7 @@ describe("contracted work-run restart recovery", () => {
       const persisted = (await store.loadAll()).records[0];
       await store.put({...persisted, phase: "spawned"});
       counts.starts.length = 0;
+      await firstRun.shutdown({preserveRuns: true});
 
       resetMergeMasterForTests();
       const freshController = createChildSessionController({runner: git, worktreesRoot: fx.worktreesRoot});

@@ -21,10 +21,12 @@ import {
   createChildWorktree,
   listWorktrees,
   removeChildWorktree,
+  resolveCommit,
   resolveRepoRoot,
   createGitRunner,
   squashMergeChild,
   rebaseChildOntoBase,
+  validateChildWorktreePath,
   WorktreeError,
   type GitRunner,
 } from "./worktreeService";
@@ -32,12 +34,14 @@ import {appendTurn, rolloutPathForThread, persistEnabled} from "./openfunction/f
 import {assembleParentMergeView, type MergeReadinessRow, type ParentMergeView} from "./mergeView";
 import {
   conversationKeyForSession,
+  buildChildBranchName,
   createGatedChildSession,
   createParentSession,
   evaluateChildAdmission,
   getMergeMasterSession,
   getWorkIdentity,
   isTerminalStatus,
+  resolveChildWorktreePath,
   setSessionHeadCommit,
   transitionSessionStatus,
   type CreateChildInput,
@@ -88,6 +92,16 @@ export interface SpawnChildInput {
   cwd?: string;
   /** Safe authoritative work identity for the contracted orchestration path. */
   work?: MergeMasterWorkIdentity;
+}
+
+export interface ChildSessionLaunch {
+  repoRoot: string;
+  baseBranch: string;
+  baseCommit: string;
+  seed: string;
+  branch: string;
+  worktreePath: string;
+  conversationKey: string;
 }
 
 export type SpawnChildResult =
@@ -200,7 +214,11 @@ export type SendBackChildResult =
   | {ok: false; reason: string};
 
 export interface ChildSessionController {
-  spawnChild(input: SpawnChildInput): SpawnChildResult;
+  /** Resolve the launch context before claim or filesystem mutation. */
+  resolveLaunch(input: SpawnChildInput): ChildSessionLaunch;
+  spawnChild(input: SpawnChildInput, launch?: ChildSessionLaunch): SpawnChildResult;
+  /** Create the prepared child or adopt the exact worktree left by a crashed creator. */
+  spawnOrAdoptChild(input: SpawnChildInput, launch: ChildSessionLaunch): SpawnChildResult;
   /** Re-register an exact, already-existing child worktree after restart. */
   adoptChild(record: ChildSessionRecord): SpawnChildResult;
   listChildSessions(): ChildSessionView[];
@@ -219,6 +237,10 @@ export interface ChildSessionController {
   sendBackChild(sessionId: number, instruction: string): SendBackChildResult;
   /** Reject a reviewed child: terminal, but keep its worktree + branch inspectable (lane F). */
   rejectChild(sessionId: number, reason?: string): {ok: boolean; reason?: string};
+  /** Fail-stop a child while retaining its worktree and branch for inspection. */
+  abandonChild(sessionId: number): {ok: boolean; reason?: string};
+  /** Remove a recorded child or confirm its managed worktree is already absent. */
+  teardownChild(record: ChildSessionRecord): {ok: boolean; reason?: string};
   removeChild(
     sessionId: number,
     opts?: {deleteBranch?: boolean; force?: boolean},
@@ -283,7 +305,35 @@ export function createChildSessionController(
     }
   }
 
-  function spawnChild(input: SpawnChildInput): SpawnChildResult {
+  function canonicalPath(path: string): string | undefined {
+    try {
+      return realpathSync(path);
+    } catch {
+      return undefined;
+    }
+  }
+
+  function resolveLaunch(input: SpawnChildInput): ChildSessionLaunch {
+    const startCwd = input.cwd ?? getSessionCwd();
+    const repoRoot = resolveRepoRoot(startCwd, runner);
+    const baseBranch = input.baseBranch ?? currentBranch(repoRoot);
+    const baseCommit = resolveCommit(repoRoot, baseBranch, runner);
+    if (!baseCommit) throw new Error(`base branch not found: ${baseBranch}`);
+    const seed = input.work?.workItemId ?? `${input.title}#${++seedCounter}`;
+    const branch = buildChildBranchName(seed, input.focus ?? input.title);
+    const worktreePath = resolveChildWorktreePath({worktreesRoot}, repoRoot, branch);
+    return {
+      repoRoot,
+      baseBranch,
+      baseCommit,
+      seed,
+      branch,
+      worktreePath,
+      conversationKey: conversationKeyForSession({repoRoot, role: "child", branch, seed}),
+    };
+  }
+
+  function spawnChild(input: SpawnChildInput, prepared?: ChildSessionLaunch): SpawnChildResult {
     // 1. Gate-A preflight — needs only access mode + scope, so do it before Git.
     const admission = evaluateChildAdmission({
       accessMode: input.accessMode,
@@ -300,30 +350,35 @@ export function createChildSessionController(
 
     // 2. Resolve repo/base/parent (still no mutation of the tree).
     const startCwd = input.cwd ?? getSessionCwd();
-    const repoRoot = resolveRepoRoot(startCwd, runner);
-    const baseBranch = input.baseBranch ?? currentBranch(repoRoot);
+    const launch = prepared ?? resolveLaunch(input);
+    const {repoRoot, baseBranch} = launch;
     const parentSessionId = ensureParent(repoRoot, baseBranch, startCwd);
 
     // 3. Create the worktree. Past this point, any failure must clean it up.
-    const seed = `${input.title}#${++seedCounter}`;
     const wt = createChildWorktree(
-      {repoRoot, baseBranch, seed, focus: input.focus ?? input.title, layout: {worktreesRoot}},
+      {
+        repoRoot,
+        baseBranch: launch.baseCommit,
+        seed: launch.seed,
+        focus: input.focus ?? input.title,
+        branch: launch.branch,
+        worktreePath: launch.worktreePath,
+        layout: {worktreesRoot},
+      },
       runner,
     );
     try {
-      const conversationKey = conversationKeyForSession({
-        repoRoot,
-        role: "child",
-        branch: wt.branch,
-        seed,
-      });
+      if (wt.baseCommit !== launch.baseCommit) {
+        throw new Error("prepared child base changed before worktree creation");
+      }
+      const conversationKey = launch.conversationKey;
       const gated = registerSession({
         parentSessionId,
         accessMode: input.accessMode,
         branch: wt.branch,
         worktreePath: wt.worktreePath,
         sessionCwd: wt.worktreePath,
-        baseBranch: wt.baseBranch,
+        baseBranch,
         baseCommit: wt.baseCommit,
         headCommit: wt.headCommit,
         writeScope: input.writeScope,
@@ -346,7 +401,7 @@ export function createChildSessionController(
         title: input.title,
         repoRoot,
         branch: wt.branch,
-        baseBranch: wt.baseBranch,
+        baseBranch,
         worktreePath: wt.worktreePath,
         sessionCwd: wt.worktreePath,
         baseCommit: wt.baseCommit,
@@ -368,15 +423,62 @@ export function createChildSessionController(
     }
   }
 
+  function spawnOrAdoptChild(
+    input: SpawnChildInput,
+    launch: ChildSessionLaunch,
+  ): SpawnChildResult {
+    let existing;
+    try {
+      existing = listWorktrees(launch.repoRoot, runner).find(
+        (candidate) => candidate.branch === launch.branch,
+      );
+    } catch (error) {
+      return {ok: false, reason: error instanceof Error ? error.message : String(error)};
+    }
+    if (!existing) return spawnChild(input, launch);
+    if (
+      existing.isPrimary
+      || existing.prunable
+      || !existing.isSiftManaged
+      || canonicalPath(existing.path) !== canonicalPath(launch.worktreePath)
+    ) {
+      return {
+        ok: false,
+        reason: `prepared child branch is registered to a mismatched worktree: ${launch.branch}`,
+      };
+    }
+    return adoptChild({
+      sessionId: 1,
+      parentSessionId: 1,
+      title: input.title,
+      repoRoot: launch.repoRoot,
+      branch: launch.branch,
+      baseBranch: launch.baseBranch,
+      worktreePath: launch.worktreePath,
+      sessionCwd: launch.worktreePath,
+      baseCommit: launch.baseCommit,
+      headCommit: existing.head,
+      accessMode: input.accessMode,
+      writeScope: input.writeScope ?? [],
+      conversationKey: launch.conversationKey,
+      work: input.work,
+    });
+  }
+
   function adoptChild(record: ChildSessionRecord): SpawnChildResult {
     let worktree;
     let canonicalRecordedPath: string;
     try {
-      canonicalRecordedPath = realpathSync(record.worktreePath);
+      canonicalRecordedPath = validateChildWorktreePath(realpathSync(record.worktreePath), {
+        worktreesRoot,
+        repoRoot: record.repoRoot,
+      });
       worktree = listWorktrees(record.repoRoot, runner).find(
         (candidate) =>
           !candidate.isPrimary
-          && realpathSync(candidate.path) === canonicalRecordedPath
+          && !candidate.prunable
+          && candidate.isSiftManaged
+          && canonicalPath(candidate.path) === canonicalRecordedPath
           && candidate.branch === record.branch,
       );
     } catch (err) {
@@ -389,7 +491,21 @@ export function createChildSessionController(
       };
     }
 
-    const canonicalWorktreePath = realpathSync(worktree.path);
+    const canonicalWorktreePath = validateChildWorktreePath(realpathSync(worktree.path), {
+      worktreesRoot,
+      repoRoot: record.repoRoot,
+    });
+    const baseCommit = resolveCommit(record.repoRoot, record.baseCommit, runner);
+    const headCommit = resolveCommit(canonicalWorktreePath, "HEAD", runner);
+    if (baseCommit !== record.baseCommit || !headCommit) {
+      return {ok: false, reason: "recorded child worktree has an unavailable immutable base or head"};
+    }
+    if (runner(["merge-base", "--is-ancestor", baseCommit, headCommit], record.repoRoot).status !== 0) {
+      return {
+        ok: false,
+        reason: `recorded child worktree no longer descends from immutable base ${baseCommit}`,
+      };
+    }
     const parentSessionId = ensureParent(record.repoRoot, record.baseBranch, record.repoRoot);
     const gated = registerSession({
       parentSessionId,
@@ -399,7 +515,7 @@ export function createChildSessionController(
       sessionCwd: canonicalWorktreePath,
       baseBranch: record.baseBranch,
       baseCommit: record.baseCommit,
-      headCommit: worktree.head || record.headCommit,
+      headCommit,
       writeScope: record.writeScope,
       work: record.work,
       conversationKey: record.conversationKey,
@@ -420,7 +536,7 @@ export function createChildSessionController(
       parentSessionId,
       worktreePath: canonicalWorktreePath,
       sessionCwd: canonicalWorktreePath,
-      headCommit: worktree.head || record.headCommit,
+      headCommit,
       work: record.work ? getWorkIdentity(gated.sessionId) ?? record.work : undefined,
     };
     records.set(adopted.sessionId, adopted);
@@ -691,6 +807,44 @@ export function createChildSessionController(
     return {ok: true};
   }
 
+  function abandonChild(sessionId: number): {ok: boolean; reason?: string} {
+    const rec = records.get(sessionId);
+    if (!rec) return {ok: false, reason: "unknown child session"};
+    const live = getMergeMasterSession(sessionId);
+    if (live && !isTerminalStatus(live.status)) {
+      const code = transitionSessionStatus(sessionId, "abandoned", now());
+      if (code !== 0) return {ok: false, reason: `cannot abandon child #${sessionId}`};
+    }
+    return {ok: true};
+  }
+
+  function teardownChild(record: ChildSessionRecord): {ok: boolean; reason?: string} {
+    const tracked = records.get(record.sessionId);
+    if (tracked) return removeChild(record.sessionId, {deleteBranch: true, force: true});
+
+    let listed;
+    try {
+      const expected = validateChildWorktreePath(record.worktreePath, {
+        worktreesRoot,
+        repoRoot: record.repoRoot,
+      });
+      listed = listWorktrees(record.repoRoot, runner).find((candidate) => {
+        const candidatePath = canonicalPath(candidate.path);
+        return !candidate.isPrimary
+          && candidatePath !== undefined
+          && candidatePath === canonicalPath(expected)
+          && candidate.branch === record.branch;
+      });
+    } catch (error) {
+      return {ok: false, reason: error instanceof Error ? error.message : String(error)};
+    }
+    if (!listed) return {ok: true};
+
+    const adopted = adoptChild(record);
+    if (!adopted.ok) return adopted;
+    return removeChild(adopted.session.sessionId, {deleteBranch: true, force: true});
+  }
+
   /** Internal worktree teardown that does not touch registry status (merge already did). */
   function removeChild_internal(
     rec: ChildSessionRecord,
@@ -719,11 +873,6 @@ export function createChildSessionController(
   ): {ok: boolean; reason?: string} {
     const rec = records.get(sessionId);
     if (!rec) return {ok: false, reason: "unknown child session"};
-    // Free the child's Gate-A scope so coupled work can be admitted again.
-    const live = getMergeMasterSession(sessionId);
-    if (live && !isTerminalStatus(live.status)) {
-      transitionSessionStatus(sessionId, "abandoned", now());
-    }
     try {
       removeChildWorktree(
         {
@@ -737,12 +886,20 @@ export function createChildSessionController(
     } catch (err) {
       return {ok: false, reason: err instanceof Error ? err.message : String(err)};
     }
+    // Keep Gate A occupied until local teardown succeeds. If Git refuses the
+    // removal, the session remains live and serialized for operator recovery.
+    const live = getMergeMasterSession(sessionId);
+    if (live && !isTerminalStatus(live.status)) {
+      transitionSessionStatus(sessionId, "abandoned", now());
+    }
     records.delete(sessionId);
     return {ok: true};
   }
 
   return {
+    resolveLaunch,
     spawnChild,
+    spawnOrAdoptChild,
     adoptChild,
     listChildSessions,
     getChild: (sessionId) => records.get(sessionId),
@@ -753,6 +910,8 @@ export function createChildSessionController(
     rebaseChild,
     sendBackChild,
     rejectChild,
+    abandonChild,
+    teardownChild,
     removeChild,
   };
 }

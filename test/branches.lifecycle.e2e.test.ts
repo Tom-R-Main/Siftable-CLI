@@ -231,7 +231,7 @@ describe("contracted work-run lifecycle on a real repo", () => {
             expect((await store.listSafe())[0].phase).toBe("spawned");
           }
           log.push(`${action}:${id}`);
-          return {statusCode: 200, data: {workItem: {id}}};
+          return {statusCode: 200, data: {workItem: {id, status: action === "release" ? "queued" : "running"}}};
         },
       };
       const run = createWorkRunController({
