@@ -106,6 +106,7 @@ function fakeClient(log: string[], options: {
   startFailure?: boolean;
   heartbeatFailure?: boolean;
   heartbeatHang?: boolean;
+  onHeartbeatAbort?: () => void;
   heartbeatStatus?: string;
   releaseFailure?: boolean;
   releaseStatus?: string;
@@ -131,7 +132,7 @@ function fakeClient(log: string[], options: {
         data: {workItem: {id: input.workItemId, claimToken: token}},
       };
     },
-    async transitionWorkItem(id, action, input) {
+    async transitionWorkItem(id, action, input, request) {
       log.push(`${action}:${id}`);
       expect(input.claimOwner).toBe(owner);
       expect(input.claimToken).toBe(token);
@@ -146,6 +147,7 @@ function fakeClient(log: string[], options: {
         return {statusCode: 409, error: "heartbeat rejected"};
       }
       if (action === "heartbeat" && options.heartbeatHang) {
+        request?.signal?.addEventListener("abort", () => options.onHeartbeatAbort?.(), {once: true});
         return await new Promise<never>(() => {});
       }
       if (action === "release" && options.releaseFailure) {
@@ -652,8 +654,9 @@ describe("workRunController contracted orchestration", () => {
     const log: string[] = [];
     const stored = await store(log);
     let clock = 0;
+    let aborted = false;
     const controller = createWorkRunController({
-      client: fakeClient(log, {heartbeatHang: true}),
+      client: fakeClient(log, {heartbeatHang: true, onHeartbeatAbort: () => { aborted = true; }}),
       childController: fakeChildren(log).controller,
       store: stored.store,
       ownerFactory: () => owner,
@@ -663,11 +666,13 @@ describe("workRunController contracted orchestration", () => {
       now: () => clock,
     });
     expect((await controller.startContractedWork(workItemId)).ok).toBe(true);
-    clock = 1_500;
+    clock = 500;
+    setTimeout(() => { clock = 1_500; }, 8);
 
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     expect(log).toContain("abandon");
+    expect(aborted).toBe(true);
     expect((await stored.store.listSafe())[0].phase).toBe("quarantined");
   });
 });
@@ -969,6 +974,35 @@ describe("workRunController recovery", () => {
       reason: "invalid work-session recovery record",
     }]);
     expect(log).toEqual(["adopt", `heartbeat:${workItemId}`, "put:started"]);
+  });
+
+  it("rejects a valid-looking record stored under the wrong deterministic run id", async () => {
+    const log: string[] = [];
+    const stored = await store();
+    const mismatchedRunId = "e".repeat(64);
+    await stored.store.put({
+      runId: mismatchedRunId,
+      phase: "started",
+      updatedAtMs: 0,
+      work: identity(),
+      launch: launch(),
+      session: session(),
+      credentials: {claimOwner: owner, claimToken: token},
+    });
+    const controller = createWorkRunController({
+      client: fakeClient(log),
+      childController: fakeChildren(log).controller,
+      store: stored.store,
+    });
+
+    const result = await controller.recoverWorkRuns();
+
+    expect(result.recovered).toEqual([]);
+    expect(result.failed).toEqual([{
+      runId: mismatchedRunId,
+      reason: "stored work-session recovery id does not match its repo and work item",
+    }]);
+    expect(log).toEqual([]);
   });
 
   it("rejects recovery metadata whose session boundary disagrees with the contract", async () => {

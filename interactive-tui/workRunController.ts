@@ -38,6 +38,7 @@ export interface WorkRunClient {
     workItemId: string,
     action: string,
     input: {claimOwner: string; claimToken: string; leaseSeconds?: number},
+    request?: {signal?: AbortSignal},
   ): Promise<ApiResponse>;
 }
 
@@ -274,11 +275,11 @@ async function startOrConfirmRunning(input: {
     assertTransition(
       input.workItemId,
       await withDeadline(
-        input.client.transitionWorkItem(input.workItemId, "start", {
-          claimOwner: input.claimOwner,
-          claimToken: input.claimToken,
-          leaseSeconds: input.leaseSeconds,
-        }),
+        (signal) => input.client.transitionWorkItem(input.workItemId, "start", {
+            claimOwner: input.claimOwner,
+            claimToken: input.claimToken,
+            leaseSeconds: input.leaseSeconds,
+          }, {signal}),
         input.timeoutMs,
         `${input.label} timed out`,
       ),
@@ -295,11 +296,11 @@ async function startOrConfirmRunning(input: {
     assertTransition(
       input.workItemId,
       await withDeadline(
-        input.client.transitionWorkItem(input.workItemId, "heartbeat", {
-          claimOwner: input.claimOwner,
-          claimToken: input.claimToken,
-          leaseSeconds: input.leaseSeconds,
-        }),
+        (signal) => input.client.transitionWorkItem(input.workItemId, "heartbeat", {
+            claimOwner: input.claimOwner,
+            claimToken: input.claimToken,
+            leaseSeconds: input.leaseSeconds,
+          }, {signal}),
         input.timeoutMs,
         `${input.label} confirmation timed out`,
       ),
@@ -313,19 +314,20 @@ async function startOrConfirmRunning(input: {
 }
 
 async function withDeadline<T>(
-  promise: Promise<T>,
+  operation: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
   message: string,
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const controller = new AbortController();
   try {
     return await Promise.race([
-      promise,
+      operation(controller.signal),
       new Promise<T>((_resolve, reject) => {
-        timer = setTimeout(
-          () => reject(new WorkRunError("start", message, true)),
-          Math.max(1, timeoutMs),
-        );
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new WorkRunError("start", message, true));
+        }, Math.max(1, timeoutMs));
         timer.unref?.();
       }),
     ]);
@@ -424,10 +426,14 @@ export function createWorkRunController(
   async function releaseLease(record: ChildSessionRecoveryRecord): Promise<void> {
     let transitionError: unknown;
     try {
-      const response = await options.client.transitionWorkItem(record.work.workItemId, "release", {
-        claimOwner: record.credentials.claimOwner,
-        claimToken: record.credentials.claimToken,
-      });
+      const response = await withDeadline(
+        (signal) => options.client.transitionWorkItem(record.work.workItemId, "release", {
+          claimOwner: record.credentials.claimOwner,
+          claimToken: record.credentials.claimToken,
+        }, {signal}),
+        heartbeatTimeoutMs,
+        "release work item timed out",
+      );
       const data = responseData(response, "start", "release work item");
       const workItem = object(data.workItem);
       if (!workItem || workItem.id !== record.work.workItemId || workItem.status !== "queued") {
@@ -440,7 +446,11 @@ export function createWorkRunController(
 
     try {
       const data = responseData(
-        await options.client.getWorkItem(record.work.workItemId),
+        await withDeadline(
+          () => options.client.getWorkItem(record.work.workItemId),
+          heartbeatTimeoutMs,
+          "confirm released work item timed out",
+        ),
         "start",
         "confirm released work item",
       );
@@ -582,11 +592,11 @@ export function createWorkRunController(
     assertTransition(
       active.record.work.workItemId,
       await withDeadline(
-        options.client.transitionWorkItem(active.record.work.workItemId, "heartbeat", {
-          claimOwner: active.record.credentials.claimOwner,
-          claimToken: active.record.credentials.claimToken,
-          leaseSeconds,
-        }),
+        (signal) => options.client.transitionWorkItem(active.record.work.workItemId, "heartbeat", {
+            claimOwner: active.record.credentials.claimOwner,
+            claimToken: active.record.credentials.claimToken,
+            leaseSeconds,
+          }, {signal}),
         timeoutMs,
         "lease heartbeat timed out",
       ),
@@ -881,6 +891,16 @@ export function createWorkRunController(
     };
 
     for (const stored of loaded.records) {
+      if (
+        options.store.runIdFor(stored.launch.repoRoot, stored.work.workItemId)
+        !== stored.runId
+      ) {
+        result.failed.push({
+          runId: stored.runId,
+          reason: "stored work-session recovery id does not match its repo and work item",
+        });
+        continue;
+      }
       const lock = await options.store.acquire(stored.runId);
       if (!lock) {
         result.failed.push({
@@ -976,11 +996,11 @@ export function createWorkRunController(
           assertTransition(
             record.work.workItemId,
             await withDeadline(
-              options.client.transitionWorkItem(record.work.workItemId, "heartbeat", {
-                claimOwner: record.credentials.claimOwner,
-                claimToken: record.credentials.claimToken,
-                leaseSeconds,
-              }),
+              (signal) => options.client.transitionWorkItem(record.work.workItemId, "heartbeat", {
+                  claimOwner: record.credentials.claimOwner,
+                  claimToken: record.credentials.claimToken,
+                  leaseSeconds,
+                }, {signal}),
               heartbeatTimeoutMs,
               "recover heartbeat timed out",
             ),
