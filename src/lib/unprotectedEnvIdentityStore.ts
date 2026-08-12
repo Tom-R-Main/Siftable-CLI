@@ -1,5 +1,5 @@
 import {constants as fsConstants} from 'node:fs';
-import {chmod, lstat, mkdir, open} from 'node:fs/promises';
+import {chmod, lstat, mkdir, open, rm} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import path from 'node:path';
 import type {MaterializerIdentityStore} from './materializerDeviceIdentity.js';
@@ -67,5 +67,9 @@ export const unprotectedEnvironmentIdentityStore: MaterializerIdentityStore = {
       await handle.close();
     }
     await chmod(filePath, 0o600);
+  },
+
+  async remove(account: string): Promise<void> {
+    await rm(valuePath(account), {force: true});
   },
 };

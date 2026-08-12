@@ -1,6 +1,6 @@
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-import {open, readFile, readdir, realpath, stat, writeFile} from 'node:fs/promises';
+import {mkdir, open, readFile, readdir, realpath, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {mkdtemp, rm} from 'node:fs/promises';
@@ -15,6 +15,8 @@ import {
 class MemoryIdentityStore implements MaterializerIdentityStore {
   readonly values = new Map<string, Buffer>();
 
+  constructor(private readonly afterWrite?: () => Promise<void>) {}
+
   async read(account: string): Promise<Buffer | null> {
     const value = this.values.get(account);
     return value ? Buffer.from(value) : null;
@@ -22,6 +24,11 @@ class MemoryIdentityStore implements MaterializerIdentityStore {
 
   async write(account: string, value: Buffer): Promise<void> {
     this.values.set(account, Buffer.from(value));
+    await this.afterWrite?.();
+  }
+
+  async remove(account: string): Promise<void> {
+    this.values.delete(account);
   }
 }
 
@@ -113,6 +120,25 @@ describe('materializer device identity', () => {
       stateDirectory,
       store,
     })).rejects.toThrow('credential-store key is missing');
+  });
+
+  it('rolls back the wrapping key when encrypted state persistence fails', async () => {
+    const stateDirectory = await temporaryDirectory();
+    const apiUrl = 'https://siftable.io';
+    const originHash = await import('node:crypto').then(({createHash}) => (
+      createHash('sha256').update(new URL(apiUrl).origin).digest('hex')
+    ));
+    const store = new MemoryIdentityStore(async () => {
+      await mkdir(path.join(stateDirectory, `${originHash}.json`));
+    });
+
+    await expect(loadOrCreateMaterializerDeviceIdentity({
+      apiUrl,
+      stateDirectory,
+      store,
+    })).rejects.toThrow();
+
+    expect(store.values.size).toBe(0);
   });
 
   it('uses distinct identities for distinct API origins', async () => {

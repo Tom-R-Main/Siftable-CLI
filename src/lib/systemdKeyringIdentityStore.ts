@@ -159,4 +159,11 @@ export const systemdManagedKeyringIdentityStore: MaterializerIdentityStore = {
     }
     stored.fill(0);
   },
+
+  async remove(account: string): Promise<void> {
+    if (!(await systemdCredentialStoreAvailable())) {
+      throw new Error('Systemd-managed Vault identity storage is unavailable');
+    }
+    await rm(credentialPath(account), {force: true});
+  },
 };

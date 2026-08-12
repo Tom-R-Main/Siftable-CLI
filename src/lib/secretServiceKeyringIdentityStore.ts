@@ -19,6 +19,11 @@ export function buildSecretServiceLookupArguments(account: string): string[] {
   return ['lookup', 'service', SERVICE, 'account', account];
 }
 
+export function buildSecretServiceClearArguments(account: string): string[] {
+  if (!/^[0-9a-f]{64}$/.test(account)) throw new Error('Secret Service account is invalid');
+  return ['clear', 'service', SERVICE, 'account', account];
+}
+
 async function runSecretTool(args: string[], input?: string): Promise<{
   code: number;
   output: string;
@@ -90,5 +95,13 @@ export const secretServiceKeyringIdentityStore: MaterializerIdentityStore = {
       value.toString('base64url'),
     );
     if (result.code !== 0) throw new Error('Unable to store the Vault identity in Secret Service');
+  },
+
+  async remove(account: string): Promise<void> {
+    if (!(await secretServiceKeyringAvailable())) {
+      throw new Error('Secret Service convenience keyring is unavailable');
+    }
+    const result = await runSecretTool(buildSecretServiceClearArguments(account));
+    if (result.code !== 0) throw new Error('Unable to remove the Vault identity from Secret Service');
   },
 };
