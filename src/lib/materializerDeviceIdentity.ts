@@ -478,8 +478,8 @@ async function writeStoredIdentity(
   } finally {
     await handle.close();
   }
+  await chmod(tempPath, 0o600);
   await rename(tempPath, filePath);
-  await chmod(filePath, 0o600);
 }
 
 function materializeIdentity(
@@ -527,9 +527,11 @@ export async function loadOrCreateMaterializerDeviceIdentity(input: {
     }
     if (!state && existingWrappingKey) {
       existingWrappingKey.fill(0);
-      throw new Error(
-        'Vault materializer OS credential-store key exists but its encrypted state is missing',
-      );
+      // A process can terminate after committing the wrapping key but before
+      // atomically renaming the encrypted state into place. The missing state
+      // cannot be recovered, so remove the orphan while holding the origin
+      // lock and restart enrollment with a fresh identity.
+      await store.remove(account);
     }
     if (state && existingWrappingKey) {
       try {

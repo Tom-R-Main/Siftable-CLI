@@ -13,7 +13,6 @@ describe('systemd-managed endpoint identity store', () => {
     expect(args).toEqual([
       'encrypt', `--name=sift-vault-${account}`, '--with-key=host', '-', '/private/output.cred',
     ]);
-    expect(args.join(' ')).not.toContain('opaque-secret');
   });
 
   it('decrypts to stdout without placing key material in arguments', () => {

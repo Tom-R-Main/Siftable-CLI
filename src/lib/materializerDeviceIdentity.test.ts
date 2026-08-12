@@ -141,6 +141,30 @@ describe('materializer device identity', () => {
     expect(store.values.size).toBe(0);
   });
 
+  it('repairs an interrupted first enrollment with a key but no encrypted state', async () => {
+    const stateDirectory = await temporaryDirectory();
+    const apiUrl = 'https://siftable.io';
+    const account = await import('node:crypto').then(({createHash}) => (
+      createHash('sha256').update(new URL(apiUrl).origin).digest('hex')
+    ));
+    const orphanedKey = Buffer.alloc(32, 7);
+    const store = new MemoryIdentityStore();
+    store.values.set(account, Buffer.from(orphanedKey));
+
+    await expect(loadOrCreateMaterializerDeviceIdentity({
+      apiUrl,
+      stateDirectory,
+      store,
+    })).resolves.toEqual(expect.objectContaining({
+      fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+    }));
+
+    expect(store.values.size).toBe(1);
+    expect(store.values.get(account)).not.toEqual(orphanedKey);
+    await expect(readFile(path.join(stateDirectory, `${account}.json`), 'utf8'))
+      .resolves.toContain('"algorithm":"aes-256-gcm"');
+  });
+
   it('uses distinct identities for distinct API origins', async () => {
     const stateDirectory = await temporaryDirectory();
     const store = new MemoryIdentityStore();

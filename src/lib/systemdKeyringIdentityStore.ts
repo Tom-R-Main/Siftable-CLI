@@ -1,10 +1,10 @@
-import {spawn} from 'node:child_process';
 import {constants as fsConstants} from 'node:fs';
 import {access, chmod, lstat, mkdir, rename, rm} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import path from 'node:path';
 import {randomBytes, timingSafeEqual} from 'node:crypto';
 import type {MaterializerIdentityStore} from './materializerDeviceIdentity.js';
+import {runBoundedStdioProcess} from './boundedStdioProcess.js';
 
 const SYSTEMD_CREDS = '/usr/bin/systemd-creds';
 const OUTPUT_LIMIT = 64 * 1024;
@@ -29,38 +29,15 @@ export function buildSystemdCredentialDecryptArguments(
 }
 
 async function runSystemdCreds(args: string[], input?: Buffer): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(SYSTEMD_CREDS, args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: {PATH: '/usr/bin:/bin'},
-    });
-    const output: Buffer[] = [];
-    let outputBytes = 0;
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      reject(new Error('systemd credential operation timed out'));
-    }, 10_000);
-    timer.unref();
-    child.stdout.on('data', (chunk: Buffer) => {
-      outputBytes += chunk.byteLength;
-      if (outputBytes > OUTPUT_LIMIT) {
-        child.kill('SIGKILL');
-        reject(new Error('systemd credential operation returned too much data'));
-        return;
-      }
-      output.push(chunk);
-    });
-    child.on('error', error => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.on('close', code => {
-      clearTimeout(timer);
-      if (code === 0) resolve(Buffer.concat(output));
-      else reject(new Error('systemd credential operation failed'));
-    });
-    child.stdin.end(input);
+  const result = await runBoundedStdioProcess({
+    executable: SYSTEMD_CREDS,
+    args,
+    stdin: input,
+    stdoutLimit: OUTPUT_LIMIT,
+    operation: 'systemd credential operation',
   });
+  if (result.code !== 0) throw new Error('systemd credential operation failed');
+  return result.stdout;
 }
 
 function credentialPath(account: string): string {

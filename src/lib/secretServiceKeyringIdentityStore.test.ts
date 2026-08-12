@@ -9,9 +9,10 @@ describe('Secret Service convenience keyring', () => {
 
   it('passes only labels and selectors in process arguments', () => {
     const args = buildSecretServiceStoreArguments(account);
-    expect(args).toContain('store');
-    expect(args).toContain(account);
-    expect(args.join(' ')).not.toContain('secret-value');
+    expect(args).toEqual([
+      'store', '--label=Siftable Vault materializer device identity',
+      'service', 'io.siftable.cli.vault-materializer', 'account', account,
+    ]);
   });
 
   it('uses the same exact selector for lookup', () => {
