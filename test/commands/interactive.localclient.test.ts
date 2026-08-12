@@ -130,6 +130,7 @@ describe('LocalControlClient (in-process transport)', () => {
     it('runs terminal commands only after approval', async () => {
       const root = await mkdtemp(join(tmpdir(), 'sift-localclient-command-'));
       const previousCwd = process.env.SIFT_USER_CWD;
+      const previousShell = process.env.SHELL;
       let commandResult: any;
       let approvedCommand = '';
       setConfirmListener((req) => {
@@ -151,6 +152,7 @@ describe('LocalControlClient (in-process transport)', () => {
         err: (error: string) => ({success: false, error}),
       };
       process.env.SIFT_USER_CWD = root;
+      delete process.env.SHELL;
       setBrainModel({provider: 'openrouter', model: 'command-smoke'});
 
       try {
@@ -163,6 +165,8 @@ describe('LocalControlClient (in-process transport)', () => {
       } finally {
         if (previousCwd === undefined) delete process.env.SIFT_USER_CWD;
         else process.env.SIFT_USER_CWD = previousCwd;
+        if (previousShell === undefined) delete process.env.SHELL;
+        else process.env.SHELL = previousShell;
         delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
         await rm(root, {recursive: true, force: true});
       }

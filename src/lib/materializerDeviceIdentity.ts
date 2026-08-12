@@ -40,6 +40,7 @@ export interface MaterializerDeviceIdentity {
 export interface MaterializerIdentityStore {
   read(account: string): Promise<Buffer | null>;
   write(account: string, value: Buffer): Promise<void>;
+  remove(account: string): Promise<void>;
 }
 
 /**
@@ -159,6 +160,24 @@ export const macOsKeychainIdentityStore: MaterializerIdentityStore = {
       || !timingSafeEqual(storedValue, value)
     ) {
       throw new Error('Unable to verify the Vault materializer identity in macOS Keychain');
+    }
+  },
+
+  async remove(account: string): Promise<void> {
+    if (process.platform !== 'darwin') {
+      throw new Error(
+        'Timed Vault materialization sessions require a supported OS credential store (macOS Keychain is currently supported)',
+      );
+    }
+    const result = await runSecurity([
+      'delete-generic-password',
+      '-a',
+      account,
+      '-s',
+      KEYCHAIN_SERVICE,
+    ]);
+    if (result.exitCode !== 0 && !result.stderr.includes('could not be found')) {
+      throw new Error('Unable to remove the Vault materializer identity from macOS Keychain');
     }
   },
 };
@@ -459,8 +478,8 @@ async function writeStoredIdentity(
   } finally {
     await handle.close();
   }
+  await chmod(tempPath, 0o600);
   await rename(tempPath, filePath);
-  await chmod(filePath, 0o600);
 }
 
 function materializeIdentity(
@@ -508,9 +527,11 @@ export async function loadOrCreateMaterializerDeviceIdentity(input: {
     }
     if (!state && existingWrappingKey) {
       existingWrappingKey.fill(0);
-      throw new Error(
-        'Vault materializer OS credential-store key exists but its encrypted state is missing',
-      );
+      // A process can terminate after committing the wrapping key but before
+      // atomically renaming the encrypted state into place. The missing state
+      // cannot be recovered, so remove the orphan while holding the origin
+      // lock and restart enrollment with a fresh identity.
+      await store.remove(account);
     }
     if (state && existingWrappingKey) {
       try {
@@ -528,15 +549,29 @@ export async function loadOrCreateMaterializerDeviceIdentity(input: {
     );
     const wrappingKey = randomBytes(32);
     try {
-      await store.write(account, wrappingKey);
-      const encrypted = encryptPrivateKey(privateKeyPem, wrappingKey);
-      await writeStoredIdentity(filePath, {
-        version: IDENTITY_VERSION,
-        algorithm: 'aes-256-gcm',
-        ...encrypted,
-        publicKeyPem,
-        createdAt: new Date().toISOString(),
-      });
+      try {
+        await store.write(account, wrappingKey);
+        const encrypted = encryptPrivateKey(privateKeyPem, wrappingKey);
+        await writeStoredIdentity(filePath, {
+          version: IDENTITY_VERSION,
+          algorithm: 'aes-256-gcm',
+          ...encrypted,
+          publicKeyPem,
+          createdAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        try {
+          await store.remove(account);
+        } catch (rollbackError) {
+          throw new Error(
+            `Vault materializer identity persistence failed and credential rollback failed: ${
+              rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+            }`,
+            {cause: error},
+          );
+        }
+        throw error;
+      }
       return {
         publicKeyPem,
         privateKey: pair.privateKey,
