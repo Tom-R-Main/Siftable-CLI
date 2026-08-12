@@ -266,8 +266,11 @@ describe("contracted work-run lifecycle on a real repo", () => {
         "persist:started",
       ]);
     } finally {
-      await run?.shutdown({preserveRuns: true});
-      await fx.cleanup();
+      try {
+        await run?.shutdown({preserveRuns: true});
+      } finally {
+        await fx.cleanup();
+      }
     }
   });
 

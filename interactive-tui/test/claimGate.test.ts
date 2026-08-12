@@ -18,6 +18,7 @@ import {
   getWorkIdentity,
   transitionSessionStatus,
   listMergeMasterSessions,
+  MM_OK,
   resetMergeMasterForTests,
   type CreateChildInput,
 } from "../mergeMaster";
@@ -110,7 +111,7 @@ describe("Gate A admission", () => {
     // …then the holder is abandoned (running → abandoned is terminal)…
     if (first.admitted) {
       expect(getWorkIdentity(first.sessionId)).toEqual(work);
-      transitionSessionStatus(first.sessionId, "abandoned");
+      expect(transitionSessionStatus(first.sessionId, "abandoned")).toBe(MM_OK);
       expect(getWorkIdentity(first.sessionId)).toBeUndefined();
     }
     // …and the scope is released.

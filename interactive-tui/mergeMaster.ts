@@ -484,7 +484,7 @@ interface MergeMasterBackend {
 }
 
 // Status codes shared with native/merge_master.zig.
-const MM_OK = 0;
+export const MM_OK = 0;
 const MM_NOT_FOUND = 2;
 
 const STATUS_TO_CODE: Record<MergeMasterStatus, number> = {

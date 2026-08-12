@@ -365,8 +365,11 @@ describe("contracted work-run restart recovery", () => {
         recovered.recovered[0].work,
       );
     } finally {
-      await freshRun?.shutdown({preserveRuns: true});
-      await fx.cleanup();
+      try {
+        await freshRun?.shutdown({preserveRuns: true});
+      } finally {
+        await fx.cleanup();
+      }
     }
   });
 
@@ -411,8 +414,11 @@ describe("contracted work-run restart recovery", () => {
       expect(listChildWorktrees(fx.repoRoot, git)).toHaveLength(1);
       expect((await store.loadAll()).records[0].phase).toBe("started");
     } finally {
-      await recoveryRun?.shutdown({preserveRuns: true});
-      await fx.cleanup();
+      try {
+        await recoveryRun?.shutdown({preserveRuns: true});
+      } finally {
+        await fx.cleanup();
+      }
     }
   });
 });

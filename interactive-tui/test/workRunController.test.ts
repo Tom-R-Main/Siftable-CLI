@@ -318,20 +318,24 @@ describe("childSessionStore run locks", () => {
       stored.store.putExclusive(alternate),
     ]);
 
+    const winner = results.findIndex((result) => result.status === "fulfilled");
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
-    expect((await stored.store.get(runId))?.work.title).toMatch(/authoritative title|alternate title/);
+    expect((await stored.store.get(runId))?.work.title)
+      .toBe(winner === 0 ? base.work.title : alternate.work.title);
   });
 
   it("distinguishes unreadable recovery entries from malformed records", async () => {
     const stored = await store();
     const unreadableRunId = "b".repeat(64);
+    const malformedRunId = "c".repeat(64);
     await mkdir(join(stored.root, `${unreadableRunId}.json`));
+    await writeFile(join(stored.root, `${malformedRunId}.json`), "{not json", "utf8");
 
-    expect((await stored.store.loadAll()).failures).toEqual([{
-      runId: unreadableRunId,
-      reason: expect.stringContaining("could not be read"),
-    }]);
+    expect((await stored.store.loadAll()).failures).toEqual([
+      {runId: unreadableRunId, reason: expect.stringContaining("could not be read")},
+      {runId: malformedRunId, reason: "invalid work-session recovery record"},
+    ]);
   });
 });
 
@@ -887,9 +891,9 @@ describe("workRunController contracted orchestration", () => {
       childController: fakeChildren(log).controller,
       store: stored.store,
       ownerFactory: () => owner,
-      leaseSeconds: 3,
+      leaseSeconds: 30,
       heartbeatIntervalMs: 5,
-      heartbeatTimeoutMs: 500,
+      heartbeatTimeoutMs: 10_000,
     });
     expect((await controller.startContractedWork(workItemId)).ok).toBe(true);
     const runId = stored.store.runIdFor("/repo", workItemId);
