@@ -494,8 +494,21 @@ export function formatReadyPacket(packet: ReadyPacket): string {
   const lines = [
     `#${merge.childSessionId} ${merge.childBranch} → ${merge.baseBranch}: ${head}`,
     `  ${stat}${drift} · base ${merge.baseTip} · head ${merge.headCommit} · ${merge.dirty ? "dirty" : "clean"}`,
+    `  fork ${merge.baseCommit}`,
   ];
-  lines.push(`  fork ${merge.baseCommit}`);
+  if (packet.proof.availability === "unavailable") {
+    lines.push(`  proof: unavailable (${packet.proof.reason}) · ${packet.proof.detail}`);
+  } else {
+    const proof = packet.proof;
+    const contractVersion = proof.identity.contract.version === undefined ? "?" : proof.identity.contract.version;
+    lines.push(
+      `  work: ${proof.identity.workItemId} · Contract V${contractVersion} ${proof.identity.contract.profile}`,
+      `  plan: ${proof.identity.activePlan.planId} v${proof.identity.activePlan.planVersion}`,
+      `  commands: ${proof.commands.state} · ${proof.commands.passed}/${proof.commands.required} passed · ${proof.commands.covered}/${proof.commands.required} covered`,
+      `  acceptance: ${proof.acceptance.met}/${proof.acceptance.total} met`,
+      `  verifier: ${formatVerifier(proof.verifier)}`,
+    );
+  }
   if (merge.changedFiles.items.length > 0) {
     lines.push(`  changed: ${merge.changedFiles.items.map((file) => file.path).join(", ")}${merge.changedFiles.truncated ? ", …" : ""}`);
   }
@@ -507,20 +520,9 @@ export function formatReadyPacket(packet: ReadyPacket): string {
   }
   for (const blocker of merge.blockers.items) lines.push(`  • ${blocker}`);
   if (merge.blockers.truncated) lines.push("  • … additional blockers truncated");
-  if (packet.proof.availability === "unavailable") {
-    lines.push(`  proof: unavailable (${packet.proof.reason}) · ${packet.proof.detail}`);
-    return bounded(lines.join("\n"), MAX_RENDERED_PACKET_LENGTH);
-  }
+  if (packet.proof.availability === "unavailable") return bounded(lines.join("\n"), MAX_RENDERED_PACKET_LENGTH);
 
   const proof = packet.proof;
-  const contractVersion = proof.identity.contract.version === undefined ? "?" : proof.identity.contract.version;
-  lines.push(
-    `  work: ${proof.identity.workItemId} · Contract V${contractVersion} ${proof.identity.contract.profile}`,
-    `  plan: ${proof.identity.activePlan.planId} v${proof.identity.activePlan.planVersion}`,
-    `  commands: ${proof.commands.state} · ${proof.commands.passed}/${proof.commands.required} passed · ${proof.commands.covered}/${proof.commands.required} covered`,
-    `  acceptance: ${proof.acceptance.met}/${proof.acceptance.total} met`,
-    `  verifier: ${formatVerifier(proof.verifier)}`,
-  );
   if (proof.commands.missingStepIds.length > 0) {
     lines.push(`  missing steps: ${proof.commands.missingStepIds.join(", ")}`);
   }

@@ -236,6 +236,23 @@ describe("work proof packets", () => {
     expect(packet.merge.changedFiles).toMatchObject({total: 150, truncated: true});
     expect(packet.merge.changedFiles.items).toHaveLength(100);
     expect(packet.merge.verdict).toBe("ready_to_merge");
-    expect(formatReadyPacket(packet).length).toBeLessThanOrEqual(16_000);
+    const rendered = formatReadyPacket(packet);
+    expect(rendered.length).toBeLessThanOrEqual(16_000);
+    expect(rendered).toContain("commands: commands_passed");
+    expect(rendered).toContain("verifier: needs_review");
+  });
+
+  test("keeps unavailable proof visible ahead of truncated merge detail", async () => {
+    const files = Array.from({length: 100}, (_, index) => ({
+      path: `src/generated/${String(index).padStart(3, "0")}-${"x".repeat(500)}.ts`,
+      additions: 1,
+      deletions: 0,
+      binary: false,
+    }));
+    const packet = await loadReadyPacket(merge({work: undefined, files}), client());
+    const rendered = formatReadyPacket(packet);
+
+    expect(rendered.length).toBeLessThanOrEqual(16_000);
+    expect(rendered).toContain("proof: unavailable (session_not_linked)");
   });
 });
