@@ -24,7 +24,7 @@ import {
   type CynefinDomain,
   type HardDependency,
 } from "./core";
-import { scopeOverlap, scopeTokenSet, sharedScopeTokens } from "./scope";
+import { pathMatchesScope, scopeTokenSet } from "./scope";
 
 export interface RawWorkContractSummary {
   classification?: "bounded" | "legacy" | "invalid" | string;
@@ -105,12 +105,77 @@ export interface WorkScopeCollision {
   shared: string[];
 }
 
+function scopeList(item: RawWorkItem, key: "include" | "exclude"): string[] {
+  const value = item.writeScope?.[key];
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    : [];
+}
+
+function normalizedScopePattern(pattern: string): string {
+  return pattern.trim().toLowerCase().replace(/^\.\/+/, "").replace(/\/+$/, "");
+}
+
+function literalScopePrefix(pattern: string): string {
+  const literal: string[] = [];
+  for (const segment of normalizedScopePattern(pattern).split("/")) {
+    if (/[?*]/.test(segment)) break;
+    literal.push(segment);
+  }
+  return literal.join("/");
+}
+
+/** Conservative path-language overlap for exact paths, directories, and globs. */
+function scopePatternsMayOverlap(left: string, right: string): boolean {
+  const a = normalizedScopePattern(left);
+  const b = normalizedScopePattern(right);
+  if (!a || !b) return false;
+  if (a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)) return true;
+  if (!/[?*]/.test(a)) return pathMatchesScope(a, b);
+  if (!/[?*]/.test(b)) return pathMatchesScope(b, a);
+  const aPrefix = literalScopePrefix(a);
+  const bPrefix = literalScopePrefix(b);
+  if (!aPrefix || !bPrefix) return true;
+  return aPrefix === bPrefix || aPrefix.startsWith(`${bPrefix}/`) || bPrefix.startsWith(`${aPrefix}/`);
+}
+
+/** True only when the first pattern provably contains the complete second scope. */
+function scopePatternCovers(cover: string, candidate: string): boolean {
+  const outer = normalizedScopePattern(cover);
+  const inner = normalizedScopePattern(candidate);
+  if (!outer || !inner) return false;
+  if (outer === inner) return true;
+  if (!/[?*]/.test(outer)) return inner.startsWith(`${outer}/`);
+  if (!/[?*]/.test(inner)) return pathMatchesScope(inner, outer);
+  if (outer.endsWith("/**") && !/[?*]/.test(outer.slice(0, -3))) {
+    const root = outer.slice(0, -3).replace(/\/+$/, "");
+    return inner === root || inner.startsWith(`${root}/`);
+  }
+  return false;
+}
+
+function effectiveScopeOverlaps(left: RawWorkItem, right: RawWorkItem): string[] {
+  const leftInclude = scopeList(left, "include");
+  const rightInclude = scopeList(right, "include");
+  const exclusions = [...scopeList(left, "exclude"), ...scopeList(right, "exclude")];
+  const overlaps = new Set<string>();
+  for (const a of leftInclude) {
+    for (const b of rightInclude) {
+      if (!scopePatternsMayOverlap(a, b)) continue;
+      const narrower = scopePatternCovers(a, b) ? b : scopePatternCovers(b, a) ? a : null;
+      if (narrower && exclusions.some((excluded) => scopePatternCovers(excluded, narrower))) continue;
+      overlaps.add(normalizedScopePattern(a) === normalizedScopePattern(b) ? normalizedScopePattern(a) : `${a} ↔ ${b}`);
+    }
+  }
+  return [...overlaps].sort((a, b) => a.localeCompare(b));
+}
+
 export function workScopeCollisions(items: RawWorkItem[]): WorkScopeCollision[] {
   const active = items.filter((item) => ACTIVE_STATUSES.has(String(item.status ?? "queued")));
   const collisions: WorkScopeCollision[] = [];
   for (let left = 0; left < active.length; left += 1) {
     for (let right = left + 1; right < active.length; right += 1) {
-      const shared = sharedScopeTokens(scopeTokens(active[left]), scopeTokens(active[right]));
+      const shared = effectiveScopeOverlaps(active[left], active[right]);
       if (shared.length) collisions.push({leftId: active[left].id, rightId: active[right].id, shared});
     }
   }
@@ -170,7 +235,10 @@ export function scopeTokens(item: RawWorkItem): Set<string> {
   const raw: string[] = [];
   const scope = item.writeScope;
   if (scope && typeof scope === "object") {
-    for (const value of Object.values(scope)) {
+    const values = Array.isArray(scope.include)
+      ? [scope.include]
+      : Object.entries(scope).filter(([key]) => key !== "exclude").map(([, value]) => value);
+    for (const value of values) {
       if (typeof value === "string") raw.push(value);
       else if (Array.isArray(value)) {
         for (const entry of value) if (typeof entry === "string") raw.push(entry);
@@ -354,7 +422,6 @@ export function buildAgentWorkGraph(items: RawWorkItem[], opts: BuildOptions = {
     const lanePart = lane ? `${lane.family}:${String(LANE_LETTERS.indexOf(lane.letter)).padStart(3, "0")}` : "~";
     return `${lanePart}|${String(item.title ?? item.id)}|${item.id}`;
   };
-  const scopes = new Map(active.map((item) => [item.id, scopeTokens(item)]));
   for (let i = 0; i < active.length; i += 1) {
     for (let j = i + 1; j < active.length; j += 1) {
       const a = active[i];
@@ -363,8 +430,7 @@ export function buildAgentWorkGraph(items: RawWorkItem[], opts: BuildOptions = {
       if (reachable.get(a.id)?.has(b.id) || reachable.get(b.id)?.has(a.id)) continue;
 
       let strength = 0;
-      const overlap = scopeOverlap(scopes.get(a.id)!, scopes.get(b.id)!);
-      if (overlap > 0) strength = Math.max(strength, Math.min(1, 0.4 + 0.6 * overlap));
+      if (effectiveScopeOverlaps(a, b).length > 0) strength = 1;
 
       const laneA = laneOf(String(a.title ?? ""));
       const laneB = laneOf(String(b.title ?? ""));

@@ -496,10 +496,6 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
           scope: {type: "array", items: {type: "string"}, description: "Workspace-relative paths coding work may write"},
           excludeScope: {type: "array", items: {type: "string"}, description: "Workspace-relative exclusions"},
           verificationCommands: {type: "array", items: {type: "string"}, description: "Commands that prove the outcome"},
-          allowNetwork: {type: "boolean", description: "Allow network access"},
-          allowVault: {type: "boolean", description: "Allow audited Vault access"},
-          allowDeploy: {type: "boolean", description: "Allow deployment"},
-          allowMigrate: {type: "boolean", description: "Allow migrations"},
           dependsOn: {
             type: "array",
             description: "Authoritative prerequisite work-item UUIDs and their required gates",
@@ -521,13 +517,18 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
       },
       tags: ["work_items"],
       handler: async (input) => {
+        const elevatedActions = [
+          ["network", input.allowNetwork],
+          ["vault", input.allowVault],
+          ["deploy", input.allowDeploy],
+          ["migrate", input.allowMigrate],
+        ].filter((entry) => entry[1]).map((entry) => entry[0]);
+        if (elevatedActions.length) {
+          return err(`Elevated actions require operator approval: ${elevatedActions.join(", ")}`);
+        }
         let contract;
         try {
           const allowedActions = defaultWorkContractActions(input.profile);
-          if (input.allowNetwork) allowedActions.network = true;
-          if (input.allowVault) allowedActions.vault = true;
-          if (input.allowDeploy) allowedActions.deploy = true;
-          if (input.allowMigrate) allowedActions.migrate = true;
           contract = requireBuiltWorkContract({
             profile: input.profile,
             acceptanceCriteria: (input.acceptanceCriteria ?? []).map((text) => ({text, met: false})),

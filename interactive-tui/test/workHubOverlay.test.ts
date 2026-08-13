@@ -70,7 +70,7 @@ describe("work contract hub", () => {
   });
 
   it("requires a complete coding contract before preview and confirmation", () => {
-    const incomplete = {...emptyHandoffDraft(), title: "Incomplete", fieldIdx: 4};
+    const incomplete = {...emptyHandoffDraft(), title: "Incomplete", fieldIdx: 5};
     const rejected = reduceWorkKey({stage: "handoffForm", draft: incomplete}, {name: "return"}, []);
     expect(rejected.kind).toBe("handoff");
     expect(draftToHandoffInput(incomplete).ok).toBe(false);
@@ -104,5 +104,29 @@ describe("work contract hub", () => {
     expect(action.state.draft.profile).toBe("read_only");
     expect(action.state.draft.files).toBe("");
     expect(action.state.draft.excludeFiles).toBe("");
+  });
+
+  it("keeps space available while editing the agent field", () => {
+    const draft = {...emptyHandoffDraft(), agent: "remote", fieldIdx: 1};
+    const action = reduceWorkKey({stage: "handoffForm", draft}, {sequence: " "}, []);
+    expect(action.kind).toBe("none");
+    if (action.kind !== "none" || action.state.stage !== "handoffForm") return;
+    expect(action.state.draft.agent).toBe("remote ");
+    expect(action.state.draft.profile).toBe("coding");
+  });
+
+  it("authors excluded scope in the guided form", () => {
+    const draft = {...emptyHandoffDraft(), fieldIdx: 3};
+    const action = reduceWorkKey({stage: "handoffForm", draft}, {sequence: "dist/**"}, []);
+    expect(action.kind).toBe("none");
+    if (action.kind !== "none" || action.state.stage !== "handoffForm") return;
+    expect(action.state.draft.excludeFiles).toBe("");
+
+    let state = {stage: "handoffForm" as const, draft};
+    for (const sequence of "dist/**") {
+      const edited = reduceWorkKey(state, {sequence}, []);
+      if (edited.kind === "none" && edited.state.stage === "handoffForm") state = edited.state;
+    }
+    expect(state.draft.excludeFiles).toBe("dist/**");
   });
 });

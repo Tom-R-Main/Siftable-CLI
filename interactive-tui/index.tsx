@@ -358,7 +358,7 @@ function App() {
       getWorkItem: (workItemId) => apiClient.getWorkItem(workItemId),
       getWorkVerificationPlan: (workItemId) => apiClient.getWorkVerificationPlan(workItemId),
       claimWorkItem: (input) => apiClient.claimWorkItem(input),
-      transitionWorkItem: (workItemId, action, input) => apiClient.transitionWorkItem(workItemId, action, input),
+      transitionWorkItem: (workItemId, action, input, request) => apiClient.transitionWorkItem(workItemId, action, input, request),
     },
     childController,
     store: createChildSessionStore(),
@@ -1819,15 +1819,19 @@ function App() {
     }
     void restoreSavedModel(commandCtx()).then(() => void refreshState());
     void refreshState();
-    void workRunController.recoverWorkRuns().then((recovery) => {
-      if (recovery.recovered.length || recovery.failed.length) {
-        push({
-          role: "system",
-          text: `work runs: ${recovery.recovered.length} recovered · ${recovery.failed.length} failed`,
-        });
-      }
-    });
-    onCleanup(() => void workRunController.shutdown().catch((error) => {
+    void workRunController.recoverWorkRuns()
+      .then((recovery) => {
+        if (recovery.recovered.length || recovery.failed.length) {
+          push({
+            role: "system",
+            text: `work runs: ${recovery.recovered.length} recovered · ${recovery.failed.length} failed`,
+          });
+        }
+      })
+      .catch((error) => {
+        push({role: "system", text: `work-run recovery: ${error instanceof Error ? error.message : String(error)}`});
+      });
+    onCleanup(() => void workRunController.shutdown({preserveRuns: true}).catch((error) => {
       push({role: "system", text: `work-run shutdown: ${error instanceof Error ? error.message : String(error)}`});
     }));
     // Route brain write/edit approval requests into the confirm overlay.
@@ -2523,6 +2527,7 @@ function App() {
                     {label: "Title", value: d().title || "(type a title)"},
                     {label: "Agent", value: `${d().agent || "codex"} · ${d().profile ?? "coding"} (←/→ profile)`},
                     {label: "Files", value: (d().profile ?? "coding") === "read_only" ? "(none for read-only)" : d().files || "(required write scope)"},
+                    {label: "Exclude", value: (d().profile ?? "coding") === "read_only" ? "(none for read-only)" : d().excludeFiles || "(optional excluded scope)"},
                     {label: "Outcome", value: d().acceptance || "(semicolon-separated criteria)"},
                     {label: "Proof", value: d().verify || ((d().profile ?? "coding") === "coding" ? "(required commands; Enter previews)" : "(optional; Enter previews)")},
                   ];

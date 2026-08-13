@@ -192,6 +192,22 @@ describe("planAgentWork rendering", () => {
     expect(queue.every((item) => item.claimability?.state === "ready")).toBe(true);
   });
 
+  it("uses effective glob scope and exclusions for collision advisories", () => {
+    const queue: RawWorkItem[] = [
+      {id: "broad", status: "queued", writeScope: {include: ["src/**"], exclude: ["src/generated/**"]}},
+      {id: "source", status: "queued", writeScope: {include: ["src/file.ts"], exclude: ["dist/**"]}},
+      {id: "generated", status: "queued", writeScope: {include: ["src/generated/file.ts"], exclude: ["dist/**"]}},
+      {id: "docs", status: "queued", writeScope: {include: ["docs/**"], exclude: ["dist/**"]}},
+    ];
+
+    expect(workScopeCollisions(queue)).toEqual([
+      {leftId: "broad", rightId: "source", shared: ["src/** ↔ src/file.ts"]},
+    ]);
+    const {snapshot} = planAgentWork(queue);
+    expect(snapshot.clusterAssignment.broad).toBe(snapshot.clusterAssignment.source);
+    expect(snapshot.clusterAssignment.broad).not.toBe(snapshot.clusterAssignment.generated);
+  });
+
   it("produces a human-readable plan that names the order and serialization", () => {
     const { text, snapshot } = planAgentWork(MERGE_MASTER_QUEUE);
     expect(snapshot.status).toBe("ready");

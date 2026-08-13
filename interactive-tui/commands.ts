@@ -972,8 +972,12 @@ function contractDisplay(row: Record<string, unknown>): WorkContractDisplay {
     : classification === "invalid"
       ? `${messages[0] ?? "The declared Work Contract is invalid."} Repair the contract before running it.`
       : null;
+  const count = (value: unknown): number => {
+    const parsed = Number(value ?? 0);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  };
   const verificationState = String(row.verificationState ?? row.verification_state ?? "unverified");
-  const verificationCommandCount = Number(summary.verificationCommandCount ?? summary.verification_command_count ?? 0);
+  const verificationCommandCount = count(summary.verificationCommandCount ?? summary.verification_command_count);
   const verifiedResults = Array.isArray(row.verificationResults ?? row.verification_results)
     ? (row.verificationResults ?? row.verification_results) as unknown[]
     : [];
@@ -986,7 +990,7 @@ function contractDisplay(row: Record<string, unknown>): WorkContractDisplay {
     classification,
     profile: typeof summary.profile === "string" ? summary.profile : null,
     enabledActions: stringList(summary.enabledActions ?? summary.enabled_actions),
-    acceptanceCriteriaCount: Number(summary.acceptanceCriteriaCount ?? summary.acceptance_criteria_count ?? 0),
+    acceptanceCriteriaCount: count(summary.acceptanceCriteriaCount ?? summary.acceptance_criteria_count),
     verificationCommandCount,
     verifiedCommandCount: verificationState === "commands_passed" || verificationState === "verified"
       ? verificationCommandCount
@@ -2493,25 +2497,29 @@ export const interactiveCommands: InteractiveCommand[] = [
   {
     name: "handoff",
     description: "create a Sift work item from current context",
-    usage: "<title> [--profile coding|read-only] [--agent codex] --files a,b --acceptance a;b --verify cmd;cmd",
+    usage: "<title> [--profile coding|read-only] [--agent codex] --files a,b [--exclude a,b] --acceptance a;b --verify cmd;cmd",
     run: async (ctx, args) => {
       const title = positionalArgs(args).join(" ").trim();
       if (!title) {
-        ctx.push({role: "system", text: "usage: /handoff <title> [--profile coding|read-only] [--agent codex] --files a,b --acceptance a;b --verify cmd;cmd"});
+        ctx.push({role: "system", text: "usage: /handoff <title> [--profile coding|read-only] [--agent codex] --files a,b [--exclude a,b] --acceptance a;b --verify cmd;cmd"});
         return;
       }
       const profileFlag = (flagValue(args, "--profile") ?? "coding").toLowerCase();
       const profile = profileFlag === "read-only" || profileFlag === "read_only" ? "read_only" : "coding";
-      const msg = await createHandoffWorkItem(ctx, {
-        title,
-        profile,
-        agent: flagValue(args, "--agent") ?? "codex",
-        files: splitList(flagValue(args, "--files") ?? ""),
-        excludeFiles: splitList(flagValue(args, "--exclude") ?? ""),
-        acceptance: (flagValue(args, "--acceptance") ?? "").split(";").map((text) => text.trim()).filter(Boolean),
-        verify: (flagValue(args, "--verify") ?? "").split(";").map((text) => text.trim()).filter(Boolean),
-      });
-      ctx.push({role: "system", text: msg});
+      try {
+        const msg = await createHandoffWorkItem(ctx, {
+          title,
+          profile,
+          agent: flagValue(args, "--agent") ?? "codex",
+          files: splitList(flagValue(args, "--files") ?? ""),
+          excludeFiles: splitList(flagValue(args, "--exclude") ?? ""),
+          acceptance: (flagValue(args, "--acceptance") ?? "").split(";").map((text) => text.trim()).filter(Boolean),
+          verify: (flagValue(args, "--verify") ?? "").split(";").map((text) => text.trim()).filter(Boolean),
+        });
+        ctx.push({role: "system", text: msg});
+      } catch (error) {
+        ctx.push({role: "system", text: `/handoff: ${error instanceof Error ? error.message : String(error)}`});
+      }
     },
   },
   {

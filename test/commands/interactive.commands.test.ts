@@ -363,6 +363,29 @@ describe('interactive command registry', () => {
     expect(messages.at(-1)?.text).toContain('bounded:coding · 1/2 proof · unverified');
   });
 
+  it('falls back to zero for malformed contract-summary counts', async () => {
+    const {ctx, messages, apiClient} = buildContext();
+    (apiClient.listWorkItems as jest.Mock).mockResolvedValue({
+      statusCode: 200,
+      data: {workItems: [{
+        id: 'work-1',
+        title: 'Malformed counts',
+        status: 'queued',
+        contractSummary: {
+          classification: 'bounded',
+          profile: 'coding',
+          acceptanceCriteriaCount: 'unknown',
+          verificationCommandCount: 'unknown',
+        },
+      }]},
+    });
+
+    await runInteractiveCommand(ctx, '/work');
+
+    expect(messages.at(-1)?.text).toContain('bounded:coding · 0/0 proof');
+    expect(messages.at(-1)?.text).not.toContain('NaN');
+  });
+
   it('creates handoff work items from transcript, cwd, and explicit args', async () => {
     const {ctx, messages, createdWork} = buildContext();
 
@@ -385,6 +408,15 @@ describe('interactive command registry', () => {
       },
     });
     expect(messages.at(-1)?.text).toContain('Work item created: work-new');
+  });
+
+  it('surfaces invalid /handoff contracts without rejecting the command', async () => {
+    const {ctx, messages, createdWork} = buildContext();
+
+    await expect(runInteractiveCommand(ctx, '/handoff Missing proof --files=src/** --acceptance=works')).resolves.toBeUndefined();
+
+    expect(createdWork).toHaveLength(0);
+    expect(messages.at(-1)?.text).toContain('/handoff: Invalid Work Contract V1');
   });
 
   it('builds focus output from the reusable daily context collector', async () => {

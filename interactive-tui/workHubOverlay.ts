@@ -80,7 +80,7 @@ export interface HandoffDraft {
   acceptance: string;
   /** Raw `;`-separated verification commands. */
   verify?: string;
-  /** 0 title · 1 agent/profile · 2 files · 3 acceptance · 4 proof/preview. */
+  /** 0 title · 1 agent/profile · 2 files · 3 exclusions · 4 acceptance · 5 proof/preview. */
   fieldIdx: number;
 }
 
@@ -137,7 +137,7 @@ export interface WorkKey {
   meta?: boolean;
 }
 
-export const HANDOFF_FIELD_COUNT = 5;
+export const HANDOFF_FIELD_COUNT = 6;
 
 /** Report verbs that close the overlay, then run their command (no behind-modal writes). */
 const RUN_KEYS: Record<string, string> = {
@@ -345,7 +345,7 @@ function reduceHandoffForm(state: WorkHandoffState, key: WorkKey): WorkAction {
       state: {stage: "handoffForm", draft: {...draft, fieldIdx: Math.min(HANDOFF_FIELD_COUNT - 1, draft.fieldIdx + 1)}},
     };
   }
-  if ((key.name === "left" || key.name === "right" || key.sequence === " ") && draft.fieldIdx === 1) {
+  if ((key.name === "left" || key.name === "right") && draft.fieldIdx === 1) {
     const profile = (draft.profile ?? "coding") === "coding" ? "read_only" : "coding";
     return {
       kind: "none",
@@ -364,7 +364,7 @@ function reduceHandoffForm(state: WorkHandoffState, key: WorkKey): WorkAction {
       ? {kind: "handoff", draft}
       : {kind: "none", state: {stage: "handoffPreview", draft}};
   }
-  const fields = ["title", "agent", "files", "acceptance", "verify"] as const;
+  const fields = ["title", "agent", "files", "excludeFiles", "acceptance", "verify"] as const;
   const fieldName = fields[draft.fieldIdx];
   if (fieldName) {
     const next = editText(draft[fieldName], key);
