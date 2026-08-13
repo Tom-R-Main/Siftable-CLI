@@ -10,7 +10,14 @@
  */
 import { describe, it, expect } from "bun:test";
 import { computePlan, type PlanInput } from "../planning/core";
-import { buildAgentWorkGraph, planAgentWork, planToMermaid, type RawWorkItem } from "../planning/agentWork";
+import {
+  buildAgentWorkGraph,
+  planAgentWork,
+  planToMermaid,
+  workContractReadiness,
+  workScopeCollisions,
+  type RawWorkItem,
+} from "../planning/agentWork";
 import { renderMermaidSource, resolveCellRenderBin } from "../cellRender";
 
 // The mergeMaster lanes as they appear in the real queue (lane A is done).
@@ -152,6 +159,39 @@ describe("computePlan on the mergeMaster lanes", () => {
 });
 
 describe("planAgentWork rendering", () => {
+  it("surfaces contract readiness, missing proof, and scope collisions without changing claimability", () => {
+    const queue: RawWorkItem[] = [
+      {
+        id: "bounded",
+        title: "Bounded but missing proof",
+        status: "queued",
+        writeScope: {include: ["src/shared.ts"]},
+        verificationState: "unverified",
+        contractSummary: {classification: "bounded", profile: "coding", verificationCommandCount: 0},
+        claimability: {state: "ready", blockedBy: []},
+      },
+      {
+        id: "legacy",
+        title: "Legacy collision",
+        status: "queued",
+        writeScope: {include: ["src/shared.ts"]},
+        contractSummary: {classification: "legacy", warnings: [{message: "Explicit contract required."}]},
+        claimability: {state: "ready", blockedBy: []},
+      },
+    ];
+
+    expect(workContractReadiness(queue[0])).toMatchObject({classification: "bounded", ready: false, missingProof: true});
+    expect(workContractReadiness(queue[1])).toMatchObject({classification: "legacy", ready: false});
+    expect(workScopeCollisions(queue)).toEqual([{leftId: "bounded", rightId: "legacy", shared: ["src/shared.ts"]}]);
+
+    const {text} = planAgentWork(queue);
+    expect(text).toContain("Contract readiness (advisory; queue claimability remains authoritative)");
+    expect(text).toContain("bounded:coding · not runnable; Add at least one verification command");
+    expect(text).toContain("legacy · not runnable; Explicit contract required.");
+    expect(text).toContain("Write-scope collisions (planning-only serialization; dependencies unchanged)");
+    expect(queue.every((item) => item.claimability?.state === "ready")).toBe(true);
+  });
+
   it("produces a human-readable plan that names the order and serialization", () => {
     const { text, snapshot } = planAgentWork(MERGE_MASTER_QUEUE);
     expect(snapshot.status).toBe("ready");

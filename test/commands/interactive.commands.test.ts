@@ -337,6 +337,32 @@ describe('interactive command registry', () => {
     expect(messages.at(-1)?.text).toContain('Review proof');
   });
 
+  it('renders /work contract and proof summaries from one list read', async () => {
+    const {ctx, messages, apiClient} = buildContext();
+    (apiClient.listWorkItems as jest.Mock).mockResolvedValue({
+      statusCode: 200,
+      data: {workItems: [{
+        id: 'work-1',
+        title: 'Bounded row',
+        status: 'queued',
+        assignedAlias: {alias: 'codex'},
+        contractSummary: {
+          classification: 'bounded',
+          profile: 'coding',
+          verificationCommandCount: 2,
+          enabledActions: ['read', 'write', 'test'],
+        },
+        verificationState: 'unverified',
+        verificationResults: [{command: 'npm test', exitCode: 0}],
+      }]},
+    });
+
+    await runInteractiveCommand(ctx, '/work');
+
+    expect(apiClient.listWorkItems).toHaveBeenCalledTimes(1);
+    expect(messages.at(-1)?.text).toContain('bounded:coding · 1/2 proof · unverified');
+  });
+
   it('creates handoff work items from transcript, cwd, and explicit args', async () => {
     const {ctx, messages, createdWork} = buildContext();
 
@@ -350,8 +376,13 @@ describe('interactive command registry', () => {
         cwd: '/repo',
         files: ['packages/exf-cli/interactive-tui/index.tsx'],
       },
-      acceptanceCriteria: [{text: 'wraps', met: false}, {text: 'tests-pass', met: false}],
-      verificationCommands: ['npm-test'],
+      contract: {
+        version: 1,
+        profile: 'coding',
+        outcome: {acceptanceCriteria: [{text: 'wraps', met: false}, {text: 'tests-pass', met: false}]},
+        boundary: {writeScope: {include: ['packages/exf-cli/interactive-tui/index.tsx'], exclude: []}},
+        proof: {verificationCommands: ['npm-test']},
+      },
     });
     expect(messages.at(-1)?.text).toContain('Work item created: work-new');
   });

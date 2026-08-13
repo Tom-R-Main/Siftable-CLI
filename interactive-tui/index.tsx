@@ -89,9 +89,14 @@ import {
   reduceWorkKey,
   initialWorkState,
   draftToHandoffInput,
+  formatWorkRow,
+  handoffPreviewLines,
+  workDetailLines,
   type WorkState,
   type WorkBoardData,
 } from "./workHubOverlay";
+import {createWorkRunController} from "./workRunController";
+import {createChildSessionStore} from "./childSessionStore";
 import type { ParentMergeView } from "./mergeView";
 import { createSessionContext } from "./sessionContext";
 import { loadPrefs } from "./prefs";
@@ -347,6 +352,19 @@ function App() {
   const quit = () => {
     if (!renderer.isDestroyed) renderer.destroy();
   };
+
+  const workRunController = createWorkRunController({
+    client: {
+      getWorkItem: (workItemId) => apiClient.getWorkItem(workItemId),
+      getWorkVerificationPlan: (workItemId) => apiClient.getWorkVerificationPlan(workItemId),
+      claimWorkItem: (input) => apiClient.claimWorkItem(input),
+      transitionWorkItem: (workItemId, action, input) => apiClient.transitionWorkItem(workItemId, action, input),
+    },
+    childController,
+    store: createChildSessionStore(),
+    cwd: getWorkspaceRoot() || getSessionCwd(),
+    onLeaseFailure: ({reason}) => push({role: "system", text: `work run contained: ${reason}`}),
+  });
 
   const pasteChipLabel = (attachment: Omit<PasteTextAttachment, "label">) =>
     `[pasted text #${attachment.id} · ${attachment.analysis.chars} chars · ${attachment.analysis.lines} lines]`;
@@ -1564,7 +1582,7 @@ function App() {
         if (action.kind === "none") {
           // Any state change also clears a stale evidence panel (it described a
           // prior selection); skip the re-render when the state object is the same.
-          if (action.state !== wp.state) setWorkPicker({ ...wp, state: action.state, evidence: undefined });
+          if (action.state !== wp.state) setWorkPicker({ ...wp, state: action.state, status: undefined, evidence: undefined });
         } else if (action.kind === "close") {
           setWorkPicker(null);
         } else if (action.kind === "run") {
@@ -1583,6 +1601,24 @@ function App() {
               .catch((err) => {
                 const cur = workPicker();
                 if (cur) setWorkPicker({ ...cur, status: `evidence: ${err instanceof Error ? err.message : String(err)}` });
+              });
+          }
+        } else if (action.kind === "runWork") {
+          const item = wp.data.items[action.rowIdx];
+          if (item) {
+            setWorkPicker({...wp, status: `starting contracted run for "${item.title}"…`, evidence: undefined});
+            void workRunController.startContractedWork(item.id)
+              .then((result) => {
+                if (result.ok === true) {
+                  void refreshWorkBoard(`started #${result.run.session.sessionId} on ${result.run.session.branch}`);
+                } else {
+                  const cur = workPicker();
+                  if (cur) setWorkPicker({...cur, status: `run blocked at ${result.stage}: ${result.reason}`});
+                }
+              })
+              .catch((err) => {
+                const cur = workPicker();
+                if (cur) setWorkPicker({...cur, status: `run: ${err instanceof Error ? err.message : String(err)}`});
               });
           }
         } else if (action.kind === "handoff") {
@@ -1783,6 +1819,17 @@ function App() {
     }
     void restoreSavedModel(commandCtx()).then(() => void refreshState());
     void refreshState();
+    void workRunController.recoverWorkRuns().then((recovery) => {
+      if (recovery.recovered.length || recovery.failed.length) {
+        push({
+          role: "system",
+          text: `work runs: ${recovery.recovered.length} recovered · ${recovery.failed.length} failed`,
+        });
+      }
+    });
+    onCleanup(() => void workRunController.shutdown().catch((error) => {
+      push({role: "system", text: `work-run shutdown: ${error instanceof Error ? error.message : String(error)}`});
+    }));
     // Route brain write/edit approval requests into the confirm overlay.
     setConfirmListener((req) => {
       playSound("notify"); // a decision is waiting on you
@@ -2414,9 +2461,11 @@ function App() {
           const sel = () => { const s = wp().state; return s.stage === "board" ? s.rowIdx : 0; };
           const detailOpen = () => { const s = wp().state; return s.stage === "board" && s.detailOpen; };
           const draft = () => { const s = wp().state; return s.stage === "handoffForm" ? s.draft : null; };
+          const preview = () => { const s = wp().state; return s.stage === "handoffPreview" ? s.draft : null; };
           const countOf = (status: string) => items().filter((it) => it.status === status).length;
           const header = () => {
-            if (draft()) return "Hand off work    type · ↑/↓ fields · Enter next/create · Esc back";
+            if (preview()) return "Preview Work Contract    Enter confirm · Esc edit";
+            if (draft()) return "Hand off work    guided contract · ↑/↓ fields · Enter next/preview · Esc back";
             const agents = data().agents.map((a) => `${a.alias}·${a.status}`).join("  ");
             return `Work    ${items().length} item(s) · ${countOf("running") + countOf("claimed")} running · ${countOf("needs_review")} needs-review · ${countOf("queued")} queued${agents ? `    (${agents})` : ""}`;
           };
@@ -2432,7 +2481,7 @@ function App() {
             >
               <text fg={theme.accentStrong} selectable={false}>{header()}</text>
 
-              <Show when={!draft()}>
+              <Show when={!draft() && !preview()}>
                 <Show when={items().length === 0}>
                   <text fg={theme.muted} selectable={false}>No work items — press h to hand one off. Esc to close.</text>
                 </Show>
@@ -2442,18 +2491,8 @@ function App() {
                     const mark =
                       it.status === "needs_review" ? "◆" : it.status === "running" || it.status === "claimed" ? "▶" : it.status === "blocked" ? "⧖" : "·";
                     const sid = it.id ? it.id.slice(0, 6) : "??????";
-                    const owner = it.owner ? `  ${it.owner}` : "";
-                    const blocked = it.blockers.length ? `  ⚠ ${it.blockers.length} blocker(s)` : "";
-                    const head = `${selected() ? "› " : "  "}${mark} #${sid}  ${it.title}    ${it.status}  [${it.agent}]${owner}${blocked}`;
-                    const detailLines = () => {
-                      const lines: string[] = [];
-                      if (it.prompt) lines.push(`prompt: ${it.prompt.replace(/\s+/g, " ").slice(0, 160)}`);
-                      if (it.writeScope.length) lines.push(`scope: ${it.writeScope.join(", ")}`);
-                      if (it.acceptance.length) lines.push(`acceptance: ${it.acceptance.join("; ")}`);
-                      if (it.verification.length) lines.push(`verify: ${it.verification.join(" · ")}`);
-                      it.blockers.forEach((b) => lines.push(`blocked: ${b}`));
-                      return lines;
-                    };
+                    const head = `${selected() ? "› " : "  "}${mark} #${sid}  ${formatWorkRow(it)}`;
+                    const detailLines = () => workDetailLines(it);
                     return (
                       <box flexDirection="column" width="100%" backgroundColor={selected() ? theme.border : theme.bgMuted}>
                         <text fg={selected() ? theme.accentStrong : theme.muted} selectable={false}>{head}</text>
@@ -2475,17 +2514,17 @@ function App() {
                     </box>
                   )}
                 </Show>
-                <text fg={theme.muted} selectable={false}>↑/↓ select · ↵ detail · v proof · h handoff · p plan · f focus · r recap · s ship · esc close</text>
+                <text fg={theme.muted} selectable={false}>↑/↓ select · ↵ detail · x run · v proof · h handoff · p plan · f focus · r recap · s ship · esc close</text>
               </Show>
 
               <Show when={draft()}>
                 {(d) => {
                   const fields = () => [
                     {label: "Title", value: d().title || "(type a title)"},
-                    {label: "Agent", value: d().agent || "codex"},
-                    {label: "Files", value: d().files || "(comma/space globs, optional)"},
-                    {label: "Accept", value: d().acceptance || "(semicolon-separated, optional)"},
-                    {label: "Create", value: "↵ to create the work item"},
+                    {label: "Agent", value: `${d().agent || "codex"} · ${d().profile ?? "coding"} (←/→ profile)`},
+                    {label: "Files", value: (d().profile ?? "coding") === "read_only" ? "(none for read-only)" : d().files || "(required write scope)"},
+                    {label: "Outcome", value: d().acceptance || "(semicolon-separated criteria)"},
+                    {label: "Proof", value: d().verify || ((d().profile ?? "coding") === "coding" ? "(required commands; Enter previews)" : "(optional; Enter previews)")},
                   ];
                   return (
                     <For each={fields()}>
@@ -2499,6 +2538,17 @@ function App() {
                     </For>
                   );
                 }}
+              </Show>
+
+              <Show when={preview()}>
+                {(d) => (
+                  <box flexDirection="column" width="100%">
+                    <For each={handoffPreviewLines(d())}>
+                      {(line) => <text fg={theme.muted} selectable={false}>{line}</text>}
+                    </For>
+                    <text fg={theme.accentStrong} selectable={false}>Enter creates this bounded work item · Esc returns to editing</text>
+                  </box>
+                )}
               </Show>
 
               <Show when={wp().status}>

@@ -24,7 +24,20 @@ import {
   type CynefinDomain,
   type HardDependency,
 } from "./core";
-import { scopeOverlap, scopeTokenSet } from "./scope";
+import { scopeOverlap, scopeTokenSet, sharedScopeTokens } from "./scope";
+
+export interface RawWorkContractSummary {
+  classification?: "bounded" | "legacy" | "invalid" | string;
+  version?: number;
+  profile?: string;
+  acceptanceCriteriaCount?: number;
+  enabledActions?: string[];
+  writeScopeIncludeCount?: number;
+  writeScopeExcludeCount?: number;
+  verificationCommandCount?: number;
+  warnings?: Array<{message?: string}>;
+  violations?: Array<{path?: string; message?: string}>;
+}
 
 /** Loose shape of a work item as returned by the REST list endpoint. */
 export interface RawWorkItem {
@@ -36,8 +49,72 @@ export interface RawWorkItem {
   queueRank?: number | null;
   writeScope?: Record<string, unknown> | null;
   verificationCommands?: string[] | null;
+  verificationState?: string | null;
+  contractSummary?: RawWorkContractSummary | null;
   dependencies?: WorkItemDependency[] | null;
   claimability?: WorkItemClaimability | null;
+}
+
+export interface WorkContractReadiness {
+  classification: "bounded" | "legacy" | "invalid";
+  ready: boolean;
+  label: string;
+  missingProof: boolean;
+  explanation: string;
+}
+
+/** Consume the server-authored summary; never reimplement Work Contract validation here. */
+export function workContractReadiness(item: RawWorkItem): WorkContractReadiness {
+  const summary = item.contractSummary;
+  if (!summary || summary.classification === "legacy" || !summary.classification) {
+    return {
+      classification: "legacy",
+      ready: false,
+      label: "legacy",
+      missingProof: true,
+      explanation: summary?.warnings?.[0]?.message
+        ?? "Re-author through /work handoff before running; legacy work has no bounded authority or proof.",
+    };
+  }
+  if (summary.classification !== "bounded") {
+    const violation = summary.violations?.[0];
+    return {
+      classification: "invalid",
+      ready: false,
+      label: "invalid",
+      missingProof: true,
+      explanation: `${violation?.path ? `${violation.path}: ` : ""}${violation?.message ?? "Repair the declared contract before running."}`,
+    };
+  }
+  const proofCount = summary.verificationCommandCount ?? item.verificationCommands?.length ?? 0;
+  const missingProof = summary.profile === "coding" && proofCount === 0;
+  return {
+    classification: "bounded",
+    ready: !missingProof,
+    label: `bounded:${summary.profile ?? "unknown"}`,
+    missingProof,
+    explanation: missingProof
+      ? "Add at least one verification command before running coding work."
+      : `${proofCount} proof command${proofCount === 1 ? "" : "s"}; evidence ${item.verificationState ?? "unverified"}.`,
+  };
+}
+
+export interface WorkScopeCollision {
+  leftId: string;
+  rightId: string;
+  shared: string[];
+}
+
+export function workScopeCollisions(items: RawWorkItem[]): WorkScopeCollision[] {
+  const active = items.filter((item) => ACTIVE_STATUSES.has(String(item.status ?? "queued")));
+  const collisions: WorkScopeCollision[] = [];
+  for (let left = 0; left < active.length; left += 1) {
+    for (let right = left + 1; right < active.length; right += 1) {
+      const shared = sharedScopeTokens(scopeTokens(active[left]), scopeTokens(active[right]));
+      if (shared.length) collisions.push({leftId: active[left].id, rightId: active[right].id, shared});
+    }
+  }
+  return collisions;
 }
 
 export type WorkDependencyGate = "done" | "commands_passed";
@@ -460,6 +537,24 @@ export function planAgentWork(items: RawWorkItem[], opts: BuildOptions = {}): Re
 
   const lines: string[] = [];
   lines.push(`Plan · agent work queue (${included.length} active item${included.length === 1 ? "" : "s"})`);
+
+  if (included.length > 0) {
+    lines.push("");
+    lines.push("Contract readiness (advisory; queue claimability remains authoritative):");
+    for (const item of included) {
+      const readiness = workContractReadiness(item);
+      lines.push(`  - ${titleOf(item.id)} — ${readiness.label} · ${readiness.ready ? "ready" : "not runnable"}; ${readiness.explanation}`);
+    }
+  }
+
+  const collisions = workScopeCollisions(included);
+  if (collisions.length > 0) {
+    lines.push("");
+    lines.push("Write-scope collisions (planning-only serialization; dependencies unchanged):");
+    for (const collision of collisions) {
+      lines.push(`  - ${titleOf(collision.leftId)} ↔ ${titleOf(collision.rightId)} · ${collision.shared.join(", ")}`);
+    }
+  }
 
   if (rejectedDeclaredEdges.length > 0) {
     lines.push("");
