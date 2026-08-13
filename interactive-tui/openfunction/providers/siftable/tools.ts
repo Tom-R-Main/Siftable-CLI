@@ -9,6 +9,11 @@
 import type { ToolDefinition } from "../../framework/types.js";
 import { defineTool, ok, err } from "../../framework/tool.js";
 import type { ExfClient } from "./client.js";
+import {
+  WorkContractValidationError,
+  defaultWorkContractActions,
+  requireBuiltWorkContract,
+} from "../../../../src/lib/work-contract.js";
 
 // ─── Tasks ──────────────────────────────────────────────────────────────────
 
@@ -459,24 +464,38 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
   return [
     defineTool<{
       title: string;
+      profile: "coding" | "read_only";
       prompt?: string;
       assignedAlias?: string;
       projectId?: string;
       taskId?: string;
+      acceptanceCriteria?: string[];
+      scope?: string[];
+      excludeScope?: string[];
+      verificationCommands?: string[];
+      allowNetwork?: boolean;
+      allowVault?: boolean;
+      allowDeploy?: boolean;
+      allowMigrate?: boolean;
       dependsOn?: Array<{workItemId: string; requiredGate?: "done" | "commands_passed"}>;
     }>({
       name: "exf_work_item_create",
       description:
-        "Create executable agent work. dependsOn is authoritative and accepts only work-item UUIDs; " +
-        "requiredGate defaults to the project's work-dependency policy.",
+        "Create executable agent work with an explicit Work Contract V1. Choose coding or read_only; " +
+        "coding requires scope and verification commands. dependsOn remains authoritative.",
       inputSchema: {
         type: "object",
         properties: {
           title: {type: "string", description: "Executable work-item title"},
+          profile: {type: "string", enum: ["coding", "read_only"], description: "Least-privilege execution profile"},
           prompt: {type: "string", description: "Agent instructions"},
           assignedAlias: {type: "string", description: "Optional assigned agent alias"},
           projectId: {type: "string", description: "Optional project UUID"},
           taskId: {type: "string", description: "Optional parent human task UUID"},
+          acceptanceCriteria: {type: "array", items: {type: "string"}, description: "Observable outcome criteria"},
+          scope: {type: "array", items: {type: "string"}, description: "Workspace-relative paths coding work may write"},
+          excludeScope: {type: "array", items: {type: "string"}, description: "Workspace-relative exclusions"},
+          verificationCommands: {type: "array", items: {type: "string"}, description: "Commands that prove the outcome"},
           dependsOn: {
             type: "array",
             description: "Authoritative prerequisite work-item UUIDs and their required gates",
@@ -494,11 +513,46 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
             },
           },
         },
-        required: ["title"],
+        required: ["title", "profile"],
       },
       tags: ["work_items"],
       handler: async (input) => {
-        const res = await sift.createWorkItem(input);
+        const elevatedActions = [
+          ["network", input.allowNetwork],
+          ["vault", input.allowVault],
+          ["deploy", input.allowDeploy],
+          ["migrate", input.allowMigrate],
+        ].filter((entry) => entry[1]).map((entry) => entry[0]);
+        if (elevatedActions.length) {
+          return err(`Elevated actions require operator approval: ${elevatedActions.join(", ")}`);
+        }
+        let contract;
+        try {
+          const allowedActions = defaultWorkContractActions(input.profile);
+          contract = requireBuiltWorkContract({
+            profile: input.profile,
+            acceptanceCriteria: (input.acceptanceCriteria ?? []).map((text) => ({text, met: false})),
+            allowedActions,
+            writeScope: {include: input.scope ?? [], exclude: input.excludeScope ?? []},
+            verificationCommands: input.verificationCommands ?? [],
+          });
+        } catch (error) {
+          if (error instanceof WorkContractValidationError) return err(error.message);
+          throw error;
+        }
+        const {
+          profile: _profile,
+          acceptanceCriteria: _acceptanceCriteria,
+          scope: _scope,
+          excludeScope: _excludeScope,
+          verificationCommands: _verificationCommands,
+          allowNetwork: _allowNetwork,
+          allowVault: _allowVault,
+          allowDeploy: _allowDeploy,
+          allowMigrate: _allowMigrate,
+          ...identity
+        } = input;
+        const res = await sift.createWorkItem({...identity, contract});
         if (res.error || !res.data) return err(`createWorkItem failed (${res.statusCode}): ${res.error}`);
         const warning = res.warnings?.length ? ` Warning: ${res.warnings.join("; ")}` : "";
         return ok(redactWorkItemTokens(res.data), `Created work item: ${input.title}.${warning}`);

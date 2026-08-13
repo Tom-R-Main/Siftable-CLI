@@ -1,5 +1,6 @@
 import {describe, expect, it, mock} from "bun:test";
 import {createWorkItemTools} from "../openfunction/providers/siftable/tools";
+import {createWorkItemTools as createExecuFunctionWorkItemTools} from "../openfunction/providers/execufunction/tools";
 import type {ExfClient} from "../openfunction/providers/siftable/client";
 
 function toolsFor(sift: Record<string, unknown>) {
@@ -15,14 +16,82 @@ describe("OpenFunction work-item tools", () => {
     ]);
   });
 
-  it("surfaces legacy dependency warnings from creation", async () => {
+  it("emits an explicit bounded contract from both embedded work-create providers", async () => {
+    const createWorkItem = mock(async () => ({
+      statusCode: 201,
+      data: {workItem: {id: "work-1"}},
+    }));
+    const input = {
+      title: "Bounded",
+      profile: "coding" as const,
+      acceptanceCriteria: ["Feature works"],
+      scope: ["src/**"],
+      verificationCommands: ["npm test"],
+    };
+    const siftable = await toolsFor({createWorkItem}).get("exf_work_item_create")!.handler(input);
+    expect(siftable.success).toBe(true);
+    expect(createWorkItem).toHaveBeenLastCalledWith(expect.objectContaining({
+      title: "Bounded",
+      contract: expect.objectContaining({version: 1, profile: "coding"}),
+    }));
+
+    const execuClient = {raw: () => ({createWorkItem})} as unknown as ExfClient;
+    const execuTool = createExecuFunctionWorkItemTools(execuClient).find((tool) => tool.name === "exf_work_item_create")!;
+    expect((await execuTool.handler(input)).success).toBe(true);
+    expect(createWorkItem).toHaveBeenLastCalledWith(expect.objectContaining({
+      contract: expect.objectContaining({version: 1, profile: "coding"}),
+    }));
+  });
+
+  it("rejects incomplete coding contracts before calling the API", async () => {
+    const createWorkItem = mock(async () => ({statusCode: 201, data: {workItem: {id: "work-1"}}}));
+    const result = await toolsFor({createWorkItem}).get("exf_work_item_create")!.handler({
+      title: "Unbounded",
+      profile: "coding",
+      scope: ["src/**"],
+    });
+    expect(result.success).toBe(false);
+    expect(String(result.message ?? result.error)).toContain("coding_verification_required");
+    expect(createWorkItem).not.toHaveBeenCalled();
+  });
+
+  it("preserves dependency warnings on bounded creation", async () => {
     const createWorkItem = mock(async () => ({
       statusCode: 201,
       warnings: ['299 - "inputContext.dependsOn is deprecated"'],
       data: {workItem: {id: "work-1"}},
     }));
-    const result = await toolsFor({createWorkItem}).get("exf_work_item_create")!.handler({title: "Legacy"});
+    const result = await toolsFor({createWorkItem}).get("exf_work_item_create")!.handler({
+      title: "Bounded dependency",
+      profile: "coding",
+      acceptanceCriteria: ["Dependency is honored"],
+      scope: ["src/**"],
+      verificationCommands: ["npm test"],
+      dependsOn: [{workItemId: "11111111-1111-4111-8111-111111111111"}],
+    });
     expect(result.message).toContain("Warning: 299");
+  });
+
+  it("rejects model-supplied elevated actions in both embedded providers", async () => {
+    const createWorkItem = mock(async () => ({statusCode: 201, data: {workItem: {id: "work-1"}}}));
+    const input = {
+      title: "Elevated",
+      profile: "coding" as const,
+      acceptanceCriteria: ["Deploy succeeds"],
+      scope: ["src/**"],
+      verificationCommands: ["npm test"],
+      allowVault: true,
+      allowDeploy: true,
+    };
+    const siftable = await toolsFor({createWorkItem}).get("exf_work_item_create")!.handler(input);
+    const execuClient = {raw: () => ({createWorkItem})} as unknown as ExfClient;
+    const execuTool = createExecuFunctionWorkItemTools(execuClient).find((tool) => tool.name === "exf_work_item_create")!;
+    const execu = await execuTool.handler(input);
+
+    expect(siftable.success).toBe(false);
+    expect(execu.success).toBe(false);
+    expect(String(siftable.error)).toContain("operator approval: vault, deploy");
+    expect(createWorkItem).not.toHaveBeenCalled();
   });
 
   it("maps a claim alias to assignedAlias and carries the owner identity", async () => {

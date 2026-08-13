@@ -135,11 +135,11 @@ describe("workHubOverlay reducer — handoff form", () => {
   });
 
   it("enter advances through fields, then submits at the last field", () => {
-    const onAcceptance = form({...emptyHandoffDraft(), title: "T", fieldIdx: 3});
+    const onAcceptance = form({...emptyHandoffDraft(), title: "T", fieldIdx: 4});
     const advanced = reduceWorkKey(onAcceptance, {name: "return"}, items);
-    expect(advanced).toEqual({kind: "none", state: form({...emptyHandoffDraft(), title: "T", fieldIdx: 4})});
-    const submit = reduceWorkKey(form({...emptyHandoffDraft(), title: "T", fieldIdx: 4}), {name: "return"}, items);
-    expect(submit).toEqual({kind: "handoff", draft: {...emptyHandoffDraft(), title: "T", fieldIdx: 4}});
+    expect(advanced).toEqual({kind: "none", state: form({...emptyHandoffDraft(), title: "T", fieldIdx: 5})});
+    const submit = reduceWorkKey(form({...emptyHandoffDraft(), title: "T", fieldIdx: 5}), {name: "return"}, items);
+    expect(submit).toEqual({kind: "handoff", draft: {...emptyHandoffDraft(), title: "T", fieldIdx: 5}});
   });
 });
 

@@ -28,7 +28,7 @@ export default class NotesSearch extends BaseCommand {
 
     if (!this.jsonEnabled()) {
       renderTable(results, [
-        {key: 'id', header: 'ID'},
+        {key: 'noteId', header: 'ID', get: (r) => String(r.noteId ?? r.id ?? '—')},
         {key: 'title', header: 'Title'},
         {key: 'noteType', header: 'Type'},
         {key: 'score', header: 'Score', get: (r) => r.score != null ? String(Number(r.score).toFixed(2)) : '—'},

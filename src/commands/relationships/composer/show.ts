@@ -14,11 +14,15 @@ export default class RelationshipsComposerShow extends BaseCommand {
       `/api/v1/relationships/composer-sessions/${encodeURIComponent(args.id)}`,
     );
     if (!this.jsonEnabled()) {
+      const dispatch = response.session.dispatch as Record<string, unknown> | undefined;
+      const currentDispatch = dispatch?.current as Record<string, unknown> | null | undefined;
       renderDetail([
         ['Session', response.session.id],
         ['Phase', response.session.phase],
         ['Version', response.session.version],
         ['Sender', response.session.senderAccountId ?? 'not bound'],
+        ['Dispatch', currentDispatch?.status ?? 'not started'],
+        ['Dispatch action', currentDispatch?.actionId ?? 'not started'],
       ]);
       const evidence = Array.isArray(response.session.evidence) ? response.session.evidence as Record<string, unknown>[] : [];
       if (evidence.length) renderTable(evidence, [

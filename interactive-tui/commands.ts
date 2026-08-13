@@ -44,7 +44,9 @@ import type {
 } from "./childSessionController";
 import type {MergePacket} from "./mergeGate";
 import type {ParentMergeView} from "./mergeView";
-import type {WorkBoardItem, WorkBoardData} from "./workHubOverlay";
+import {formatWorkRow, type WorkBoardItem, type WorkBoardData, type WorkContractDisplay} from "./workHubOverlay";
+import {requireBuiltWorkContract} from "../src/lib/work-contract.js";
+import type {WorkContractV1} from "@siftable/mcp-server/dist/exfClient.js";
 
 export type CommandMessage = { role: "you" | "assistant" | "system" | "shell" | "tool"; text: string };
 
@@ -244,13 +246,21 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     defaultEffort: "high",
   },
   {
-    id: "openrouter/x-ai/grok-4.5",
+    id: "openrouter/x-ai/grok-4.6",
     provider: "openrouter",
-    model: "x-ai/grok-4.5",
-    label: "Grok 4.5",
-    description: "OpenRouter · balanced agentic coding",
+    model: "x-ai/grok-4.6",
+    label: "Grok 4.6",
+    description: "OpenRouter · xAI flagship for code and agentic work",
     aliases: [
       "grok",
+      "grok-4.6",
+      "grok-4-6",
+      "grok-46",
+      "x-ai/grok-4.6",
+      "x-ai/grok-4-6",
+      "openrouter:x-ai/grok-4.6",
+      "openrouter:x-ai/grok-4-6",
+      // Retired Grok 4.5 aliases continue to select the current model.
       "grok-4.5",
       "grok-4-5",
       "grok-45",
@@ -937,11 +947,70 @@ function scopeGlobs(value: unknown): string[] {
   return [];
 }
 
+function excludedScopeGlobs(value: unknown): string[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  return stringList((value as Record<string, unknown>).exclude);
+}
+
+function contractDisplay(row: Record<string, unknown>): WorkContractDisplay {
+  const raw = row.contractSummary ?? row.contract_summary;
+  const summary = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+  const classification = summary.classification === "bounded"
+    || summary.classification === "invalid"
+    || summary.classification === "legacy"
+    ? summary.classification
+    : "legacy";
+  const messages = [summary.violations, summary.warnings]
+    .flatMap((value) => Array.isArray(value) ? value : [])
+    .map((value) => value && typeof value === "object" ? (value as Record<string, unknown>).message : value)
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean);
+  const explanation = classification === "legacy"
+    ? messages[0] ?? "Legacy item: use h to author a bounded replacement before running it."
+    : classification === "invalid"
+      ? `${messages[0] ?? "The declared Work Contract is invalid."} Repair the contract before running it.`
+      : null;
+  const count = (value: unknown): number => {
+    const parsed = Number(value ?? 0);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  };
+  const verificationState = String(row.verificationState ?? row.verification_state ?? "unverified");
+  const verificationCommandCount = count(summary.verificationCommandCount ?? summary.verification_command_count);
+  const verifiedResults = Array.isArray(row.verificationResults ?? row.verification_results)
+    ? (row.verificationResults ?? row.verification_results) as unknown[]
+    : [];
+  const successfulCommands = new Set(verifiedResults.flatMap((result) => {
+    if (!result || typeof result !== "object" || Array.isArray(result)) return [];
+    const record = result as Record<string, unknown>;
+    return record.exitCode === 0 && typeof record.command === "string" ? [record.command] : [];
+  })).size;
+  return {
+    classification,
+    profile: typeof summary.profile === "string" ? summary.profile : null,
+    enabledActions: stringList(summary.enabledActions ?? summary.enabled_actions),
+    acceptanceCriteriaCount: count(summary.acceptanceCriteriaCount ?? summary.acceptance_criteria_count),
+    verificationCommandCount,
+    verifiedCommandCount: verificationState === "commands_passed" || verificationState === "verified"
+      ? verificationCommandCount
+      : Math.min(verificationCommandCount, successfulCommands),
+    verificationState,
+    explanation,
+  };
+}
+
 /** Normalize one API work-item row into the board's display shape. */
 function normalizeWorkItem(row: Record<string, unknown>): WorkBoardItem {
   const blockers = stringList(row.blockers);
   const blockedReason = row.blockedReason ?? row.blocked_reason;
   if (!blockers.length && typeof blockedReason === "string" && blockedReason.trim()) blockers.push(blockedReason.trim());
+  const excludedScope = excludedScopeGlobs(row.writeScope ?? row.write_scope);
+  const rawClaimability = row.claimability ?? row.claimability_state;
+  const claimability = rawClaimability && typeof rawClaimability === "object" && !Array.isArray(rawClaimability)
+    ? String((rawClaimability as Record<string, unknown>).state ?? "unknown")
+    : typeof rawClaimability === "string" ? rawClaimability : undefined;
+  const hasContractSummary = row.contractSummary !== undefined || row.contract_summary !== undefined;
   return {
     id: String(row.id ?? ""),
     title: String(row.title ?? "(untitled)"),
@@ -950,9 +1019,12 @@ function normalizeWorkItem(row: Record<string, unknown>): WorkBoardItem {
     owner: row.claimOwner ? String(row.claimOwner) : row.claim_owner ? String(row.claim_owner) : null,
     prompt: (row.prompt ?? null) as string | null,
     writeScope: scopeGlobs(row.writeScope ?? row.write_scope),
+    ...(excludedScope.length ? {excludedScope} : {}),
     verification: stringList(row.verificationCommands ?? row.verification_commands),
     acceptance: stringList(row.acceptanceCriteria ?? row.acceptance_criteria),
     blockers,
+    ...(claimability ? {claimability} : {}),
+    ...(hasContractSummary ? {contract: contractDisplay(row)} : {}),
   };
 }
 
@@ -1034,10 +1106,13 @@ export async function workItemEvidence(ctx: InteractiveCommandContext, item: Wor
 /** Structured input for a handoff work item — shared by /handoff and the /work hub. */
 export interface HandoffWorkItemInput {
   title: string;
+  profile?: "coding" | "read_only";
   agent: string;
   files: string[];
+  excludeFiles?: string[];
   acceptance: string[];
   verify?: string[];
+  contract?: WorkContractV1;
 }
 
 /**
@@ -1048,6 +1123,13 @@ export interface HandoffWorkItemInput {
  * user-facing confirmation line.
  */
 export async function createHandoffWorkItem(ctx: InteractiveCommandContext, input: HandoffWorkItemInput): Promise<string> {
+  const profile = input.profile ?? "coding";
+  const contract = input.contract ?? requireBuiltWorkContract({
+    profile,
+    acceptanceCriteria: input.acceptance.map((text) => ({text, met: false})),
+    writeScope: {include: input.files, exclude: input.excludeFiles ?? []},
+    verificationCommands: input.verify ?? [],
+  });
   const payload = {
     title: input.title,
     prompt: `Handoff from sift interactive.\n\n${ctx.conversationText().slice(-4000)}`,
@@ -1058,8 +1140,13 @@ export async function createHandoffWorkItem(ctx: InteractiveCommandContext, inpu
       gitStatus: collectLocalGitSummary({cwd: ctx.cwd()}).status,
       transcriptTail: ctx.conversationText().slice(-4000),
     },
-    acceptanceCriteria: input.acceptance.map((text) => ({text, met: false})),
-    verificationCommands: input.verify ?? [],
+    contract,
+    // Exact projections preserve compatibility for older embedded clients;
+    // the contract remains authoritative and the server rejects divergence.
+    acceptanceCriteria: contract.outcome.acceptanceCriteria,
+    allowedActions: contract.authority.allowedActions,
+    writeScope: contract.boundary.writeScope,
+    verificationCommands: contract.proof.verificationCommands,
   };
   const response = await ctx.apiClient.createWorkItem(payload, `interactive-${Date.now()}-${randomUUID()}`);
   const workItem = getData(response).workItem as Record<string, unknown> | undefined;
@@ -2279,6 +2366,8 @@ export const interactiveCommands: InteractiveCommand[] = [
         queueRank: (row.queueRank ?? row.queue_rank ?? null) as number | null,
         writeScope: (row.writeScope ?? row.write_scope ?? null) as Record<string, unknown> | null,
         verificationCommands: (row.verificationCommands ?? row.verification_commands ?? null) as string[] | null,
+        verificationState: (row.verificationState ?? row.verification_state ?? null) as string | null,
+        contractSummary: (row.contractSummary ?? row.contract_summary ?? null) as RawWorkItem["contractSummary"],
         dependencies: (row.dependencies ?? null) as RawWorkItem["dependencies"],
         claimability: (row.claimability ?? null) as RawWorkItem["claimability"],
       }));
@@ -2358,7 +2447,7 @@ export const interactiveCommands: InteractiveCommand[] = [
   {
     name: "work",
     aliases: ["w"],
-    description: "the agent work-queue hub — board, plan, focus, proof, handoff",
+    description: "the Work Contract control plane — board, run, plan, proof, handoff",
     run: async (ctx) => {
       // Text fallback. The TUI intercepts bare /work (index.tsx) to open the
       // arrow-navigable hub overlay; this body serves non-overlay contexts
@@ -2375,7 +2464,7 @@ export const interactiveCommands: InteractiveCommand[] = [
         const group = items.filter((item) => item.status === status);
         if (!group.length) continue;
         any = true;
-        lines.push(status, ...group.map((item) => `  - ${item.title} [${item.agent}]${item.owner ? ` · ${item.owner}` : ""}`));
+        lines.push(status, ...group.map((item) => `  - ${formatWorkRow(item)}`));
       }
       if (!any) lines.push("No queued or active work items.");
       ctx.push({role: "system", text: lines.join("\n")});
@@ -2408,21 +2497,29 @@ export const interactiveCommands: InteractiveCommand[] = [
   {
     name: "handoff",
     description: "create a Sift work item from current context",
-    usage: "<title> [--agent codex] [--files a,b] [--acceptance a;b]",
+    usage: "<title> [--profile coding|read-only] [--agent codex] --files a,b [--exclude a,b] --acceptance a;b --verify cmd;cmd",
     run: async (ctx, args) => {
       const title = positionalArgs(args).join(" ").trim();
       if (!title) {
-        ctx.push({role: "system", text: "usage: /handoff <title> [--agent codex] [--files a,b] [--acceptance a;b]"});
+        ctx.push({role: "system", text: "usage: /handoff <title> [--profile coding|read-only] [--agent codex] --files a,b [--exclude a,b] --acceptance a;b --verify cmd;cmd"});
         return;
       }
-      const msg = await createHandoffWorkItem(ctx, {
-        title,
-        agent: flagValue(args, "--agent") ?? "codex",
-        files: splitList(flagValue(args, "--files") ?? ""),
-        acceptance: (flagValue(args, "--acceptance") ?? "").split(";").map((text) => text.trim()).filter(Boolean),
-        verify: splitList(flagValue(args, "--verify") ?? ""),
-      });
-      ctx.push({role: "system", text: msg});
+      const profileFlag = (flagValue(args, "--profile") ?? "coding").toLowerCase();
+      const profile = profileFlag === "read-only" || profileFlag === "read_only" ? "read_only" : "coding";
+      try {
+        const msg = await createHandoffWorkItem(ctx, {
+          title,
+          profile,
+          agent: flagValue(args, "--agent") ?? "codex",
+          files: splitList(flagValue(args, "--files") ?? ""),
+          excludeFiles: splitList(flagValue(args, "--exclude") ?? ""),
+          acceptance: (flagValue(args, "--acceptance") ?? "").split(";").map((text) => text.trim()).filter(Boolean),
+          verify: (flagValue(args, "--verify") ?? "").split(";").map((text) => text.trim()).filter(Boolean),
+        });
+        ctx.push({role: "system", text: msg});
+      } catch (error) {
+        ctx.push({role: "system", text: `/handoff: ${error instanceof Error ? error.message : String(error)}`});
+      }
     },
   },
   {

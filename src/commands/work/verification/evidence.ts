@@ -21,6 +21,8 @@ export default class WorkVerificationEvidence extends BaseCommand {
     environment: Flags.string({description: 'Execution environment label', required: true}),
     provenance: Flags.string({description: 'Evidence provenance JSON object'}),
     'ran-at': Flags.string({description: 'RFC3339 execution timestamp'}),
+    'claim-owner': Flags.string({description: 'Active lease owner for workspace-service evidence'}),
+    'claim-token': Flags.string({description: 'Opaque active lease token for workspace-service evidence'}),
   };
 
   async run(): Promise<unknown> {
@@ -33,6 +35,8 @@ export default class WorkVerificationEvidence extends BaseCommand {
     }>(flags, `/api/v1/work-items/${args.id}/verification-evidence`, {
       method: 'POST',
       body: {
+        claimOwner: flags['claim-owner'] || process.env.SIFT_WORK_OWNER,
+        claimToken: flags['claim-token'] || process.env.SIFT_WORK_CLAIM_TOKEN,
         planVersion: flags['plan-version'],
         stepId: flags.step,
         attemptId: flags.attempt,

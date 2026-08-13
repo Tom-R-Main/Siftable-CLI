@@ -1,5 +1,10 @@
 import {installIsolatedConfigDirHooks} from '../helpers/config-env';
 import {fixtures, mockFetch, restoreFetch, runCommand} from '../helpers/mock-api';
+import {
+  runShellWithHeartbeats,
+  workerHeartbeatIntervalMs,
+  workerHeartbeatTimeoutMs,
+} from '../../src/commands/worker/run';
 
 installIsolatedConfigDirHooks('sift-cli-agents-work-test-');
 
@@ -246,6 +251,7 @@ describe('work commands', () => {
           title: 'Run verification',
           status: 'running',
           claimToken: 'should-not-render',
+          leaseDiagnostic: {state: 'expired', expiresAt: '2026-08-11T19:59:00.000Z'},
           dependencies: [{
             predecessorId: '11111111-1111-4111-8111-111111111111',
             requiredGate: 'commands_passed',
@@ -261,6 +267,7 @@ describe('work commands', () => {
     expect(json.claimToken).toBeUndefined();
     expect(json.dependencies[0].requiredGate).toBe('commands_passed');
     expect(json.claimability.state).toBe('waiting');
+    expect(json.leaseDiagnostic.state).toBe('expired');
     expect(result.stdout).not.toContain('should-not-render');
   });
 
@@ -697,6 +704,60 @@ describe('codex daily-review collect', () => {
 });
 
 describe('worker run command', () => {
+  it('schedules renewal well before even the minimum lease expires', () => {
+    expect(workerHeartbeatIntervalMs(60)).toBe(20_000);
+    expect(workerHeartbeatIntervalMs(1800)).toBe(600_000);
+    expect(workerHeartbeatTimeoutMs(60)).toBe(10_000);
+    expect(workerHeartbeatTimeoutMs(1800)).toBe(300_000);
+  });
+
+  it('renews the lease while a worker command is still running', async () => {
+    let heartbeatCount = 0;
+    const result = await runShellWithHeartbeats({
+      shell: process.env.SHELL || 'sh',
+      command: 'sleep 0.2; printf worker-finished',
+      cwd: process.cwd(),
+      env: process.env,
+      leaseSeconds: 60,
+      heartbeatIntervalMs: 10,
+      heartbeat: async () => {
+        heartbeatCount += 1;
+      },
+    });
+
+    expect(result).toMatchObject({exitCode: 0, stdoutTail: 'worker-finished'});
+    expect(heartbeatCount).toBeGreaterThan(0);
+  });
+
+  it('terminates a worker command when lease renewal fails', async () => {
+    await expect(runShellWithHeartbeats({
+      shell: process.env.SHELL || 'sh',
+      command: 'sleep 5',
+      cwd: process.cwd(),
+      env: process.env,
+      leaseSeconds: 60,
+      heartbeatIntervalMs: 10,
+      heartbeat: async () => {
+        throw new Error('lease lost');
+      },
+    })).rejects.toThrow('Worker lease heartbeat failed: lease lost');
+  });
+
+  it('terminates a worker before lease expiry when renewal stalls', async () => {
+    const startedAt = Date.now();
+    await expect(runShellWithHeartbeats({
+      shell: process.env.SHELL || 'sh',
+      command: 'sleep 5',
+      cwd: process.cwd(),
+      env: process.env,
+      leaseSeconds: 60,
+      heartbeatIntervalMs: 10,
+      heartbeatTimeoutMs: 20,
+      heartbeat: async () => await new Promise<void>(() => {}),
+    })).rejects.toThrow('Worker lease heartbeat failed: heartbeat timed out after 20ms');
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+
   it('claims, starts, runs, heartbeats, and marks work as needing review', async () => {
     const transitions: string[] = [];
     mockFetch()

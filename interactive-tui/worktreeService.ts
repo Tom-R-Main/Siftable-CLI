@@ -33,6 +33,15 @@
 import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { isAbsolute, resolve, sep } from "node:path";
+import type {
+  AgentWorkspacePreflightInputV1,
+  AgentWorkspacePreflightResultV1,
+  AgentWorkspaceProvisionInputV1,
+} from "@execufunction/shared";
+import type {
+  LocalWorkspaceDriver,
+  LocalWorkspaceHandle,
+} from "../src/lib/agent-runtime/provider";
 import {
   buildChildBranchName,
   resolveChildWorktreePath,
@@ -444,6 +453,121 @@ export function createChildWorktree(
     runner(["rev-parse", "HEAD"], worktreePath).stdout.trim() || baseCommit;
 
   return { repoRoot, branch, worktreePath, baseBranch: opts.baseBranch, baseCommit, headCommit };
+}
+
+// ---------------------------------------------------------------------------
+// AgentWorkspaceRuntimeV1 adapter
+// ---------------------------------------------------------------------------
+
+/**
+ * Expose this service's guarded Git lifecycle through the narrow driver used by
+ * LocalWorktreeAgentWorkspaceRuntimeProvider. Existing branches are recovered
+ * only when their registered worktree, immutable base ancestry, and managed
+ * path all still match; ambiguous partial state fails closed.
+ */
+export function createAgentRuntimeWorktreeDriver(
+  options: {repoRoot: string; layout: ChildWorktreeLayout},
+  runner: GitRunner = defaultRunner,
+): LocalWorkspaceDriver {
+  const repoRoot = resolveRepoRoot(options.repoRoot, runner);
+  const worktreesRoot = canonicalize(options.layout.worktreesRoot);
+  const layout = {worktreesRoot};
+
+  const currentHead = (handle: LocalWorkspaceHandle): string => {
+    const head = resolveCommit(handle.worktreePath, "HEAD", runner);
+    if (!head) throw new WorktreeError("not_found", `worktree HEAD is unavailable: ${handle.worktreePath}`);
+    return head;
+  };
+
+  const recover = (input: AgentWorkspaceProvisionInputV1): LocalWorkspaceHandle | null => {
+    const branch = validateChildBranchName(input.binding.branch);
+    const entry = listWorktrees(repoRoot, runner).find(worktree => worktree.branch === branch);
+    const branchHead = resolveCommit(repoRoot, branch, runner);
+    if (!entry) {
+      if (branchHead) {
+        throw new WorktreeError(
+          "already_exists",
+          `branch exists without a registered worktree: ${branch}`,
+          "Inspect and reconcile the existing branch before retrying provision.",
+        );
+      }
+      return null;
+    }
+    const worktreePath = validateChildWorktreePath(entry.path, {
+      worktreesRoot,
+      repoRoot,
+    });
+    const baseSha = resolveCommit(repoRoot, input.binding.baseSha, runner);
+    if (baseSha !== input.binding.baseSha) {
+      throw new WorktreeError("not_found", `immutable base SHA not found: ${input.binding.baseSha}`);
+    }
+    const headSha = currentHead({
+      repositoryRoot: repoRoot,
+      worktreePath,
+      branch,
+      baseSha,
+      headSha: entry.head,
+      recovered: true,
+    });
+    const ancestry = runner(["merge-base", "--is-ancestor", baseSha, headSha], repoRoot);
+    if (ancestry.status !== 0) {
+      throw new WorktreeError(
+        "unsafe_input",
+        `existing worktree ${branch} does not descend from immutable base ${baseSha}`,
+      );
+    }
+    return {repositoryRoot: repoRoot, worktreePath, branch, baseSha, headSha, recovered: true};
+  };
+
+  return {
+    async preflight(input: AgentWorkspacePreflightInputV1): Promise<AgentWorkspacePreflightResultV1> {
+      const repositoryHead = resolveCommit(repoRoot, "HEAD", runner);
+      const checks = {
+        gitRepository: true,
+        managedRootOutsideRepository: worktreesRoot !== repoRoot
+          && !worktreesRoot.startsWith(`${repoRoot}${sep}`),
+        leaseGeneration: input.context.leaseGeneration > 0,
+        provider: input.template.provider === "local-worktree",
+        repositoryHasHead: repositoryHead !== null,
+      };
+      return {
+        ok: Object.values(checks).every(Boolean),
+        checks,
+        reasonCode: Object.values(checks).every(Boolean) ? null : "local_worktree_preflight_failed",
+      };
+    },
+
+    async provision(input: AgentWorkspaceProvisionInputV1): Promise<LocalWorkspaceHandle> {
+      const recovered = recover(input);
+      if (recovered) return recovered;
+      const created = createChildWorktree({
+        repoRoot,
+        baseBranch: input.binding.baseSha,
+        seed: input.binding.workItemId,
+        branch: input.binding.branch,
+        layout,
+      }, runner);
+      if (created.baseCommit !== input.binding.baseSha || created.headCommit !== input.binding.baseSha) {
+        throw new WorktreeError("unsafe_input", "worktree did not fork from the requested immutable base SHA");
+      }
+      return {
+        repositoryRoot: created.repoRoot,
+        worktreePath: created.worktreePath,
+        branch: created.branch,
+        baseSha: created.baseCommit,
+        headSha: created.headCommit,
+        recovered: false,
+      };
+    },
+
+    async currentHead(handle: LocalWorkspaceHandle): Promise<string> {
+      return currentHead(handle);
+    },
+
+    async terminate(handle: LocalWorkspaceHandle): Promise<void> {
+      removeChildWorktree({repoRoot, worktreePath: handle.worktreePath}, runner);
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

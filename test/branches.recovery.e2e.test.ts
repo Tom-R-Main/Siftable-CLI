@@ -19,6 +19,7 @@ import {join} from "node:path";
 import {tmpdir} from "node:os";
 import {
   createGitRunner,
+  listChildWorktrees,
   resolveRepoRoot,
   rebaseChildOntoBase,
   worktreeStatus,
@@ -26,7 +27,9 @@ import {
   type GitRunner,
 } from "../interactive-tui/worktreeService";
 import {createChildSessionController} from "../interactive-tui/childSessionController";
+import {createChildSessionStore} from "../interactive-tui/childSessionStore";
 import {getMergeMasterSession, resetMergeMasterForTests} from "../interactive-tui/mergeMaster";
+import {createWorkRunController, type WorkRunClient} from "../interactive-tui/workRunController";
 
 const git: GitRunner = createGitRunner();
 
@@ -281,6 +284,141 @@ describe("lane F — controller recovery", () => {
       expect(getMergeMasterSession(c.session.sessionId)!.status).toBe("running");
     } finally {
       await fx.cleanup();
+    }
+  });
+});
+
+describe("contracted work-run restart recovery", () => {
+  function clientFor(counts: {
+    claims: number;
+    starts: Array<{id: string; owner?: string; token?: string}>;
+  }): WorkRunClient {
+    return {
+      async getWorkItem(id) {
+        return {
+          statusCode: 200,
+          data: {workItem: {
+            id,
+            title: "recover exact work",
+            contractSummary: {classification: "bounded", profile: "coding", version: 1},
+            writeScope: {include: ["shared.txt"], exclude: ["dist/**"]},
+          }},
+        };
+      },
+      async getWorkVerificationPlan(id) {
+        return {statusCode: 200, data: {plan: {id: "plan-recovery", workItemId: id, version: 4, state: "active"}}};
+      },
+      async claimWorkItem(input) {
+        counts.claims++;
+        return {statusCode: 200, data: {workItem: {id: input.workItemId, claimToken: "opaque-recovery-token"}}};
+      },
+      async transitionWorkItem(id, action, input) {
+        if (action === "start") counts.starts.push({id, owner: input.claimOwner, token: input.claimToken});
+        return {statusCode: 200, data: {workItem: {id, status: action === "release" ? "queued" : "running"}}};
+      },
+    };
+  }
+
+  it("re-associates a started run with the same work identity and no second claim or worktree", async () => {
+    const fx = await setupRepo();
+    let freshRun: ReturnType<typeof createWorkRunController> | undefined;
+    try {
+      const counts = {claims: 0, starts: [] as Array<{id: string; owner?: string; token?: string}>};
+      const store = createChildSessionStore({root: join(fx.worktreesRoot, "recovery")});
+      const firstController = createChildSessionController({runner: git, worktreesRoot: fx.worktreesRoot});
+      const firstRun = createWorkRunController({
+        client: clientFor(counts),
+        childController: firstController,
+        store,
+        cwd: fx.repoRoot,
+        ownerFactory: () => "opaque-recovery-owner",
+      });
+      const started = await firstRun.startContractedWork("work-recovery");
+      expect(started.ok).toBe(true);
+      expect(counts.claims).toBe(1);
+      expect(counts.starts).toHaveLength(1);
+      expect(listChildWorktrees(fx.repoRoot, git)).toHaveLength(1);
+      await firstRun.shutdown({preserveRuns: true});
+
+      resetMergeMasterForTests();
+      const freshController = createChildSessionController({runner: git, worktreesRoot: fx.worktreesRoot});
+      freshRun = createWorkRunController({
+        client: clientFor(counts),
+        childController: freshController,
+        store,
+        cwd: fx.repoRoot,
+      });
+      const recovered = await freshRun.recoverWorkRuns();
+
+      expect(recovered.failed).toEqual([]);
+      expect(recovered.recovered).toHaveLength(1);
+      expect(recovered.recovered[0].work.workItemId).toBe("work-recovery");
+      expect(recovered.recovered[0].work.plan).toEqual({
+        planId: "plan-recovery",
+        planVersion: 4,
+        state: "active",
+      });
+      expect(counts.claims).toBe(1);
+      expect(counts.starts).toHaveLength(1);
+      expect(listChildWorktrees(fx.repoRoot, git)).toHaveLength(1);
+      expect(getMergeMasterSession(recovered.recovered[0].session.sessionId)?.work).toEqual(
+        recovered.recovered[0].work,
+      );
+    } finally {
+      try {
+        await freshRun?.shutdown({preserveRuns: true});
+      } finally {
+        await fx.cleanup();
+      }
+    }
+  });
+
+  it("adopts a spawned run before retrying start with the stored exact lease", async () => {
+    const fx = await setupRepo();
+    let recoveryRun: ReturnType<typeof createWorkRunController> | undefined;
+    try {
+      const counts = {claims: 0, starts: [] as Array<{id: string; owner?: string; token?: string}>};
+      const store = createChildSessionStore({root: join(fx.worktreesRoot, "recovery")});
+      const firstController = createChildSessionController({runner: git, worktreesRoot: fx.worktreesRoot});
+      const firstRun = createWorkRunController({
+        client: clientFor(counts),
+        childController: firstController,
+        store,
+        cwd: fx.repoRoot,
+        ownerFactory: () => "opaque-recovery-owner",
+      });
+      expect((await firstRun.startContractedWork("work-recovery")).ok).toBe(true);
+      const persisted = (await store.loadAll()).records[0];
+      counts.starts.length = 0;
+      await firstRun.shutdown({preserveRuns: true});
+      await store.put({...persisted, phase: "spawned"});
+
+      resetMergeMasterForTests();
+      const freshController = createChildSessionController({runner: git, worktreesRoot: fx.worktreesRoot});
+      recoveryRun = createWorkRunController({
+        client: clientFor(counts),
+        childController: freshController,
+        store,
+        cwd: fx.repoRoot,
+      });
+      const recovered = await recoveryRun.recoverWorkRuns();
+
+      expect(recovered.failed).toEqual([]);
+      expect(recovered.recovered[0].phase).toBe("started");
+      expect(counts.claims).toBe(1);
+      expect(counts.starts).toEqual([{
+        id: "work-recovery",
+        owner: "opaque-recovery-owner",
+        token: "opaque-recovery-token",
+      }]);
+      expect(listChildWorktrees(fx.repoRoot, git)).toHaveLength(1);
+      expect((await store.loadAll()).records[0].phase).toBe("started");
+    } finally {
+      try {
+        await recoveryRun?.shutdown({preserveRuns: true});
+      } finally {
+        await fx.cleanup();
+      }
     }
   });
 });
