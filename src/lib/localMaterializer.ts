@@ -29,6 +29,10 @@ import {
   fingerprintMaterializerPublicKey,
   loadOrCreateMaterializerDeviceIdentity,
 } from './materializerDeviceIdentity.js';
+import {
+  systemdCredentialStoreAvailable,
+  systemdManagedKeyringIdentityStore,
+} from './systemdKeyringIdentityStore.js';
 
 const execFileAsync = promisify(execFile);
 const SAFE_MODES = new Map([['0400', 0o400], ['0600', 0o600]]);
@@ -201,29 +205,66 @@ export async function inspectMaterializationDestination(input: {
 export async function createMaterializerRunner(
   apiUrl: string,
 ): Promise<MaterializerRunner> {
+  const extension = path.extname(__filename);
+  const materializerFiles = [
+    __filename,
+    path.join(path.dirname(__filename), `environmentLease${extension}`),
+    path.join(path.dirname(__filename), `environmentLeaseApi${extension}`),
+    path.join(path.dirname(__filename), `environmentLeaseSupervisor${extension}`),
+    path.join(path.dirname(__filename), '..', 'commands', 'vault', 'use', `lease${extension}`),
+  ];
   const materializerDigest = createHash('sha256')
-    .update(readFileSync(__filename))
-    .update(process.version)
-    .digest('hex');
-  if (process.platform !== 'darwin') {
+    .update('sift.environment-lease-materializer.v1\0');
+  for (const file of materializerFiles) {
+    materializerDigest.update(path.relative(path.dirname(__filename), file)).update('\0');
+    materializerDigest.update(readFileSync(file)).update('\0');
+  }
+  const resolvedMaterializerDigest = materializerDigest.update(process.version).digest('hex');
+  const linuxStoreAvailable = process.platform === 'linux'
+    && await systemdCredentialStoreAvailable();
+  if (process.platform !== 'darwin' && !linuxStoreAvailable) {
     const pair = generateKeyPairSync('rsa', {modulusLength: 3072});
     const publicKeyPem = pair.publicKey.export({type: 'spki', format: 'pem'}).toString();
     return {
       publicKeyPem,
       privateKey: pair.privateKey,
       fingerprint: fingerprintMaterializerPublicKey(publicKeyPem),
-      materializerDigest,
+      materializerDigest: resolvedMaterializerDigest,
       sessionEligible: false,
     };
   }
-  const identity = await loadOrCreateMaterializerDeviceIdentity({apiUrl});
+  const identity = await loadOrCreateMaterializerDeviceIdentity({
+    apiUrl,
+    ...(linuxStoreAvailable ? {store: systemdManagedKeyringIdentityStore} : {}),
+  });
   return {
     publicKeyPem: identity.publicKeyPem,
     privateKey: identity.privateKey,
     fingerprint: identity.fingerprint,
-    materializerDigest,
+    materializerDigest: resolvedMaterializerDigest,
     sessionEligible: true,
   };
+}
+
+export function createEnvironmentLeaseCleanupProofBinding(input: {
+  leaseId: string;
+  attemptId: string;
+  state: 'confirmed' | 'not_required' | 'failed' | 'unknowable';
+  reason: string;
+  runnerFingerprint: string;
+  materializerDigest: string;
+  proofTimestamp: string;
+}): string {
+  return canonicalJson({
+    proofContext: 'sift.vault.environment-lease.cleanup.v1',
+    leaseId: input.leaseId,
+    attemptId: input.attemptId,
+    state: input.state,
+    reason: input.reason,
+    runnerFingerprint: input.runnerFingerprint,
+    materializerDigest: input.materializerDigest,
+    proofTimestamp: input.proofTimestamp,
+  });
 }
 
 export function createMaterializationRunnerProofBinding(input: {
@@ -276,6 +317,12 @@ export function createMaterializationBundleRunnerProofBinding(input: {
   materializerDigest: string;
   runnerProofTimestamp: string;
   vaultOwner: string;
+  deliveryClass?: 'durable_pull' | 'ephemeral_lease';
+  leaseId?: string;
+  leaseConsumer?: string;
+  leaseHolder?: string;
+  leaseTtlSeconds?: number;
+  leaseArtifactPathClass?: 'xdg_runtime' | 'tmpfs' | 'platform_runtime';
 }): string {
   return canonicalJson({
     bundleDigest: input.bundleDigest,
@@ -293,6 +340,14 @@ export function createMaterializationBundleRunnerProofBinding(input: {
     materializerDigest: input.materializerDigest,
     runnerProofTimestamp: input.runnerProofTimestamp,
     vaultOwner: input.vaultOwner,
+    ...(input.deliveryClass === 'ephemeral_lease' ? {
+      deliveryClass: input.deliveryClass,
+      leaseId: input.leaseId ?? 'none',
+      leaseConsumer: input.leaseConsumer ?? 'none',
+      leaseHolder: input.leaseHolder ?? 'none',
+      leaseTtlSeconds: String(input.leaseTtlSeconds ?? 0),
+      leaseArtifactPathClass: input.leaseArtifactPathClass ?? 'none',
+    } : {}),
   });
 }
 
@@ -360,6 +415,17 @@ export function createMaterializationBundleCredentialBinding(input: {
   observedStateBinding?: string;
   purpose: string;
   nonce: string;
+  deliveryClass?: 'durable_pull' | 'ephemeral_lease';
+  leaseConsumer?: string;
+  leaseHolder?: string;
+  leaseExpiresAt?: string;
+  leaseArtifactPathClass?: 'xdg_runtime' | 'tmpfs' | 'platform_runtime';
+  endpointEnrollmentId?: string;
+  endpointClassification?: string;
+  endpointStorageTier?: string;
+  endpointDedicated?: boolean;
+  endpointPolicyEligible?: boolean;
+  endpointKillSwitchEnabled?: boolean;
 }): string {
   return canonicalJson({
     materializationId: input.materializationId,
@@ -373,6 +439,19 @@ export function createMaterializationBundleCredentialBinding(input: {
     observedStateBinding: input.observedStateBinding ?? 'none',
     purposeDigest: createHash('sha256').update(input.purpose).digest('hex'),
     nonce: input.nonce,
+    ...(input.deliveryClass === 'ephemeral_lease' ? {
+      deliveryClass: input.deliveryClass,
+      leaseConsumer: input.leaseConsumer ?? 'none',
+      leaseHolder: input.leaseHolder ?? 'none',
+      leaseExpiresAt: input.leaseExpiresAt ?? 'none',
+      leaseArtifactPathClass: input.leaseArtifactPathClass ?? 'none',
+      endpointEnrollmentId: input.endpointEnrollmentId ?? 'none',
+      endpointClassification: input.endpointClassification ?? 'none',
+      endpointStorageTier: input.endpointStorageTier ?? 'none',
+      endpointDedicated: String(input.endpointDedicated ?? false),
+      endpointPolicyEligible: String(input.endpointPolicyEligible ?? false),
+      endpointKillSwitchEnabled: String(input.endpointKillSwitchEnabled ?? false),
+    } : {}),
   });
 }
 
