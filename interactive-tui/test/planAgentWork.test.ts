@@ -222,6 +222,8 @@ describe("planAgentWork rendering", () => {
     expect(workScopeCollisions(fileExcludesItself)).toEqual([]);
     expect(planAgentWork(globExcludesFile).snapshot.clusterAssignment.glob)
       .not.toBe(planAgentWork(globExcludesFile).snapshot.clusterAssignment.file);
+    expect(planAgentWork(fileExcludesItself).snapshot.clusterAssignment.glob)
+      .not.toBe(planAgentWork(fileExcludesItself).snapshot.clusterAssignment.file);
   });
 
   it("produces a human-readable plan that names the order and serialization", () => {
