@@ -4710,6 +4710,7 @@
           "multiple": false,
           "options": [
             "github_gh",
+            "github_publish_pr",
             "terraform_apply"
           ],
           "type": "option"
@@ -4744,6 +4745,13 @@
         },
         "cwd": {
           "name": "cwd",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "body-file": {
+          "description": "PR body file for github_publish_pr",
+          "name": "body-file",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
