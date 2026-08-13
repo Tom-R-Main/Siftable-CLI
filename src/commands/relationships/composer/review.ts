@@ -8,6 +8,7 @@ export default class RelationshipsComposerReview extends BaseCommand {
   static flags = {
     ...BaseCommand.baseFlags,
     'expected-version': Flags.integer({ description: 'Current optimistic session version', required: true, min: 1 }),
+    'approver-user-id': Flags.string({ description: 'Optional active internal workspace member who will approve the exact message' }),
     yes: Flags.boolean({ description: 'Confirm the transition to review' }),
   };
 
@@ -17,13 +18,20 @@ export default class RelationshipsComposerReview extends BaseCommand {
     const response = await this.apiRequest<{ session: Record<string, unknown> }>(
       flags,
       `/api/v1/relationships/composer-sessions/${encodeURIComponent(args.id)}/review`,
-      { method: 'POST', body: { expectedVersion: flags['expected-version'] } },
+      {
+        method: 'POST',
+        body: {
+          expectedVersion: flags['expected-version'],
+          ...(flags['approver-user-id'] ? { approverUserId: flags['approver-user-id'] } : {}),
+        },
+      },
     );
     if (!this.jsonEnabled()) renderDetail([
       ['Session', response.session.id],
       ['Phase', response.session.phase],
       ['Draft revision', (response.session.draft as Record<string, unknown> | null)?.revision ?? 'not created'],
-      ['Next', 'Governed approval and transport'],
+      ['Approver', flags['approver-user-id'] ?? 'self'],
+      ['Next', 'Request governed approval; dispatch remains separate'],
     ]);
     return response.session;
   }
