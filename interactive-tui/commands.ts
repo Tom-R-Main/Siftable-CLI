@@ -44,6 +44,7 @@ import type {
 } from "./childSessionController";
 import type {MergePacket} from "./mergeGate";
 import type {ParentMergeView} from "./mergeView";
+import {formatReadyPacket, loadReadyPacket} from "./workProof";
 import {formatWorkRow, type WorkBoardItem, type WorkBoardData, type WorkContractDisplay} from "./workHubOverlay";
 import {requireBuiltWorkContract} from "../src/lib/work-contract.js";
 import type {WorkContractV1} from "@siftable/mcp-server/dist/exfClient.js";
@@ -1779,7 +1780,7 @@ function resolveTargetChild(ctx: InteractiveCommandContext, raw: string | undefi
   return {id: active};
 }
 
-function readyCommand(ctx: InteractiveCommandContext, args: string[]): void {
+async function readyCommand(ctx: InteractiveCommandContext, args: string[]): Promise<void> {
   const autoCommit = args.includes("--commit");
   const idArg = args.find((a) => !a.startsWith("--"));
   const target = resolveTargetChild(ctx, idArg);
@@ -1792,7 +1793,9 @@ function readyCommand(ctx: InteractiveCommandContext, args: string[]): void {
     ctx.push({role: "system", text: `/ready: ${res.reason}`});
     return;
   }
-  let text = formatPacket(res.packet);
+  const loading = loadReadyPacket(res.packet, ctx.apiClient);
+  const packet = loading instanceof Promise ? await loading : loading;
+  let text = formatReadyPacket(packet);
   if (res.committed) text = `committed working changes first.\n${text}`;
   // If blocked solely because the tree is dirty, point at the one-step fix.
   if (res.packet.verdict === "merge_blocked" && res.packet.dirty && !autoCommit) {

@@ -25,7 +25,7 @@
  * docs/architecture/mergemaster-session-and-git-model.md.)
  */
 import {filesOutsideScope} from "./planning/scope";
-import type {MergeMasterAccessMode, MergeMasterStatus} from "./mergeMaster";
+import type {MergeMasterAccessMode, MergeMasterStatus, MergeMasterWorkIdentity} from "./mergeMaster";
 import {
   countCommits,
   diffNumstat,
@@ -56,6 +56,8 @@ export interface MergeGateChild {
   accessMode: MergeMasterAccessMode;
   /** Declared write scope; empty means unscoped (`--rw-any`), exempt from the scope check. */
   writeScope: string[];
+  /** Safe contracted-work identity; absent for legacy or manually spawned sessions. */
+  work?: MergeMasterWorkIdentity;
 }
 
 /** Pure inputs to {@link assembleMergePacket}: the child plus gathered git facts. */
@@ -95,6 +97,8 @@ export interface MergePacket {
   verdict: MergeVerdict;
   /** Human-readable reasons, present iff verdict is `merge_blocked`. */
   blockers: string[];
+  /** Exact contracted-work identity used to load proof; never contains lease credentials. */
+  work?: MergeMasterWorkIdentity;
 }
 
 /**
@@ -144,6 +148,7 @@ export function assembleMergePacket(inputs: MergeGateInputs): MergePacket {
     dirty: inputs.dirty,
     verdict: blockers.length > 0 ? "merge_blocked" : "ready_to_merge",
     blockers,
+    ...(child.work ? {work: structuredClone(child.work)} : {}),
   };
 }
 
