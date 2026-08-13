@@ -302,12 +302,12 @@ describe('LocalControlClient (in-process transport)', () => {
     it('reports authenticated when a token is present', async () => {
       const client = new LocalControlClient({
         getToken: () => 'sift_pat_x',
-        getModel: () => ({provider: 'openrouter', model: 'google/gemini-3.6-flash'}),
+        getModel: () => ({provider: 'openrouter', model: 'google/gemini-3.7-flash'}),
       });
       const s = await client.state();
       expect(s.available).toBe(true);
       expect(s.authStatus).toBe('authenticated');
-      expect(s.model?.model).toBe('google/gemini-3.6-flash');
+      expect(s.model?.model).toBe('google/gemini-3.7-flash');
       expect(s.context?.surface).toBe('local');
     });
 

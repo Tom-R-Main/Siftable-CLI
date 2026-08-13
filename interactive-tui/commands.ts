@@ -169,6 +169,7 @@ export interface ExplorerBudgetChoice {
 const GPT56_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const GPT5_EFFORTS = ["low", "medium", "high", "xhigh"];
 const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const GEMINI_EFFORTS = ["low", "medium", "high"];
 const GLM_EFFORTS = ["high", "xhigh"];
 
 // Ordered by tier, not by when each was added: flagship brains first (best for
@@ -322,20 +323,26 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
   },
   // ── Fast / scout models (cheap, low-latency; Explorer defaults live here) ──
   {
-    id: "openrouter/google/gemini-3.6-flash",
+    id: "openrouter/google/gemini-3.7-flash",
     provider: "openrouter",
-    model: "google/gemini-3.6-flash",
-    label: "Gemini 3.6 Flash",
+    model: "google/gemini-3.7-flash",
+    label: "Gemini 3.7 Flash",
     description: "OpenRouter default",
     aliases: [
       "gemini",
+      "gemini-3.7-flash",
+      "google/gemini-3.7-flash",
+      "openrouter:google/gemini-3.7-flash",
+      // Retired Gemini Flash aliases and persisted ids select the current model.
       "gemini-3.6-flash",
       "google/gemini-3.6-flash",
+      "openrouter/google/gemini-3.6-flash",
+      "openrouter:google/gemini-3.6-flash",
       "gemini-3.5-flash",
       "google/gemini-3.5-flash",
     ],
     auth: "api-key",
-    reasoningEfforts: CLAUDE_EFFORTS,
+    reasoningEfforts: GEMINI_EFFORTS,
     defaultEffort: "medium",
   },
   {
@@ -365,7 +372,7 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     description: "OpenRouter · cheap scout",
     aliases: ["flash-lite", "gemini-lite", "gemini-3.1-flash-lite", "google/gemini-3.1-flash-lite"],
     auth: "api-key",
-    reasoningEfforts: CLAUDE_EFFORTS,
+    reasoningEfforts: GEMINI_EFFORTS,
     defaultEffort: "low",
   },
   {
@@ -378,7 +385,7 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     auth: "api-key",
     requiredEnv: "GEMINI_API_KEY",
     keyHint: "/key gemini <key>",
-    reasoningEfforts: CLAUDE_EFFORTS,
+    reasoningEfforts: GEMINI_EFFORTS,
     defaultEffort: "low",
   },
   {

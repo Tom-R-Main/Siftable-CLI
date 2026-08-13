@@ -34,7 +34,7 @@ describe('OpenRouter chat-completions adapter', () => {
       });
     }) as typeof fetch;
 
-    const adapter = createOpenRouterAdapter({apiKey: 'test-key', model: 'google/gemini-3.6-flash'});
+    const adapter = createOpenRouterAdapter({apiKey: 'test-key', model: 'google/gemini-3.7-flash'});
     const result = await adapter.chat([{role: 'user', content: 'hello'}], registry as any);
 
     expect(result.text).toBe('Hello from retry.');
@@ -52,7 +52,7 @@ describe('OpenRouter chat-completions adapter', () => {
       }],
     })) as typeof fetch;
 
-    const adapter = createOpenRouterAdapter({apiKey: 'test-key', model: 'google/gemini-3.6-flash'});
+    const adapter = createOpenRouterAdapter({apiKey: 'test-key', model: 'google/gemini-3.7-flash'});
     const result = await adapter.chat([{role: 'user', content: 'hello'}], registry as any);
 
     expect(result.text).toContain('OpenRouter returned an empty assistant message');

@@ -167,7 +167,7 @@ describe('interactive command registry', () => {
     const {ctx, messages} = buildContext();
 
     await runInteractiveCommand(ctx, '/status');
-    expect(messages.at(-1)?.text).toContain('google/gemini-3.6-flash');
+    expect(messages.at(-1)?.text).toContain('google/gemini-3.7-flash');
     expect(messages.at(-1)?.text).toContain('queued:  2');
 
     await runInteractiveCommand(ctx, '/copy all');
