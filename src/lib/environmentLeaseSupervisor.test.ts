@@ -1,5 +1,6 @@
-import {fork} from 'node:child_process';
+import {fork, type ChildProcess} from 'node:child_process';
 import {generateKeyPairSync, randomUUID} from 'node:crypto';
+import {EventEmitter} from 'node:events';
 import {createServer} from 'node:http';
 import {lstat, mkdtemp, realpath, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -29,6 +30,32 @@ afterEach(async () => {
 });
 
 describe('environment lease supervisor', () => {
+  it('rejects unsettled lifecycle promises when the supervisor exits by signal', async () => {
+    const pair = generateKeyPairSync('rsa', {modulusLength: 3072});
+    const child = new EventEmitter() as ChildProcess;
+    child.unref = () => undefined;
+    child.send = ((_message: unknown, callback?: (error: Error | null) => void) => {
+      callback?.(null);
+      return true;
+    }) as ChildProcess['send'];
+    const supervisor = startEnvironmentLeaseSupervisor({
+      runtimeRoot: '/synthetic/runtime',
+      leaseId: randomUUID(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      apiUrl: 'https://example.invalid',
+      token: 'synthetic-test-pat',
+      workspaceId: null,
+      contextContractVersion: 1,
+      runnerFingerprint: 'a'.repeat(64),
+      materializerDigest: 'b'.repeat(64),
+      privateKey: pair.privateKey,
+      forkProcess: () => child,
+    });
+    child.emit('exit', null, 'SIGTERM');
+    await expect(supervisor.armed).rejects.toThrow('lease_supervisor_signal_SIGTERM');
+    await expect(supervisor.completed).rejects.toThrow('lease_supervisor_signal_SIGTERM');
+  });
+
   it('survives independently and removes plaintext at the hard TTL', async () => {
     const checkoutRoot = await temporaryRoot('sift-supervisor-checkout-');
     const runtimeRoot = await temporaryRoot('sift-supervisor-runtime-');

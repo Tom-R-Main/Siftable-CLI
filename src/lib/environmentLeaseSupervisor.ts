@@ -293,8 +293,10 @@ export function startEnvironmentLeaseSupervisor(input: {
     if (typed.type === 'failed') fail(typed.code);
   });
   child.once('error', error => fail(error.message));
-  child.once('exit', code => {
-    if (code && code !== 0) fail('lease_supervisor_exited');
+  child.once('exit', (code, signal) => {
+    if (code !== 0) {
+      fail(signal ? `lease_supervisor_signal_${signal}` : 'lease_supervisor_exited');
+    }
   });
   const privateKeyPem = Buffer.from(input.privateKey.export({type: 'pkcs8', format: 'pem'}));
   child.send({
