@@ -208,6 +208,22 @@ describe("planAgentWork rendering", () => {
     expect(snapshot.clusterAssignment.broad).not.toBe(snapshot.clusterAssignment.generated);
   });
 
+  it("subtracts an exact exclusion from a single-segment wildcard overlap", () => {
+    const globExcludesFile: RawWorkItem[] = [
+      {id: "glob", status: "queued", writeScope: {include: ["src/*.ts"], exclude: ["src/a.ts"]}},
+      {id: "file", status: "queued", writeScope: {include: ["src/a.ts"], exclude: []}},
+    ];
+    const fileExcludesItself: RawWorkItem[] = [
+      {id: "glob", status: "queued", writeScope: {include: ["src/*.ts"], exclude: []}},
+      {id: "file", status: "queued", writeScope: {include: ["src/a.ts"], exclude: ["src/a.ts"]}},
+    ];
+
+    expect(workScopeCollisions(globExcludesFile)).toEqual([]);
+    expect(workScopeCollisions(fileExcludesItself)).toEqual([]);
+    expect(planAgentWork(globExcludesFile).snapshot.clusterAssignment.glob)
+      .not.toBe(planAgentWork(globExcludesFile).snapshot.clusterAssignment.file);
+  });
+
   it("produces a human-readable plan that names the order and serialization", () => {
     const { text, snapshot } = planAgentWork(MERGE_MASTER_QUEUE);
     expect(snapshot.status).toBe("ready");
