@@ -4,6 +4,7 @@ import {
   generateKeyPairSync,
   randomBytes,
   sign,
+  timingSafeEqual,
   type KeyObject,
 } from 'node:crypto';
 import {execFile} from 'node:child_process';
@@ -28,6 +29,7 @@ import {decryptExecutionGrantEnvelope} from './localExecutionRunner.js';
 import {
   fingerprintMaterializerPublicKey,
   loadOrCreateMaterializerDeviceIdentity,
+  type MaterializerIdentityStore,
 } from './materializerDeviceIdentity.js';
 import {
   systemdCredentialStoreAvailable,
@@ -61,6 +63,31 @@ export interface MaterializationReceipt {
   mode: '0400' | '0600';
   writtenAt: string;
   cleanupSucceeded: boolean;
+}
+
+export async function systemdMaterializerIdentityStoreUsable(input: {
+  available?: () => Promise<boolean>;
+  store?: MaterializerIdentityStore;
+} = {}): Promise<boolean> {
+  const available = input.available ?? systemdCredentialStoreAvailable;
+  const store = input.store ?? systemdManagedKeyringIdentityStore;
+  if (!(await available())) return false;
+  const account = randomBytes(32).toString('hex');
+  const probe = randomBytes(32);
+  let restored: Buffer | null = null;
+  try {
+    await store.write(account, probe);
+    restored = await store.read(account);
+    return restored !== null
+      && restored.length === probe.length
+      && timingSafeEqual(restored, probe);
+  } catch {
+    return false;
+  } finally {
+    restored?.fill(0);
+    probe.fill(0);
+    await store.remove(account).catch(() => undefined);
+  }
 }
 
 function canonicalJson(value: Record<string, string>): string {
@@ -221,7 +248,7 @@ export async function createMaterializerRunner(
   }
   const resolvedMaterializerDigest = materializerDigest.update(process.version).digest('hex');
   const linuxStoreAvailable = process.platform === 'linux'
-    && await systemdCredentialStoreAvailable();
+    && await systemdMaterializerIdentityStoreUsable();
   if (process.platform !== 'darwin' && !linuxStoreAvailable) {
     const pair = generateKeyPairSync('rsa', {modulusLength: 3072});
     const publicKeyPem = pair.publicKey.export({type: 'spki', format: 'pem'}).toString();

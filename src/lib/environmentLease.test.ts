@@ -18,6 +18,7 @@ import {
   sweepEnvironmentLeases,
   type EnvironmentLeaseRuntimeRoot,
 } from './environmentLease.js';
+import {systemdMaterializerIdentityStoreUsable} from './localMaterializer.js';
 
 const temporaryRoots: string[] = [];
 const RUNNER_DIGEST = 'b'.repeat(64);
@@ -88,6 +89,36 @@ afterEach(async () => {
 });
 
 describe('environment lease runtime', () => {
+  it('requires a successful systemd credential round trip before selecting the store', async () => {
+    let stored: Buffer | null = null;
+    const usable = await systemdMaterializerIdentityStoreUsable({
+      available: async () => true,
+      store: {
+        read: async () => stored ? Buffer.from(stored) : null,
+        write: async (_account, value) => {
+          stored = Buffer.from(value);
+        },
+        remove: async () => {
+          stored?.fill(0);
+          stored = null;
+        },
+      },
+    });
+    expect(usable).toBe(true);
+
+    const inaccessible = await systemdMaterializerIdentityStoreUsable({
+      available: async () => true,
+      store: {
+        read: async () => null,
+        write: async () => {
+          throw new Error('host credential key is inaccessible');
+        },
+        remove: async () => undefined,
+      },
+    });
+    expect(inaccessible).toBe(false);
+  });
+
   it('selects XDG, Linux tmpfs, and platform runtime roots deterministically', () => {
     expect(resolveEnvironmentLeaseRuntimeRoot({
       environment: {XDG_RUNTIME_DIR: '/runtime/user'},
