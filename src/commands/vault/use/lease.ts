@@ -546,11 +546,23 @@ export default class VaultUseLease extends BaseCommand {
       disposeSignalCleanup?.();
       if (supervisor) {
         supervisor.cleanup('cancellation');
-        await withDeadline(
+        let cleanup = await withDeadline(
           () => supervisor!.completed,
           5_000,
           'Lease supervisor cleanup timed out',
-        ).catch(() => undefined);
+        ).catch(() => null);
+        if (!cleanup) {
+          const localRecord = await readEnvironmentLeaseRecord(runtime.root, lease.id)
+            .catch(() => undefined);
+          if (localRecord) {
+            cleanup = await cleanupEnvironmentLeaseArtifact({
+              runtimeRoot: runtime.root,
+              leaseId: lease.id,
+              reason: 'cancellation',
+            }).catch(() => null);
+          }
+        }
+        if (cleanup) await attestLocalCleanup(cleanup).catch(() => undefined);
       } else {
         const localRecord = await readEnvironmentLeaseRecord(runtime.root, lease.id)
           .catch(() => undefined);
