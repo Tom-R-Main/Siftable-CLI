@@ -1,5 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {datasetIdempotencyKeyFlag} from './idempotency.js';
 
 export default class DatasetsSchema extends BaseCommand {
   static description = 'Modify dataset schema (add, update, or delete fields)';
@@ -10,6 +11,7 @@ export default class DatasetsSchema extends BaseCommand {
 
   static flags = {
     ...BaseCommand.baseFlags,
+    'idempotency-key': datasetIdempotencyKeyFlag,
     operation: Flags.string({
       description: 'Schema operation',
       options: ['add_field', 'update_field', 'delete_field'],
@@ -48,7 +50,7 @@ export default class DatasetsSchema extends BaseCommand {
       operation,
       fieldId: flags['field-id'],
       field,
-    });
+    }, flags['idempotency-key']);
     this.handleApiError(response);
 
     if (!this.jsonEnabled()) {

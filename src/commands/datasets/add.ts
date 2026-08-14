@@ -1,5 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {datasetIdempotencyKeyFlag} from './idempotency.js';
 
 export default class DatasetsAdd extends BaseCommand {
   static description = 'Add records to a dataset';
@@ -10,6 +11,7 @@ export default class DatasetsAdd extends BaseCommand {
 
   static flags = {
     ...BaseCommand.baseFlags,
+    'idempotency-key': datasetIdempotencyKeyFlag,
     record: Flags.string({
       description: 'Record as JSON object, e.g. \'{"name":"Alice","age":"30"}\'',
       multiple: true,
@@ -53,7 +55,7 @@ export default class DatasetsAdd extends BaseCommand {
     const response = await client.mutateDataset(args.id, {
       operation: 'create',
       records,
-    });
+    }, flags['idempotency-key']);
     this.handleApiError(response);
 
     if (!this.jsonEnabled()) {

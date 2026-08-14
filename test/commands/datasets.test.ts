@@ -56,12 +56,112 @@ describe('dataset commands', () => {
         'run-1',
         '--ttl',
         '7d',
+        '--idempotency-key',
+        'dataset-create-lifecycle-1',
         '--json',
         '--token',
         'exf_pat_test',
       ]);
       const parsed = JSON.parse(result.stdout);
       expect(parsed.dataset.id).toBe('ds-1');
+    });
+  });
+
+  describe('dataset mutation idempotency', () => {
+    const mutationCases = [
+      {
+        name: 'create',
+        method: 'POST',
+        path: '/api/v1/datasets',
+        argv: ['datasets', 'create', '--title', 'Fixture'],
+        response: {dataset: {id: 'ds-created', title: 'Fixture'}, fields: []},
+      },
+      {
+        name: 'add',
+        method: 'POST',
+        path: '/api/v1/datasets/ds-1/records',
+        argv: ['datasets', 'add', 'ds-1', '--records', '[{"name":"row"}]'],
+        response: {records: [{id: 'row-created'}]},
+      },
+      {
+        name: 'update-record',
+        method: 'PATCH',
+        path: '/api/v1/datasets/ds-1/records/row-1',
+        argv: ['datasets', 'update-record', 'ds-1', 'row-1', '--fields', '{"status":"done"}'],
+        response: {id: 'row-1', fields: {status: 'done'}},
+      },
+      {
+        name: 'delete-record',
+        method: 'DELETE',
+        path: '/api/v1/datasets/ds-1/records/row-1',
+        argv: ['datasets', 'delete-record', 'ds-1', 'row-1', '--yes'],
+        response: {},
+      },
+      {
+        name: 'schema',
+        method: 'POST',
+        path: '/api/v1/datasets/ds-1/schema',
+        argv: [
+          'datasets',
+          'schema',
+          'ds-1',
+          '--operation',
+          'add_field',
+          '--field',
+          '{"name":"status","fieldType":"text"}',
+        ],
+        response: {field: {id: 'field-1', name: 'status'}},
+      },
+      {
+        name: 'materialize',
+        method: 'POST',
+        path: '/api/v1/datasets/derived/materialize',
+        argv: [
+          'datasets',
+          'materialize',
+          '--title',
+          'Derived',
+          '--source-result',
+          '{"columns":[],"rows":[]}',
+        ],
+        response: {materializedDatasetId: 'ds-derived', title: 'Derived'},
+      },
+    ] as const;
+
+    it.each(mutationCases)('passes a caller-owned key through datasets $name', async (fixture) => {
+      mockFetch()
+        .on(fixture.method, fixture.path)
+        .reply(fixture.name === 'delete-record' ? 204 : 200, fixture.response)
+        .install();
+
+      const idempotencyKey = `dataset-${fixture.name}-stable-1`;
+      const result = await runCommand([
+        ...fixture.argv,
+        '--idempotency-key',
+        idempotencyKey,
+        '--json',
+        '--token',
+        'exf_pat_test',
+      ]);
+
+      expect(result.error).toBeUndefined();
+      const request = (global.fetch as jest.Mock).mock.calls[0][1] as RequestInit;
+      expect((request.headers as Record<string, string>)['Idempotency-Key']).toBe(idempotencyKey);
+    });
+
+    it('requires a caller-owned key before creating a dataset', async () => {
+      mockFetch().install();
+      const result = await runCommand([
+        'datasets',
+        'create',
+        '--title',
+        'Fixture',
+        '--token',
+        'exf_pat_test',
+      ]);
+
+      expect(result.error).toBeDefined();
+      expect((global.fetch as jest.Mock)).not.toHaveBeenCalled();
     });
   });
 

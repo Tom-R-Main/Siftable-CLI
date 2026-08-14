@@ -1,5 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {datasetIdempotencyKeyFlag} from './idempotency.js';
 
 export default class DatasetsDeleteRecord extends BaseCommand {
   static description = 'Delete a record from a dataset';
@@ -11,6 +12,7 @@ export default class DatasetsDeleteRecord extends BaseCommand {
 
   static flags = {
     ...BaseCommand.baseFlags,
+    'idempotency-key': datasetIdempotencyKeyFlag,
     yes: Flags.boolean({char: 'y', description: 'Skip confirmation'}),
   };
 
@@ -27,7 +29,7 @@ export default class DatasetsDeleteRecord extends BaseCommand {
     const response = await client.mutateDataset(args.id, {
       operation: 'delete',
       recordId: args['record-id'],
-    });
+    }, flags['idempotency-key']);
     this.handleApiError(response);
 
     if (!this.jsonEnabled()) {

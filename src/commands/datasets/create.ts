@@ -1,11 +1,13 @@
 import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {datasetIdempotencyKeyFlag} from './idempotency.js';
 
 export default class DatasetsCreate extends BaseCommand {
   static description = 'Create a dataset';
 
   static flags = {
     ...BaseCommand.baseFlags,
+    'idempotency-key': datasetIdempotencyKeyFlag,
     title: Flags.string({description: 'Dataset title', required: true}),
     description: Flags.string({description: 'Dataset description'}),
     fields: Flags.string({
@@ -53,7 +55,7 @@ export default class DatasetsCreate extends BaseCommand {
       fields,
       noteId: flags['note-id'],
       metadata,
-    });
+    }, flags['idempotency-key']);
     this.handleApiError(response);
 
     const dataset = this.unwrapOne(response, 'dataset');
