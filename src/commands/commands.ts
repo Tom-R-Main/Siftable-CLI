@@ -18,7 +18,6 @@ const TOPICS = [
   {topic: 'timeline', description: 'Timeline facts and narratives'},
   {topic: 'events', description: 'Research events backed by timeline facts'},
   {topic: 'graph', description: 'Entity graph search and neighborhoods'},
-  {topic: 'codebase', description: 'Code indexing and semantic search'},
   {topic: 'code memory', description: 'Code memory and facts'},
   {topic: 'vault', description: 'Vault metadata and governed destination-bound materialization'},
   {topic: 'env', description: 'Declarative environment contracts and governed Vault bundle pulls'},

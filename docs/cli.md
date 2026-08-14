@@ -100,9 +100,9 @@ Link work to a planning task with `sift work create --task <task-id>` rather tha
 
 ## Command reference
 
-All 297 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
+All 307 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
 
-**Topics:** [General](#general) · [Agents](#agents) · [Ai](#ai) · [Approvals](#approvals) · [Auth](#auth) · [Billing](#billing) · [Calendar](#calendar) · [Capabilities](#capabilities) · [Code](#code) · [Codebase](#codebase) · [Codex](#codex) · [Context](#context) · [Crm](#crm) · [Datasets](#datasets) · [Documents](#documents) · [Env](#env) · [Events](#events) · [Evidence](#evidence) · [Grants](#grants) · [Graph](#graph) · [Notes](#notes) · [Organizations](#organizations) · [People](#people) · [Projects](#projects) · [Recipes](#recipes) · [Relationships](#relationships) · [Research](#research) · [Skills](#skills) · [Tasks](#tasks) · [Timeline](#timeline) · [Vault](#vault) · [Work](#work) · [Worker](#worker) · [Workspaces](#workspaces)
+**Topics:** [General](#general) · [Agents](#agents) · [Ai](#ai) · [Approvals](#approvals) · [Auth](#auth) · [Billing](#billing) · [Calendar](#calendar) · [Capabilities](#capabilities) · [Code](#code) · [Codex](#codex) · [Context](#context) · [Crm](#crm) · [Datasets](#datasets) · [Documents](#documents) · [Env](#env) · [Events](#events) · [Evidence](#evidence) · [Grants](#grants) · [Graph](#graph) · [Notes](#notes) · [Organizations](#organizations) · [People](#people) · [Projects](#projects) · [Recipes](#recipes) · [Relationships](#relationships) · [Research](#research) · [Skills](#skills) · [Tasks](#tasks) · [Timeline](#timeline) · [Vault](#vault) · [Work](#work) · [Worker](#worker) · [Workspaces](#workspaces)
 
 
 ### General
@@ -111,21 +111,6 @@ Top-level commands and diagnostics.
 
 #### `sift capabilities`
 Show Siftable CLI capabilities and readiness status
-
-#### `sift codebase`
-*Alias: `sift codebase index`*
-Deprecated hosted-ingestion path (blocked unless temporarily restored by an operator)
-
-**Arguments**
-
-- `id` — Repository ID
-
-**Flags**
-
-- `--exclude <value>` — Comma-separated exclude glob patterns
-- `--include <value>` — Comma-separated include glob patterns
-- `--incremental` — Git-aware incremental index (changed files only)
-- `--path <value>` — Absolute path to repository root
 
 #### `sift commands`
 Show agent-friendly command topics and workflow entry points
@@ -453,39 +438,6 @@ Git blame for a file
 
 - `--root <value>` *(default: ".")* — Repository root path
 
-#### `sift code expertise`
-Refresh developer expertise index for a repository
-
-**Arguments**
-
-- `repo` *(required)* — Repository ID
-
-#### `sift code history`
-Get commit history for a repository
-
-**Arguments**
-
-- `repo` *(required)* — Repository ID
-
-**Flags**
-
-- `--limit <value>` — Maximum number of results
-- `--path <value>` — Filter by file path
-
-#### `sift code link`
-Link a task to code (file, commit, or repository)
-
-**Arguments**
-
-- `task-id` *(required)* — Task ID
-
-**Flags**
-
-- `--commit <value>` — Commit SHA
-- `--file <value>` — File path
-- `--notes <value>` — Notes about the link
-- `--repo <value>` *(required)* — Repository ID
-
 #### `sift code memory confirm`
 Confirm a code memory candidate with an auditable reason
 
@@ -498,7 +450,7 @@ Confirm a code memory candidate with an auditable reason
 - `--reason <value>` *(required)* — Audit reason
 
 #### `sift code memory delete`
-Delete a stored codebase fact
+Delete a stored curated code fact
 
 **Arguments**
 
@@ -548,7 +500,7 @@ Show one code memory with provenance, evidence, and lifecycle
 - `id` *(required)* — Memory ID
 
 #### `sift code memory list`
-List stored codebase facts (excludes rejected/superseded by default)
+List stored curated code facts (excludes rejected/superseded by default)
 
 **Flags**
 
@@ -581,7 +533,7 @@ Reject a code memory with an auditable reason (soft-reject; never deletes)
 - `--reason <value>` *(required)* — Audit reason
 
 #### `sift code memory search`
-Search stored codebase facts (excludes rejected/superseded by default)
+Search stored curated code facts (excludes rejected/superseded by default)
 
 **Arguments**
 
@@ -596,7 +548,7 @@ Search stored codebase facts (excludes rejected/superseded by default)
 - `--repo <value>` — Repository ID
 
 #### `sift code memory store`
-Store a codebase fact
+Store a curated code fact
 
 **Flags**
 
@@ -629,95 +581,6 @@ Supersede a code memory with a new fact; old memory retained as lineage
 - `--file <value>` — Related file path
 - `--path <value>` *(repeatable)* — Additional related path (repeatable)
 - `--reason <value>` *(required)* — Audit reason
-
-#### `sift code who-knows`
-Find experts for a code area
-
-**Arguments**
-
-- `repo` *(required)* — Repository ID
-- `area` *(required)* — Path, glob, or symbol
-
-**Flags**
-
-- `--limit <value>` — Maximum number of results
-
-
-### Codebase
-
-Code indexing and search.
-
-#### `sift codebase delete`
-Create a dry-run retirement plan for hosted indexed source
-
-**Arguments**
-
-- `id` *(required)* — Repository ID
-
-**Flags**
-
-- `-y, --yes` — Skip plan confirmation
-
-#### `sift codebase incremental`
-*Alias: `sift codebase incremental-index`, `sift codebase index-incremental`*
-Deprecated hosted incremental-ingestion path (blocked by default)
-
-**Arguments**
-
-- `id` *(required)* — Repository ID
-
-**Flags**
-
-- `--exclude <value>` — Comma-separated exclude glob patterns
-- `--include <value>` — Comma-separated include glob patterns
-- `--path <value>` *(required)* — Absolute path to repository root
-
-#### `sift codebase list`
-List indexed repositories
-
-#### `sift codebase register`
-Deprecated hosted repository-ingestion path (blocked by default)
-
-**Flags**
-
-- `--auto-index` — Enable automatic indexing
-- `--name <value>` *(required)* — Repository name
-- `--path <value>` *(required)* — Absolute path to repository root
-- `--project <value>` — Project ID to associate
-
-#### `sift codebase search`
-Semantic code search
-
-**Arguments**
-
-- `query` *(required)* — Search query
-
-**Flags**
-
-- `--language <value>` — Filter by language
-- `--limit <value>` — Maximum number of results
-- `--project <value>` — Project ID
-- `--repo <value>` — Repository ID
-- `--symbol-type <function|class|interface|type|export|impl>` — Filter by symbol type
-
-#### `sift codebase snapshot`
-Get latest index snapshot for a repository
-
-**Arguments**
-
-- `id` *(required)* — Repository ID
-
-**Flags**
-
-- `--branch <value>` — Filter by branch
-- `--materialize` — Generate a download URL for the snapshot
-
-#### `sift codebase status`
-Check indexing status for a repository
-
-**Arguments**
-
-- `id` *(required)* — Repository ID
 
 
 ### Codex
@@ -775,6 +638,7 @@ Add records to a dataset
 
 **Flags**
 
+- `--idempotency-key <value>` *(required)* — Caller-owned stable key for replaying this exact dataset mutation
 - `--record <value>` *(repeatable)* — Record as JSON object, e.g. '{"name":"Alice","age":"30"}'
 - `--records <value>` — Multiple records as JSON array
 
@@ -912,6 +776,7 @@ Create a dataset
 
 - `--description <value>` — Dataset description
 - `--fields <value>` — Field definitions as JSON array, e.g. '[{"name":"age","type":"number"}]'
+- `--idempotency-key <value>` *(required)* — Caller-owned stable key for replaying this exact dataset mutation
 - `--lifecycle <value>` — Lifecycle kind for generated datasets, e.g. scratch, benchmark, research-run
 - `--metadata <value>` — Dataset metadata as JSON object
 - `--note-id <value>` — Link to an existing note
@@ -954,6 +819,7 @@ Delete a record from a dataset
 
 **Flags**
 
+- `--idempotency-key <value>` *(required)* — Caller-owned stable key for replaying this exact dataset mutation
 - `-y, --yes` — Skip confirmation
 
 #### `sift datasets diff`
@@ -1123,6 +989,7 @@ Materialize a derived result into a new scratch dataset
 **Flags**
 
 - `--description <value>` — Dataset description
+- `--idempotency-key <value>` *(required)* — Caller-owned stable key for replaying this exact dataset mutation
 - `--source-result <value>` — Inline JSON for a derived result
 - `--source-result-file <value>` — Path to a JSON file containing a derived result
 - `--title <value>` *(required)* — Title of the new dataset
@@ -1219,6 +1086,7 @@ Modify dataset schema (add, update, or delete fields)
 
 - `--field <value>` — Field definition as JSON, e.g. '{"name":"email","type":"text"}'
 - `--field-id <value>` — Field ID (required for update/delete)
+- `--idempotency-key <value>` *(required)* — Caller-owned stable key for replaying this exact dataset mutation
 - `--operation <add_field|update_field|delete_field>` *(required)* — Schema operation
 
 #### `sift datasets search`
@@ -1283,6 +1151,7 @@ Update a record in a dataset
 **Flags**
 
 - `--fields <value>` *(required)* — Field updates as JSON object, e.g. '{"status":"done"}'
+- `--idempotency-key <value>` *(required)* — Caller-owned stable key for replaying this exact dataset mutation
 
 #### `sift datasets validate`
 Validate a dataset against a built-in template
@@ -1332,6 +1201,17 @@ Show value-free environment contract drift
 **Flags**
 
 - `--checkout-root <value>` — Exact Git checkout root containing .sift/environment.yaml
+
+#### `sift env endpoint enroll`
+Enroll a public endpoint identity without granting Vault access
+
+**Flags**
+
+- `--dedicated` — Endpoint is a dedicated runner
+- `--endpoint-class <interactive_desktop|remote_vm|noninteractive_runner|shared_host|ci_runner|production_host|multi_tenant>` *(required)* — Explicit endpoint policy class
+- `--kill-switch` — Runner has an enforced kill switch
+- `--owner <value>` *(default: "personal")* — personal or workspace:<uuid>
+- `--storage-tier <hardware_host_bound|systemd_managed|convenience_keyring|none>` *(required)* — Actual endpoint key storage tier; convenience_keyring is not hardware-backed
 
 #### `sift env example`
 Generate a deterministic names-and-placeholders-only example
@@ -1626,9 +1506,10 @@ Request approval, redeem in memory, and run exactly one reviewed child process
 
 **Flags**
 
-- `--adapter <github_gh|terraform_apply>` *(required)*
+- `--adapter <github_gh|github_publish_pr|terraform_apply>` *(required)*
 - `--approval-timeout <value>` *(default: 600)*
 - `--audience <value>` *(required)*
+- `--body-file <value>` — PR body file for github_publish_pr
 - `--credential-field <value>` *(required)*
 - `--cwd <value>`
 - `--issuer <value>` *(required)*
@@ -2230,6 +2111,199 @@ Compose an exact, evidence-grounded relationship brief
 **Flags**
 
 - `--lens <value>` *(default: "relationship")* — Relationship lens identifier
+
+#### `sift relationships composer approver-edit`
+Create an attributed approver revision and reopen coaching review
+
+**Arguments**
+
+- `id` *(required)* — Composer session UUID
+
+**Flags**
+
+- `--body <value>` *(required)*
+- `--expected-version <value>` *(required)*
+- `--reason <value>` *(required)*
+- `--subject <value>` *(required)*
+- `--yes` — Confirm the attributed edit
+
+#### `sift relationships composer bind-sender`
+Bind an explicit active connected email account to a durable draft
+
+**Arguments**
+
+- `id` *(required)* — Composer session UUID
+
+**Flags**
+
+- `--expected-version <value>` *(required)* — Current optimistic session version
+- `--sender <value>` *(required)* — Connected email account UUID
+
+#### `sift relationships composer confirm`
+Confirm the bound brief and create its first durable draft revision
+
+**Arguments**
+
+- `id` *(required)* — Composer session UUID
+
+**Flags**
+
+- `--expected-version <value>` *(required)* — Current optimistic session version
+- `--yes` — Confirm brief and create draft
+
+#### `sift relationships composer create`
+Create or resume a durable relationship brief-to-draft session
+
+**Arguments**
+
+- `subject` *(required)* — Subject as prospect:uuid or opportunity:uuid
+
+**Flags**
+
+- `--file <value>` *(required)* — JSON file with source, recommendation, brief, and ranked evidence
+
+#### `sift relationships composer dispatch`
+Keep exact approval, send now, or schedule one governed relationship message
+
+**Arguments**
+
+- `id` *(required)* — Composer session UUID
+
+**Flags**
+
+- `--at <value>` — ISO-8601 time required for send_later
+- `--choice <approve_only|send_now|send_later>` *(required)* — Dispatch outcome
+- `--expected-version <value>` *(required)* — Current optimistic session version
+- `--idempotency-key <value>` *(required)* — Stable retry key for this exact choice and time
+- `--yes` — Confirm this governed dispatch choice
+
+#### `sift relationships composer evaluate`
+Evaluate the current durable draft and append phrase-anchored coaching findings
+
+**Arguments**
+
+- `id` *(required)* — Composer session UUID
+
+**Flags**
+
+- `--expected-version <value>` *(required)* — Current optimistic session version
+
+#### `sift relationships composer finding-action`
+Explain, preview, accept, reject, or undo an attributable coaching finding
+
+**Arguments**
+
+- `id` *(required)* — Composer session UUID
+- `finding` *(required)* — Coaching finding UUID
+
+**Flags**
+
+- `--action <explain|preview|accept|reject|undo>` *(required)*
+- `--expected-version <value>` *(required)* — Current optimistic session version
+- `--yes` — Confirm a mutating coaching decision
+
+#### `sift relationships composer history`
+Show append-only coaching and draft decision history in recorded order
+
+**Arguments**
+
+- `id` *(required)* — Composer session UUID
+
+#### `sift relationships composer request-approval`
+Request or resume approval for the exact composer review; approval remains browser-only
+
+**Arguments**
+
+- `id` *(required)* — Composer session UUID
+
+**Flags**
+
+- `--expected-version <value>` *(required)* — Current optimistic session version
+- `--idempotency-key <value>` *(required)* — Stable approval-request retry key
+- `--yes` — Confirm the approval request
+
+#### `sift relationships composer request-changes`
+Return an exact review to its author without mutating the message
+
+**Arguments**
+
+- `id` *(required)* — Composer session UUID
+
+**Flags**
+
+- `--expected-version <value>` *(required)*
+- `--reason <value>` *(required)*
+- `--yes` — Confirm the review interruption
+
+#### `sift relationships composer resolve-identity`
+Resolve or route the inline plausible-duplicate gate for one reviewed message
+
+**Arguments**
+
+- `id` *(required)* — Composer session UUID
+
+**Flags**
+
+- `--candidate <value>` *(required)* — Candidate person UUID
+- `--decision <same_person|different_people|route_to_owner>` *(required)*
+- `--expected-version <value>` *(required)*
+- `--yes` — Confirm the identity decision
+
+#### `sift relationships composer review`
+Continue a coaching-clear durable draft to governed review
+
+**Arguments**
+
+- `id` *(required)* — Composer session UUID
+
+**Flags**
+
+- `--approver-user-id <value>` — Optional active internal workspace member who will approve the exact message
+- `--expected-version <value>` *(required)* — Current optimistic session version
+- `--yes` — Confirm the transition to review
+
+#### `sift relationships composer save-draft`
+Save a new durable revision of a relationship draft
+
+**Arguments**
+
+- `id` *(required)* — Composer session UUID
+
+**Flags**
+
+- `--file <value>` *(required)* — JSON file with expectedVersion, subject, and bodyText
+
+#### `sift relationships composer show`
+Show a durable relationship composer session
+
+**Arguments**
+
+- `id` *(required)* — Composer session UUID
+
+#### `sift relationships composer update`
+Update bound intent and ranked evidence before draft creation
+
+**Arguments**
+
+- `id` *(required)* — Composer session UUID
+
+**Flags**
+
+- `--file <value>` *(required)* — JSON file with expectedVersion, brief, and evidence
+
+#### `sift relationships contact-plan inspect`
+Inspect one canonical person contact plan without mutating its source lifecycles
+
+**Arguments**
+
+- `person` *(required)* — Canonical person UUID
+
+**Flags**
+
+- `--from <value>` — Inclusive ISO-8601 inspection window start
+- `--limit <value>` *(default: 100)* — Maximum projected items
+- `--timezone <value>` — IANA display timezone
+- `--to <value>` — Inclusive ISO-8601 inspection window end
 
 #### `sift relationships diagnoses create`
 Create an immutable, evidence-grounded relationship diagnosis snapshot
@@ -3082,6 +3156,52 @@ Store a new encrypted secret (requires vault:manage)
 - `--type <env_var|credential|oauth_token|ssh_key|certificate|note>` — Entry type
 - `--url <value>` — Associated URL
 
+#### `sift vault leases clean`
+*Alias: `sift env leases clean`*
+Clean one local lease artifact and attest confirmed, failed, or unknowable state
+
+**Arguments**
+
+- `id` *(required)*
+
+**Flags**
+
+- `--checkout-root <value>` — Git checkout used to prove runtime separation
+- `--owner <value>` — Exact Vault owner: personal or workspace:<tenant-id>
+
+#### `sift vault leases list`
+*Alias: `sift env leases list`*
+List value-free environment lease and cleanup metadata
+
+**Flags**
+
+- `--owner <value>` — Exact Vault owner: personal or workspace:<tenant-id>
+
+#### `sift vault leases revoke`
+*Alias: `sift env leases revoke`*
+Revoke future lease use, remove the local artifact when present, and attest cleanup
+
+**Arguments**
+
+- `id` *(required)*
+
+**Flags**
+
+- `--checkout-root <value>` — Git checkout used to prove runtime separation
+- `--owner <value>` — Exact Vault owner: personal or workspace:<tenant-id>
+
+#### `sift vault leases status`
+*Alias: `sift env leases status`*
+Inspect one value-free environment lease lifecycle
+
+**Arguments**
+
+- `id` *(required)*
+
+**Flags**
+
+- `--owner <value>` — Exact Vault owner: personal or workspace:<tenant-id>
+
 #### `sift vault list`
 List vault entries (metadata only; requires vault:metadata:read)
 
@@ -3192,6 +3312,23 @@ Update vault entry metadata (requires vault:manage)
 - `--owner <value>` — Exact Vault owner: personal or workspace:<tenant-id>
 - `--tags <value>` — Comma-separated tags
 - `--url <value>` — Associated URL
+
+#### `sift vault use lease`
+*Alias: `sift env lease`*
+Create one exact short-lived environment bundle artifact outside the Git worktree
+
+**Flags**
+
+- `--approval-timeout <value>` *(default: 600)*
+- `--checkout-root <value>` — Checkout containing .sift/environment.yaml
+- `--consumer <value>` *(required)* — Bound consumer identifier; not a command allowlist
+- `--consumer-pid <value>` — Optional already-running consumer process lifetime
+- `--destination <value>` — Manifest destination used only to select one exact bundle
+- `--endpoint-class <development|production|ci|shared_host>` *(required)*
+- `--holder <value>` — Bound holder identifier; defaults to the local runner fingerprint
+- `--owner <value>` — Exact Vault owner: personal or workspace:<tenant-id>
+- `--purpose <value>` *(required)*
+- `--ttl <value>` *(default: 300)*
 
 
 ### Work
@@ -3511,6 +3648,8 @@ Submit externally executed evidence for an exact plan version and step ID
 
 - `--artifacts <value>` — Artifact reference JSON array for larger logs
 - `--attempt <value>` *(required)* — Caller-stable attempt identity
+- `--claim-owner <value>` — Active lease owner for workspace-service evidence
+- `--claim-token <value>` — Opaque active lease token for workspace-service evidence
 - `--environment <value>` *(required)* — Execution environment label
 - `--exit-code <value>` — Process exit code when applicable
 - `--outcome <passed|failed|error>` *(required)* — Attempt outcome

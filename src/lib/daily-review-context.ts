@@ -58,7 +58,7 @@ export interface DailyReviewClient {
   listAgents(options?: Record<string, unknown>): Promise<ApiResponse>;
   listWorkItems(options?: Record<string, unknown>): Promise<ApiResponse>;
   listTasks(options?: Record<string, unknown>): Promise<ApiResponse>;
-  listCodeRepositories(options?: Record<string, unknown>): Promise<ApiResponse>;
+  listRepositoryIdentities(options?: Record<string, unknown>): Promise<ApiResponse>;
   listCodeMemories(options?: Record<string, unknown>): Promise<ApiResponse>;
   listCalendarEvents(options?: Record<string, unknown>): Promise<ApiResponse>;
   listVaultEntries(options?: Record<string, unknown>): Promise<ApiResponse>;
@@ -151,7 +151,7 @@ export async function collectDailyReviewContext(
     capture('workItems', () => client.listWorkItems({limit})),
     capture('tasksInProgress', () => client.listTasks({status: 'in_progress', limit})),
     capture('tasksOpenPhase', () => client.listTasks({phase: 'open', limit})),
-    capture('codeRepositories', () => client.listCodeRepositories()),
+    capture('repositoryIdentities', () => client.listRepositoryIdentities()),
     capture('codeMemories', () => client.listCodeMemories({limit})),
     capture('calendar', () => client.listCalendarEvents({
       startDate: now.toISOString(),

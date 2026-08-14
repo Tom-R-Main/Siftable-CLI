@@ -85,19 +85,4 @@ describe('code commands', () => {
       expect(result.stdout).toContain('not_recorded');
     });
   });
-
-  describe('code history', () => {
-    it('shows commit history', async () => {
-      mockFetch()
-        .on('GET', '/api/v1/code/repositories/repo-001/commits')
-        .reply(200, {commits: [
-          {sha: 'abc12345def', authorName: 'Test Author', message: 'Initial commit', authorDate: '2026-01-01T00:00:00Z'},
-        ]})
-        .install();
-
-      const result = await runCommand(['code', 'history', 'repo-001', '--token', 'exf_pat_test']);
-      expect(result.stdout).toContain('abc12345');
-      expect(result.stdout).toContain('Test Author');
-    });
-  });
 });

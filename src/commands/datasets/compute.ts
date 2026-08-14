@@ -1,5 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {parseDatasetFiltersFlag, parseDatasetSortsFlag} from '../../lib/dataset-query.js';
 import {renderTable, truncate} from '../../lib/output.js';
 
 export default class DatasetsCompute extends BaseCommand {
@@ -39,11 +40,11 @@ export default class DatasetsCompute extends BaseCommand {
     }
 
     const response = await client.computeDatasetFields(datasetId, {
-      filters: this.parseJsonFlag(flags.filters, '--filters') as Array<Record<string, unknown>> | undefined,
+      filters: parseDatasetFiltersFlag(flags.filters),
       select: flags.select?.split(',').map((part) => part.trim()).filter(Boolean),
       computedFields: this.parseJsonFlag(flags['computed-fields'], '--computed-fields') as Array<{ as: string; expression: string; description?: string }>,
       orderBy: this.parseJsonFlag(flags['order-by'], '--order-by') as Array<Record<string, unknown>> | undefined,
-      sorts: this.parseJsonFlag(flags.sorts, '--sorts') as Array<Record<string, unknown>> | undefined,
+      sorts: parseDatasetSortsFlag(flags.sorts),
       limit: flags.limit,
       sourceResult,
     });

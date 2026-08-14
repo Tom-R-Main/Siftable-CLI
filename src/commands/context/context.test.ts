@@ -28,7 +28,7 @@ describe('context current', () => {
       .mockResolvedValueOnce({id: 'user-1', email: 'user@example.com'})
       .mockResolvedValueOnce({workspaces: []});
     (instance as any).client = vi.fn().mockResolvedValue({
-      listCodeRepositories: vi.fn().mockResolvedValue({
+      listRepositoryIdentities: vi.fn().mockResolvedValue({
         statusCode: 200,
         data: {repositories: [{id: 'repo-1', name: 'Repo', rootPath: '/workspace', projectId: 'project-1'}]},
       }),

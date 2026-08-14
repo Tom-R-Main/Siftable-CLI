@@ -1,6 +1,6 @@
 {
   "name": "@siftable/cli",
-  "version": "0.5.40",
+  "version": "0.5.41",
   "description": "Siftable CLI — human planning tasks, executable agent work queues, knowledge, and automation tools",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -11,7 +11,7 @@
   },
   "scripts": {
     "prebuild": "npm run build --workspace @siftable/mcp-server && npm run build --workspace @siftable/tabular-import",
-    "build": "node scripts/clean-dist.mjs && tsc",
+    "build": "node scripts/clean-dist.mjs && tsc && node -e \"const fs=require('node:fs');fs.mkdirSync('dist/lib/vendor',{recursive:true});fs.copyFileSync('../shared/dist/types/datasetQueryContract.js','dist/lib/vendor/datasetQueryContract.js')\"",
     "typecheck": "tsc --noEmit",
     "manifest": "npm run build && oclif manifest",
     "interactive:dev": "npm run manifest && (cd interactive-tui && bun run native:build) && SIFT_INTERACTIVE_RUNTIME=source node ./bin/run.js interactive",
@@ -111,9 +111,6 @@
       "relationships:handoffs": {
         "description": "Source-linked outcome handoff receipts"
       },
-      "codebase": {
-        "description": "Code indexing and search"
-      },
       "code": {
         "description": "Code tools"
       },
@@ -195,7 +192,7 @@
     "@oclif/core": "^4",
     "@oclif/plugin-help": "^6",
     "@siftable/tabular-import": "*",
-    "@siftable/mcp-server": "^1.2.18",
+    "@siftable/mcp-server": "^1.2.28",
     "pg": "^8.20.0",
     "sharp": "^0.34.4",
     "yaml": "^2.8.2"

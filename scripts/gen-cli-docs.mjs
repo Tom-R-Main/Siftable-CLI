@@ -36,7 +36,7 @@ const GLOBAL_FLAGS = new Set(['api-url', 'json', 'no-input', 'token', 'workspace
 const TOPIC_INTROS = {
   '(general)': 'Top-level commands and diagnostics.',
   agents: 'Agent aliases.', auth: 'Authentication commands.', calendar: 'Calendar events.',
-  code: 'Code tools.', codebase: 'Code indexing and search.', codex: 'Codex automation helpers.',
+  code: 'Code tools.', codex: 'Codex automation helpers.',
   datasets: 'Structured datasets.', documents: 'Document upload.',
   events: 'Research events backed by timeline facts.',
   evidence: 'Evidence Graph setup and proof workflow orchestration.',

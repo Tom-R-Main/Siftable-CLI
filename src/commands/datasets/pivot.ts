@@ -1,6 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
-import {parseJsonArrayFlag} from '../../lib/dataset-query.js';
+import {parseDatasetFiltersFlag, parseJsonArrayFlag} from '../../lib/dataset-query.js';
 import {renderTable} from '../../lib/output.js';
 
 export default class DatasetsPivot extends BaseCommand {
@@ -25,7 +25,7 @@ export default class DatasetsPivot extends BaseCommand {
     let filters;
     try {
       metrics = parseJsonArrayFlag(flags.metrics, '--metrics') ?? [{operation: 'count', as: 'count'}];
-      filters = parseJsonArrayFlag(flags.filters, '--filters');
+      filters = parseDatasetFiltersFlag(flags.filters);
     } catch (error) {
       this.error(error instanceof Error ? error.message : 'Invalid JSON flag.');
     }

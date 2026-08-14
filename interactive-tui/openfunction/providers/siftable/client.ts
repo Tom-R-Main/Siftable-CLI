@@ -242,22 +242,6 @@ export class ExfClient {
     return data as { organizations: Record<string, unknown>[] };
   }
 
-  // ─── Codebase ───────────────────────────────────────────────────────────
-
-  async searchCode(query: string, repositoryId?: string) {
-    return unwrap(
-      await this.sift.searchCode({ query, repositoryId }),
-      "searchCode",
-    );
-  }
-
-  async codeWhoKnows(repositoryId: string, area: string) {
-    return unwrap(
-      await this.sift.whoKnows(repositoryId, area),
-      "whoKnows",
-    );
-  }
-
   // ─── Health ─────────────────────────────────────────────────────────────
 
   async checkAuth() {

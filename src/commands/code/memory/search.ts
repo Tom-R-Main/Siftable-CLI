@@ -3,7 +3,7 @@ import {BaseCommand} from '../../../lib/base-command.js';
 import {renderTable} from '../../../lib/output.js';
 
 export default class CodeMemorySearch extends BaseCommand {
-  static description = 'Search stored codebase facts (excludes rejected/superseded by default)';
+  static description = 'Search stored curated code facts (excludes rejected/superseded by default)';
 
   static args = {
     query: Args.string({description: 'Search query', required: true}),

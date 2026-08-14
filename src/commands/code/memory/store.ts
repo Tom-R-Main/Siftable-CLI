@@ -2,7 +2,7 @@ import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../../lib/base-command.js';
 
 export default class CodeMemoryStore extends BaseCommand {
-  static description = 'Store a codebase fact';
+  static description = 'Store a curated code fact';
 
   static flags = {
     ...BaseCommand.baseFlags,

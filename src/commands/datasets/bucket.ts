@@ -1,5 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {parseDatasetFiltersFlag} from '../../lib/dataset-query.js';
 
 export default class DatasetsBucket extends BaseCommand {
   static description = 'Bucket a numeric or date field into ranges with aggregate metrics per bucket';
@@ -25,7 +26,7 @@ export default class DatasetsBucket extends BaseCommand {
     if (flags.boundaries) options.boundaries = flags.boundaries.split(',').map((s) => Number(s.trim()));
     if (flags['bucket-count']) options.bucketCount = flags['bucket-count'];
     if (flags.metrics) options.metrics = JSON.parse(flags.metrics);
-    if (flags.filters) options.filters = JSON.parse(flags.filters);
+    if (flags.filters) options.filters = parseDatasetFiltersFlag(flags.filters);
 
     const response = await client.bucketDataset(args.id, options as any);
     this.handleApiError(response);

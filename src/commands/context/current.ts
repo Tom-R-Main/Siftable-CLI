@@ -55,7 +55,7 @@ export default class ContextCurrent extends BaseCommand {
       'api-url': flags['api-url'],
       workspace: selection.selectedWorkspaceId,
     });
-    const repositoriesResponse = await client.listCodeRepositories();
+    const repositoriesResponse = await client.listRepositoryIdentities();
     const repositories = repositoriesResponse.error
       ? []
       : this.unwrapList(repositoriesResponse, 'repositories') as RepositorySummary[];

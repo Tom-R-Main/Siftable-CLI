@@ -145,29 +145,19 @@ The most-used surface, grouped by domain. Run `sift --help` or `sift <topic> --h
 | `sift people list` | List contacts |
 | `sift people search <query>` | Search contacts |
 
-### Codebase
-| Command | Description |
-|---------|-------------|
-| `sift codebase list` | List indexed repositories |
-| `sift codebase register` | Register a repo for indexing |
-| `sift codebase status <id>` | Check indexing status |
-| `sift codebase index <id>` | Trigger indexing |
-| `sift codebase search <query> [--repo <id>\|--project <id>]` | Semantic code search scoped to the current registered repo by default |
-| `sift codebase snapshot <id>` | Get latest snapshot |
-| `sift codebase delete <id>` | Delete a repository |
-
 ### Code tools
 | Command | Description |
 |---------|-------------|
-| `sift code history <repo>` | Get commit history |
-| `sift code who-knows <repo> <area>` | Find experts for a code area |
 | `sift code blame <file>` | Git blame for a file |
 | `sift code link <task>` | Link a task to code |
-| `sift code expertise <repo>` | Refresh expertise index |
-| `sift code memory store` | Store a codebase fact |
+| `sift code memory store` | Store a curated code fact |
 | `sift code memory list` | List stored facts |
 | `sift code memory search <query>` | Search stored facts |
 | `sift code memory delete <id>` | Delete a stored fact |
+
+Use Git, `rg`, the editor, or agent-native tools for source inspection and search
+inside an authorized checkout. The CLI no longer indexes or semantically searches
+repository source.
 
 ### Vault
 

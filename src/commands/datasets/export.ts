@@ -1,5 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {parseDatasetFiltersFlag, parseDatasetSortsFlag} from '../../lib/dataset-query.js';
 
 export default class DatasetsExport extends BaseCommand {
   static description = 'Export bounded dataset records as CSV, JSON, JSONL, or Markdown';
@@ -22,8 +23,8 @@ export default class DatasetsExport extends BaseCommand {
     const client = await this.client(flags);
 
     const options: Record<string, unknown> = {limit: flags.limit};
-    if (flags.filters) options.filters = JSON.parse(flags.filters);
-    if (flags.sorts) options.sorts = JSON.parse(flags.sorts);
+    if (flags.filters) options.filters = parseDatasetFiltersFlag(flags.filters);
+    if (flags.sorts) options.sorts = parseDatasetSortsFlag(flags.sorts);
 
     const response = await client.queryDataset(args.id, options as any);
     this.handleApiError(response);

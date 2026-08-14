@@ -1,5 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {parseDatasetFiltersFlag} from '../../lib/dataset-query.js';
 import {renderTable, truncate} from '../../lib/output.js';
 
 export default class DatasetsTimeseries extends BaseCommand {
@@ -31,7 +32,7 @@ export default class DatasetsTimeseries extends BaseCommand {
     const client = await this.client(flags);
 
     const response = await client.analyzeDatasetTimeseries(args.id, {
-      filters: this.parseJsonFlag(flags.filters, '--filters') as Array<Record<string, unknown>> | undefined,
+      filters: parseDatasetFiltersFlag(flags.filters),
       dateField: flags['date-field'],
       segmentField: flags['segment-field'],
       segmentValues: flags['segment-values']?.split(',').map((part) => part.trim()).filter(Boolean),

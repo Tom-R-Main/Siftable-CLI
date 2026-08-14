@@ -1,7 +1,7 @@
 import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
 import {renderDetail} from '../../lib/output.js';
-import {datasetIdempotencyKeyFlag} from './idempotency.js';
+import {datasetIdempotencyKeyFlag} from '../../lib/dataset-idempotency.js';
 
 export default class DatasetsMaterialize extends BaseCommand {
   static description = 'Materialize a derived result into a new scratch dataset';

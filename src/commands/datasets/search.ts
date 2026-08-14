@@ -1,6 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
-import {mergeFilters, parseJsonArrayFlag, splitFields} from '../../lib/dataset-query.js';
+import {mergeFilters, parseDatasetFiltersFlag, splitFields} from '../../lib/dataset-query.js';
 import {recordKey, renderDatasetRecords} from '../../lib/dataset-render.js';
 
 export default class DatasetsSearch extends BaseCommand {
@@ -24,7 +24,7 @@ export default class DatasetsSearch extends BaseCommand {
     const client = await this.client(flags);
     let baseFilters;
     try {
-      baseFilters = parseJsonArrayFlag(flags.filters, '--filters');
+      baseFilters = parseDatasetFiltersFlag(flags.filters);
     } catch (error) {
       this.error(error instanceof Error ? error.message : 'Invalid --filters JSON.');
     }

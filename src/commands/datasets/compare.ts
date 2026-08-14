@@ -1,5 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {parseDatasetFiltersFlag} from '../../lib/dataset-query.js';
 
 export default class DatasetsCompare extends BaseCommand {
   static description = 'Compare metrics across segments of a categorical field side-by-side';
@@ -27,7 +28,7 @@ export default class DatasetsCompare extends BaseCommand {
     };
     if (flags['segment-values']) options.segmentValues = flags['segment-values'].split(',').map((s) => s.trim());
     if (flags.metrics) options.metrics = JSON.parse(flags.metrics);
-    if (flags.filters) options.filters = JSON.parse(flags.filters);
+    if (flags.filters) options.filters = parseDatasetFiltersFlag(flags.filters);
 
     const response = await client.compareDatasetSegments(args.id, options as any);
     this.handleApiError(response);

@@ -1,6 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
-import {datasetIdempotencyKeyFlag} from './idempotency.js';
+import {datasetIdempotencyKeyFlag} from '../../lib/dataset-idempotency.js';
 
 export default class DatasetsUpdateRecord extends BaseCommand {
   static description = 'Update a record in a dataset';

@@ -1,6 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
-import {datasetIdempotencyKeyFlag} from './idempotency.js';
+import {datasetIdempotencyKeyFlag} from '../../lib/dataset-idempotency.js';
 
 export default class DatasetsSchema extends BaseCommand {
   static description = 'Modify dataset schema (add, update, or delete fields)';
