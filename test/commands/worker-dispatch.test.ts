@@ -100,24 +100,14 @@ describe('surface-neutral agent runtime dispatch', () => {
     })).toThrow(/scopes overlap/);
   });
 
-  it('does not let a one-segment wildcard exclusion hide descendant collisions', () => {
-    const broad = workItem(1, ['packages/**']);
-    broad.writeScope = {include: ['packages/**'], exclude: ['packages/*']};
-    expect(() => buildAgentRuntimeDispatchPlan({
-      requestedBySurface: 'codex',
-      sourceGitSha: SHA,
-      workItems: [broad, workItem(2, ['packages/foo'])],
-    })).toThrow(/scopes overlap/);
-  });
-
-  it('honors an exclusion only when it covers the complete intersecting subtree', () => {
+  it('does not let exclusions hide collisions before downstream enforcement supports them', () => {
     const broad = workItem(1, ['packages/**']);
     broad.writeScope = {include: ['packages/**'], exclude: ['packages/foo']};
     expect(() => buildAgentRuntimeDispatchPlan({
       requestedBySurface: 'codex',
       sourceGitSha: SHA,
       workItems: [broad, workItem(2, ['packages/foo'])],
-    })).not.toThrow();
+    })).toThrow(/scopes overlap/);
   });
 
   it('rejects non-relative scope projections before comparing them', () => {

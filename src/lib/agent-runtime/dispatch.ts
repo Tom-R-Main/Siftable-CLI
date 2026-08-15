@@ -137,29 +137,14 @@ function scopePatternsMayOverlap(left: string, right: string): boolean {
   return aPrefix === bPrefix || aPrefix.startsWith(`${bPrefix}/`) || bPrefix.startsWith(`${aPrefix}/`);
 }
 
-function scopePatternFullyCovers(cover: string, candidate: string): boolean {
-  const outer = normalizedScopePattern(cover);
-  const inner = normalizedScopePattern(candidate);
-  if (outer === inner) return true;
-  if (!/[?*]/.test(outer)) return inner.startsWith(`${outer}/`);
-  if (outer.endsWith('/**') && !/[?*]/.test(outer.slice(0, -3))) {
-    const root = outer.slice(0, -3).replace(/\/+$/, '');
-    return inner === root || inner.startsWith(`${root}/`);
-  }
-  return false;
-}
-
 function overlappingScopes(
-  left: {include: string[]; exclude: string[]},
-  right: {include: string[]; exclude: string[]},
+  left: {include: string[]},
+  right: {include: string[]},
 ): string[] {
-  const exclusions = [...left.exclude, ...right.exclude];
   const overlaps = new Set<string>();
   for (const a of left.include) {
     for (const b of right.include) {
       if (!scopePatternsMayOverlap(a, b)) continue;
-      const narrower = scopePatternFullyCovers(a, b) ? b : scopePatternFullyCovers(b, a) ? a : null;
-      if (narrower && exclusions.some(excluded => scopePatternFullyCovers(excluded, narrower))) continue;
       overlaps.add(a === b ? a : `${a} <-> ${b}`);
     }
   }
