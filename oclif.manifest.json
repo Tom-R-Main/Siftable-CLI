@@ -28960,6 +28960,333 @@
         "evidence",
         "show.js"
       ]
+    },
+    "crm:import:apply": {
+      "aliases": [],
+      "args": {
+        "planId": {
+          "description": "Durable CRM import plan UUID",
+          "name": "planId",
+          "required": true
+        }
+      },
+      "description": "Apply only approved operations from an existing CRM import plan; replay is safe",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "yes": {
+          "description": "Confirm canonical CRM writes without prompting",
+          "name": "yes",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "crm:import:apply",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "crm",
+        "import",
+        "apply.js"
+      ]
+    },
+    "crm:import:approve": {
+      "aliases": [],
+      "args": {
+        "planId": {
+          "description": "Durable CRM import plan UUID",
+          "name": "planId",
+          "required": true
+        }
+      },
+      "description": "Approve all or selected pending operations in an existing CRM import plan",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "reason": {
+          "description": "Human approval reason recorded on the plan",
+          "name": "reason",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "operation-id": {
+          "description": "Stable operation ID to approve; repeat to approve a subset",
+          "name": "operation-id",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "yes": {
+          "description": "Confirm the approval without prompting",
+          "name": "yes",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "crm:import:approve",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "crm",
+        "import",
+        "approve.js"
+      ]
+    },
+    "crm:import:get": {
+      "aliases": [],
+      "args": {
+        "planId": {
+          "description": "Durable CRM import plan UUID",
+          "name": "planId",
+          "required": true
+        }
+      },
+      "description": "Resume and inspect a durable CRM import plan by stable plan ID",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "crm:import:get",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "crm",
+        "import",
+        "get.js"
+      ]
+    },
+    "crm:import:plan": {
+      "aliases": [],
+      "args": {
+        "file": {
+          "description": "Local CSV, TSV, XLS, or XLSX source (8 MiB maximum)",
+          "name": "file",
+          "required": true
+        }
+      },
+      "description": "Create or reuse a durable CRM import plan from CSV, TSV, XLS, or XLSX without writing canonical CRM records",
+      "examples": [
+        "<%= config.bin %> crm import plan contacts.csv --json",
+        "<%= config.bin %> crm import plan accounts.xlsx --provider salesforce --workspace <workspace-id>"
+      ],
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "provider": {
+          "description": "Source provider mapping",
+          "name": "provider",
+          "default": "generic",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "generic",
+            "salesforce"
+          ],
+          "type": "option"
+        },
+        "mapping-mode": {
+          "description": "Manual mapping or approved workspace mapping profile",
+          "name": "mapping-mode",
+          "default": "manual",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "manual",
+            "workspace_auto"
+          ],
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "crm:import:plan",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "crm",
+        "import",
+        "plan.js"
+      ]
     }
   },
   "version": "0.5.41"

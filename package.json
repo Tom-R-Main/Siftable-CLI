@@ -81,6 +81,9 @@
       "crm:organizations": {
         "description": "CRM organizations, excluding collaborative workspaces"
       },
+      "crm:import": {
+        "description": "Durable, review-gated CRM import plans"
+      },
       "context": {
         "description": "Current principal, owner, project, and checkout context"
       },
