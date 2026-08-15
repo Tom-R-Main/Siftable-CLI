@@ -23,7 +23,7 @@ export default class CodeMemoryEdit extends BaseCommand {
       reason: flags.reason,
       confidence: flags.confidence ? Number(flags.confidence) : undefined,
       actorType: 'human',
-    });
+    }, this.idempotencyKey());
     this.handleApiError(response);
 
     if (!this.jsonEnabled()) {

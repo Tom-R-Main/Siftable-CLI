@@ -168,7 +168,7 @@ export default class WorkerRun extends BaseCommand {
       assignedAlias: flags.agent,
       claimOwner: flags.owner,
       leaseSeconds: flags.lease,
-    });
+    }, this.idempotencyKey());
     this.handleApiError(claim);
     const workItem = this.unwrapOne(claim, 'workItem');
     const claimToken = workItem.claimToken as string | undefined;
@@ -181,7 +181,7 @@ export default class WorkerRun extends BaseCommand {
       claimOwner: flags.owner,
       claimToken,
       leaseSeconds: flags.lease,
-    });
+    }, {idempotencyKey: this.idempotencyKey()});
     this.handleApiError(start);
 
     const inputContext = workInputContext(workItem);
@@ -245,7 +245,7 @@ export default class WorkerRun extends BaseCommand {
         decision: 'skip',
         rationale: 'Local worker run did not evaluate durable code-memory capture',
       },
-    });
+    }, {idempotencyKey: this.idempotencyKey()});
     this.handleApiError(review);
     const reviewed = this.unwrapOne(review, 'workItem');
 

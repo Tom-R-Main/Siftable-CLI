@@ -26,7 +26,7 @@ export default class AgentsCreate extends BaseCommand {
       capabilities: this.parseJsonFlag<Record<string, unknown>>(flags.capabilities, 'capabilities'),
       defaultPermissions: this.parseJsonFlag<Record<string, unknown>>(flags.permissions, 'permissions'),
       visibleToUser: !flags.hidden,
-    });
+    }, this.idempotencyKey());
     this.handleApiError(response);
     const agent = this.unwrapOne(response, 'agent');
 

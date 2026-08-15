@@ -66,7 +66,7 @@ export abstract class WorkActionCommand extends BaseCommand {
       blockedReason: flags.reason,
       failureReason: flags.reason,
       ...extra,
-    });
+    }, {idempotencyKey: action === 'heartbeat' ? undefined : this.idempotencyKey()});
     this.handleApiError(response);
     const workItem = this.unwrapOne(response, 'workItem');
     if (!this.jsonEnabled()) {
