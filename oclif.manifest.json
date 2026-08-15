@@ -14686,6 +14686,105 @@
         "narrative.js"
       ]
     },
+    "worker:dispatch": {
+      "aliases": [],
+      "args": {},
+      "description": "Build a no-spend, surface-neutral plan for exactly two AWS agent workers",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "work-item": {
+          "description": "Queued Sift work-item UUID; repeat exactly twice",
+          "name": "work-item",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "surface": {
+          "description": "Calling control surface; does not change dispatch identity",
+          "name": "surface",
+          "default": "cli",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "cli",
+            "t3",
+            "codex",
+            "claude-code",
+            "mcp"
+          ],
+          "type": "option"
+        },
+        "source-sha": {
+          "description": "Reviewed 40-character source Git SHA; defaults to a clean current HEAD",
+          "name": "source-sha",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "max-runtime-minutes": {
+          "description": "Per-worker runtime ceiling",
+          "name": "max-runtime-minutes",
+          "default": 120,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "worker:dispatch",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "worker",
+        "dispatch.js"
+      ]
+    },
     "worker:run": {
       "aliases": [],
       "args": {},
