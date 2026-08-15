@@ -1,5 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {parseDatasetFiltersFlag, parseDatasetSortsFlag} from '../../lib/dataset-query.js';
 import {renderDatasetRecords} from '../../lib/dataset-render.js';
 
 export default class DatasetsQuery extends BaseCommand {
@@ -35,17 +36,17 @@ export default class DatasetsQuery extends BaseCommand {
 
     if (flags.filters) {
       try {
-        input.filters = JSON.parse(flags.filters);
-      } catch {
-        this.error('Invalid --filters JSON. Expected array of filter objects.');
+        input.filters = parseDatasetFiltersFlag(flags.filters);
+      } catch (error) {
+        this.error(error instanceof Error ? error.message : 'Invalid --filters JSON.');
       }
     }
 
     if (flags.sorts) {
       try {
-        input.sorts = JSON.parse(flags.sorts);
-      } catch {
-        this.error('Invalid --sorts JSON. Expected array of sort objects.');
+        input.sorts = parseDatasetSortsFlag(flags.sorts);
+      } catch (error) {
+        this.error(error instanceof Error ? error.message : 'Invalid --sorts JSON.');
       }
     }
 

@@ -120,8 +120,8 @@ export const RECIPES: Recipe[] = [
         purpose: 'Find prior integration facts, conventions, gotchas, and ownership notes.',
       },
       {
-        command: 'sift codebase search "<entity-name>" --repo <repo-id> --json',
-        purpose: 'Find current local usage or relevant implementation seams.',
+        command: 'rg -n "<entity-name>" .',
+        purpose: 'Find current local usage or relevant implementation seams in the authorized checkout.',
       },
       {
         command: 'sift notes create --title "Verdict: <entity-name>" --type reference --metadata \'{"kind":"verdict","entityType":"library","entityName":"<entity-name>","recommendation":"spike","confidence":"low","fetchedAt":"<iso>","freshnessTtlDays":30,"evidenceUrls":[],"signals":{}}\' --content "<verdict markdown>" --json',

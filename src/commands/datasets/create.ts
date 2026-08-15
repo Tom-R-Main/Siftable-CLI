@@ -1,6 +1,6 @@
 import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
-import {datasetIdempotencyKeyFlag} from './idempotency.js';
+import {datasetIdempotencyKeyFlag} from '../../lib/dataset-idempotency.js';
 
 export default class DatasetsCreate extends BaseCommand {
   static description = 'Create a dataset';

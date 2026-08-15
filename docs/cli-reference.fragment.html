@@ -1,23 +1,10 @@
         <!-- BEGIN generated CLI command reference (gen-cli-docs.mjs) -->
             <h2 id="cli-general" data-i18n="docs.cli.general.title">General</h2>
             <p class="cli-topic__intro" data-i18n="docs.cli.general.intro">Top-level commands and diagnostics.</p>
-            <details class="cli-topic"><summary><span data-i18n="docs.cli.general.count">6 commands</span></summary>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.general.count">5 commands</span></summary>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift capabilities</code></div></div>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.general.capabilities.desc">Show Siftable CLI capabilities and readiness status</p>
-              </div>
-              <div class="cli-cmd">
-                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift codebase</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.general.codebase.desc">Deprecated hosted-ingestion path (blocked unless temporarily restored by an operator)</p>
-                <dl class="cli-cmd__params">
-                  <dt>Arguments</dt>
-                  <dd><code>id</code> — Repository ID</dd>
-                  <dt>Flags</dt>
-                  <dd><code>--exclude &lt;value&gt;</code> — Comma-separated exclude glob patterns</dd>
-                  <dd><code>--include &lt;value&gt;</code> — Comma-separated include glob patterns</dd>
-                  <dd><code>--incremental</code> — Git-aware incremental index (changed files only)</dd>
-                  <dd><code>--path &lt;value&gt;</code> — Absolute path to repository root</dd>
-                </dl>
               </div>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift commands</code></div></div>
@@ -352,7 +339,7 @@
             </details>
             <h2 id="cli-code" data-i18n="docs.cli.code.title">Code</h2>
             <p class="cli-topic__intro" data-i18n="docs.cli.code.intro">Code tools.</p>
-            <details class="cli-topic"><summary><span data-i18n="docs.cli.code.count">17 commands</span></summary>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.code.count">13 commands</span></summary>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift code blame</code></div></div>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.code.blame.desc">Git blame for a file</p>
@@ -361,38 +348,6 @@
                   <dd><code>file</code> <span class="req">required</span> — Relative file path</dd>
                   <dt>Flags</dt>
                   <dd><code>--root &lt;value&gt;</code> <span class="flag-meta">default: "."</span> — Repository root path</dd>
-                </dl>
-              </div>
-              <div class="cli-cmd">
-                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift code expertise</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.code.expertise.desc">Refresh developer expertise index for a repository</p>
-                <dl class="cli-cmd__params">
-                  <dt>Arguments</dt>
-                  <dd><code>repo</code> <span class="req">required</span> — Repository ID</dd>
-                </dl>
-              </div>
-              <div class="cli-cmd">
-                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift code history</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.code.history.desc">Get commit history for a repository</p>
-                <dl class="cli-cmd__params">
-                  <dt>Arguments</dt>
-                  <dd><code>repo</code> <span class="req">required</span> — Repository ID</dd>
-                  <dt>Flags</dt>
-                  <dd><code>--limit &lt;value&gt;</code> — Maximum number of results</dd>
-                  <dd><code>--path &lt;value&gt;</code> — Filter by file path</dd>
-                </dl>
-              </div>
-              <div class="cli-cmd">
-                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift code link</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.code.link.desc">Link a task to code (file, commit, or repository)</p>
-                <dl class="cli-cmd__params">
-                  <dt>Arguments</dt>
-                  <dd><code>task-id</code> <span class="req">required</span> — Task ID</dd>
-                  <dt>Flags</dt>
-                  <dd><code>--commit &lt;value&gt;</code> — Commit SHA</dd>
-                  <dd><code>--file &lt;value&gt;</code> — File path</dd>
-                  <dd><code>--notes &lt;value&gt;</code> — Notes about the link</dd>
-                  <dd><code>--repo &lt;value&gt;</code> <span class="flag-meta">required</span> — Repository ID</dd>
                 </dl>
               </div>
               <div class="cli-cmd">
@@ -407,7 +362,7 @@
               </div>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift code memory delete</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.code.memory-delete.desc">Delete a stored codebase fact</p>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.code.memory-delete.desc">Delete a stored curated code fact</p>
                 <dl class="cli-cmd__params">
                   <dt>Arguments</dt>
                   <dd><code>id</code> <span class="req">required</span> — Memory ID</dd>
@@ -456,7 +411,7 @@
               </div>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift code memory list</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.code.memory-list.desc">List stored codebase facts (excludes rejected/superseded by default)</p>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.code.memory-list.desc">List stored curated code facts (excludes rejected/superseded by default)</p>
                 <dl class="cli-cmd__params">
                   <dt>Flags</dt>
                   <dd><code>--include-inactive</code> — Include rejected and superseded lineage memories</dd>
@@ -488,7 +443,7 @@
               </div>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift code memory search</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.code.memory-search.desc">Search stored codebase facts (excludes rejected/superseded by default)</p>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.code.memory-search.desc">Search stored curated code facts (excludes rejected/superseded by default)</p>
                 <dl class="cli-cmd__params">
                   <dt>Arguments</dt>
                   <dd><code>query</code> <span class="req">required</span> — Search query</dd>
@@ -502,7 +457,7 @@
               </div>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift code memory store</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.code.memory-store.desc">Store a codebase fact</p>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.code.memory-store.desc">Store a curated code fact</p>
                 <dl class="cli-cmd__params">
                   <dt>Flags</dt>
                   <dd><code>--agent &lt;value&gt;</code> — Authoring agent (marks memory as agent-authored)</dd>
@@ -533,91 +488,6 @@
                   <dd><code>--file &lt;value&gt;</code> — Related file path</dd>
                   <dd><code>--path &lt;value&gt;</code> <span class="flag-meta">repeatable</span> — Additional related path (repeatable)</dd>
                   <dd><code>--reason &lt;value&gt;</code> <span class="flag-meta">required</span> — Audit reason</dd>
-                </dl>
-              </div>
-              <div class="cli-cmd">
-                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift code who-knows</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.code.who-knows.desc">Find experts for a code area</p>
-                <dl class="cli-cmd__params">
-                  <dt>Arguments</dt>
-                  <dd><code>repo</code> <span class="req">required</span> — Repository ID</dd>
-                  <dd><code>area</code> <span class="req">required</span> — Path, glob, or symbol</dd>
-                  <dt>Flags</dt>
-                  <dd><code>--limit &lt;value&gt;</code> — Maximum number of results</dd>
-                </dl>
-              </div>
-            </details>
-            <h2 id="cli-codebase" data-i18n="docs.cli.codebase.title">Codebase</h2>
-            <p class="cli-topic__intro" data-i18n="docs.cli.codebase.intro">Code indexing and search.</p>
-            <details class="cli-topic"><summary><span data-i18n="docs.cli.codebase.count">7 commands</span></summary>
-              <div class="cli-cmd">
-                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift codebase delete</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.delete.desc">Create a dry-run retirement plan for hosted indexed source</p>
-                <dl class="cli-cmd__params">
-                  <dt>Arguments</dt>
-                  <dd><code>id</code> <span class="req">required</span> — Repository ID</dd>
-                  <dt>Flags</dt>
-                  <dd><code>-y, --yes</code> — Skip plan confirmation</dd>
-                </dl>
-              </div>
-              <div class="cli-cmd">
-                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift codebase incremental</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.incremental.desc">Deprecated hosted incremental-ingestion path (blocked by default)</p>
-                <dl class="cli-cmd__params">
-                  <dt>Arguments</dt>
-                  <dd><code>id</code> <span class="req">required</span> — Repository ID</dd>
-                  <dt>Flags</dt>
-                  <dd><code>--exclude &lt;value&gt;</code> — Comma-separated exclude glob patterns</dd>
-                  <dd><code>--include &lt;value&gt;</code> — Comma-separated include glob patterns</dd>
-                  <dd><code>--path &lt;value&gt;</code> <span class="flag-meta">required</span> — Absolute path to repository root</dd>
-                </dl>
-              </div>
-              <div class="cli-cmd">
-                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift codebase list</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.list.desc">List indexed repositories</p>
-              </div>
-              <div class="cli-cmd">
-                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift codebase register</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.register.desc">Deprecated hosted repository-ingestion path (blocked by default)</p>
-                <dl class="cli-cmd__params">
-                  <dt>Flags</dt>
-                  <dd><code>--auto-index</code> — Enable automatic indexing</dd>
-                  <dd><code>--name &lt;value&gt;</code> <span class="flag-meta">required</span> — Repository name</dd>
-                  <dd><code>--path &lt;value&gt;</code> <span class="flag-meta">required</span> — Absolute path to repository root</dd>
-                  <dd><code>--project &lt;value&gt;</code> — Project ID to associate</dd>
-                </dl>
-              </div>
-              <div class="cli-cmd">
-                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift codebase search</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.search.desc">Semantic code search</p>
-                <dl class="cli-cmd__params">
-                  <dt>Arguments</dt>
-                  <dd><code>query</code> <span class="req">required</span> — Search query</dd>
-                  <dt>Flags</dt>
-                  <dd><code>--language &lt;value&gt;</code> — Filter by language</dd>
-                  <dd><code>--limit &lt;value&gt;</code> — Maximum number of results</dd>
-                  <dd><code>--project &lt;value&gt;</code> — Project ID</dd>
-                  <dd><code>--repo &lt;value&gt;</code> — Repository ID</dd>
-                  <dd><code>--symbol-type &lt;function|class|interface|type|export|impl&gt;</code> — Filter by symbol type</dd>
-                </dl>
-              </div>
-              <div class="cli-cmd">
-                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift codebase snapshot</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.snapshot.desc">Get latest index snapshot for a repository</p>
-                <dl class="cli-cmd__params">
-                  <dt>Arguments</dt>
-                  <dd><code>id</code> <span class="req">required</span> — Repository ID</dd>
-                  <dt>Flags</dt>
-                  <dd><code>--branch &lt;value&gt;</code> — Filter by branch</dd>
-                  <dd><code>--materialize</code> — Generate a download URL for the snapshot</dd>
-                </dl>
-              </div>
-              <div class="cli-cmd">
-                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift codebase status</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.status.desc">Check indexing status for a repository</p>
-                <dl class="cli-cmd__params">
-                  <dt>Arguments</dt>
-                  <dd><code>id</code> <span class="req">required</span> — Repository ID</dd>
                 </dl>
               </div>
             </details>
@@ -676,6 +546,7 @@
                   <dt>Arguments</dt>
                   <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
                   <dt>Flags</dt>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> <span class="flag-meta">required</span> — Caller-owned stable key for replaying this exact dataset mutation</dd>
                   <dd><code>--record &lt;value&gt;</code> <span class="flag-meta">repeatable</span> — Record as JSON object, e.g. '{"name":"Alice","age":"30"}'</dd>
                   <dd><code>--records &lt;value&gt;</code> — Multiple records as JSON array</dd>
                 </dl>
@@ -807,6 +678,7 @@
                   <dt>Flags</dt>
                   <dd><code>--description &lt;value&gt;</code> — Dataset description</dd>
                   <dd><code>--fields &lt;value&gt;</code> — Field definitions as JSON array, e.g. '[{"name":"age","type":"number"}]'</dd>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> <span class="flag-meta">required</span> — Caller-owned stable key for replaying this exact dataset mutation</dd>
                   <dd><code>--lifecycle &lt;value&gt;</code> — Lifecycle kind for generated datasets, e.g. scratch, benchmark, research-run</dd>
                   <dd><code>--metadata &lt;value&gt;</code> — Dataset metadata as JSON object</dd>
                   <dd><code>--note-id &lt;value&gt;</code> — Link to an existing note</dd>
@@ -846,6 +718,7 @@
                   <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
                   <dd><code>record-id</code> <span class="req">required</span> — Record ID</dd>
                   <dt>Flags</dt>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> <span class="flag-meta">required</span> — Caller-owned stable key for replaying this exact dataset mutation</dd>
                   <dd><code>-y, --yes</code> — Skip confirmation</dd>
                 </dl>
               </div>
@@ -1012,6 +885,7 @@
                 <dl class="cli-cmd__params">
                   <dt>Flags</dt>
                   <dd><code>--description &lt;value&gt;</code> — Dataset description</dd>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> <span class="flag-meta">required</span> — Caller-owned stable key for replaying this exact dataset mutation</dd>
                   <dd><code>--source-result &lt;value&gt;</code> — Inline JSON for a derived result</dd>
                   <dd><code>--source-result-file &lt;value&gt;</code> — Path to a JSON file containing a derived result</dd>
                   <dd><code>--title &lt;value&gt;</code> <span class="flag-meta">required</span> — Title of the new dataset</dd>
@@ -1103,6 +977,7 @@
                   <dt>Flags</dt>
                   <dd><code>--field &lt;value&gt;</code> — Field definition as JSON, e.g. '{"name":"email","type":"text"}'</dd>
                   <dd><code>--field-id &lt;value&gt;</code> — Field ID (required for update/delete)</dd>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> <span class="flag-meta">required</span> — Caller-owned stable key for replaying this exact dataset mutation</dd>
                   <dd><code>--operation &lt;add_field|update_field|delete_field&gt;</code> <span class="flag-meta">required</span> — Schema operation</dd>
                 </dl>
               </div>
@@ -1167,6 +1042,7 @@
                   <dd><code>record-id</code> <span class="req">required</span> — Record ID</dd>
                   <dt>Flags</dt>
                   <dd><code>--fields &lt;value&gt;</code> <span class="flag-meta">required</span> — Field updates as JSON object, e.g. '{"status":"done"}'</dd>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> <span class="flag-meta">required</span> — Caller-owned stable key for replaying this exact dataset mutation</dd>
                 </dl>
               </div>
               <div class="cli-cmd">
@@ -1198,7 +1074,7 @@
             </details>
             <h2 id="cli-env" data-i18n="docs.cli.env.title">Env</h2>
             <p class="cli-topic__intro" data-i18n="docs.cli.env.intro">Declarative environment contracts and governed Vault bundle materialization.</p>
-            <details class="cli-topic"><summary><span data-i18n="docs.cli.env.count">10 commands</span></summary>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.env.count">11 commands</span></summary>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift env check</code></div></div>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.env.check.desc">Validate the environment contract for local or CI use</p>
@@ -1214,6 +1090,18 @@
                 <dl class="cli-cmd__params">
                   <dt>Flags</dt>
                   <dd><code>--checkout-root &lt;value&gt;</code> — Exact Git checkout root containing .sift/environment.yaml</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift env endpoint enroll</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.env.endpoint-enroll.desc">Enroll a public endpoint identity without granting Vault access</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--dedicated</code> — Endpoint is a dedicated runner</dd>
+                  <dd><code>--endpoint-class &lt;interactive_desktop|remote_vm|noninteractive_runner|shared_host|ci_runner|production_host|multi_tenant&gt;</code> <span class="flag-meta">required</span> — Explicit endpoint policy class</dd>
+                  <dd><code>--kill-switch</code> — Runner has an enforced kill switch</dd>
+                  <dd><code>--owner &lt;value&gt;</code> <span class="flag-meta">default: "personal"</span> — personal or workspace:&lt;uuid&gt;</dd>
+                  <dd><code>--storage-tier &lt;hardware_host_bound|systemd_managed|convenience_keyring|none&gt;</code> <span class="flag-meta">required</span> — Actual endpoint key storage tier; convenience_keyring is not hardware-backed</dd>
                 </dl>
               </div>
               <div class="cli-cmd">
@@ -1519,9 +1407,10 @@
                 <p class="cli-cmd__desc" data-i18n="docs.cli.grants.run.desc">Request approval, redeem in memory, and run exactly one reviewed child process</p>
                 <dl class="cli-cmd__params">
                   <dt>Flags</dt>
-                  <dd><code>--adapter &lt;github_gh|terraform_apply&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--adapter &lt;github_gh|github_publish_pr|terraform_apply&gt;</code> <span class="flag-meta">required</span></dd>
                   <dd><code>--approval-timeout &lt;value&gt;</code> <span class="flag-meta">default: 600</span></dd>
                   <dd><code>--audience &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--body-file &lt;value&gt;</code> — PR body file for github_publish_pr</dd>
                   <dd><code>--credential-field &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
                   <dd><code>--cwd &lt;value&gt;</code></dd>
                   <dd><code>--issuer &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
@@ -2057,7 +1946,7 @@
               </div>
             </details>
             <h2 id="cli-relationships" data-i18n="docs.cli.relationships.title">Relationships</h2>
-            <details class="cli-topic"><summary><span data-i18n="docs.cli.relationships.count">63 commands</span></summary>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.relationships.count">79 commands</span></summary>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift relationships actions dry-run</code></div></div>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.actions-dry-run.desc">Preview a relationship action on the server without committing it</p>
@@ -2114,6 +2003,187 @@
                   <dd><code>subject</code> <span class="req">required</span> — Subject as prospect:uuid or opportunity:uuid</dd>
                   <dt>Flags</dt>
                   <dd><code>--lens &lt;value&gt;</code> <span class="flag-meta">default: "relationship"</span> — Relationship lens identifier</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift relationships composer approver-edit</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.composer-approver-edit.desc">Create an attributed approver revision and reopen coaching review</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Composer session UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--body &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--expected-version &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--reason &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--subject &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--yes</code> — Confirm the attributed edit</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift relationships composer bind-sender</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.composer-bind-sender.desc">Bind an explicit active connected email account to a durable draft</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Composer session UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--expected-version &lt;value&gt;</code> <span class="flag-meta">required</span> — Current optimistic session version</dd>
+                  <dd><code>--sender &lt;value&gt;</code> <span class="flag-meta">required</span> — Connected email account UUID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift relationships composer confirm</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.composer-confirm.desc">Confirm the bound brief and create its first durable draft revision</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Composer session UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--expected-version &lt;value&gt;</code> <span class="flag-meta">required</span> — Current optimistic session version</dd>
+                  <dd><code>--yes</code> — Confirm brief and create draft</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift relationships composer create</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.composer-create.desc">Create or resume a durable relationship brief-to-draft session</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>subject</code> <span class="req">required</span> — Subject as prospect:uuid or opportunity:uuid</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--file &lt;value&gt;</code> <span class="flag-meta">required</span> — JSON file with source, recommendation, brief, and ranked evidence</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift relationships composer dispatch</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.composer-dispatch.desc">Keep exact approval, send now, or schedule one governed relationship message</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Composer session UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--at &lt;value&gt;</code> — ISO-8601 time required for send_later</dd>
+                  <dd><code>--choice &lt;approve_only|send_now|send_later&gt;</code> <span class="flag-meta">required</span> — Dispatch outcome</dd>
+                  <dd><code>--expected-version &lt;value&gt;</code> <span class="flag-meta">required</span> — Current optimistic session version</dd>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> <span class="flag-meta">required</span> — Stable retry key for this exact choice and time</dd>
+                  <dd><code>--yes</code> — Confirm this governed dispatch choice</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift relationships composer evaluate</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.composer-evaluate.desc">Evaluate the current durable draft and append phrase-anchored coaching findings</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Composer session UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--expected-version &lt;value&gt;</code> <span class="flag-meta">required</span> — Current optimistic session version</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift relationships composer finding-action</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.composer-finding-action.desc">Explain, preview, accept, reject, or undo an attributable coaching finding</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Composer session UUID</dd>
+                  <dd><code>finding</code> <span class="req">required</span> — Coaching finding UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--action &lt;explain|preview|accept|reject|undo&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--expected-version &lt;value&gt;</code> <span class="flag-meta">required</span> — Current optimistic session version</dd>
+                  <dd><code>--yes</code> — Confirm a mutating coaching decision</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift relationships composer history</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.composer-history.desc">Show append-only coaching and draft decision history in recorded order</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Composer session UUID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift relationships composer request-approval</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.composer-request-approval.desc">Request or resume approval for the exact composer review; approval remains browser-only</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Composer session UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--expected-version &lt;value&gt;</code> <span class="flag-meta">required</span> — Current optimistic session version</dd>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> <span class="flag-meta">required</span> — Stable approval-request retry key</dd>
+                  <dd><code>--yes</code> — Confirm the approval request</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift relationships composer request-changes</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.composer-request-changes.desc">Return an exact review to its author without mutating the message</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Composer session UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--expected-version &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--reason &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--yes</code> — Confirm the review interruption</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift relationships composer resolve-identity</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.composer-resolve-identity.desc">Resolve or route the inline plausible-duplicate gate for one reviewed message</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Composer session UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--candidate &lt;value&gt;</code> <span class="flag-meta">required</span> — Candidate person UUID</dd>
+                  <dd><code>--decision &lt;same_person|different_people|route_to_owner&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--expected-version &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--yes</code> — Confirm the identity decision</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift relationships composer review</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.composer-review.desc">Continue a coaching-clear durable draft to governed review</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Composer session UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--approver-user-id &lt;value&gt;</code> — Optional active internal workspace member who will approve the exact message</dd>
+                  <dd><code>--expected-version &lt;value&gt;</code> <span class="flag-meta">required</span> — Current optimistic session version</dd>
+                  <dd><code>--yes</code> — Confirm the transition to review</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift relationships composer save-draft</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.composer-save-draft.desc">Save a new durable revision of a relationship draft</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Composer session UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--file &lt;value&gt;</code> <span class="flag-meta">required</span> — JSON file with expectedVersion, subject, and bodyText</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift relationships composer show</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.composer-show.desc">Show a durable relationship composer session</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Composer session UUID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift relationships composer update</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.composer-update.desc">Update bound intent and ranked evidence before draft creation</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Composer session UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--file &lt;value&gt;</code> <span class="flag-meta">required</span> — JSON file with expectedVersion, brief, and evidence</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift relationships contact-plan inspect</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.relationships.contact-plan-inspect.desc">Inspect one canonical person contact plan without mutating its source lifecycles</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>person</code> <span class="req">required</span> — Canonical person UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--from &lt;value&gt;</code> — Inclusive ISO-8601 inspection window start</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 100</span> — Maximum projected items</dd>
+                  <dd><code>--timezone &lt;value&gt;</code> — IANA display timezone</dd>
+                  <dd><code>--to &lt;value&gt;</code> — Inclusive ISO-8601 inspection window end</dd>
                 </dl>
               </div>
               <div class="cli-cmd">
@@ -2961,7 +3031,7 @@
             </details>
             <h2 id="cli-vault" data-i18n="docs.cli.vault.title">Vault</h2>
             <p class="cli-topic__intro" data-i18n="docs.cli.vault.intro">Vault metadata and governed destination-bound materialization.</p>
-            <details class="cli-topic"><summary><span data-i18n="docs.cli.vault.count">10 commands</span></summary>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.vault.count">15 commands</span></summary>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift vault audit</code></div></div>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.vault.audit.desc">List Vault audit events (requires vault:audit:read)</p>
@@ -2985,6 +3055,46 @@
                   <dd><code>--tags &lt;value&gt;</code> — Comma-separated tags</dd>
                   <dd><code>--type &lt;env_var|credential|oauth_token|ssh_key|certificate|note&gt;</code> — Entry type</dd>
                   <dd><code>--url &lt;value&gt;</code> — Associated URL</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift vault leases clean</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.leases-clean.desc">Clean one local lease artifact and attest confirmed, failed, or unknowable state</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span></dd>
+                  <dt>Flags</dt>
+                  <dd><code>--checkout-root &lt;value&gt;</code> — Git checkout used to prove runtime separation</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Exact Vault owner: personal or workspace:&lt;tenant-id&gt;</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift vault leases list</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.leases-list.desc">List value-free environment lease and cleanup metadata</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--owner &lt;value&gt;</code> — Exact Vault owner: personal or workspace:&lt;tenant-id&gt;</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift vault leases revoke</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.leases-revoke.desc">Revoke future lease use, remove the local artifact when present, and attest cleanup</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span></dd>
+                  <dt>Flags</dt>
+                  <dd><code>--checkout-root &lt;value&gt;</code> — Git checkout used to prove runtime separation</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Exact Vault owner: personal or workspace:&lt;tenant-id&gt;</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift vault leases status</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.leases-status.desc">Inspect one value-free environment lease lifecycle</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span></dd>
+                  <dt>Flags</dt>
+                  <dd><code>--owner &lt;value&gt;</code> — Exact Vault owner: personal or workspace:&lt;tenant-id&gt;</dd>
                 </dl>
               </div>
               <div class="cli-cmd">
@@ -3096,6 +3206,23 @@
                   <dd><code>--owner &lt;value&gt;</code> — Exact Vault owner: personal or workspace:&lt;tenant-id&gt;</dd>
                   <dd><code>--tags &lt;value&gt;</code> — Comma-separated tags</dd>
                   <dd><code>--url &lt;value&gt;</code> — Associated URL</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift vault use lease</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.vault.use-lease.desc">Create one exact short-lived environment bundle artifact outside the Git worktree</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--approval-timeout &lt;value&gt;</code> <span class="flag-meta">default: 600</span></dd>
+                  <dd><code>--checkout-root &lt;value&gt;</code> — Checkout containing .sift/environment.yaml</dd>
+                  <dd><code>--consumer &lt;value&gt;</code> <span class="flag-meta">required</span> — Bound consumer identifier; not a command allowlist</dd>
+                  <dd><code>--consumer-pid &lt;value&gt;</code> — Optional already-running consumer process lifetime</dd>
+                  <dd><code>--destination &lt;value&gt;</code> — Manifest destination used only to select one exact bundle</dd>
+                  <dd><code>--endpoint-class &lt;development|production|ci|shared_host&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--holder &lt;value&gt;</code> — Bound holder identifier; defaults to the local runner fingerprint</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Exact Vault owner: personal or workspace:&lt;tenant-id&gt;</dd>
+                  <dd><code>--purpose &lt;value&gt;</code> <span class="flag-meta">required</span></dd>
+                  <dd><code>--ttl &lt;value&gt;</code> <span class="flag-meta">default: 300</span></dd>
                 </dl>
               </div>
             </details>
@@ -3405,6 +3532,8 @@
                   <dt>Flags</dt>
                   <dd><code>--artifacts &lt;value&gt;</code> — Artifact reference JSON array for larger logs</dd>
                   <dd><code>--attempt &lt;value&gt;</code> <span class="flag-meta">required</span> — Caller-stable attempt identity</dd>
+                  <dd><code>--claim-owner &lt;value&gt;</code> — Active lease owner for workspace-service evidence</dd>
+                  <dd><code>--claim-token &lt;value&gt;</code> — Opaque active lease token for workspace-service evidence</dd>
                   <dd><code>--environment &lt;value&gt;</code> <span class="flag-meta">required</span> — Execution environment label</dd>
                   <dd><code>--exit-code &lt;value&gt;</code> — Process exit code when applicable</dd>
                   <dd><code>--outcome &lt;passed|failed|error&gt;</code> <span class="flag-meta">required</span> — Attempt outcome</dd>

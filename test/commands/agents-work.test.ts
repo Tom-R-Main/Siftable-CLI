@@ -680,7 +680,7 @@ describe('codex daily-review collect', () => {
       .on('GET', '/api/v1/work-items').query(true).reply(200, {workItems: []})
       .on('GET', '/api/v1/tasks').query(true).reply(200, {tasks: [fixtures.task()]})
       .on('GET', '/api/v1/tasks').query(true).reply(200, {tasks: []})
-      .on('GET', '/api/v1/code/repositories').reply(200, {repositories: [fixtures.repository()]})
+      .on('GET', '/api/v1/context/repositories').reply(200, {repositories: [fixtures.repository()]})
       .on('GET', '/api/v1/code/memories').query(true).reply(200, {memories: [fixtures.memory()], total: 1})
       .on('GET', '/api/v1/calendar/events').query(true).reply(200, {events: [fixtures.event()]})
       .on('GET', '/api/v1/vault/entries').query(true).reply(200, {entries: [fixtures.vaultEntry()]})

@@ -460,7 +460,7 @@ describe('daily review context library', () => {
       'workItems',
       'tasksInProgress',
       'tasksOpenPhase',
-      'codeRepositories',
+      'repositoryIdentities',
       'codeMemories',
       'calendar',
       'vaultMetadata',

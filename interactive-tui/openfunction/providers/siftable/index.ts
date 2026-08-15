@@ -3,7 +3,7 @@
  *
  * Reference implementation of the ContextProvider interface, built on
  * the published @siftable/mcp-server SDK. Connects Siftable's cloud
- * API (tasks, calendar, knowledge, projects, CRM, codebase) to the
+ * API (tasks, calendar, knowledge, projects, CRM, and curated code memory) to the
  * openFunctions agent runtime.
  *
  * Auth resolution order:
@@ -36,7 +36,6 @@ import {
   createKnowledgeTools,
   createProjectTools,
   createPeopleTools,
-  createCodebaseTools,
   createWorkItemTools,
   createVaultTools,
   createDatasetTools,
@@ -63,7 +62,7 @@ const METADATA: ContextProviderMetadata = {
   id: "siftable",
   name: "Siftable",
   description:
-    "Sift tasks, projects, calendar, knowledge, CRM, and codebase - " +
+    "Sift tasks, projects, calendar, knowledge, CRM, and curated code memory - " +
     "structured cloud context for AI agents",
   capabilities: [
     "tasks",
@@ -72,7 +71,7 @@ const METADATA: ContextProviderMetadata = {
     "knowledge",
     "people",
     "organizations",
-    "codebase",
+    "code-memory",
   ],
   auth: {
     kind: "pat",
@@ -131,7 +130,6 @@ export function createSiftableProvider(
             ...createKnowledgeTools(client),
             ...createProjectTools(client),
             ...createPeopleTools(client),
-            ...createCodebaseTools(client),
             ...createWorkItemTools(client),
             ...createVaultTools(client),
             ...createDatasetTools(client),

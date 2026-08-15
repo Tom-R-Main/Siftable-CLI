@@ -3,7 +3,7 @@ import {BaseCommand} from '../../../lib/base-command.js';
 import {renderTable} from '../../../lib/output.js';
 
 export default class CodeMemoryList extends BaseCommand {
-  static description = 'List stored codebase facts (excludes rejected/superseded by default)';
+  static description = 'List stored curated code facts (excludes rejected/superseded by default)';
 
   static flags = {
     ...BaseCommand.baseFlags,

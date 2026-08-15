@@ -3,7 +3,7 @@ import {writeFileSync} from 'node:fs';
 import {BaseCommand} from '../../lib/base-command.js';
 import {DatasetDiffPlan} from '../../lib/dataset-diff-plan.js';
 import {renderDatasetImportResult} from '../../lib/dataset-import-render.js';
-import {splitFields} from '../../lib/dataset-query.js';
+import {parseDatasetFiltersFlag, parseDatasetSortsFlag, splitFields} from '../../lib/dataset-query.js';
 import {renderDetail} from '../../lib/output.js';
 
 function readRowValue(row: Record<string, unknown>, field: string): unknown {
@@ -61,11 +61,11 @@ export default class DatasetsFormulaPlan extends BaseCommand {
     ]));
 
     const computeResponse = await client.computeDatasetFields(args.id, {
-      filters: this.parseJsonFlag(flags.filters, '--filters') as Array<Record<string, unknown>> | undefined,
+      filters: parseDatasetFiltersFlag(flags.filters),
       select,
       computedFields,
       orderBy: this.parseJsonFlag(flags['order-by'], '--order-by') as Array<Record<string, unknown>> | undefined,
-      sorts: this.parseJsonFlag(flags.sorts, '--sorts') as Array<Record<string, unknown>> | undefined,
+      sorts: parseDatasetSortsFlag(flags.sorts),
       limit: flags.limit,
     });
     this.handleApiError(computeResponse);

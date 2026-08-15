@@ -412,31 +412,6 @@ export function createPeopleTools(client: ExfClient): ToolDefinition<any, any>[]
   ];
 }
 
-// ─── Codebase ───────────────────────────────────────────────────────────────
-
-export function createCodebaseTools(client: ExfClient): ToolDefinition<any, any>[] {
-  return [
-    defineTool<{ repositoryId: string; area: string }>({
-      name: "exf_code_who_knows",
-      description:
-        "Find who has expertise in a specific code area, based on commit history and ownership.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          repositoryId: { type: "string", description: "Repository ID" },
-          area: { type: "string", description: "Code area or topic, e.g. 'auth middleware'" },
-        },
-        required: ["repositoryId", "area"],
-      },
-      tags: ["codebase"],
-      handler: async ({ repositoryId, area }) => {
-        const data = await client.codeWhoKnows(repositoryId, area);
-        return ok(data);
-      },
-    }),
-  ];
-}
-
 // ─── Work Items ─────────────────────────────────────────────────────────────
 //
 // Work items are Siftable's executable agent work queue: discrete units

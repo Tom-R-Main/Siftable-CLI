@@ -25,7 +25,7 @@ export function buildCommandContext(overrides: Partial<InteractiveCommandContext
         ? [{id: 'task-1', title: 'Ship interactive commands'}]
         : [{id: 'task-2', title: 'Plan recap'}],
     })),
-    listCodeRepositories: jest.fn(() => response({repositories: [{id: 'repo-1', rootPath: '/repo'}]})),
+    listRepositoryIdentities: jest.fn(() => response({repositories: [{id: 'repo-1', rootPath: '/repo'}]})),
     listCodeMemories: jest.fn(() => response({memories: [{id: 'mem-1', content: 'Use work queue'}]})),
     listCalendarEvents: jest.fn(() => response({events: [{id: 'event-1', title: 'Demo'}]})),
     listVaultEntries: jest.fn(() => response({entries: []})),
