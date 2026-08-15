@@ -6,6 +6,7 @@ import CrmImportApprove from '../../src/commands/crm/import/approve.js';
 import {
   CRM_IMPORT_LIMITS,
   CRM_IMPORT_SUPPORTED_EXTENSIONS,
+  assertCrmImportSourceWithinLimits,
   parseCrmImportFile,
   renderCrmImportPlan,
 } from '../../src/lib/crm-import.js';
@@ -116,6 +117,26 @@ describe('CRM import CLI parity', () => {
     expect(() => parseCrmImportFile(htmlPath)).toThrow(expect.objectContaining({
       code: 'crm_import_unsupported_html',
       suggestions: expect.arrayContaining([expect.stringContaining('CSV or XLSX')]),
+    }));
+  });
+
+  test('applies the row limit across the entire workbook rather than per sheet', () => {
+    const parsed = parseCrmImportFile(csvPath);
+    const sheet = parsed.sheets[0]!;
+    const row = sheet.rows[0]!;
+    const firstRows = Array.from({length: 12_501}, () => row);
+    const secondRows = Array.from({length: 12_500}, () => row);
+
+    expect(() => assertCrmImportSourceWithinLimits({
+      ...parsed,
+      sheets: [
+        {...sheet, name: 'First', rows: firstRows},
+        {...sheet, name: 'Second', rows: secondRows},
+      ],
+      truncated: false,
+    })).toThrow(expect.objectContaining({
+      code: 'crm_import_tabular_limit_exceeded',
+      message: expect.stringContaining('across all sheets'),
     }));
   });
 

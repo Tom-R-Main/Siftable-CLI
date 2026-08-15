@@ -18,6 +18,38 @@ function inputError(message: string, code: string, suggestions: string[]): CliIn
   return Object.assign(new Error(message), {code, suggestions});
 }
 
+export function assertCrmImportSourceWithinLimits(source: TabularParseResult): void {
+  if (source.sheets.length > CRM_IMPORT_LIMITS.maxSheets) {
+    throw inputError(
+      `CRM import supports at most ${CRM_IMPORT_LIMITS.maxSheets} sheets; received ${source.sheets.length}.`,
+      'crm_import_sheet_limit_exceeded',
+      ['Split the workbook and create a separate durable plan for each file.'],
+    );
+  }
+  const totalRows = source.sheets.reduce((sum, sheet) => sum + sheet.rows.length, 0);
+  if (totalRows > CRM_IMPORT_LIMITS.maxRows) {
+    throw inputError(
+      `CRM import input exceeds the ${CRM_IMPORT_LIMITS.maxRows.toLocaleString('en-US')}-row planning limit across all sheets (${totalRows.toLocaleString('en-US')} rows).`,
+      'crm_import_tabular_limit_exceeded',
+      ['Split the source so each plan contains at most 25,000 rows across all sheets.'],
+    );
+  }
+  if (source.truncated) {
+    throw inputError(
+      'CRM import input exceeds the 25,000-row or 1,000-column planning limit.',
+      'crm_import_tabular_limit_exceeded',
+      ['Split the source so every plan is within 25,000 rows across all sheets, 1,000 columns per sheet, and 32 sheets.'],
+    );
+  }
+  if (source.errors.length > 0) {
+    throw inputError(
+      `CRM import parsing failed: ${source.errors.map(error => error.message).join('; ')}`,
+      'crm_import_parse_failed',
+      ['Correct the source diagnostics and rerun the plan command; no canonical CRM records were written.'],
+    );
+  }
+}
+
 export function parseCrmImportFile(filePath: string): TabularParseResult {
   const absolutePath = resolve(filePath);
   const extension = extname(absolutePath).toLowerCase();
@@ -64,27 +96,7 @@ export function parseCrmImportFile(filePath: string): TabularParseResult {
     maxRows: CRM_IMPORT_LIMITS.maxRows,
     maxColumns: CRM_IMPORT_LIMITS.maxColumnsPerSheet,
   });
-  if (source.sheets.length > CRM_IMPORT_LIMITS.maxSheets) {
-    throw inputError(
-      `CRM import supports at most ${CRM_IMPORT_LIMITS.maxSheets} sheets; received ${source.sheets.length}.`,
-      'crm_import_sheet_limit_exceeded',
-      ['Split the workbook and create a separate durable plan for each file.'],
-    );
-  }
-  if (source.truncated) {
-    throw inputError(
-      'CRM import input exceeds the 25,000-row or 1,000-column planning limit.',
-      'crm_import_tabular_limit_exceeded',
-      ['Split the source so every plan is within 25,000 rows, 1,000 columns per sheet, and 32 sheets.'],
-    );
-  }
-  if (source.errors.length > 0) {
-    throw inputError(
-      `CRM import parsing failed: ${source.errors.map(error => error.message).join('; ')}`,
-      'crm_import_parse_failed',
-      ['Correct the source diagnostics and rerun the plan command; no canonical CRM records were written.'],
-    );
-  }
+  assertCrmImportSourceWithinLimits(source);
   return source;
 }
 
