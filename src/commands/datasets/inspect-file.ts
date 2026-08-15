@@ -1,7 +1,7 @@
 import {Args, Flags} from '@oclif/core';
 import {
   inspectTabularFile,
-  TabularInspectError,
+  isTabularInspectError,
   type TabularFormat,
   type TabularParseResult,
   type TabularSheet,
@@ -57,7 +57,10 @@ export default class DatasetsInspectFile extends BaseCommand {
         ...(flags.format === undefined ? {} : {format: flags.format as TabularFormat}),
       });
     } catch (error) {
-      if (error instanceof TabularInspectError) {
+      // Not instanceof: the CLI and the MCP server can each resolve their own
+      // copy of the package, and a cross-copy error would fall through to the
+      // generic handler with a worse message.
+      if (isTabularInspectError(error)) {
         this.error(error.message);
       }
       throw error;
