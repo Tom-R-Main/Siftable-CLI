@@ -23,7 +23,7 @@ export default class OrganizationsDelete extends BaseCommand {
     }
 
     const client = await this.client(flags);
-    const response = await client.deleteOrganization(args.id);
+    const response = await client.deleteOrganization(args.id, this.idempotencyKey());
     this.handleApiError(response);
 
     if (!this.jsonEnabled()) {

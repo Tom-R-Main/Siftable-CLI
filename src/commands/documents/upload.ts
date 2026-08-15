@@ -26,6 +26,7 @@ export default class DocumentsUpload extends BaseCommand {
       title: flags.title,
       noteType: flags.type,
       projectId: flags.project,
+      idempotencyKey: this.idempotencyKey(),
     });
     this.handleApiError(response);
 

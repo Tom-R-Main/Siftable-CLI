@@ -45,7 +45,7 @@ export default class CodeMemoryStore extends BaseCommand {
       captureReason: flags.reason,
       sourceCommit: flags.commit,
       workItemId: flags['work-item'],
-    });
+    }, this.idempotencyKey());
     this.handleApiError(response);
 
     const memory = response.data;

@@ -48,7 +48,7 @@ export default class VaultCreate extends BaseCommand {
       tags: flags.tags?.split(',').map(t => t.trim()),
       category: flags.category,
       url: flags.url,
-    });
+    }, this.idempotencyKey());
     this.handleApiError(response);
 
     const entry = this.unwrapOne(response, 'entry');

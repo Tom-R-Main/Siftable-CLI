@@ -23,7 +23,7 @@ export default class ProjectsCreate extends BaseCommand {
       summary: flags.summary,
       status: flags.status as 'planning' | 'active' | 'on_hold' | 'blocked' | 'completed' | undefined,
       emoji: flags.emoji,
-    });
+    }, this.idempotencyKey());
     this.handleApiError(response);
 
     const project = this.unwrapOne(response, 'project');

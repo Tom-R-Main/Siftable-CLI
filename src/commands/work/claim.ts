@@ -23,7 +23,7 @@ export default class WorkClaim extends BaseCommand {
       assignedAlias: flags.agent,
       claimOwner: flags.owner,
       leaseSeconds: flags.lease,
-    });
+    }, this.idempotencyKey());
     this.handleApiError(response);
     const workItem = this.unwrapOne(response, 'workItem');
     if (!this.jsonEnabled()) {

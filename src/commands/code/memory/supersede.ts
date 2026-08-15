@@ -39,7 +39,7 @@ export default class CodeMemorySupersede extends BaseCommand {
       confidence: flags.confidence ? Number(flags.confidence) : undefined,
       sourceCommit: flags.commit,
       actorType: 'human',
-    });
+    }, this.idempotencyKey());
     this.handleApiError(response);
 
     if (!this.jsonEnabled()) {
