@@ -89,6 +89,26 @@ describe('surface-neutral agent runtime dispatch', () => {
     })).toThrow(/scopes overlap/);
   });
 
+  it('does not let a one-segment wildcard exclusion hide descendant collisions', () => {
+    const broad = workItem(1, ['packages/**']);
+    broad.writeScope = {include: ['packages/**'], exclude: ['packages/*']};
+    expect(() => buildAgentRuntimeDispatchPlan({
+      requestedBySurface: 'codex',
+      sourceGitSha: SHA,
+      workItems: [broad, workItem(2, ['packages/foo'])],
+    })).toThrow(/scopes overlap/);
+  });
+
+  it('honors an exclusion only when it covers the complete intersecting subtree', () => {
+    const broad = workItem(1, ['packages/**']);
+    broad.writeScope = {include: ['packages/**'], exclude: ['packages/foo']};
+    expect(() => buildAgentRuntimeDispatchPlan({
+      requestedBySurface: 'codex',
+      sourceGitSha: SHA,
+      workItems: [broad, workItem(2, ['packages/foo'])],
+    })).not.toThrow();
+  });
+
   it('rejects non-relative scope projections before comparing them', () => {
     for (const invalid of ['/packages/one', 'packages/../packages/one']) {
       expect(() => buildAgentRuntimeDispatchPlan({
@@ -132,13 +152,27 @@ describe('surface-neutral agent runtime dispatch', () => {
   });
 
   it('canonicalizes UUID casing and uses code-point scope order', () => {
-    const first = workItem(1, ['packages/ä', 'packages/z']);
+    const first = workItem(1, ['packages/\u{1F000}', 'packages/\uE000', 'packages/ä', 'packages/z']);
+    first.acceptanceCriteria = [{
+      2: 'two',
+      10: 'ten',
+      '\u{1F000}': 'astral',
+      '\uE000': 'bmp',
+    }];
     const upper = {...first, id: first.id.toUpperCase()};
     const second = workItem(2, ['services/two']);
     const lowerPlan = buildAgentRuntimeDispatchPlan({requestedBySurface: 't3', sourceGitSha: SHA, workItems: [first, second]});
     const upperPlan = buildAgentRuntimeDispatchPlan({requestedBySurface: 'codex', sourceGitSha: SHA, workItems: [upper, second]});
     expect(upperPlan.planSha256).toBe(lowerPlan.planSha256);
-    expect(lowerPlan.workItems[0].writeScope.include).toEqual(['packages/z', 'packages/ä']);
+    expect(lowerPlan.workItems[0].writeScope.include).toEqual([
+      'packages/z',
+      'packages/ä',
+      'packages/\uE000',
+      'packages/\u{1F000}',
+    ]);
+    expect(lowerPlan.workItems[0].contractBindingSha256).toBe(
+      '8ee35dcf321f7e55525e501243fefaf0adf967b74d8afbddd5c8733253fec834',
+    );
   });
 
   it('exposes a read-only CLI command that performs only the two work-item reads', async () => {

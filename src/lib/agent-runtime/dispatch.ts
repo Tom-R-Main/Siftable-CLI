@@ -55,23 +55,32 @@ function fail(message: string): never {
 }
 
 function compareCodePoints(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
+  const leftPoints = Array.from(left, character => character.codePointAt(0) as number);
+  const rightPoints = Array.from(right, character => character.codePointAt(0) as number);
+  const length = Math.min(leftPoints.length, rightPoints.length);
+  for (let index = 0; index < length; index += 1) {
+    if (leftPoints[index] !== rightPoints[index]) return leftPoints[index] - rightPoints[index];
+  }
+  return leftPoints.length - rightPoints.length;
 }
 
-function stableValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stableValue);
+function stableJson(value: unknown, arrayEntry = false): string {
+  if (Array.isArray(value)) return `[${value.map(entry => stableJson(entry, true)).join(',')}]`;
   if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => compareCodePoints(left, right))
-        .map(([key, entry]) => [key, stableValue(entry)]),
-    );
+    const members = Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined && typeof entry !== 'function' && typeof entry !== 'symbol')
+      .sort(([left], [right]) => compareCodePoints(left, right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`);
+    return `{${members.join(',')}}`;
   }
-  return value;
+  const serialized = JSON.stringify(value);
+  if (serialized !== undefined) return serialized;
+  if (arrayEntry) return 'null';
+  fail('Dispatch identity inputs must be JSON-serializable.');
 }
 
 function sha256(value: unknown): string {
-  return createHash('sha256').update(JSON.stringify(stableValue(value))).digest('hex');
+  return createHash('sha256').update(stableJson(value)).digest('hex');
 }
 
 function object(value: unknown, field: string): Record<string, unknown> {
@@ -108,22 +117,6 @@ function scopeList(value: unknown, field: string, nonEmpty = false): string[] {
   return normalized.sort(compareCodePoints);
 }
 
-function pathMatchesPattern(candidate: string, pattern: string): boolean {
-  const path = normalizedScopePattern(candidate);
-  const scope = normalizedScopePattern(pattern);
-  if (!path || !scope) return false;
-  if (path === scope) return true;
-  if (!/[?*]/.test(scope)) return path.startsWith(`${scope}/`);
-  const doubleStar = '__SIFT_DOUBLE_STAR__';
-  const expression = scope
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*/g, doubleStar)
-    .replace(/\*/g, '[^/]*')
-    .replaceAll(doubleStar, '.*')
-    .replace(/\?/g, '[^/]');
-  return new RegExp(`^${expression}$`).test(path);
-}
-
 function literalScopePrefix(pattern: string): string {
   const literal: string[] = [];
   for (const segment of normalizedScopePattern(pattern).split('/')) {
@@ -144,13 +137,11 @@ function scopePatternsMayOverlap(left: string, right: string): boolean {
   return aPrefix === bPrefix || aPrefix.startsWith(`${bPrefix}/`) || bPrefix.startsWith(`${aPrefix}/`);
 }
 
-function scopePatternCovers(cover: string, candidate: string): boolean {
+function scopePatternFullyCovers(cover: string, candidate: string): boolean {
   const outer = normalizedScopePattern(cover);
   const inner = normalizedScopePattern(candidate);
-  if (!outer || !inner) return false;
   if (outer === inner) return true;
   if (!/[?*]/.test(outer)) return inner.startsWith(`${outer}/`);
-  if (!/[?*]/.test(inner)) return pathMatchesPattern(inner, outer);
   if (outer.endsWith('/**') && !/[?*]/.test(outer.slice(0, -3))) {
     const root = outer.slice(0, -3).replace(/\/+$/, '');
     return inner === root || inner.startsWith(`${root}/`);
@@ -167,8 +158,8 @@ function overlappingScopes(
   for (const a of left.include) {
     for (const b of right.include) {
       if (!scopePatternsMayOverlap(a, b)) continue;
-      const narrower = scopePatternCovers(a, b) ? b : scopePatternCovers(b, a) ? a : null;
-      if (narrower && exclusions.some(excluded => scopePatternCovers(excluded, narrower))) continue;
+      const narrower = scopePatternFullyCovers(a, b) ? b : scopePatternFullyCovers(b, a) ? a : null;
+      if (narrower && exclusions.some(excluded => scopePatternFullyCovers(excluded, narrower))) continue;
       overlaps.add(a === b ? a : `${a} <-> ${b}`);
     }
   }
