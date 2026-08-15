@@ -90,7 +90,13 @@ describe('CRM import CLI parity', () => {
       .on('GET', `/api/v1/imports/crm/plans/${planId}`)
       .reply(200, {plan})
       .on('POST', `/api/v1/imports/crm/plans/${planId}/approve`)
-      .body(body => JSON.stringify(body) === JSON.stringify({reason: 'Reviewed source', operationIds: [operationId]}))
+      .body((body) => {
+        const payload = body as Record<string, unknown>;
+        return payload.reason === 'Reviewed source'
+          && Array.isArray(payload.operationIds)
+          && payload.operationIds.length === 1
+          && payload.operationIds[0] === operationId;
+      })
       .reply(200, {plan: approved})
       .on('POST', `/api/v1/imports/crm/plans/${planId}/apply`)
       .reply(200, {plan: applied})

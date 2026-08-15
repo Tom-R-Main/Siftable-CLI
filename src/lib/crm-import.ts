@@ -93,6 +93,7 @@ export function parseCrmImportFile(filePath: string): TabularParseResult {
 
   const source = parseTabularBytes(readFileSync(absolutePath), {
     filename: basename(absolutePath),
+    maxSheets: CRM_IMPORT_LIMITS.maxSheets,
     maxRows: CRM_IMPORT_LIMITS.maxRows,
     maxColumns: CRM_IMPORT_LIMITS.maxColumnsPerSheet,
   });
