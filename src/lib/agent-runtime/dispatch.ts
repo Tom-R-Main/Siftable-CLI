@@ -106,7 +106,7 @@ function normalizedScopePattern(pattern: string): string {
   }
   const parts = slashed.replace(/^(?:\.\/+)+/, '').split('/');
   if (parts.includes('..')) fail(`Scope pattern ${pattern} must not contain a .. segment.`);
-  const normalized = parts.filter(part => part !== '' && part !== '.').join('/');
+  const normalized = parts.filter(part => part !== '' && part !== '.').join('/').toLowerCase();
   if (!normalized) fail(`Scope pattern ${pattern} must not be empty.`);
   return normalized;
 }

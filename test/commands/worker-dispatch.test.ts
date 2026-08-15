@@ -89,6 +89,17 @@ describe('surface-neutral agent runtime dispatch', () => {
     })).toThrow(/scopes overlap/);
   });
 
+  it('rejects case-only scope variants using the authoritative matcher semantics', () => {
+    expect(() => buildAgentRuntimeDispatchPlan({
+      requestedBySurface: 'claude-code',
+      sourceGitSha: SHA,
+      workItems: [
+        workItem(1, ['exf-app/web/src/components/Foo']),
+        workItem(2, ['exf-app/web/src/components/foo/Button.ts']),
+      ],
+    })).toThrow(/scopes overlap/);
+  });
+
   it('does not let a one-segment wildcard exclusion hide descendant collisions', () => {
     const broad = workItem(1, ['packages/**']);
     broad.writeScope = {include: ['packages/**'], exclude: ['packages/*']};
