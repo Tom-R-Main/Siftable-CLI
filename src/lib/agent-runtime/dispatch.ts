@@ -54,12 +54,16 @@ function fail(message: string): never {
   throw new AgentRuntimeDispatchError(message);
 }
 
+function compareCodePoints(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function stableValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableValue);
   if (value !== null && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => compareCodePoints(left, right))
         .map(([key, entry]) => [key, stableValue(entry)]),
     );
   }
@@ -83,11 +87,25 @@ function stringList(value: unknown, field: string, nonEmpty = false): string[] {
   }
   if (nonEmpty && value.length === 0) fail(`${field} must not be empty.`);
   if (new Set(value as string[]).size !== value.length) fail(`${field} must not contain duplicates.`);
-  return [...value as string[]].sort((left, right) => left.localeCompare(right));
+  return [...value as string[]].sort(compareCodePoints);
 }
 
 function normalizedScopePattern(pattern: string): string {
-  return pattern.trim().replace(/^\.\/+/, '').replace(/\/+$/, '');
+  const slashed = pattern.trim().replaceAll('\\', '/');
+  if (slashed.startsWith('/') || /^[A-Za-z]:\//.test(slashed)) {
+    fail(`Scope pattern ${pattern} must be repository-relative.`);
+  }
+  const parts = slashed.replace(/^(?:\.\/+)+/, '').split('/');
+  if (parts.includes('..')) fail(`Scope pattern ${pattern} must not contain a .. segment.`);
+  const normalized = parts.filter(part => part !== '' && part !== '.').join('/');
+  if (!normalized) fail(`Scope pattern ${pattern} must not be empty.`);
+  return normalized;
+}
+
+function scopeList(value: unknown, field: string, nonEmpty = false): string[] {
+  const normalized = stringList(value, field, nonEmpty).map(normalizedScopePattern);
+  if (new Set(normalized).size !== normalized.length) fail(`${field} must not contain normalized duplicates.`);
+  return normalized.sort(compareCodePoints);
 }
 
 function pathMatchesPattern(candidate: string, pattern: string): boolean {
@@ -120,8 +138,6 @@ function scopePatternsMayOverlap(left: string, right: string): boolean {
   const b = normalizedScopePattern(right);
   if (!a || !b) return false;
   if (a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)) return true;
-  if (!/[?*]/.test(a)) return pathMatchesPattern(a, b);
-  if (!/[?*]/.test(b)) return pathMatchesPattern(b, a);
   const aPrefix = literalScopePrefix(a);
   const bPrefix = literalScopePrefix(b);
   if (!aPrefix || !bPrefix) return true;
@@ -156,7 +172,7 @@ function overlappingScopes(
       overlaps.add(a === b ? a : `${a} <-> ${b}`);
     }
   }
-  return [...overlaps].sort((leftEntry, rightEntry) => leftEntry.localeCompare(rightEntry));
+  return [...overlaps].sort(compareCodePoints);
 }
 
 function validateWorkItem(item: AgentRuntimeDispatchWorkItem): ValidatedDispatchWorkItem {
@@ -184,12 +200,13 @@ function validateWorkItem(item: AgentRuntimeDispatchWorkItem): ValidatedDispatch
     true,
   );
   const writeScope = object(item.writeScope, `Work item ${item.id} writeScope`);
-  const include = stringList(writeScope.include, `Work item ${item.id} writeScope.include`, true);
-  const exclude = stringList(writeScope.exclude ?? [], `Work item ${item.id} writeScope.exclude`);
+  const include = scopeList(writeScope.include, `Work item ${item.id} writeScope.include`, true);
+  const exclude = scopeList(writeScope.exclude ?? [], `Work item ${item.id} writeScope.exclude`);
   const revision = item.revision;
   if (!Number.isInteger(revision) || Number(revision) < 1) fail(`Work item ${item.id} must have a positive revision.`);
+  const normalizedId = item.id.toLowerCase();
   const contractBindingSha256 = sha256({
-    id: item.id,
+    id: normalizedId,
     revision,
     contractSummary: summary,
     acceptanceCriteria: item.acceptanceCriteria,
@@ -198,7 +215,7 @@ function validateWorkItem(item: AgentRuntimeDispatchWorkItem): ValidatedDispatch
     verificationCommands,
   });
   return {
-    id: item.id.toLowerCase(),
+    id: normalizedId,
     revision: Number(revision),
     contractBindingSha256,
     writeScope: {include, exclude},
@@ -222,7 +239,7 @@ export function buildAgentRuntimeDispatchPlan(input: {
     fail('maximumRuntimeMinutes must be between 1 and 120.');
   }
   if (input.workItems.length !== 2) fail('Exactly two work items are required for the bounded pilot.');
-  const validated = input.workItems.map(validateWorkItem).sort((left, right) => left.id.localeCompare(right.id));
+  const validated = input.workItems.map(validateWorkItem).sort((left, right) => compareCodePoints(left.id, right.id));
   if (validated[0].id === validated[1].id) fail('The two work items must be distinct.');
   if (validated[0].projectId !== validated[1].projectId) fail('The two work items must belong to the same Sift project.');
   const collisions = overlappingScopes(validated[0].writeScope, validated[1].writeScope);

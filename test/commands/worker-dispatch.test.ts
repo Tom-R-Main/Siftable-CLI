@@ -78,6 +78,27 @@ describe('surface-neutral agent runtime dispatch', () => {
     ));
   });
 
+  it('rejects a directory that intersects a wildcard descendant', () => {
+    expect(() => buildAgentRuntimeDispatchPlan({
+      requestedBySurface: 'codex',
+      sourceGitSha: SHA,
+      workItems: [
+        workItem(1, ['packages/foo']),
+        workItem(2, ['packages/*/bar']),
+      ],
+    })).toThrow(/scopes overlap/);
+  });
+
+  it('rejects non-relative scope projections before comparing them', () => {
+    for (const invalid of ['/packages/one', 'packages/../packages/one']) {
+      expect(() => buildAgentRuntimeDispatchPlan({
+        requestedBySurface: 't3',
+        sourceGitSha: SHA,
+        workItems: [workItem(1, [invalid]), workItem(2, ['packages/two'])],
+      })).toThrow(/repository-relative|\.\./);
+    }
+  });
+
   it('rejects work that is not ready, bounded, unclaimed coding work', () => {
     const blocked = workItem(1, ['packages/one']);
     blocked.claimability = {state: 'waiting', blockedBy: []};
@@ -96,6 +117,28 @@ describe('surface-neutral agent runtime dispatch', () => {
       sourceGitSha: SHA,
       workItems: [workItem(1, ['packages/one']), second],
     })).toThrow(/same Sift project/);
+  });
+
+  it('requires exactly two work items', () => {
+    const first = workItem(1, ['packages/one']);
+    const second = workItem(2, ['packages/two']);
+    for (const workItems of [[first], [first, second, {...second, id: '33333333-3333-4333-8333-333333333333'}]]) {
+      expect(() => buildAgentRuntimeDispatchPlan({
+        requestedBySurface: 'cli',
+        sourceGitSha: SHA,
+        workItems,
+      })).toThrow(/Exactly two work items/);
+    }
+  });
+
+  it('canonicalizes UUID casing and uses code-point scope order', () => {
+    const first = workItem(1, ['packages/ä', 'packages/z']);
+    const upper = {...first, id: first.id.toUpperCase()};
+    const second = workItem(2, ['services/two']);
+    const lowerPlan = buildAgentRuntimeDispatchPlan({requestedBySurface: 't3', sourceGitSha: SHA, workItems: [first, second]});
+    const upperPlan = buildAgentRuntimeDispatchPlan({requestedBySurface: 'codex', sourceGitSha: SHA, workItems: [upper, second]});
+    expect(upperPlan.planSha256).toBe(lowerPlan.planSha256);
+    expect(lowerPlan.workItems[0].writeScope.include).toEqual(['packages/z', 'packages/ä']);
   });
 
   it('exposes a read-only CLI command that performs only the two work-item reads', async () => {
