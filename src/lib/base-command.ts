@@ -52,6 +52,10 @@ export abstract class BaseCommand extends Command {
       apiUrl: flags['api-url'] || envValue('SIFT_API_URL', 'EXF_API_URL') || DEFAULT_API_URL,
       pat: token,
       workspaceId,
+      // The CLI runs on the caller's own machine, so reading a local path the
+      // user typed (`sift documents upload <file>`) is the user's own file
+      // access, not a server reading its filesystem on a remote caller's behalf.
+      allowLocalFiles: true,
     });
   }
 
