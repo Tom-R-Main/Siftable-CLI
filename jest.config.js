@@ -18,6 +18,15 @@ module.exports = {
     '<rootDir>/test/dotenvImportCommands.test.ts',
   ],
   modulePathIgnorePatterns: ['<rootDir>/dist/'],
+  collectCoverageFrom: [
+    'src/**/*.ts',
+    '!src/**/*.d.ts',
+    '!src/**/generated/**',
+    '!src/**/__mocks__/**',
+    '!src/**/*.{test,spec,vitest}.*',
+  ],
+  coverageDirectory: '<rootDir>/coverage/jest',
+  coverageReporters: ['lcov', 'json', 'json-summary'],
   moduleNameMapper: {
     '^.*?/packages/exf-cli/dist/(.*)\\.js$': '<rootDir>/src/$1.ts',
     '^\\.\\./dist/lib/daily-review-context\\.js$': '<rootDir>/src/lib/daily-review-context.ts',
