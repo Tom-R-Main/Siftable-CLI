@@ -213,6 +213,8 @@ export interface WorkItemClaimability {
   nextAction?: string;
 }
 
+const QUEUE_GATE_CLAIMABILITY_STATES = new Set<string>(["waiting", "dependency_failed", "blocked", "human_review_gate"]);
+
 /** A fresh claim is expected to succeed; falls back to the legacy ready-state rule. */
 export function isWorkItemClaimable(claimability: WorkItemClaimability | null | undefined): boolean {
   if (!claimability) return true;
@@ -650,8 +652,14 @@ export function planAgentWork(items: RawWorkItem[], opts: BuildOptions = {}): Re
     for (const edge of rejectedDeclaredEdges) lines.push(`  - ${titleOf(edge.source)} -> ${titleOf(edge.target)}`);
   }
 
+  // Queue gates are things the claim path enforces before work can start:
+  // dependency edges, a non-recoverable block, or a human review gate. An
+  // active lease or a pending review is lifecycle, not a gate, so it stays out.
   const itemsWithQueueGates = included.filter((item) =>
-    (item.dependencies?.length ?? 0) > 0 || (item.claimability && !isWorkItemClaimable(item.claimability))
+    (item.dependencies?.length ?? 0) > 0
+    || (item.claimability
+      && !isWorkItemClaimable(item.claimability)
+      && QUEUE_GATE_CLAIMABILITY_STATES.has(String(item.claimability.state)))
   );
   if (itemsWithQueueGates.length > 0) {
     lines.push("");
