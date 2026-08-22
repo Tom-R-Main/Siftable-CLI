@@ -161,7 +161,12 @@ function validateWorkItem(item: AgentRuntimeDispatchWorkItem): ValidatedDispatch
   }
   if (item.claimOwner != null || item.claimExpiresAt != null) fail(`Work item ${item.id} is already claimed.`);
   const claimability = object(item.claimability, `Work item ${item.id} claimability`);
-  if (claimability.state !== 'ready') fail(`Work item ${item.id} is not claimable.`);
+  // Servers >= 1.2.40 project `claimable` directly (e.g. lease_expired is claimable);
+  // older servers only expose the ready/waiting/dependency_failed state.
+  const claimable = typeof claimability.claimable === 'boolean'
+    ? claimability.claimable
+    : claimability.state === 'ready';
+  if (!claimable) fail(`Work item ${item.id} is not claimable.`);
   const summary = object(item.contractSummary, `Work item ${item.id} contractSummary`);
   if (summary.classification !== 'bounded' || summary.version !== 1 || summary.profile !== 'coding') {
     fail(`Work item ${item.id} must have a bounded version 1 coding contract.`);

@@ -193,9 +193,31 @@ export interface WorkItemDependency {
   satisfied: boolean;
 }
 
+export type WorkItemClaimabilityState =
+  | "ready"
+  | "waiting"
+  | "dependency_failed"
+  | "leased"
+  | "lease_expired"
+  | "blocked"
+  | "in_review"
+  | "human_review_gate"
+  | "terminal";
+
 export interface WorkItemClaimability {
-  state: "ready" | "waiting" | "dependency_failed";
+  state: WorkItemClaimabilityState | (string & {});
+  /** Server-authoritative when present (mcp-server/exf-app >= 1.2.40); older servers omit it. */
+  claimable?: boolean;
   blockedBy: WorkItemDependency[];
+  reason?: string;
+  nextAction?: string;
+}
+
+/** A fresh claim is expected to succeed; falls back to the legacy ready-state rule. */
+export function isWorkItemClaimable(claimability: WorkItemClaimability | null | undefined): boolean {
+  if (!claimability) return true;
+  if (typeof claimability.claimable === "boolean") return claimability.claimable;
+  return claimability.state === "ready";
 }
 
 const ACTIVE_STATUSES = new Set(["queued", "claimed", "running", "needs_review", "blocked", "ready"]);
@@ -629,7 +651,7 @@ export function planAgentWork(items: RawWorkItem[], opts: BuildOptions = {}): Re
   }
 
   const itemsWithQueueGates = included.filter((item) =>
-    (item.dependencies?.length ?? 0) > 0 || (item.claimability && item.claimability.state !== "ready")
+    (item.dependencies?.length ?? 0) > 0 || (item.claimability && !isWorkItemClaimable(item.claimability))
   );
   if (itemsWithQueueGates.length > 0) {
     lines.push("");
