@@ -73,6 +73,7 @@ export default class EvidenceExtract extends BaseCommand {
         resourceScope,
       },
       contract,
+      captureApplicability: 'non_conversational' as const,
     };
 
     if (flags['dry-run']) {

@@ -50,6 +50,10 @@ export default class WorkCreate extends BaseCommand {
       description: 'Finalized capture receipt UUID to bind atomically; repeat for multi-surface handoffs',
       multiple: true,
     }),
+    'capture-applicability': Flags.string({
+      description: 'Prospective capture applicability; this does not determine study eligibility',
+      options: ['conversational_capture_required', 'non_conversational', 'unclassified'],
+    }),
   };
 
   async run(): Promise<unknown> {
@@ -129,6 +133,13 @@ export default class WorkCreate extends BaseCommand {
     if (flags['dry-run'] && !contract) {
       this.error('Contract preview requires --profile, --contract, or --contract-file.');
     }
+    if (
+      flags['capture-receipt']?.length
+      && flags['capture-applicability']
+      && flags['capture-applicability'] !== 'conversational_capture_required'
+    ) {
+      this.error('--capture-receipt requires --capture-applicability conversational_capture_required.');
+    }
     let dependsOn;
     try {
       dependsOn = parseWorkDependencies(flags['depends-on']);
@@ -153,6 +164,9 @@ export default class WorkCreate extends BaseCommand {
           }),
       dependsOn,
       captureReceiptIds: flags['capture-receipt'],
+      captureApplicability: flags['capture-receipt']?.length
+        ? 'conversational_capture_required' as const
+        : flags['capture-applicability'] as 'conversational_capture_required' | 'non_conversational' | 'unclassified' | undefined,
     };
     if (flags['dry-run']) {
       return {

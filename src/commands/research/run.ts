@@ -59,6 +59,7 @@ export default class ResearchRun extends BaseCommand {
       projectId: flags.project,
       inputContext,
       contract,
+      captureApplicability: 'non_conversational' as const,
     };
 
     if (flags['dry-run']) {

@@ -527,7 +527,11 @@ export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>
           allowMigrate: _allowMigrate,
           ...identity
         } = input;
-        const res = await sift.createWorkItem({...identity, contract});
+        const res = await sift.createWorkItem({
+          ...identity,
+          contract,
+          captureApplicability: 'conversational_capture_required',
+        });
         if (res.error || !res.data) return err(`createWorkItem failed (${res.statusCode}): ${res.error}`);
         const warning = res.warnings?.length ? ` Warning: ${res.warnings.join("; ")}` : "";
         return ok(redactWorkItemTokens(res.data), `Created work item: ${input.title}.${warning}`);

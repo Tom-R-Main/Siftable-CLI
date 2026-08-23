@@ -1155,6 +1155,7 @@ export async function createHandoffWorkItem(ctx: InteractiveCommandContext, inpu
     allowedActions: contract.authority.allowedActions,
     writeScope: contract.boundary.writeScope,
     verificationCommands: contract.proof.verificationCommands,
+    captureApplicability: 'conversational_capture_required' as const,
   };
   const response = await ctx.apiClient.createWorkItem(payload, `interactive-${Date.now()}-${randomUUID()}`);
   const workItem = getData(response).workItem as Record<string, unknown> | undefined;
