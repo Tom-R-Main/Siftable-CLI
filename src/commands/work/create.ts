@@ -46,6 +46,10 @@ export default class WorkCreate extends BaseCommand {
     'depends-on': Flags.string({
       description: 'Dependency JSON array: [{"workItemId":"<uuid>","requiredGate"?:"done"|"commands_passed"}]',
     }),
+    'capture-receipt': Flags.string({
+      description: 'Finalized capture receipt UUID to bind atomically; repeat for multi-surface handoffs',
+      multiple: true,
+    }),
   };
 
   async run(): Promise<unknown> {
@@ -148,6 +152,7 @@ export default class WorkCreate extends BaseCommand {
             verificationCommands,
           }),
       dependsOn,
+      captureReceiptIds: flags['capture-receipt'],
     };
     if (flags['dry-run']) {
       return {
