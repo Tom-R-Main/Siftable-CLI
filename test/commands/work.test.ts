@@ -263,7 +263,7 @@ describe("sift work edit", () => {
       "--json",
     ]);
 
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(2);
     expect(result.stdout).toContain("Missing required flag idempotency-key");
     expect(global.fetch).not.toHaveBeenCalled();
   });

@@ -16,6 +16,7 @@ module.exports = {
     '<rootDir>/test/environmentState.test.ts',
     '<rootDir>/test/dotenvImport.test.ts',
     '<rootDir>/test/dotenvImportCommands.test.ts',
+    '<rootDir>/test/error-exit-contract.test.ts',
   ],
   modulePathIgnorePatterns: ['<rootDir>/dist/'],
   collectCoverageFrom: [

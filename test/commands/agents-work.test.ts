@@ -131,7 +131,7 @@ describe('work commands', () => {
       'sift_pat_test',
       '--json',
     ]);
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(2);
     expect(result.stdout).toContain('workItemId must be a UUID');
     expect(global.fetch).not.toHaveBeenCalled();
   });
@@ -343,7 +343,7 @@ describe('work commands', () => {
       '--json',
     ]);
 
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(2);
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
@@ -490,7 +490,7 @@ describe('work commands', () => {
       '--json',
     ]);
 
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(2);
     expect(result.stdout).toContain('release requires both --owner and --claim-token');
     expect(global.fetch).not.toHaveBeenCalled();
   });

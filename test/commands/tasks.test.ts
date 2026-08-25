@@ -316,7 +316,7 @@ describe('tasks commands', () => {
         'Focus queue full: You already have 3 tasks in Now. Move something to Today or Soon first.'
       );
       expect(json.error.code).toBe('bad_request');
-      expect(json.error.exit).toBe(400);
+      expect(json.error.exit).toBe(1);
       expect(json.error.statusCode).toBe(400);
       expect(json.error.api.title).toBe('Focus queue full');
     });

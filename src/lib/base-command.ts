@@ -18,6 +18,16 @@ function envValue(primary: string, legacy: string): string | undefined {
 
 export const DEFAULT_API_URL = 'https://siftable.io';
 
+type CliCommandError = Error & {
+  exitCode?: number;
+  oclif?: {exit?: number};
+};
+
+function portableExitCode(err: CliCommandError): number {
+  const requested = err.oclif?.exit ?? err.exitCode ?? 1;
+  return Number.isInteger(requested) && requested >= 0 && requested <= 255 ? requested : 1;
+}
+
 export abstract class BaseCommand extends Command {
   static enableJsonFlag = true;
 
@@ -40,6 +50,14 @@ export abstract class BaseCommand extends Command {
       helpGroup: 'GLOBAL',
     }),
   };
+
+  protected override async catch(err: CliCommandError): Promise<void> {
+    const exitCode = portableExitCode(err);
+    if (err.oclif) err.oclif.exit = exitCode;
+    else err.exitCode = exitCode;
+    process.exitCode = process.exitCode ?? exitCode;
+    await super.catch(err);
+  }
 
   protected async client(flags: ApiContextFlags): Promise<SiftClient> {
     const token = flags.token || envValue('SIFT_TOKEN', 'EXF_TOKEN') || resolveToken();
@@ -202,7 +220,7 @@ export abstract class BaseCommand extends Command {
         code: err.code,
         statusCode: err.statusCode,
         api: err.api,
-        exit: err.oclif?.exit ?? 1,
+        exit: portableExitCode(err),
         suggestions: err.suggestions,
       },
     };
