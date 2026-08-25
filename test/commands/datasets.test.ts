@@ -24,7 +24,46 @@ describe('dataset commands', () => {
       expect(parsed).toEqual({
         ok: true,
         datasets: [{id: 'ds-1', title: 'Sources', rowCount: 2}],
+        page: {
+          returned: 1,
+          nextCursor: null,
+          total: null,
+          complete: true,
+          snapshotId: null,
+        },
+        omissions: ['totalCount'],
+        warnings: [],
       });
+    });
+
+    it('does not claim completeness when the backend result reaches the limit', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/datasets')
+        .query({limit: '1'})
+        .reply(200, {datasets: [{id: 'ds-1', title: 'Sources'}]})
+        .install();
+
+      const result = await runCommand([
+        'datasets',
+        'list',
+        '--limit',
+        '1',
+        '--json',
+        '--token',
+        'exf_pat_test',
+      ]);
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.page).toEqual({
+        returned: 1,
+        nextCursor: null,
+        total: null,
+        complete: false,
+        snapshotId: null,
+      });
+      expect(parsed.omissions).toEqual(['totalCount', 'continuationCursor']);
+      expect(parsed.warnings).toEqual([
+        'The collection may contain more results, but this backend does not expose a continuation cursor. Narrow filters or raise the limit.',
+      ]);
     });
   });
 

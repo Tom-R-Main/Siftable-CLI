@@ -20,16 +20,62 @@ describe('tasks commands', () => {
       expect(result.stdout).toContain('Second task');
     });
 
-    it('returns JSON array when --json is passed', async () => {
+    it('returns tasks with truthful page metadata in JSON mode', async () => {
       mockFetch()
         .on('GET', '/api/v1/tasks')
-        .reply(200, {tasks: [fixtures.task()]})
+        .query({limit: '1'})
+        .reply(200, {
+          tasks: [fixtures.task()],
+          nextCursor: 'task-cursor-2',
+          totalCount: 8,
+        })
         .install();
 
-      const result = await runCommand(['tasks', 'list', '--token', 'exf_pat_test', '--json']);
+      const result = await runCommand([
+        'tasks',
+        'list',
+        '--limit',
+        '1',
+        '--token',
+        'exf_pat_test',
+        '--json',
+      ]);
       const json = JSON.parse(result.stdout);
-      expect(Array.isArray(json)).toBe(true);
-      expect(json[0].id).toBe('task-001');
+      expect(json).toEqual({
+        ok: true,
+        tasks: [expect.objectContaining({id: 'task-001'})],
+        page: {
+          returned: 1,
+          nextCursor: 'task-cursor-2',
+          total: 8,
+          complete: false,
+          snapshotId: null,
+        },
+        omissions: [],
+        warnings: [],
+      });
+    });
+
+    it('forwards a continuation cursor', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/tasks')
+        .query({limit: '1', cursor: 'task-cursor-2'})
+        .reply(200, {tasks: [fixtures.task({id: 'task-002'})], totalCount: 2})
+        .install();
+
+      const result = await runCommand([
+        'tasks',
+        'list',
+        '--limit',
+        '1',
+        '--cursor',
+        'task-cursor-2',
+        '--token',
+        'exf_pat_test',
+        '--json',
+      ]);
+      const json = JSON.parse(result.stdout);
+      expect(json.page).toMatchObject({returned: 1, nextCursor: null, total: 2, complete: true});
     });
 
     it('shows "No results" for empty list', async () => {

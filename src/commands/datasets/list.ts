@@ -1,5 +1,6 @@
 import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {collectionNavigation} from '../../lib/collection-navigation.js';
 import {renderTable, formatDate} from '../../lib/output.js';
 
 export default class DatasetsList extends BaseCommand {
@@ -20,6 +21,7 @@ export default class DatasetsList extends BaseCommand {
     const result = {
       ok: true,
       datasets,
+      ...collectionNavigation(datasets.length, flags.limit, {cursorSupported: false}),
     };
 
     if (!this.jsonEnabled()) {
