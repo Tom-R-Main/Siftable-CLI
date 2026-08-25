@@ -1,6 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
-import {renderDetail, renderTable} from '../../lib/output.js';
+import {renderDetail, renderTable, sanitizeTerminalText} from '../../lib/output.js';
 
 interface QualityExample {
   value: string;
@@ -122,12 +122,12 @@ export default class DatasetsQuality extends BaseCommand {
         this.log('\nFindings:');
         for (const {field, finding} of findings) {
           const label = finding.classification === 'observation' ? 'OBSERVATION' : finding.severity.toUpperCase();
-          this.log(`  [${label}] ${field}: ${finding.message}`);
+          this.log(`  [${label}] ${sanitizeTerminalText(field)}: ${sanitizeTerminalText(finding.message)}`);
           if (finding.examples && finding.examples.length > 0) {
             const examples = finding.examples.map(example =>
               example.occurrences === undefined
-                ? `"${example.value}"`
-                : `"${example.value}" (${example.occurrences}x)`,
+                ? `"${sanitizeTerminalText(example.value)}"`
+                : `"${sanitizeTerminalText(example.value)}" (${example.occurrences}x)`,
             );
             this.log(`    Examples: ${examples.join(', ')}`);
           }

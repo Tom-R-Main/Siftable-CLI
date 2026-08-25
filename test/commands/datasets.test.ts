@@ -75,6 +75,7 @@ describe('dataset commands', () => {
       ]);
 
       expect(JSON.parse(result.stdout).fields[0]).not.toHaveProperty('nullCount');
+      expect(JSON.parse(result.stdout).fields[0]).not.toHaveProperty('nullRate');
       expect(JSON.parse(result.stdout).fields[0]).not.toHaveProperty('issues');
     });
 
@@ -91,6 +92,33 @@ describe('dataset commands', () => {
       expect(result.stdout).toContain('[OBSERVATION] Author');
       expect(result.stdout).toContain('repetition may be valid');
       expect(result.stdout).not.toContain('duplicate group');
+    });
+
+    it('sanitizes dataset-controlled text in human output', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/datasets/ds-1/quality-check')
+        .reply(200, {
+          ...qualityResult,
+          fields: [{
+            ...qualityResult.fields[0],
+            field: '\u001B[31mAuthor\u001B[0m',
+            findings: [{
+              ...qualityResult.fields[0].findings[0],
+              message: '\u001B[31mspoofed\u001B[0m message',
+              examples: [{value: '\u202Etxt.exe', occurrences: 2}],
+            }],
+          }],
+        })
+        .install();
+
+      const result = await runCommand([
+        'datasets', 'quality', 'ds-1', '--token', 'exf_pat_test',
+      ]);
+
+      expect(result.stdout).toContain('[OBSERVATION] Author: spoofed message');
+      expect(result.stdout).toContain('"txt.exe" (2x)');
+      expect(result.stdout).not.toContain('\u001B');
+      expect(result.stdout).not.toContain('\u202E');
     });
   });
 
