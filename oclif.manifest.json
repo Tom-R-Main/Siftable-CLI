@@ -15785,6 +15785,25 @@
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
+        },
+        "capture-receipt": {
+          "description": "Finalized capture receipt UUID to bind atomically; repeat for multi-surface handoffs",
+          "name": "capture-receipt",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "capture-applicability": {
+          "description": "Prospective capture applicability; this does not determine study eligibility",
+          "name": "capture-applicability",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "conversational_capture_required",
+            "non_conversational",
+            "unclassified"
+          ],
+          "type": "option"
         }
       },
       "hasDynamicHelp": false,
