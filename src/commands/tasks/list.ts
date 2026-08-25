@@ -56,7 +56,7 @@ export default class TasksList extends BaseCommand {
     const hasPostFilteredTitlePredicate = Boolean(flags['title-starts-with'] || flags['title-equals']);
     const effectiveLimit = flags.limit;
     const postFilteredPageMayBeIncomplete = hasPostFilteredTitlePredicate
-      && (tasks.length >= effectiveLimit || nextCursor !== null);
+      && (Boolean(flags.cursor) || tasks.length >= effectiveLimit || nextCursor !== null);
     const totalIsAuthoritative = !hasPostFilteredTitlePredicate;
     const total = totalIsAuthoritative && Number.isInteger(data?.totalCount)
       ? data?.totalCount as number

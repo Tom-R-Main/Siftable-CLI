@@ -179,6 +179,38 @@ describe('tasks commands', () => {
       expect(json.omissions).toEqual(['totalCount', 'continuationCursor']);
     });
 
+    it('marks a post-filtered page reached by cursor as incomplete', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/tasks')
+        .query({limit: '25', cursor: 'broad-page-cursor', titleEquals: 'foo'})
+        .reply(200, {tasks: [fixtures.task({title: 'foo'})], totalCount: 1})
+        .install();
+
+      const result = await runCommand([
+        'tasks',
+        'list',
+        '--cursor',
+        'broad-page-cursor',
+        '--title-equals',
+        'foo',
+        '--token',
+        'exf_pat_test',
+        '--json',
+      ]);
+      const json = JSON.parse(result.stdout);
+
+      expect(json.page).toMatchObject({
+        returned: 1,
+        nextCursor: null,
+        total: null,
+        complete: false,
+      });
+      expect(json.omissions).toEqual(['totalCount', 'continuationCursor']);
+      expect(json.warnings).toEqual([
+        'The collection may contain more results, but no safe continuation cursor is available. Narrow filters or raise the limit.',
+      ]);
+    });
+
     it('shows "No results" for empty list', async () => {
       mockFetch()
         .on('GET', '/api/v1/tasks')
