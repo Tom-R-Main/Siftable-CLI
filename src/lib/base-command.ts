@@ -207,6 +207,12 @@ export abstract class BaseCommand extends Command {
     }
   }
 
+  private throwApiStatusError(statusCode: number, message: string): never {
+    const error = new Error(message) as Error & {statusCode?: number};
+    error.statusCode = statusCode;
+    this.error(error, {exit: statusCode});
+  }
+
   protected override toErrorJson(err: Error & {
     oclif?: {exit?: number};
     code?: string;
@@ -231,15 +237,21 @@ export abstract class BaseCommand extends Command {
       const parsed = this.parseApiError(response.error);
 
       if (response.statusCode === 401) {
-        this.error(`Authentication failed: ${parsed.message}\nRun \`sift auth login\` to authenticate.`);
+        this.throwApiStatusError(
+          response.statusCode,
+          `Authentication failed: ${parsed.message}\nRun \`sift auth login\` to authenticate.`,
+        );
       }
 
       if (response.statusCode === 404) {
-        this.error(`Not found: ${parsed.message}`);
+        this.throwApiStatusError(response.statusCode, `Not found: ${parsed.message}`);
       }
 
       if (response.statusCode === 429) {
-        this.error(`Rate limited: ${parsed.message}\nPlease try again shortly.`);
+        this.throwApiStatusError(
+          response.statusCode,
+          `Rate limited: ${parsed.message}\nPlease try again shortly.`,
+        );
       }
 
       if (parsed.payload) {
@@ -258,7 +270,7 @@ export abstract class BaseCommand extends Command {
       }
 
       if (response.statusCode === 403) {
-        this.error(`Permission denied: ${parsed.message}`);
+        this.throwApiStatusError(response.statusCode, `Permission denied: ${parsed.message}`);
       }
 
       const error = new Error(`API error (${response.statusCode}): ${parsed.message}`) as Error & {

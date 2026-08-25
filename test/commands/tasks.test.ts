@@ -402,6 +402,56 @@ describe('tasks commands', () => {
   });
 
   describe('error handling', () => {
+    it.each([
+      [401, 'Authentication failed'],
+      [404, 'Not found'],
+      [429, 'Rate limited'],
+    ])('retains HTTP status %i in structured errors', async (statusCode, message) => {
+      mockFetch()
+        .on('GET', '/api/v1/tasks')
+        .reply(statusCode, {error: 'bounded failure'})
+        .install();
+
+      const result = await runCommand([
+        'tasks',
+        'list',
+        '--token',
+        'exf_pat_test',
+        '--json',
+      ]);
+      const json = JSON.parse(result.stdout);
+      expect(result.exitCode).toBe(1);
+      expect(json.error).toMatchObject({
+        exit: 1,
+        message: expect.stringContaining(message),
+        statusCode,
+      });
+    });
+
+    it('retains an unstructured 403 status in JSON mode', async () => {
+      global.fetch = jest.fn(async () => ({
+        ok: false,
+        status: 403,
+        headers: new Headers({'content-type': 'text/plain'}),
+        text: async () => 'plain permission denial',
+      } as Response));
+
+      const result = await runCommand([
+        'tasks',
+        'list',
+        '--token',
+        'exf_pat_test',
+        '--json',
+      ]);
+      const json = JSON.parse(result.stdout);
+      expect(result.exitCode).toBe(1);
+      expect(json.error).toMatchObject({
+        exit: 1,
+        message: 'Permission denied: plain permission denial',
+        statusCode: 403,
+      });
+    });
+
     it('handles 401 with auth suggestion', async () => {
       mockFetch()
         .on('GET', '/api/v1/tasks')
