@@ -8,7 +8,7 @@
  *   RECORD=1 ANTHROPIC_API_KEY=… npx jest interactive.anthropic-recorded
  * (a record harness calls cassette.save(); see http-cassette.ts).
  */
-import {createAnthropicAdapter} from '../../interactive-tui/openfunction/framework/adapters/anthropic';
+import {createAnthropicAdapter} from '../../interactive-tui/agent-harness/framework/adapters/anthropic';
 import {createCassetteFetch} from '../helpers/http-cassette';
 
 const emptyRegistry = {toAnthropicFormat: () => []} as any;

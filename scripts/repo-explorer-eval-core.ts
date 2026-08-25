@@ -39,7 +39,7 @@ export const EXPLORER_EVAL_PROMPTS = [
   'scour this repo and explain how local search works',
   'find where repo_explorer is injected into the model turn',
   'why might the search tool skip files unexpectedly?',
-  'map the path from a TUI prompt to OpenFunction/Codex',
+  'map the path from a TUI prompt to the agent harness or Codex',
   'find the tests that prove explorer behavior',
   'where should we add parallel scout fan-out?',
   'explain the native/TS fallback boundary for file search',

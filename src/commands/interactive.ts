@@ -119,16 +119,15 @@ export async function runInteractiveAiRequest(
  * auto-approve. We scrub any inherited EXECUTERM_AUTO_APPROVE so a stray value
  * can't grant silent writes if write tools are reintroduced in A1.
  *
- * The brain's OpenFunction `execufunction` provider reads SIFT_PAT / SIFT_API_URL
- * / SIFT_WORKSPACE_ID; SIFT_LOCAL_BRAIN tells index.tsx to use the in-process
- * LocalControlClient. EXECUTERM_OPENFUNCTION_PATH is an optional dev override;
- * published installs use the vendored runtime in interactive-tui/openfunction.
+ * The bundled Siftable agent harness reads SIFT_PAT / SIFT_API_URL /
+ * SIFT_WORKSPACE_ID; SIFT_LOCAL_BRAIN tells index.tsx to use the in-process
+ * LocalControlClient. The harness is part of the packaged TUI and cannot be
+ * replaced with an external runtime path.
  */
 export function buildChildEnv(opts: {
   token: string;
   apiUrl: string;
   workspaceId?: string;
-  openfunctionPath?: string;
   userCwd?: string;
   /** Writable root for A1 write/edit tools. Defaults to the repo root above userCwd. */
   workspaceRoot?: string;
@@ -142,6 +141,8 @@ export function buildChildEnv(opts: {
 
   // Safety scrub — do this FIRST so nothing below can be undone.
   delete env.EXECUTERM_AUTO_APPROVE;
+  // Retired runtime injection seam: the packaged Siftable harness is authoritative.
+  delete env.EXECUTERM_OPENFUNCTION_PATH;
 
   env.SIFT_LOCAL_BRAIN = '1';
   env.SIFT_PAT = opts.token;
@@ -156,12 +157,6 @@ export function buildChildEnv(opts: {
   // the boundary /status reports and the Zig write path enforces.
   const workspaceRoot = opts.workspaceRoot ?? (opts.userCwd ? resolveWorkspaceRoot(opts.userCwd) : undefined);
   if (workspaceRoot) env.SIFT_WORKSPACE_ROOT = workspaceRoot;
-
-  if (opts.openfunctionPath) {
-    env.EXECUTERM_OPENFUNCTION_PATH = opts.openfunctionPath;
-  } else {
-    delete env.EXECUTERM_OPENFUNCTION_PATH;
-  }
 
   if (opts.model) env.EXECUTERM_MODEL = opts.model;
   if (opts.provider) env.EXECUTERM_MODEL_PROVIDER = opts.provider;

@@ -1,4 +1,4 @@
-import {createOpenRouterAdapter} from '../../interactive-tui/openfunction/framework/adapters/openai';
+import {createOpenRouterAdapter} from '../../interactive-tui/agent-harness/framework/adapters/openai';
 
 const registry = {
   getAll: () => [],

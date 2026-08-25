@@ -2,7 +2,8 @@
  * sift interactive — terminal copilot TUI on @opentui/solid.
  *
  * Fine-grained Solid reactivity (only changed nodes redraw → no flicker) +
- * native <markdown streaming>. A0 runs the OpenFunction brain IN-PROCESS via
+ * native <markdown streaming>. A0 runs the bundled Siftable agent harness
+ * IN-PROCESS via
  * LocalControlClient (selected by SIFT_LOCAL_BRAIN); the daemon HTTP/SSE
  * ControlClient path is retained for the future hostless mode. Both transports
  * implement ControlTransport, so the UI below is transport-agnostic.
@@ -20,9 +21,11 @@
  *   Enter while busy → queue the message; it runs when the turn finishes
  *
  * Launched by the oclif `sift interactive` command, which resolves the token
- * and sets SIFT_LOCAL_BRAIN=1 + SIFT_PAT/SIFT_API_URL. The OpenFunction runtime
- * used by the local brain is vendored under interactive-tui/openfunction.
+ * and sets SIFT_LOCAL_BRAIN=1 + SIFT_PAT/SIFT_API_URL. The local brain uses the
+ * Siftable-owned harness bundled with the TUI.
  */
+import {randomUUID} from "node:crypto";
+
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { type KeyEvent, type PasteEvent, type TextareaRenderable } from "@opentui/core";
 import { createSignal, createMemo, createEffect, For, Show, Switch, Match, onMount, onCleanup } from "solid-js";
@@ -83,7 +86,12 @@ import {
 import { serializeConversation } from "./transcript";
 import { getSessionCwd, getWorkspaceRoot, setSessionCwd } from "./navigation";
 import { createChildSessionController } from "./childSessionController";
-import { setSessionController } from "./brain";
+import {
+  inspectActiveThread,
+  resetActiveThread,
+  setAgentConversationKey,
+  setSessionController,
+} from "./brain";
 import { reduceBranchesKey, initialBranchesState, draftToSpawnInput, type BranchesState } from "./branchesOverlay";
 import {
   reduceWorkKey,
@@ -122,7 +130,7 @@ import {createCrewFromTemplate, listCrewDefinitions, type SiftCrewDefinition} fr
 
 // ── Transport seam ─────────────────────────────────────────────────────────
 // The ONLY place that differs between in-process (A0) and daemon (future)
-// modes. SIFT_LOCAL_BRAIN ⇒ run the OpenFunction brain in this process.
+// modes. SIFT_LOCAL_BRAIN ⇒ run the bundled Siftable harness in this process.
 const LOCAL = Boolean(process.env.SIFT_LOCAL_BRAIN);
 let baseUrl: string;
 let client: ControlTransport;
@@ -148,9 +156,8 @@ if (LOCAL) {
   client = new ControlClient(baseUrl, process.env.EXECUTERM_DASHBOARD_TOKEN);
 }
 
-// Phase 1 of the thread-engine rollout: a live context-size meter in the status
-// bar, driven by the Zig token estimator. Gated until the compaction planner and
-// rollout persistence land; off by default.
+// Compaction controls the live meter/planner only. Durable event-journal
+// persistence is always active and must not be coupled to this display flag.
 const COMPACTION_ENABLED = process.env.SIFT_CONTEXT_COMPACTION !== "0";
 
 type Msg = {
@@ -315,9 +322,12 @@ function App() {
   setSessionController(childController);
   const sessionCtx = createSessionContext<Msg>({
     sessionId: 0,
-    conversationKey: `parent:${getWorkspaceRoot() || getSessionCwd()}`,
+    // Preserve the historical parent rollout identity; child sessions use the
+    // controller-provided conversationKey so send-back and resume agree.
+    conversationKey: getWorkspaceRoot() || getSessionCwd(),
     sessionCwd: getSessionCwd(),
   });
+  setAgentConversationKey(sessionCtx.activeConversationKey());
   let attachmentSeq = 0;
   let histIndex = 0;
 
@@ -357,7 +367,7 @@ function App() {
     client: {
       getWorkItem: (workItemId) => apiClient.getWorkItem(workItemId),
       getWorkVerificationPlan: (workItemId) => apiClient.getWorkVerificationPlan(workItemId),
-      claimWorkItem: (input) => apiClient.claimWorkItem(input),
+      claimWorkItem: (input) => apiClient.claimWorkItem(input, randomUUID()),
       transitionWorkItem: (workItemId, action, input, request) => apiClient.transitionWorkItem(workItemId, action, input, request),
     },
     childController,
@@ -912,6 +922,9 @@ function App() {
         setSessionCwd(p);
       },
       workspaceRoot: () => getWorkspaceRoot(),
+      conversationKey: () => sessionCtx.activeConversationKey(),
+      resetThread: () => resetActiveThread(),
+      inspectThread: () => inspectActiveThread(),
       push,
       setMessages: (next: CommandMessage[]) => setMessages(next),
       submit: (sendText: string, displayText?: string) => {
@@ -932,7 +945,7 @@ function App() {
       compactThread: async (): Promise<CompactionReport> =>
         client.compact
           ? client.compact()
-          : { engine: "openfunction", ran: false, reason: "compaction is only available with the local brain" },
+          : { engine: "agent-harness", ran: false, reason: "compaction is only available with the local brain" },
       showDiagram: (fullText: string) => showDiagramInline(fullText),
       viewLastDiagram: () => openDiagramViewer(),
       sessions: {
@@ -949,6 +962,7 @@ function App() {
             conversationKey: rec.conversationKey,
             sessionCwd: rec.worktreePath,
           });
+          setAgentConversationKey(sw.session.conversationKey);
           setMessages([...sw.transcript]);
           return { ok: true, session: rec };
         },
@@ -957,6 +971,7 @@ function App() {
           sessionCtx.replaceTranscript([...messages]);
           const sw = sessionCtx.leave();
           if (!sw) return { ok: false, reason: "not in a child session" };
+          setAgentConversationKey(sw.session.conversationKey);
           setMessages([...sw.transcript]);
           return { ok: true };
         },

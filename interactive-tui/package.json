@@ -2,7 +2,7 @@
   "name": "@siftable/interactive-tui",
   "private": true,
   "type": "module",
-  "description": "Bun/opentui TUI spawned by `sift interactive` (runs the OpenFunction brain in-process)",
+  "description": "Bun/opentui TUI spawned by `sift interactive` (runs the bundled Siftable agent harness in-process)",
   "scripts": {
     "pretest": "bun run native:build",
     "test": "bun test",

@@ -29,6 +29,12 @@ import {
 import {createChildSessionController} from "../interactive-tui/childSessionController";
 import {createChildSessionStore} from "../interactive-tui/childSessionStore";
 import {getMergeMasterSession, resetMergeMasterForTests} from "../interactive-tui/mergeMaster";
+import {
+  acknowledgeSessionInstruction,
+  enqueueSessionInstruction,
+  listPendingSessionInstructions,
+  sessionJournalIdForConversation,
+} from "../interactive-tui/sessionMailbox";
 import {createWorkRunController, type WorkRunClient} from "../interactive-tui/workRunController";
 
 const git: GitRunner = createGitRunner();
@@ -77,6 +83,53 @@ function makeController(fx: Awaited<ReturnType<typeof setupRepo>>) {
 
 beforeEach(() => resetMergeMasterForTests());
 afterEach(() => resetMergeMasterForTests());
+
+describe("durable session instruction mailbox", () => {
+  it("uses the stable journal identity and retains instructions until acknowledged", async () => {
+    const rootDir = await realpath(await mkdtemp(join(tmpdir(), "sift-session-mailbox-")));
+    try {
+      const conversationKey = "/repo child feature/mailbox work-42";
+      const first = enqueueSessionInstruction(conversationKey, "  inspect the failed gate  ", {
+        rootDir,
+        now: () => new Date("2026-08-25T12:00:00.000Z"),
+        idFactory: () => "instruction-a",
+      });
+      const second = enqueueSessionInstruction(conversationKey, "then rerun the focused test", {
+        rootDir,
+        now: () => new Date("2026-08-25T12:00:01.000Z"),
+        idFactory: () => "instruction-b",
+      });
+
+      expect(first.sessionId).toBe(sessionJournalIdForConversation(conversationKey));
+      expect(first.sessionId).toMatch(/^[0-9a-f]{64}$/);
+      expect(first.instruction).toBe("inspect the failed gate");
+      expect(listPendingSessionInstructions(conversationKey, {rootDir})).toEqual([first, second]);
+
+      expect(acknowledgeSessionInstruction(conversationKey, first.instructionId, {rootDir})).toBe(true);
+      expect(acknowledgeSessionInstruction(conversationKey, first.instructionId, {rootDir})).toBe(false);
+      expect(listPendingSessionInstructions(conversationKey, {rootDir})).toEqual([second]);
+    } finally {
+      await rm(rootDir, {recursive: true, force: true});
+    }
+  });
+
+  it("never overwrites a published instruction when an id collides", async () => {
+    const rootDir = await realpath(await mkdtemp(join(tmpdir(), "sift-session-mailbox-")));
+    try {
+      const options = {
+        rootDir,
+        now: () => new Date("2026-08-25T12:00:00.000Z"),
+        idFactory: () => "fixed-id",
+      };
+      const original = enqueueSessionInstruction("conversation", "original", options);
+
+      expect(() => enqueueSessionInstruction("conversation", "replacement", options)).toThrow();
+      expect(listPendingSessionInstructions("conversation", {rootDir})).toEqual([original]);
+    } finally {
+      await rm(rootDir, {recursive: true, force: true});
+    }
+  });
+});
 
 describe("lane F — rebaseChildOntoBase (git helper)", () => {
   it("replays cleanly onto a non-conflicting moved base", async () => {
@@ -228,6 +281,90 @@ describe("lane F — controller recovery", () => {
       expect(posts).toHaveLength(1);
       expect(posts[0].key).toBe(c.session.conversationKey);
       expect(posts[0].text).toBe("rebase onto main and re-resolve shared.txt");
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it("sendBackChild: durably enqueues without legacy rollout or compaction", async () => {
+    const fx = await setupRepo();
+    const priorMailboxRoot = process.env.SIFT_SESSION_MAILBOX_ROOT;
+    const priorCompaction = process.env.SIFT_CONTEXT_COMPACTION;
+    const rootDir = join(fx.worktreesRoot, "..", "session-mailbox");
+    process.env.SIFT_SESSION_MAILBOX_ROOT = rootDir;
+    process.env.SIFT_CONTEXT_COMPACTION = "0";
+    try {
+      const controller = createChildSessionController({runner: git, worktreesRoot: fx.worktreesRoot});
+      const child = controller.spawnChild({
+        title: "mailbox",
+        accessMode: "read_write",
+        writeScope: ["shared.txt"],
+        cwd: fx.repoRoot,
+      });
+      expect(child.ok).toBe(true);
+      if (!child.ok) return;
+      await writeFile(join(child.session.worktreePath, "shared.txt"), "L1\nCHILD\n", "utf8");
+      controller.commitChild(child.session.sessionId, "child edits shared");
+      await fx.write("shared.txt", "L1\nMAIN\n");
+      fx.run(["commit", "-am", "base moves shared"]);
+      controller.reviewChild(child.session.sessionId);
+      expect(getMergeMasterSession(child.session.sessionId)?.status).toBe("merge_blocked");
+
+      const result = controller.sendBackChild(
+        child.session.sessionId,
+        "  rebase and resolve shared.txt  ",
+      );
+
+      expect(result).toEqual({
+        ok: true,
+        posted: true,
+        conversationKey: child.session.conversationKey,
+      });
+      const pending = listPendingSessionInstructions(child.session.conversationKey, {rootDir});
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject({
+        sessionId: sessionJournalIdForConversation(child.session.conversationKey),
+        instruction: "rebase and resolve shared.txt",
+      });
+    } finally {
+      if (priorMailboxRoot === undefined) delete process.env.SIFT_SESSION_MAILBOX_ROOT;
+      else process.env.SIFT_SESSION_MAILBOX_ROOT = priorMailboxRoot;
+      if (priorCompaction === undefined) delete process.env.SIFT_CONTEXT_COMPACTION;
+      else process.env.SIFT_CONTEXT_COMPACTION = priorCompaction;
+      await fx.cleanup();
+    }
+  });
+
+  it("sendBackChild: restores the reviewed state when durable enqueue fails", async () => {
+    const fx = await setupRepo();
+    try {
+      const controller = createChildSessionController({
+        runner: git,
+        worktreesRoot: fx.worktreesRoot,
+        postToThread: () => false,
+      });
+      const child = controller.spawnChild({
+        title: "mailbox-failure",
+        accessMode: "read_write",
+        writeScope: ["shared.txt"],
+        cwd: fx.repoRoot,
+      });
+      expect(child.ok).toBe(true);
+      if (!child.ok) return;
+      await writeFile(join(child.session.worktreePath, "shared.txt"), "L1\nCHILD\n", "utf8");
+      controller.commitChild(child.session.sessionId, "child edits shared");
+      await fx.write("shared.txt", "L1\nMAIN\n");
+      fx.run(["commit", "-am", "base moves shared"]);
+      controller.reviewChild(child.session.sessionId);
+      expect(getMergeMasterSession(child.session.sessionId)?.status).toBe("merge_blocked");
+
+      const result = controller.sendBackChild(child.session.sessionId, "retry safely");
+
+      expect(result.ok).toBe(false);
+      if ("reason" in result) {
+        expect(result.reason).toMatch(/could not durably enqueue.*status restored/i);
+      }
+      expect(getMergeMasterSession(child.session.sessionId)?.status).toBe("merge_blocked");
     } finally {
       await fx.cleanup();
     }

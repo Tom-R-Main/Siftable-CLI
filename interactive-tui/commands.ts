@@ -91,6 +91,8 @@ export interface InteractiveCommandContext {
   setCwd: (path: string) => void;
   /** Writable root for write/edit tools (repo root); empty if writes are off. */
   workspaceRoot: () => string;
+  /** Durable identity for the active parent or child conversation. */
+  conversationKey?: () => string;
   push: (message: CommandMessage) => void;
   setMessages: (messages: CommandMessage[]) => void;
   /** Start an agent turn (queues if the agent is busy). `displayText` is what the
@@ -108,6 +110,14 @@ export interface InteractiveCommandContext {
   setAwaitingLogin: (value: boolean) => void;
   /** Force a context compaction on the active session's agent (/compact). */
   compactThread: () => Promise<CompactionReport>;
+  /** Reset the active live model-history journal. */
+  resetThread?: () => Promise<boolean>;
+  /** Inspect the active durable journal rather than the retired rollout mirror. */
+  inspectThread?: () => Promise<{
+    sessionId: string;
+    eventCount: number;
+    messageCount: number;
+  }>;
   /** mergeMaster child-session control (/spawn · /children · /enter · /leave). */
   sessions: ChildSessionActions;
 }
@@ -1492,7 +1502,7 @@ const MERMAID_HEADER_RE =
 
 /**
  * Wrap a natural-language request as a diagram-generation instruction. Works on
- * any engine (codex or the OpenFunction brain) because the guidance travels in
+ * any engine (Codex or the agent harness) because the guidance travels in
  * the prompt — the reply's ```mermaid block is auto-rendered by the TUI.
  */
 function mermaidRequestPrompt(request: string): string {
@@ -2094,21 +2104,63 @@ export const interactiveCommands: InteractiveCommand[] = [
     usage: "[<session-id>] [reason]",
     run: (ctx, args) => rejectCommand(ctx, args),
   },
-  {name: "clear", description: "clear the conversation", run: (ctx) => ctx.setMessages([{role: "system", text: "cleared."}])},
+  {
+    name: "clear",
+    description: "clear the conversation",
+    run: async (ctx) => {
+      try {
+        const reset = await ctx.resetThread?.();
+        if (reset !== true) throw new Error("the active harness does not expose durable thread reset");
+        ctx.setMessages([{role: "system", text: "cleared."}]);
+      } catch (error) {
+        ctx.push({
+          role: "system",
+          text: `Could not clear the conversation: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    },
+  },
   {
     name: "threads",
     description: "show or clear the persisted conversation for this workspace",
     usage: "/threads [clear]",
-    run: (ctx, args) => {
-      if (process.env.SIFT_CONTEXT_COMPACTION === "0") {
-        ctx.push({role: "system", text: "Thread persistence is off. Set SIFT_CONTEXT_COMPACTION=1 to enable resume."});
-        return;
-      }
-      const key = ctx.workspaceRoot() || ctx.cwd();
+    run: async (ctx, args) => {
+      const key = ctx.conversationKey?.() || ctx.workspaceRoot() || ctx.cwd();
       const path = rolloutPathForKey(homedir(), key);
       if (args[0] === "clear") {
+        try {
+          const reset = await ctx.resetThread?.();
+          if (reset !== true) {
+            throw new Error("the active harness does not expose durable thread reset");
+          }
+        } catch (error) {
+          ctx.push({
+            role: "system",
+            text: `Could not clear the persisted thread: ${error instanceof Error ? error.message : String(error)}`,
+          });
+          return;
+        }
         if (existsSync(path)) rmSync(path);
         ctx.push({role: "system", text: `Cleared persisted thread for ${key}.`});
+        return;
+      }
+      if (ctx.inspectThread) {
+        try {
+          const status = await ctx.inspectThread();
+          ctx.push({
+            role: "system",
+            text:
+              `Durable thread for ${key}\n` +
+              `  ${status.messageCount} model-history message(s), ${status.eventCount} journal event(s)\n` +
+              `  session ${status.sessionId}\n` +
+              "  (resumes automatically next session · /threads clear to reset)",
+          });
+        } catch (error) {
+          ctx.push({
+            role: "system",
+            text: `Could not inspect the persisted thread: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
         return;
       }
       if (!existsSync(path)) {
@@ -2567,7 +2619,7 @@ export const interactiveCommands: InteractiveCommand[] = [
         ctx.push({role: "system", text: "usage: /remember <fact> --category architecture|integration|convention|entrypoint|gotcha|ownership"});
         return;
       }
-      const response = await ctx.apiClient.storeCodeMemory({fact, category});
+      const response = await ctx.apiClient.storeCodeMemory({fact, category}, randomUUID());
       const data = getData(response);
       ctx.push({role: "system", text: `Remembered: ${data.id ?? "stored"} (${category})`});
     },

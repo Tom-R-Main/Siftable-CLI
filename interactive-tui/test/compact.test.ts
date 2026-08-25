@@ -8,9 +8,9 @@
 import { describe, it, expect, afterAll, beforeAll } from "bun:test";
 import { homedir } from "node:os";
 import { existsSync, rmSync } from "node:fs";
-import { createChatAgent } from "../openfunction/framework/index";
+import { createChatAgent } from "../agent-harness";
 import { rolloutPathForKey } from "../threadEngine";
-import type { AIAdapter } from "../openfunction/framework/adapters/types";
+import type { AIAdapter } from "../agent-harness/framework/adapters/types";
 
 const KEY = `__sift_test_compact_${process.pid}`;
 const PATH = rolloutPathForKey(homedir(), KEY);
@@ -82,5 +82,46 @@ describe("ChatAgent.compact() (manual /compact)", () => {
     } finally {
       process.env.SIFT_CONTEXT_COMPACTION = "1";
     }
+  });
+
+  it("does not rewrite history when compaction is cancelled during summarization", async () => {
+    let notifyStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      notifyStarted = resolve;
+    });
+    const adapter: AIAdapter = {
+      name: "abortable-mock",
+      model: "mock-1",
+      async chat(_messages, _registry, options) {
+        if (!options?.oneShot) return { text: "ok" };
+        notifyStarted();
+        return new Promise((_resolve, reject) => {
+          const signal = options.signal;
+          if (signal?.aborted) {
+            reject(signal.reason);
+            return;
+          }
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+    };
+    const agent = await createChatAgent({
+      name: "t",
+      adapter,
+      persistKey: `${KEY}_abort`,
+      memory: false,
+      tools: [],
+    });
+    for (let i = 0; i < 5; i += 1) {
+      await agent.chat(`question ${i} ${"detail ".repeat(20)}`);
+    }
+    const before = structuredClone(agent.getHistory());
+    const controller = new AbortController();
+    const compaction = agent.compact({ force: true, signal: controller.signal });
+    await started;
+    controller.abort(new Error("cancel compaction"));
+
+    await expect(compaction).rejects.toThrow("cancel compaction");
+    expect(agent.getHistory()).toEqual(before);
   });
 });

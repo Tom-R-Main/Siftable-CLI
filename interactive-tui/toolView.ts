@@ -56,7 +56,7 @@ function clipLine(s: string, max: number): string {
 
 /**
  * Pull a salient arg out of a tool call for a one-line narration. Used for the
- * OpenFunction brain path (codex provides a ready-made `detail` instead). Array
+ * Agent-harness path (Codex provides a ready-made `detail` instead). Array
  * values (e.g. a `command: ["bash","-lc","…"]`) are joined, not dropped.
  */
 export function toolArgPreview(args?: Record<string, unknown>): string {
@@ -103,7 +103,7 @@ export function toolArgPreview(args?: Record<string, unknown>): string {
 
 /**
  * The one-line label shown next to a tool call. Codex hands us a ready `detail`
- * (the command/query/path); the OpenFunction brain hands us raw args.
+ * (the command/query/path); the agent harness hands us raw args.
  */
 export function toolCallLabel(
   detail: string | undefined,

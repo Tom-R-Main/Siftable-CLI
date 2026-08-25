@@ -12,7 +12,8 @@
   "scripts": {
     "prebuild": "npm run build --workspace @siftable/mcp-server && npm run build --workspace @siftable/tabular-import",
     "build": "node scripts/clean-dist.mjs && tsc && node -e \"const fs=require('node:fs');fs.mkdirSync('dist/lib/vendor',{recursive:true});fs.copyFileSync('../shared/dist/types/datasetQueryContract.js','dist/lib/vendor/datasetQueryContract.js')\"",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && npm run typecheck:tui",
+    "typecheck:tui": "tsc --noEmit -p interactive-tui/tsconfig.json",
     "manifest": "npm run build && oclif manifest",
     "interactive:dev": "npm run manifest && (cd interactive-tui && bun run native:build) && SIFT_INTERACTIVE_RUNTIME=source node ./bin/run.js interactive",
     "interactive:help": "npm run build && npm run manifest && node ./bin/run.js interactive --help",
@@ -21,21 +22,30 @@
     "bench:tui-actions": "tsx scripts/bench-tui-actions.ts",
     "explorer:eval": "tsx scripts/eval-repo-explorer.ts",
     "test": "jest",
+    "test:harness": "cd interactive-tui && bun test test/agentHarnessBoundary.test.ts test/agentHarnessWorkTools.test.ts test/agent-persistence.test.ts test/compaction.test.ts test/packagedRuntime.test.ts",
     "test:jest": "jest",
+    "test:tui": "cd interactive-tui && bun run pretest && bun test",
     "test:vitest": "vitest run --config vitest.config.ts",
     "test-coverage": "npm run test:jest -- --coverage && npm run test:vitest -- --coverage.enabled",
     "native:release": "cd interactive-tui && bash scripts/build-native-release.sh",
     "verify:test-typecheck-boundaries": "node scripts/verify-test-typecheck-boundaries.mjs",
-    "verify:package": "npm run package:interactive && node scripts/verify-package-imports.mjs",
+    "verify:harness": "npm run typecheck:tui && vitest run test/commands/interactive.chat-agent.test.ts --config vitest.config.ts && npm run test:harness",
+    "verify:package": "npm run package:interactive && npm run verify:harness && node scripts/verify-package-imports.mjs",
     "prepublishOnly": "npm run build",
     "prepack": "npm run manifest && npm run verify:package"
   },
   "nx": {
     "targets": {
+      "typecheck": {
+        "dependsOn": ["build"]
+      },
       "test": {
-        "dependsOn": ["test:vitest"]
+        "dependsOn": ["test:vitest", "test:harness"]
       },
       "test:vitest": {
+        "dependsOn": ["build"]
+      },
+      "test:harness": {
         "dependsOn": ["build"]
       },
       "test-coverage": {

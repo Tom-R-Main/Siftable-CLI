@@ -62,12 +62,12 @@ export interface CodexLogin {
 /** Result of an explicit `/compact` (manual context compaction). */
 export interface CompactionReport {
   /** Which engine handled the request. Codex compacts server-side. */
-  engine: "openfunction" | "codex";
+  engine: "agent-harness" | "codex";
   /** True when the conversation history was actually rewritten. */
   ran: boolean;
   /** When ran=false, a human-readable reason. */
   reason?: string;
-  /** Heuristic token estimate before/after (OpenFunction engine only). */
+  /** Heuristic token estimate before/after (agent-harness engine only). */
   beforeTokens?: number;
   afterTokens?: number;
   /** Messages whose tool output was cleared. */

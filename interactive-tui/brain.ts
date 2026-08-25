@@ -1,8 +1,7 @@
 /**
- * In-process OpenFunction brain for `sift interactive` (A0 shape proof).
+ * In-process Siftable agent harness for `sift interactive`.
  *
- * Forked from execuTerm-refork daemon/src/services/openfunctionBrain.ts, trimmed
- * for the standalone copilot:
+ * This is the product-owned conversation runtime for the standalone copilot:
  *   - no daemon coupling (own BrainEvent type, no ../exfClient import)
  *   - READ-ONLY tools for A0. Write/edit/run land in A1 (behind a real TUI
  *     confirm); dispatch in A2.
@@ -12,7 +11,6 @@
  * Runs INSIDE the spawned Bun TUI process (not the Node oclif command). The
  * launcher (src/commands/interactive.ts) sets the env contract:
  *   SIFT_PAT / SIFT_API_URL / SIFT_WORKSPACE_ID  Siftable context provider creds
- *   EXECUTERM_OPENFUNCTION_PATH                   optional dev override for OpenFunction framework index
  *   SIFT_LOCAL_BRAIN=1                            tells index.tsx to use LocalControlClient
  * The launcher DELETES EXECUTERM_AUTO_APPROVE — A0 has no write tools, so there
  * is nothing to auto-approve; the scrub keeps the invariant honest if a stray
@@ -31,7 +29,8 @@ import {
   writeText,
 } from './fsEngine';
 import { requestConfirm } from './confirmGate';
-import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import {
   attachRepoExplorerScout,
   attachRepoExplorerFanout,
@@ -77,6 +76,12 @@ import { renderMermaidFile, renderMermaidSource } from './cellRender';
 import { discoverSkills, formatSkillsForPrompt, loadSkill, type SkillInfo } from './skillsEngine';
 import type { ChildSessionController } from './childSessionController';
 import type { CompactionReport } from './controlClient';
+import {
+  acknowledgeSessionInstruction,
+  listPendingSessionInstructions,
+  sessionJournalIdForConversation,
+} from './sessionMailbox';
+import * as bundledAgentHarness from './agent-harness';
 
 /** Relay-compatible event shape the TUI already understands (token, tool_call, tool_result, done, error). */
 export interface BrainEvent {
@@ -113,14 +118,7 @@ const LEAN_PROMPT =
   'Use code_search forceRefresh after external commands likely changed the workspace. ' +
   'If a search result is truncated/capped, describe it as partial and narrow or explicitly broaden before treating absence as definitive.';
 
-function entryPath(): string {
-  return (
-    process.env.EXECUTERM_OPENFUNCTION_PATH ||
-    join(process.env.SIFT_INTERACTIVE_TUI_DIR || process.cwd(), 'openfunction', 'framework', 'index.ts')
-  );
-}
-
-interface OfChunk {
+interface AgentHarnessChunk {
   type: 'text' | 'tool_call' | 'tool_result' | 'done';
   text?: string;
   toolCall?: { name: string; args?: Record<string, unknown> };
@@ -128,10 +126,8 @@ interface OfChunk {
   result?: { content?: string; text?: string };
 }
 
-/** Outcome of an explicit ChatAgent.compact() call (structural mirror of the
- *  framework's CompactionOutcome — kept local so the brain stays decoupled from
- *  the dynamically-imported vendored types). */
-interface OfCompactionOutcome {
+/** Outcome of an explicit harness compaction call. */
+interface AgentHarnessCompactionOutcome {
   ran: boolean;
   reason?: string;
   beforeTokens: number;
@@ -140,10 +136,20 @@ interface OfCompactionOutcome {
   summarized: boolean;
 }
 
-interface OfModule {
+interface AgentHarnessModule {
+  JsonlSessionEventStore?: new (options: {rootDir: string}) => {
+    acquireLease: (sessionId: string) => {release: () => void};
+  };
   createChatAgent: (config: Record<string, unknown>) => Promise<{
-    chat: (msg: ChatInput, o: { stream: true }) => AsyncIterable<OfChunk>;
-    compact?: (options?: { force?: boolean }) => Promise<OfCompactionOutcome>;
+    chat: (msg: ChatInput, o: { stream: true; signal?: AbortSignal }) => AsyncIterable<AgentHarnessChunk>;
+    compact?: (options?: { force?: boolean }) => Promise<AgentHarnessCompactionOutcome>;
+    reset?: (options?: {threadId?: string}) => Promise<void>;
+    resetAsync?: (options?: {threadId?: string}) => Promise<void>;
+    ingestExternalMessage?: (message: ChatInput, options: {id: string}) => Promise<boolean>;
+    getHistory?: () => unknown[];
+    getSessionEvents?: () => unknown[];
+    close?: () => Promise<void>;
+    destroy?: () => Promise<void>;
   }>;
   defineTool: (def: {
     name: string;
@@ -155,32 +161,125 @@ interface OfModule {
   err: (error: string) => unknown;
 }
 
-// One OpenFunction agent per active-session context, keyed by the workspace/cwd
+// One harness agent per active-session context, keyed by the workspace/cwd
 // identity (the same string used as the rollout persistKey). Lane C: a child
 // session runs in its own worktree → its own workspace root → its own agent
 // instance and rollout, so entering a child and returning to the parent reuses
 // each side's agent instead of rebuilding a singleton bound to whoever built it
 // first. read_only children that share the parent's cwd intentionally share its
 // agent; their visible transcripts stay separate via sessionContext.
-type OfAgent = {
-  chat: (msg: ChatInput, o: { stream: true }) => AsyncIterable<OfChunk>;
-  compact?: (options?: { force?: boolean }) => Promise<OfCompactionOutcome>;
+type AgentHarnessAgent = {
+  chat: (msg: ChatInput, o: { stream: true; signal?: AbortSignal }) => AsyncIterable<AgentHarnessChunk>;
+  compact?: (options?: { force?: boolean }) => Promise<AgentHarnessCompactionOutcome>;
+  reset?: (options?: {threadId?: string}) => Promise<void>;
+  resetAsync?: (options?: {threadId?: string}) => Promise<void>;
+  ingestExternalMessage?: (message: ChatInput, options: {id: string}) => Promise<boolean>;
+  getHistory?: () => unknown[];
+  getSessionEvents?: () => unknown[];
+  close?: () => Promise<void>;
+  destroy?: () => Promise<void>;
 };
-const agents = new Map<string, Promise<OfAgent>>();
+const agents = new Map<string, Promise<AgentHarnessAgent>>();
+const agentRetirements = new Map<string, Promise<void>>();
+const mailboxDrains = new Map<string, Promise<void>>();
+let activeConversationKey: string | undefined;
+
+function retireAgentsAfterCurrentTurns(): void {
+  const staleAgents = [...agents.entries()];
+  agents.clear();
+  for (const [key, pending] of staleAgents) {
+    const prior = agentRetirements.get(key) ?? Promise.resolve();
+    const retirement = prior
+      .then(async () => {
+        const agent = await pending;
+        if (typeof agent.close === 'function') await agent.close();
+        else await agent.destroy?.();
+      })
+      .catch(() => undefined);
+    agentRetirements.set(key, retirement);
+    void retirement.then(() => {
+      if (agentRetirements.get(key) === retirement) agentRetirements.delete(key);
+    });
+  }
+}
+
+/** Keep the brain's durable identity aligned with sessionContext enter/leave. */
+export function setAgentConversationKey(key: string | undefined): void {
+  activeConversationKey = key?.trim() || undefined;
+}
 
 /** The active session's agent/rollout identity at the brain layer. Equals the
- *  persistKey; a distinct worktree (child) yields a distinct key. */
+ *  persistKey. sessionContext's conversationKey is authoritative when the TUI
+ *  is active; headless callers fall back to the workspace/cwd identity. */
 function agentSessionKey(): string {
-  return getWorkspaceRoot() || getSessionCwd();
+  return activeConversationKey || getWorkspaceRoot() || getSessionCwd();
+}
+
+interface HeldSessionJournalLease {
+  release: () => void;
+}
+
+const heldSessionJournalLeases = new Map<string, HeldSessionJournalLease>();
+let journalLeaseExitCleanupRegistered = false;
+
+function releaseSessionJournalLease(lease: HeldSessionJournalLease): void {
+  try {
+    lease.release();
+  } catch {
+    // Cleanup also runs during process exit. The store's token-bound release
+    // never removes a replacement lease, so a failure is safe to leave for its
+    // crash-recovery protocol on the next open.
+  }
+}
+
+function releaseAllSessionJournalLeases(): void {
+  for (const lease of heldSessionJournalLeases.values()) {
+    releaseSessionJournalLease(lease);
+  }
+  heldSessionJournalLeases.clear();
+}
+
+function registerJournalLeaseExitCleanup(): void {
+  if (journalLeaseExitCleanupRegistered) return;
+  journalLeaseExitCleanupRegistered = true;
+  process.once('exit', releaseAllSessionJournalLeases);
+}
+
+/**
+ * Bind every incarnation of one logical TUI conversation to the same durable
+ * session journal. The id is an opaque digest of the conversation key; a
+ * process-lifetime lease prevents concurrent SessionKernel projections from
+ * advancing that shared event stream.
+ */
+function sessionJournalConfig(of: AgentHarnessModule, key: string): Record<string, unknown> | undefined {
+  if (typeof of.JsonlSessionEventStore !== 'function') return undefined;
+
+  const rootDir = resolve(
+    process.env.SIFT_SESSION_EVENT_ROOT?.trim() ||
+    join(homedir(), '.siftable', 'session-events', 'v1'),
+  );
+  const conversationDigest = sessionJournalIdForConversation(key);
+  const store = new of.JsonlSessionEventStore({rootDir});
+  const leaseKey = `${rootDir}\0${conversationDigest}`;
+  if (!heldSessionJournalLeases.has(leaseKey)) {
+    heldSessionJournalLeases.set(leaseKey, store.acquireLease(conversationDigest));
+    registerJournalLeaseExitCleanup();
+  }
+  return {
+    id: conversationDigest,
+    threadId: key,
+    store,
+    recoverInterrupted: true,
+  };
 }
 
 /** Provider id that routes the brain to the Codex app-server engine. */
 const CODEX_PROVIDER = 'codex';
-/** OpenFunction's default model — used to decide when to pass a model override to Codex. */
-const DEFAULT_OPENFUNCTION_MODEL = 'google/gemini-3.7-flash';
+/** Local harness default model — used to decide when to pass a model override to Codex. */
+const DEFAULT_AGENT_HARNESS_MODEL = 'google/gemini-3.7-flash';
 
 let currentProvider = process.env.EXECUTERM_MODEL_PROVIDER || 'openrouter';
-let currentModel = process.env.EXECUTERM_MODEL || DEFAULT_OPENFUNCTION_MODEL;
+let currentModel = process.env.EXECUTERM_MODEL || DEFAULT_AGENT_HARNESS_MODEL;
 let currentEffort: string | undefined = process.env.EXECUTERM_MODEL_EFFORT || undefined;
 
 const SCOUT_PROMPT =
@@ -295,10 +394,10 @@ export function setBrainModel(input: {
   // effort is explicitly settable to "" to clear it back to provider default.
   if (input.effort !== undefined) currentEffort = input.effort || undefined;
   if (input.apiKey && input.provider) {
-    // OpenFunction adapters read provider keys from env (e.g. OPENROUTER_API_KEY).
+    // Harness adapters read provider keys from env (e.g. OPENROUTER_API_KEY).
     process.env[`${input.provider.toUpperCase()}_API_KEY`] = input.apiKey;
   }
-  agents.clear(); // a model/provider/key change invalidates every session's agent
+  retireAgentsAfterCurrentTurns(); // a model/provider/key change invalidates every session's agent
   return getBrainModel();
 }
 
@@ -392,7 +491,7 @@ export function refreshSkills(): SkillInfo[] {
  * There is no auto-approve path: the confirm gate denies if no UI is listening,
  * and the Zig layer independently jails writes to the workspace root.
  */
-function buildLocalTools(of: OfModule): unknown[] {
+function buildLocalTools(of: AgentHarnessModule): unknown[] {
   // Writable root for A1. Empty → write/edit tools are not registered at all.
   const writableRootAvailable = Boolean(process.env.SIFT_WORKSPACE_ROOT);
   const currentUserCwd = () => getSessionCwd();
@@ -1177,32 +1276,22 @@ function buildLocalTools(of: OfModule): unknown[] {
 }
 
 /**
- * Load an optional OpenFunction .env (model provider keys) into process.env so
- * local dev can keep OPENROUTER_API_KEY etc. near an override checkout. Never
- * overrides an already-set var. Runs once. The Siftable token (SIFT_PAT) is
- * supplied by the launcher, so there is no auth.json fallback here.
+ * Load an optional source-TUI .env containing model provider keys. Never
+ * overrides an inherited value. The Siftable token is supplied by the launcher.
  */
 let envLoaded = false;
-async function loadOpenFunctionEnv(): Promise<void> {
+async function loadAgentHarnessEnv(): Promise<void> {
   if (envLoaded) return;
   envLoaded = true;
   try {
     const fs = await import('node:fs/promises');
-    const override = process.env.EXECUTERM_OPENFUNCTION_PATH;
-    const envPaths = [
-      ...(override ? [override.replace(/\/src\/framework\/index\.(ts|js)$/, '/.env')] : []),
-      join(process.env.SIFT_INTERACTIVE_TUI_DIR || process.cwd(), '.env'),
-      join(process.env.HOME || '', 'projects', 'OpenFunction', '.env'),
-    ];
-    const seen = new Set<string>();
-    for (const envPath of envPaths) {
-      if (!envPath || seen.has(envPath)) continue;
-      seen.add(envPath);
+    const envPath = join(process.env.SIFT_INTERACTIVE_TUI_DIR || process.cwd(), '.env');
+    {
       let text = '';
       try {
         text = await fs.readFile(envPath, 'utf8');
       } catch {
-        continue;
+        return;
       }
       for (const line of text.split('\n')) {
         const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
@@ -1217,24 +1306,30 @@ async function loadOpenFunctionEnv(): Promise<void> {
   }
 }
 
-async function loadOpenFunctionModule(): Promise<OfModule> {
-  await loadOpenFunctionEnv();
-  // Tests and future compiled binaries may inject a runtime directly; normal
-  // CLI installs load the vendored OpenFunction slice from interactive-tui.
-  const injected = (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ as
-    | OfModule
+async function loadAgentHarnessModule(): Promise<AgentHarnessModule> {
+  await loadAgentHarnessEnv();
+  // Tests may inject a narrow fake. Production and packaged installs always
+  // use the static import above, allowing Bun to include the harness offline.
+  const injected = (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ as
+    | AgentHarnessModule
     | undefined;
-  return injected ?? ((await import(entryPath())) as unknown as OfModule);
+  return injected ?? (bundledAgentHarness as unknown as AgentHarnessModule);
 }
 
-export async function getAgent(): Promise<OfAgent> {
+export async function getAgent(): Promise<AgentHarnessAgent> {
   // Bind the key at call time so the agent is built for whatever session is
   // active now; the persistKey is the same string, captured at build time.
   const key = agentSessionKey();
   let pending = agents.get(key);
   if (!pending) {
+    const retirement = agentRetirements.get(key);
     pending = (async () => {
-      const of = await loadOpenFunctionModule();
+      // A model/key switch may retire an agent while its admitted turn is
+      // still running. Wait for close() to serialize behind that turn before
+      // constructing another SessionKernel over the same durable journal.
+      await retirement;
+      const of = await loadAgentHarnessModule();
+      const session = sessionJournalConfig(of, key);
       return of.createChatAgent({
         name: 'siftable-control',
         provider: currentProvider,
@@ -1245,25 +1340,91 @@ export async function getAgent(): Promise<OfAgent> {
         memory: false,
         maxToolRounds: 24,
         prompt: LEAN_PROMPT + formatSkillsForPrompt(currentSkills()),
-        // Stable key for rollout persistence: same workspace/cwd resumes the
-        // prior conversation (gated by SIFT_CONTEXT_COMPACTION inside the agent).
+        // Retain the legacy key for one-time migration. The event journal above
+        // is the always-on durable authority for resume and recovery.
         persistKey: key,
+        ...(session ? {session} : {}),
       });
     })();
     agents.set(key, pending);
   }
-  return pending;
+  const agent = await pending;
+  await drainSessionMailbox(key, agent);
+  return agent;
+}
+
+async function drainSessionMailbox(key: string, agent: AgentHarnessAgent): Promise<void> {
+  const prior = mailboxDrains.get(key) ?? Promise.resolve();
+  const drain = prior.then(async () => {
+    const pending = listPendingSessionInstructions(key);
+    if (pending.length === 0) return;
+    if (typeof agent.ingestExternalMessage !== 'function') {
+      throw new Error(
+        'This agent harness cannot consume durable session instructions; update the bundled harness.',
+      );
+    }
+    for (const instruction of pending) {
+      // ingestExternalMessage records instructionId in the append-only journal
+      // before acknowledgement. A crash between these operations redelivers,
+      // the journal deduplicates it, and the next drain safely removes the file.
+      await agent.ingestExternalMessage(instruction.instruction, {id: instruction.instructionId});
+      acknowledgeSessionInstruction(key, instruction.instructionId);
+    }
+  });
+  mailboxDrains.set(key, drain);
+  try {
+    await drain;
+  } finally {
+    if (mailboxDrains.get(key) === drain) mailboxDrains.delete(key);
+  }
 }
 
 /** Test seam: drop all cached per-session agents (e.g. between unit tests). */
 export function __resetBrainAgentsForTests(): void {
   agents.clear();
+  agentRetirements.clear();
+  mailboxDrains.clear();
+  activeConversationKey = undefined;
+  releaseAllSessionJournalLeases();
+}
+
+/** Reset the active live agent without deleting its append-only audit evidence. */
+export async function resetActiveThread(): Promise<boolean> {
+  const key = agentSessionKey();
+  const agent = await getAgent();
+  if (typeof agent.resetAsync === 'function') {
+    await agent.resetAsync({threadId: key});
+    return true;
+  }
+  if (typeof agent.reset === 'function') {
+    await agent.reset({threadId: key});
+    return true;
+  }
+  return false;
+}
+
+/** Read the active event journal, never the deprecated rollout mirror. */
+export async function inspectActiveThread(): Promise<{
+  sessionId: string;
+  eventCount: number;
+  messageCount: number;
+}> {
+  const key = agentSessionKey();
+  const agent = await getAgent();
+  if (typeof agent.getSessionEvents !== 'function' || typeof agent.getHistory !== 'function') {
+    throw new Error('the active agent harness does not expose durable session inspection');
+  }
+  return {
+    sessionId: sessionJournalIdForConversation(key),
+    eventCount: agent.getSessionEvents().length,
+    messageCount: agent.getHistory().length,
+  };
 }
 
 /**
  * Force a context compaction on the active session's agent (the TUI's
  * `/compact`). Codex compacts its own context server-side, so for the `/codex`
- * engine this is a reported no-op. For the OpenFunction engine it prunes + (if
+ * engine this is a reported no-op. For the agent harness it prunes + (if
  * needed) summarizes the older turns of the live in-memory history — the same
  * pipeline auto-compaction uses, but run on demand regardless of budget.
  */
@@ -1278,13 +1439,13 @@ export async function compactActiveThread(): Promise<CompactionReport> {
   const agent = await getAgent();
   if (typeof agent.compact !== "function") {
     return {
-      engine: "openfunction",
+      engine: "agent-harness",
       ran: false,
-      reason: "this brain build does not support /compact (update the vendored OpenFunction framework)",
+      reason: "this brain build does not support /compact (update the bundled agent harness)",
     };
   }
   const outcome = await agent.compact({ force: true });
-  return { engine: "openfunction", ...outcome };
+  return { engine: "agent-harness", ...outcome };
 }
 
 function explorerScoutEnabled(): boolean {
@@ -1296,7 +1457,7 @@ function explorerFanoutEnabled(): boolean {
 }
 
 function buildRepoExplorerScoutTools(
-  of: OfModule,
+  of: AgentHarnessModule,
   budget: {
     maxToolCalls: number;
     maxSearches: number;
@@ -1593,9 +1754,9 @@ export function deterministicExplorerQuery(prose: string, blobs: string[]): stri
 // main agent's transcript, so the main model's own context is unchanged. The
 // model read everything and decided what matters, so the explorer still acts on
 // the full intent of the paste.
-async function distillExplorerQueryWithMainModel(of: OfModule, raw: string): Promise<string> {
+async function distillExplorerQueryWithMainModel(of: AgentHarnessModule, raw: string): Promise<string> {
   const provider = currentProvider === CODEX_PROVIDER ? 'openrouter' : currentProvider;
-  const model = currentProvider === CODEX_PROVIDER ? DEFAULT_OPENFUNCTION_MODEL : currentModel;
+  const model = currentProvider === CODEX_PROVIDER ? DEFAULT_AGENT_HARNESS_MODEL : currentModel;
   const agent = await of.createChatAgent({
     name: 'siftable-explorer-query-distill',
     provider,
@@ -1621,7 +1782,7 @@ async function distillExplorerQueryWithMainModel(of: OfModule, raw: string): Pro
 // (normal use is untouched). Over the gate → main-model distill (primary), with
 // the deterministic prose+terms compaction as the backup if the model call
 // errors or times out.
-async function buildExplorerQuery(of: OfModule, input: ChatInput): Promise<{ text: string; distill: ExplorerQueryDistill }> {
+async function buildExplorerQuery(of: AgentHarnessModule, input: ChatInput): Promise<{ text: string; distill: ExplorerQueryDistill }> {
   const raw = chatInputText(input);
   if (raw.length <= EXPLORER_QUERY_DISTILL_CHARS) {
     return { text: raw, distill: { method: 'verbatim', originalChars: raw.length, finalChars: raw.length } };
@@ -1653,13 +1814,13 @@ async function runRepoExplorerScout(
   const budget = repoExplorerScoutBudget();
   const state: RepoExplorerScoutState = { enabled: true, ran: true, elapsedMs: 0, failed: false };
   try {
-    const of = await loadOpenFunctionModule();
+    const of = await loadAgentHarnessModule();
     const provider = process.env.SIFT_EXPLORER_PROVIDER ||
       process.env.SIFT_EXPLORER_SCOUT_PROVIDER ||
       (currentProvider === CODEX_PROVIDER ? 'openrouter' : currentProvider);
     const model = process.env.SIFT_EXPLORER_MODEL ||
       process.env.SIFT_EXPLORER_SCOUT_MODEL ||
-      (currentProvider === CODEX_PROVIDER ? DEFAULT_OPENFUNCTION_MODEL : currentModel);
+      (currentProvider === CODEX_PROVIDER ? DEFAULT_AGENT_HARNESS_MODEL : currentModel);
     const scout = await of.createChatAgent({
       name: 'siftable-repo-explorer-scout',
       provider,
@@ -1741,7 +1902,7 @@ async function runRepoExplorerWarpGrep(
     return state;
   };
   try {
-    await loadOpenFunctionEnv();
+    await loadAgentHarnessEnv();
     const apiKey = process.env.MORPH_API_KEY;
     if (!apiKey) return fail('MORPH_API_KEY not set (use /key vault morph to load it from vault, or /key morph <key>)');
     let MorphClientCtor: new (config: { apiKey: string }) => {
@@ -1757,7 +1918,7 @@ async function runRepoExplorerWarpGrep(
     // Distill the query before it goes over the wire: warp-grep 400s once its
     // searchTerm exceeds Morph's ~85k-token window, which a giant pasted context
     // blows through. buildExplorerQuery is a no-op under the size gate.
-    const of = await loadOpenFunctionModule();
+    const of = await loadAgentHarnessModule();
     const query = await buildExplorerQuery(of, input);
     state.queryDistill = query.distill;
     // warp-grep is a remote subagent (its own grep/read loop), not a local
@@ -1826,7 +1987,7 @@ async function runRepoExplorerFanout(
   };
   // Distill ONCE here (not per-branch): a string is a valid ChatInput, so each
   // branch's chatInputText() returns the resolved query verbatim — no N model calls.
-  const of = await loadOpenFunctionModule();
+  const of = await loadAgentHarnessModule();
   const query = await buildExplorerQuery(of, input);
   state.queryDistill = query.distill;
   const fanoutRun = await runCollabBranches({
@@ -1874,13 +2035,13 @@ async function runRepoExplorerFanoutBranch(
 ): Promise<{ branch: RepoExplorerFanoutBranch; report?: ReturnType<typeof parseScoutReportForFanout> }> {
   const { branch, startedAt } = context;
   try {
-    const of = await loadOpenFunctionModule();
+    const of = await loadAgentHarnessModule();
     const provider = process.env.SIFT_EXPLORER_PROVIDER ||
       process.env.SIFT_EXPLORER_SCOUT_PROVIDER ||
       (currentProvider === CODEX_PROVIDER ? 'openrouter' : currentProvider);
     const model = process.env.SIFT_EXPLORER_MODEL ||
       process.env.SIFT_EXPLORER_SCOUT_MODEL ||
-      (currentProvider === CODEX_PROVIDER ? DEFAULT_OPENFUNCTION_MODEL : currentModel);
+      (currentProvider === CODEX_PROVIDER ? DEFAULT_AGENT_HARNESS_MODEL : currentModel);
     context.appendEvent('agent_configured', { provider, model });
     const scout = await of.createChatAgent({
       name: `siftable-repo-explorer-fanout-${branch.id}`,
@@ -2047,7 +2208,7 @@ function reduceRepoExplorerFanout(
 }
 
 async function collectScoutText(
-  chunks: AsyncIterable<OfChunk>,
+  chunks: AsyncIterable<AgentHarnessChunk>,
   budget: { maxReturnedChars: number; maxToolCalls: number } = {
     maxReturnedChars: DEFAULT_SCOUT_BUDGET.maxReturnedChars,
     maxToolCalls: DEFAULT_SCOUT_BUDGET.maxToolCalls,
@@ -2096,11 +2257,36 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
 }
 
 /**
- * Ask the OpenFunction brain. Emits relay-compatible events to onEvent and
+ * Ask the Siftable agent harness. Emits relay-compatible events to onEvent and
  * resolves with the assembled reply text. Returns {error} (never throws) so the
  * caller can render a degraded state instead of crashing the TUI.
  */
-export async function openfunctionAsk(
+function agentHarnessErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!error || typeof error !== 'object' || !('toolEffects' in error)) return message;
+
+  const effects = (error as {toolEffects?: unknown}).toolEffects;
+  if (!effects || typeof effects !== 'object' || Array.isArray(effects)) return message;
+
+  const {
+    certainty,
+    receipts,
+    verificationRequired,
+  } = effects as {
+    certainty?: unknown;
+    receipts?: unknown;
+    verificationRequired?: unknown;
+  };
+  const mayHaveOccurred = certainty === 'unknown'
+    || (Array.isArray(receipts) && receipts.length > 0)
+    || verificationRequired === true
+    || (typeof verificationRequired === 'string' && verificationRequired.length > 0);
+  if (!mayHaveOccurred) return message;
+
+  return `${message}\n\nTool side effects may have occurred; verify state before retrying.`;
+}
+
+export async function agentHarnessAsk(
   input: ChatInput,
   onEvent: (event: BrainEvent) => void,
   signal?: AbortSignal,
@@ -2200,13 +2386,13 @@ export async function openfunctionAsk(
 
   // Codex engine: when the active provider is `codex`, drive the OpenAI
   // `codex app-server` sidecar (ChatGPT-subscription auth) instead of the
-  // OpenFunction agent. Lazily imported to avoid a static import cycle
+  // Siftable agent harness. Codex remains lazy to avoid a static import cycle
   // (codexEngine type-imports this module).
   if (currentProvider === CODEX_PROVIDER) {
     const { codexAsk } = await import('./codexEngine');
-    // Pass the model only when it isn't the OpenFunction default, so a fresh
+    // Pass the model only when it isn't the harness default, so a fresh
     // /codex switch lets app-server pick its own default model.
-    const model = currentModel && currentModel !== DEFAULT_OPENFUNCTION_MODEL ? currentModel : undefined;
+    const model = currentModel && currentModel !== DEFAULT_AGENT_HARNESS_MODEL ? currentModel : undefined;
     try {
       return await codexAsk(preparedInput, emitPostExplorer, { signal, model, effort: currentEffort });
     } finally {
@@ -2220,13 +2406,13 @@ export async function openfunctionAsk(
   } catch (err) {
     return {
       text: '',
-      error: `OpenFunction brain unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      error: `Siftable agent harness unavailable: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 
   let assembled = '';
   try {
-    for await (const chunk of agent.chat(preparedInput, { stream: true })) {
+    for await (const chunk of agent.chat(preparedInput, { stream: true, signal })) {
       if (chunk.type === 'text' && typeof chunk.text === 'string') {
         assembled += chunk.text;
         emitPostExplorer({ type: 'token', content: chunk.text });
@@ -2252,7 +2438,7 @@ export async function openfunctionAsk(
     }
     return { text: assembled };
   } catch (err) {
-    return { text: assembled, error: err instanceof Error ? err.message : String(err) };
+    return { text: assembled, error: agentHarnessErrorMessage(err) };
   } finally {
     finishExplorerEffectiveness();
   }

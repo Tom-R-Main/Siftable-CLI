@@ -10,7 +10,7 @@
  * This module owns the two facets that are pure data — the **active session
  * pointer** and a **per-session transcript buffer** — plus the cwd swap, and
  * exposes `enter`/`leave` as the single place those move in lockstep. It is
- * deliberately free of any TUI (Solid), Codex, or OpenFunction coupling: the
+ * deliberately free of any TUI (Solid), Codex, or agent-harness coupling: the
  * engines key their own per-session state (threads / agent instances) off the
  * same `conversationKey` this module switches on, but they import nothing from
  * here. That keeps the foundation unit-testable without a renderer or a model.

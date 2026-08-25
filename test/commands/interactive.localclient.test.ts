@@ -6,7 +6,7 @@ import {setBrainModel, type BrainEvent, type BrainAskResult} from '../../interac
 import {doneFallbackText, type SseEvent} from '../../interactive-tui/controlClient';
 import {rejectAllConfirms, resetBypass, resolveApproval, setConfirmListener} from '../../interactive-tui/confirmGate';
 
-/** Build a fake openfunctionAsk that replays a scripted event stream. */
+/** Build a fake agentHarnessAsk that replays a scripted event stream. */
 function fakeAsk(
   events: BrainEvent[],
   result: BrainAskResult = {text: ''},
@@ -52,7 +52,7 @@ describe('LocalControlClient (in-process transport)', () => {
 
     it('emits a trailing error event when the brain returns {error} (degraded path)', async () => {
       const client = new LocalControlClient({
-        ask: fakeAsk([], {text: '', error: 'OpenFunction brain unavailable: no key'}),
+        ask: fakeAsk([], {text: '', error: 'Siftable agent harness unavailable: no key'}),
       });
 
       const received: SseEvent[] = [];
@@ -60,7 +60,7 @@ describe('LocalControlClient (in-process transport)', () => {
 
       expect(received).toHaveLength(1);
       expect(received[0].type).toBe('error');
-      expect(received[0].error).toContain('brain unavailable');
+      expect(received[0].error).toContain('agent harness unavailable');
     });
 
     it('recovers final text from done.result.text when no deltas streamed', () => {
@@ -85,7 +85,7 @@ describe('LocalControlClient (in-process transport)', () => {
       await mkdir(join(root, 'nested'), {recursive: true});
       await writeFile(join(root, 'nested', 'target.txt'), 'dynamic cwd works\n', 'utf8');
       let readResult: any;
-      (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+      (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
         createChatAgent: async (config: Record<string, any>) => ({
           chat: async function* () {
             const changeDirectory = config.tools.find((tool: any) => tool.name === 'change_directory');
@@ -122,7 +122,7 @@ describe('LocalControlClient (in-process transport)', () => {
         else process.env.SIFT_USER_CWD = previousCwd;
         if (previousRoot === undefined) delete process.env.SIFT_WORKSPACE_ROOT;
         else process.env.SIFT_WORKSPACE_ROOT = previousRoot;
-        delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+        delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
         await rm(root, {recursive: true, force: true});
       }
     });
@@ -137,7 +137,7 @@ describe('LocalControlClient (in-process transport)', () => {
         approvedCommand = req.path;
         resolveApproval(req.id, 'allow');
       });
-      (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+      (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
         createChatAgent: async (config: Record<string, any>) => ({
           chat: async function* () {
             const runCommand = config.tools.find((tool: any) => tool.name === 'run_terminal_command');
@@ -167,7 +167,7 @@ describe('LocalControlClient (in-process transport)', () => {
         else process.env.SIFT_USER_CWD = previousCwd;
         if (previousShell === undefined) delete process.env.SHELL;
         else process.env.SHELL = previousShell;
-        delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+        delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
         await rm(root, {recursive: true, force: true});
       }
     });
@@ -185,7 +185,7 @@ describe('LocalControlClient (in-process transport)', () => {
       await writeFile(join(root, 'src', 'brain.ts'), 'export const route = "local search routing";\n', 'utf8');
       await writeFile(join(root, 'src', 'scoutTarget.ts'), 'export const scoutMarker = "local search scout";\n', 'utf8');
       await writeFile(join(root, 'src', 'fanoutTarget.ts'), 'export const fanoutMarker = "local search fanout";\n', 'utf8');
-      (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+      (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
         createChatAgent: async (config: Record<string, unknown>) => ({
           chat: async function* (message: unknown) {
             const name = String(config.name || '');
@@ -292,7 +292,7 @@ describe('LocalControlClient (in-process transport)', () => {
         else process.env.SIFT_EXPLORER_SCOUT = previousScout;
         if (previousFanout === undefined) delete process.env.SIFT_EXPLORER_FANOUT;
         else process.env.SIFT_EXPLORER_FANOUT = previousFanout;
-        delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+        delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
         await rm(root, {recursive: true, force: true});
       }
     });
@@ -338,7 +338,7 @@ describe('LocalControlClient (in-process transport)', () => {
 
   describe('compact()', () => {
     it('delegates to the brain compaction and returns its report', async () => {
-      const report = {engine: 'openfunction' as const, ran: true, beforeTokens: 100, afterTokens: 40, prunedMessages: 0, summarized: true};
+      const report = {engine: 'agent-harness' as const, ran: true, beforeTokens: 100, afterTokens: 40, prunedMessages: 0, summarized: true};
       const compact = jest.fn(async () => report);
       const client = new LocalControlClient({compact});
       const result = await client.compact();

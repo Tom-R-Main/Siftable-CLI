@@ -11,7 +11,7 @@
  *
  * Wiring:
  *   - brain.ts dynamically imports `codexAsk` and routes to it when the active
- *     provider is `codex` (the dispatcher in openfunctionAsk).
+ *     provider is `codex` (the dispatcher in agentHarnessAsk).
  *   - localControlClient.ts imports the control ops (account/login/logout) to
  *     back the optional ControlTransport codex* methods and the `/codex` command.
  *
@@ -354,7 +354,7 @@ let installState: CodexInstallState = 'unknown';
 // Lane C: a child session runs in its own worktree (cwd), so it must hold its own
 // thread — switching to a child and back must not tear down the parent's thread.
 // Model is part of the key so a `/model` switch starts a fresh thread (matching
-// the OpenFunction agent's reset-on-model-change), rather than silently reusing
+// the agent harness's reset-on-model-change), rather than silently reusing
 // a thread bound to the old model. See docs/architecture/mergemaster-session-and-git-model.md.
 const threads = new Map<string, string>();
 let accountCache: { account: CodexAccount | null; ts: number } | null = null;
@@ -652,7 +652,7 @@ export async function ensureThread(c: CodexClient, model?: string): Promise<stri
 }
 
 /**
- * Run one turn against Codex. Mirrors openfunctionAsk: streams BrainEvents to
+ * Run one turn against Codex. Mirrors agentHarnessAsk: streams BrainEvents to
  * onEvent and resolves with the assembled reply (never throws — a failure comes
  * back as {error} so the TUI renders a degraded state). The thread is reused
  * across calls so the conversation keeps context within the session.

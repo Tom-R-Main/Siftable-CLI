@@ -2,20 +2,20 @@
  * LocalControlClient — in-process transport for `sift interactive` (A0).
  *
  * Implements the same ControlTransport surface as the HTTP ControlClient, but
- * send() calls the OpenFunction brain directly (no daemon, no socket). This is
+ * send() calls the Siftable agent harness directly (no daemon, no socket). This is
  * the single seam the TUI swaps on: index.tsx picks LocalControlClient when
  * SIFT_LOCAL_BRAIN is set.
  *
  *   state()   synthesized from token presence + the brain's current model
  *   config()  → setBrainModel (the /model and /key commands)
  *   login()   not a daemon round-trip in local mode — directs to `sift auth login`
- *   send()    → openfunctionAsk, translating BrainEvent → SseEvent
+ *   send()    → agentHarnessAsk, translating BrainEvent → SseEvent
  *
  * Brain functions are injected (defaulting to the real brain) so tests can
  * drive event translation and degraded states with a fake `ask`.
  */
 import {
-  openfunctionAsk,
+  agentHarnessAsk,
   setBrainModel,
   getBrainModel,
   compactActiveThread,
@@ -40,7 +40,7 @@ import type {
 } from "./controlClient";
 
 export interface LocalBrainDeps {
-  ask: typeof openfunctionAsk;
+  ask: typeof agentHarnessAsk;
   setModel: typeof setBrainModel;
   getModel: typeof getBrainModel;
   /** Resolve the Siftable token from env (launcher sets SIFT_PAT). */
@@ -52,7 +52,7 @@ export interface LocalBrainDeps {
 }
 
 const defaultDeps: LocalBrainDeps = {
-  ask: openfunctionAsk,
+  ask: agentHarnessAsk,
   setModel: setBrainModel,
   getModel: getBrainModel,
   getToken: () => process.env.SIFT_PAT || process.env.EXF_PAT,
@@ -122,7 +122,7 @@ export class LocalControlClient implements ControlTransport {
     if (active) {
       return this.deps.setModel({ provider: CODEX_PROVIDER, model: CODEX_DEFAULT_MODEL });
     }
-    // Restore the OpenFunction default engine.
+    // Restore the default local agent-harness engine.
     return this.deps.setModel({ provider: "openrouter", model: "google/gemini-3.7-flash" });
   }
 
@@ -142,9 +142,9 @@ export class LocalControlClient implements ControlTransport {
   ): Promise<void> {
     if (signal?.aborted) throw abortError();
 
-    // The in-process brain runs an async generator we can't interrupt mid-flight.
-    // Best-effort abort for A0: stop forwarding events and reject so the TUI
-    // shows "paused"; the brain finishes in the background and its tail is dropped.
+    // Reject immediately so the TUI can show "paused" while the signal
+    // cooperatively interrupts the harness/provider. An already-started tool is
+    // allowed to settle in the background; late UI events remain suppressed.
     let stopped = false;
     const forward = (e: BrainEvent) => {
       if (!stopped) onEvent(e as SseEvent);
@@ -152,7 +152,7 @@ export class LocalControlClient implements ControlTransport {
 
     const askPromise = this.deps.ask(input, forward, signal).then((result) => {
       if (stopped) return;
-      // openfunctionAsk never throws; a brain failure arrives as {error}.
+      // agentHarnessAsk never throws; a brain failure arrives as {error}.
       // Surface it as an SSE error event the TUI already renders.
       if (result.error) {
         onEvent({ type: "error", error: result.error });

@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 import { performance } from 'node:perf_hooks';
-import { openfunctionAsk, setBrainModel, type BrainEvent } from '../interactive-tui/brain';
+import { agentHarnessAsk, setBrainModel, type BrainEvent } from '../interactive-tui/brain';
 import {
   EXPLORER_EVAL_PROMPTS,
   candidateFilesFromContext,
@@ -55,7 +55,7 @@ main().catch((err) => {
 });
 
 async function main(): Promise<void> {
-  if (!useRealAgent) installFakeOpenFunction();
+  if (!useRealAgent) installFakeAgentHarness();
 
   const root = process.env.SIFT_USER_CWD || process.cwd();
   const results: EvalRun[] = [];
@@ -110,7 +110,7 @@ async function runPrompt(prompt: string, mode: EvalMode, cwd: string): Promise<E
   setBrainModel({ provider: process.env.EXECUTERM_MODEL_PROVIDER || 'openrouter', model: process.env.EXECUTERM_MODEL || 'repo-explorer-eval' });
 
   try {
-    const result = await openfunctionAsk(prompt, (event) => events.push(event));
+    const result = await agentHarnessAsk(prompt, (event) => events.push(event));
     const elapsedMs = Math.round(performance.now() - startedAt);
     const effectiveness = parseEffectiveness(debugLines.find((line) => line.includes('repo_explorer_effectiveness:')) || '');
     const reportText = debugLines.find((line) => line.includes('<repo_explorer_artifact>') || line.includes('<repo_explorer_report>')) || '';
@@ -159,8 +159,8 @@ async function runPrompt(prompt: string, mode: EvalMode, cwd: string): Promise<E
   }
 }
 
-function installFakeOpenFunction(): void {
-  (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+function installFakeAgentHarness(): void {
+  (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
     createChatAgent: async (config: Record<string, unknown>) => ({
       chat: async function* (message: unknown) {
         const text = String(message);

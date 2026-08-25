@@ -3,8 +3,7 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { hydrateProviderKeyFromVault } from '../../interactive-tui/commands.js';
-import { createVaultTools as createSiftableVaultTools } from '../../interactive-tui/openfunction/providers/siftable/tools.js';
-import { createVaultTools as createExecuFunctionVaultTools } from '../../interactive-tui/openfunction/providers/execufunction/tools.js';
+import { createVaultTools as createSiftableVaultTools } from '../../interactive-tui/agent-harness/providers/siftable/tools.js';
 
 describe('Vault plaintext containment', () => {
   it('omits the legacy read command from the real Oclif runner and generated manifest', () => {
@@ -53,17 +52,11 @@ describe('Vault plaintext containment', () => {
     expect(output).not.toContain('vault read');
   });
 
-  it('does not advertise raw decrypt in either interactive agent registry', () => {
+  it('does not advertise raw decrypt in the interactive agent registry', () => {
     const client = { raw: () => ({}) };
-    const registries = [
-      createSiftableVaultTools(client as never),
-      createExecuFunctionVaultTools(client as never),
-    ];
-
-    for (const tools of registries) {
-      expect(tools.map((tool) => tool.name)).not.toContain('exf_vault_read_secret');
-      expect(tools.map((tool) => tool.description).join(' ')).not.toContain('exf_vault_read_secret');
-    }
+    const tools = createSiftableVaultTools(client as never);
+    expect(tools.map((tool) => tool.name)).not.toContain('exf_vault_read_secret');
+    expect(tools.map((tool) => tool.description).join(' ')).not.toContain('exf_vault_read_secret');
   });
 
   it('retires interactive Vault hydration before making an API request', async () => {

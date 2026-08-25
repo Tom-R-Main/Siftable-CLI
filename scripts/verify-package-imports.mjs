@@ -24,6 +24,18 @@ import path from 'node:path';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const EMITTED_IMPORTS_ONLY = process.argv.includes('--emitted-imports-only');
+const HARNESS_IDENTITY = 'siftable-agent-harness';
+const HARNESS_SOURCE_ROOT = 'agent-harness';
+const HARNESS_ENTRYPOINT = 'agent-harness/index.ts';
+const REQUIRED_HARNESS_INPUTS = Object.freeze([
+  HARNESS_ENTRYPOINT,
+  'agent-harness/framework/chat-agent.ts',
+  'agent-harness/framework/session.ts',
+  'agent-harness/framework/tool.ts',
+  'agent-harness/providers/siftable/index.ts',
+  'agent-harness/providers/siftable/client.ts',
+  'agent-harness/providers/siftable/tools.ts',
+]);
 
 function shippedFiles() {
   const out = execSync('npm pack --dry-run --ignore-scripts --json', {
@@ -88,6 +100,33 @@ function sha256File(file) {
   return createHash('sha256').update(readFileSync(file)).digest('hex');
 }
 
+function sourceFilesUnder(root) {
+  if (!existsSync(root)) return [];
+  const files = [];
+  const visit = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(absolute);
+      else if (entry.isFile() && /\.[cm]?[jt]sx?$/u.test(entry.name)) files.push(absolute);
+    }
+  };
+  visit(root);
+  return files.sort();
+}
+
+function sourceTreeSha256(tuiRoot, files) {
+  const hash = createHash('sha256');
+  for (const file of files) {
+    const sourcePath = path.relative(tuiRoot, file).replaceAll('\\', '/');
+    const contents = readFileSync(file);
+    hash.update(`${Buffer.byteLength(sourcePath)}:`);
+    hash.update(sourcePath);
+    hash.update(`:${contents.byteLength}:`);
+    hash.update(contents);
+  }
+  return hash.digest('hex');
+}
+
 function verifyPackagedInteractiveRuntime(files, shipped, problems) {
   const manifestPath = 'interactive-tui/runtime/runtime-manifest.json';
   if (!shipped.has(manifestPath)) {
@@ -104,7 +143,7 @@ function verifyPackagedInteractiveRuntime(files, shipped, problems) {
     'win32-arm64',
     'win32-x64',
   ];
-  if (manifest.schemaVersion !== 1) {
+  if (manifest.schemaVersion !== 2) {
     problems.push(`${manifestPath}\n    unsupported or missing schemaVersion`);
   }
   if (manifest.opentuiVersion !== '0.3.1') {
@@ -119,6 +158,45 @@ function verifyPackagedInteractiveRuntime(files, shipped, problems) {
 
   if (manifest.bunLockSha256 !== sha256File(path.join(ROOT, 'interactive-tui/bun.lock'))) {
     problems.push(`${manifestPath}\n    bun.lock SHA-256 does not match the authoritative private package lock`);
+  }
+
+  const harness = manifest.harness;
+  if (!harness || typeof harness !== 'object' || Array.isArray(harness)) {
+    problems.push(`${manifestPath}\n    agent harness identity and source metadata are missing`);
+  } else {
+    if (harness.identity !== HARNESS_IDENTITY) {
+      problems.push(`${manifestPath}\n    agent harness identity drifted from '${HARNESS_IDENTITY}'`);
+    }
+    if (harness.sourceRoot !== HARNESS_SOURCE_ROOT || harness.entrypoint !== HARNESS_ENTRYPOINT) {
+      problems.push(`${manifestPath}\n    agent harness source boundary or entrypoint drifted`);
+    }
+    const bundledInputs = Array.isArray(harness.bundledInputs) ? harness.bundledInputs : [];
+    const safeBundledInputs = bundledInputs.every((input) => (
+      typeof input === 'string'
+      && input.startsWith(`${HARNESS_SOURCE_ROOT}/`)
+      && path.posix.normalize(input) === input
+    ));
+    if (!safeBundledInputs || new Set(bundledInputs).size !== bundledInputs.length) {
+      problems.push(`${manifestPath}\n    agent harness metafile inventory is unsafe or contains duplicates`);
+    }
+    const missingInputs = REQUIRED_HARNESS_INPUTS.filter((input) => !bundledInputs.includes(input));
+    if (missingInputs.length > 0) {
+      problems.push(`${manifestPath}\n    statically bundled agent harness inputs are missing: ${missingInputs.join(', ')}`);
+    }
+
+    const tuiRoot = path.join(ROOT, 'interactive-tui');
+    const harnessSourceFiles = sourceFilesUnder(path.join(tuiRoot, HARNESS_SOURCE_ROOT));
+    if (harnessSourceFiles.length === 0) {
+      problems.push(`${manifestPath}\n    authoritative agent harness source is missing`);
+    } else {
+      if (harness.sourceFileCount !== harnessSourceFiles.length) {
+        problems.push(`${manifestPath}\n    agent harness source file count does not match the build input`);
+      }
+      if (!/^[0-9a-f]{64}$/u.test(harness.sourceSha256 ?? '')
+        || harness.sourceSha256 !== sourceTreeSha256(tuiRoot, harnessSourceFiles)) {
+        problems.push(`${manifestPath}\n    agent harness source SHA-256 does not match the build input`);
+      }
+    }
   }
 
   const manifestEntries = Array.isArray(manifest.files) ? manifest.files : [];
@@ -190,6 +268,16 @@ function verifyPackagedInteractiveRuntime(files, shipped, problems) {
   }
   if (!entrySource.includes('./platform/${process.platform}-${process.arch}/index.js')) {
     problems.push(`${manifestPath}\n    packaged bundle does not resolve the vendored platform runtime`);
+  }
+  const forbiddenLegacyHarnessLoaders = [
+    ['EXECUTERM_OPENFUNCTION_PATH', /EXECUTERM_OPENFUNCTION_PATH/u],
+    ['openfunction/framework path', /openfunction[\\/]framework/iu],
+    ['computed openfunction/framework path', /["']openfunction["']\s*,\s*["']framework["']/iu],
+  ];
+  for (const [description, pattern] of forbiddenLegacyHarnessLoaders) {
+    if (pattern.test(entrySource)) {
+      problems.push(`${manifestPath}\n    packaged bundle retains legacy ${description}`);
+    }
   }
 
   const bunfig = readFileSync(path.join(ROOT, 'interactive-tui/runtime/bunfig.toml'), 'utf8');

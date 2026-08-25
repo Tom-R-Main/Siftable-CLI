@@ -8,7 +8,7 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import { tmpdir } from "node:os";
 import { existsSync, rmSync } from "node:fs";
-import { appendTurn, loadHistory } from "../openfunction/framework/rollout";
+import { appendTurn, loadHistory } from "../agent-harness/framework/rollout";
 
 const path = `${tmpdir()}/sift-rollout-test-${process.pid}.jsonl`;
 const reset = () => {
