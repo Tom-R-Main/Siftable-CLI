@@ -350,6 +350,38 @@ describe('model connection interactive CLI transport', () => {
     });
   });
 
+  it('rejects malformed streamed AI error metadata at the CLI boundary', async () => {
+    const canary = 'ai_gateway_failed\nterminal-canary';
+    const client = {
+      generateAiStream: jest.fn(async function* () {
+        yield {type: 'failed', code: canary, statusCode: 999} as never;
+      }),
+    };
+    jest.spyOn(BaseCommand.prototype as never, 'client' as never)
+      .mockResolvedValueOnce(client as never);
+
+    const result = await runCommandLifecycle(AiInvoke, [
+      '--connection', model.connectionId,
+      '--model', model.model,
+      '--prompt', 'bounded prompt',
+      '--stream',
+      '--token', 'sift_pat_test',
+      '--json',
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    const output = JSON.parse(result.stdout);
+    expect(output).toMatchObject({
+      error: {
+        exit: 1,
+        message: 'AI request failed (transport).',
+      },
+    });
+    expect(output.error).not.toHaveProperty('code');
+    expect(output.error).not.toHaveProperty('statusCode');
+    expect(result.stdout).not.toContain('terminal-canary');
+  });
+
   it('surfaces a structured disabled-mode explanation instead of a generic 404', async () => {
     const client = {
       listAiModels: jest.fn().mockResolvedValue({

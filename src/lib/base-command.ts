@@ -274,9 +274,12 @@ export abstract class BaseCommand extends Command {
     requiredScope: string,
   ): void {
     if (!response.error) return;
-    const status = Number.isInteger(response.statusCode) && response.statusCode > 0
+    const statusCode = Number.isInteger(response.statusCode)
+      && response.statusCode >= 400
+      && response.statusCode <= 599
       ? response.statusCode
-      : 1;
+      : undefined;
+    const status = statusCode ?? 1;
     let code = '';
     try {
       const payload = JSON.parse(response.error) as {type?: unknown; code?: unknown};
@@ -287,9 +290,9 @@ export abstract class BaseCommand extends Command {
     } catch {
       // Transport text is intentionally not surfaced.
     }
-    const message = response.statusCode === 401
+    const message = statusCode === 401
       ? 'AI request was not authenticated (401). Run `sift auth login` to authenticate.'
-      : response.statusCode === 403
+      : statusCode === 403
         ? `AI request was denied (403). Required scope: ${requiredScope}.`
         : code === 'ai_gateway_unavailable'
           ? 'Model Connections are not enabled on this Siftable deployment.'
@@ -297,12 +300,10 @@ export abstract class BaseCommand extends Command {
             ? 'The selected model provider is temporarily disabled.'
             : code === 'ai_resource_limit_exceeded'
               ? 'The connected-model request exceeded its configured resource limit.'
-              : `AI request failed (${response.statusCode || 'transport'}${code ? `, ${code}` : ''}).`;
+              : `AI request failed (${statusCode ?? 'transport'}${code ? `, ${code}` : ''}).`;
     const error = new Error(message) as Error & {code?: string; statusCode?: number};
     if (code) error.code = code;
-    if (Number.isInteger(response.statusCode) && response.statusCode > 0) {
-      error.statusCode = response.statusCode;
-    }
+    if (statusCode) error.statusCode = statusCode;
     this.error(error, {exit: status});
   }
 

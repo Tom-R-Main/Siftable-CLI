@@ -58,15 +58,10 @@ export default class AiInvoke extends BaseCommand {
         }
         if (event.type === 'completed') finishReason = event.finishReason;
         if (event.type === 'failed') {
-          const error = new Error(`Connected model stream failed (${event.code}).`) as Error & {
-            code?: string;
-            statusCode?: number;
-          };
-          error.code = event.code;
-          error.statusCode = event.statusCode;
-          this.error(error, {
-            exit: event.statusCode,
-          });
+          this.handleAiApiError({
+            statusCode: event.statusCode,
+            error: JSON.stringify({type: event.code}),
+          }, 'ai:invoke');
         }
       }
       return {
