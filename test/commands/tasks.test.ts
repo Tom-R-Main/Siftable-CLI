@@ -1,5 +1,6 @@
 import {mockFetch, fixtures, runCommand, restoreFetch} from '../helpers/mock-api';
 import {installIsolatedConfigDirHooks} from '../helpers/config-env';
+import TasksList from '../../src/commands/tasks/list';
 
 installIsolatedConfigDirHooks('exf-cli-tasks-test-');
 
@@ -9,6 +10,14 @@ afterAll(() => {
 
 describe('tasks commands', () => {
   describe('tasks list', () => {
+    it('matches the backend default and maximum page size', () => {
+      expect(TasksList.flags.limit).toEqual(expect.objectContaining({
+        default: 25,
+        min: 1,
+        max: 100,
+      }));
+    });
+
     it('lists tasks in table format', async () => {
       mockFetch()
         .on('GET', '/api/v1/tasks')
@@ -108,6 +117,33 @@ describe('tasks commands', () => {
       expect(json.warnings).toEqual([
         'The collection may contain more results, but no safe continuation cursor is available. Narrow filters or raise the limit.',
       ]);
+    });
+
+    it('uses the backend default page size when inferring filtered completion', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/tasks')
+        .query({limit: '25', titleEquals: 'foo'})
+        .reply(200, {tasks: [fixtures.task({title: 'foo'})], totalCount: 1})
+        .install();
+
+      const result = await runCommand([
+        'tasks',
+        'list',
+        '--title-equals',
+        'foo',
+        '--token',
+        'exf_pat_test',
+        '--json',
+      ]);
+      const json = JSON.parse(result.stdout);
+
+      expect(json.page).toMatchObject({
+        returned: 1,
+        nextCursor: null,
+        total: null,
+        complete: true,
+      });
+      expect(json.warnings).toEqual([]);
     });
 
     it('does not expose a broad-page cursor for post-filtered title results', async () => {

@@ -13131,6 +13131,14 @@
         "limit": {
           "description": "Maximum number of results",
           "name": "limit",
+          "default": 25,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "cursor": {
+          "description": "Continuation cursor from a previous page",
+          "name": "cursor",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"

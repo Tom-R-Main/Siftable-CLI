@@ -2915,8 +2915,9 @@
                 <p class="cli-cmd__desc" data-i18n="docs.cli.tasks.list.desc">List human planning tasks</p>
                 <dl class="cli-cmd__params">
                   <dt>Flags</dt>
+                  <dd><code>--cursor &lt;value&gt;</code> — Continuation cursor from a previous page</dd>
                   <dd><code>--effort &lt;trivial|small|medium|large|epic|unknown&gt;</code> — Filter by effort</dd>
-                  <dd><code>--limit &lt;value&gt;</code> — Maximum number of results</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 25</span> — Maximum number of results</dd>
                   <dd><code>--phase &lt;draft|open|in_flight|review|blocked|done|cancelled&gt;</code> — Filter by phase</dd>
                   <dd><code>--project &lt;value&gt;</code> — Filter by project ID</dd>
                   <dd><code>--status &lt;inbox|next_action|in_progress|waiting_for|completed|archived&gt;</code> — Filter by status</dd>

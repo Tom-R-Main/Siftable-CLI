@@ -19,7 +19,7 @@ export default class TasksList extends BaseCommand {
       options: ['inbox', 'next_action', 'in_progress', 'waiting_for', 'completed', 'archived'],
     }),
     project: Flags.string({description: 'Filter by project ID'}),
-    limit: Flags.integer({description: 'Maximum number of results'}),
+    limit: Flags.integer({description: 'Maximum number of results', default: 25, min: 1, max: 100}),
     cursor: Flags.string({description: 'Continuation cursor from a previous page'}),
     phase: Flags.string({
       description: 'Filter by phase',
@@ -54,7 +54,7 @@ export default class TasksList extends BaseCommand {
     const data = response.data as Record<string, unknown> | undefined;
     const nextCursor = typeof data?.nextCursor === 'string' ? data.nextCursor : null;
     const hasPostFilteredTitlePredicate = Boolean(flags['title-starts-with'] || flags['title-equals']);
-    const effectiveLimit = flags.limit ?? Math.max(tasks.length, 1);
+    const effectiveLimit = flags.limit;
     const postFilteredPageMayBeIncomplete = hasPostFilteredTitlePredicate
       && (tasks.length >= effectiveLimit || nextCursor !== null);
     const totalIsAuthoritative = !hasPostFilteredTitlePredicate;

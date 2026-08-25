@@ -3015,8 +3015,9 @@ List human planning tasks
 
 **Flags**
 
+- `--cursor <value>` — Continuation cursor from a previous page
 - `--effort <trivial|small|medium|large|epic|unknown>` — Filter by effort
-- `--limit <value>` — Maximum number of results
+- `--limit <value>` *(default: 25)* — Maximum number of results
 - `--phase <draft|open|in_flight|review|blocked|done|cancelled>` — Filter by phase
 - `--project <value>` — Filter by project ID
 - `--status <inbox|next_action|in_progress|waiting_for|completed|archived>` — Filter by status
