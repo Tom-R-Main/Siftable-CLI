@@ -74,7 +74,7 @@ sift commands       # agent-friendly command topics and workflow entry points
 
 ```bash
 # List in-progress tasks
-sift tasks list --json | jq '.[] | select(.status == "in_progress")'
+sift tasks list --json | jq '.tasks[] | select(.status == "in_progress")'
 
 # Create a planning task and capture its ID
 TASK_ID=$(sift tasks create --title "Deploy v2" --json | jq -r '.task.id')

@@ -78,6 +78,30 @@ describe('tasks commands', () => {
       expect(json.page).toMatchObject({returned: 1, nextCursor: null, total: 2, complete: true});
     });
 
+    it('omits a broad backend total for exact or prefix title filters', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/tasks')
+        .query({limit: '1', titleEquals: 'foo'})
+        .reply(200, {tasks: [fixtures.task({title: 'foo'})], totalCount: 2})
+        .install();
+
+      const result = await runCommand([
+        'tasks',
+        'list',
+        '--limit',
+        '1',
+        '--title-equals',
+        'foo',
+        '--token',
+        'exf_pat_test',
+        '--json',
+      ]);
+      const json = JSON.parse(result.stdout);
+
+      expect(json.page).toMatchObject({returned: 1, total: null, complete: true});
+      expect(json.omissions).toContain('totalCount');
+    });
+
     it('shows "No results" for empty list', async () => {
       mockFetch()
         .on('GET', '/api/v1/tasks')

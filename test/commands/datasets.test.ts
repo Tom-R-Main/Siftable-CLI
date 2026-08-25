@@ -3,6 +3,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {mockFetch, runCommand, restoreFetch} from '../helpers/mock-api';
 import {inferFieldType} from '../../src/lib/dataset-files';
+import DatasetsList from '../../src/commands/datasets/list';
 
 afterAll(() => {
   restoreFetch();
@@ -10,6 +11,14 @@ afterAll(() => {
 
 describe('dataset commands', () => {
   describe('datasets list', () => {
+    it('matches the backend collection limit', () => {
+      expect(DatasetsList.flags.limit).toEqual(expect.objectContaining({
+        default: 50,
+        min: 1,
+        max: 200,
+      }));
+    });
+
     it('returns a stable object shape in JSON mode', async () => {
       mockFetch()
         .on('GET', '/api/v1/datasets')

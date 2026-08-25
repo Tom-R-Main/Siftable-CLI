@@ -204,7 +204,7 @@ Every command supports `--json` for structured output, so the CLI composes with 
 
 ```bash
 # List tasks as JSON and filter with jq
-sift tasks list --json | jq '.[] | select(.status == "in_progress")'
+sift tasks list --json | jq '.tasks[] | select(.status == "in_progress")'
 
 # Create a human planning task and capture the ID
 TASK_ID=$(sift tasks create --title "Deploy v2" --json | jq -r '.task.id')

@@ -8,7 +8,7 @@ export default class DatasetsList extends BaseCommand {
 
   static flags = {
     ...BaseCommand.baseFlags,
-    limit: Flags.integer({description: 'Maximum number of results', default: 50}),
+    limit: Flags.integer({description: 'Maximum number of results', default: 50, min: 1, max: 200}),
   };
 
   async run(): Promise<unknown> {

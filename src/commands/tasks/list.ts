@@ -53,7 +53,10 @@ export default class TasksList extends BaseCommand {
     const tasks = this.unwrapList(response, 'tasks');
     const data = response.data as Record<string, unknown> | undefined;
     const nextCursor = typeof data?.nextCursor === 'string' ? data.nextCursor : null;
-    const total = Number.isInteger(data?.totalCount) ? data?.totalCount as number : null;
+    const totalIsAuthoritative = !flags['title-starts-with'] && !flags['title-equals'];
+    const total = totalIsAuthoritative && Number.isInteger(data?.totalCount)
+      ? data?.totalCount as number
+      : null;
     const result = {
       ok: true,
       tasks,
