@@ -53,17 +53,22 @@ export default class TasksList extends BaseCommand {
     const tasks = this.unwrapList(response, 'tasks');
     const data = response.data as Record<string, unknown> | undefined;
     const nextCursor = typeof data?.nextCursor === 'string' ? data.nextCursor : null;
-    const totalIsAuthoritative = !flags['title-starts-with'] && !flags['title-equals'];
+    const hasPostFilteredTitlePredicate = Boolean(flags['title-starts-with'] || flags['title-equals']);
+    const effectiveLimit = flags.limit ?? Math.max(tasks.length, 1);
+    const totalIsAuthoritative = !hasPostFilteredTitlePredicate;
     const total = totalIsAuthoritative && Number.isInteger(data?.totalCount)
       ? data?.totalCount as number
       : null;
     const result = {
       ok: true,
       tasks,
-      ...collectionNavigation(tasks.length, flags.limit ?? Math.max(tasks.length, 1), {
+      ...collectionNavigation(tasks.length, effectiveLimit, {
         nextCursor,
         total,
         cursorSupported: true,
+        ...(hasPostFilteredTitlePredicate && tasks.length >= effectiveLimit
+          ? {completeOverride: false}
+          : {}),
       }),
     };
 

@@ -98,8 +98,16 @@ describe('tasks commands', () => {
       ]);
       const json = JSON.parse(result.stdout);
 
-      expect(json.page).toMatchObject({returned: 1, total: null, complete: true});
-      expect(json.omissions).toContain('totalCount');
+      expect(json.page).toMatchObject({
+        returned: 1,
+        nextCursor: null,
+        total: null,
+        complete: false,
+      });
+      expect(json.omissions).toEqual(['totalCount', 'continuationCursor']);
+      expect(json.warnings).toEqual([
+        'The collection may contain more results, but this backend does not expose a continuation cursor. Narrow filters or raise the limit.',
+      ]);
     });
 
     it('shows "No results" for empty list', async () => {

@@ -2,6 +2,7 @@ export interface CollectionNavigationOptions {
   nextCursor?: string | null;
   total?: number | null;
   cursorSupported: boolean;
+  completeOverride?: boolean;
 }
 
 export function collectionNavigation(
@@ -12,10 +13,11 @@ export function collectionNavigation(
   const effectiveLimit = Number.isInteger(limit) && limit > 0 ? limit : Math.max(returned, 1);
   const nextCursor = options.nextCursor ?? null;
   const total = options.total ?? null;
-  const complete = options.cursorSupported
+  const inferredComplete = options.cursorSupported
     ? nextCursor === null
     : nextCursor === null && (total !== null ? returned >= total : returned < effectiveLimit);
-  const continuationMissing = !complete && !options.cursorSupported;
+  const complete = options.completeOverride ?? inferredComplete;
+  const continuationMissing = !complete && nextCursor === null;
 
   return {
     page: {
