@@ -55,6 +55,8 @@ export default class TasksList extends BaseCommand {
     const nextCursor = typeof data?.nextCursor === 'string' ? data.nextCursor : null;
     const hasPostFilteredTitlePredicate = Boolean(flags['title-starts-with'] || flags['title-equals']);
     const effectiveLimit = flags.limit ?? Math.max(tasks.length, 1);
+    const postFilteredPageMayBeIncomplete = hasPostFilteredTitlePredicate
+      && (tasks.length >= effectiveLimit || nextCursor !== null);
     const totalIsAuthoritative = !hasPostFilteredTitlePredicate;
     const total = totalIsAuthoritative && Number.isInteger(data?.totalCount)
       ? data?.totalCount as number
@@ -63,10 +65,10 @@ export default class TasksList extends BaseCommand {
       ok: true,
       tasks,
       ...collectionNavigation(tasks.length, effectiveLimit, {
-        nextCursor,
+        nextCursor: hasPostFilteredTitlePredicate ? null : nextCursor,
         total,
         cursorSupported: true,
-        ...(hasPostFilteredTitlePredicate && tasks.length >= effectiveLimit
+        ...(postFilteredPageMayBeIncomplete
           ? {completeOverride: false}
           : {}),
       }),

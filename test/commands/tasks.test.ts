@@ -110,6 +110,39 @@ describe('tasks commands', () => {
       ]);
     });
 
+    it('does not expose a broad-page cursor for post-filtered title results', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/tasks')
+        .query({limit: '5', titleStartsWith: 'foo'})
+        .reply(200, {
+          tasks: [fixtures.task({title: 'foo one'})],
+          nextCursor: 'unsafe-broad-page-cursor',
+          totalCount: 12,
+        })
+        .install();
+
+      const result = await runCommand([
+        'tasks',
+        'list',
+        '--limit',
+        '5',
+        '--title-starts-with',
+        'foo',
+        '--token',
+        'exf_pat_test',
+        '--json',
+      ]);
+      const json = JSON.parse(result.stdout);
+
+      expect(json.page).toMatchObject({
+        returned: 1,
+        nextCursor: null,
+        total: null,
+        complete: false,
+      });
+      expect(json.omissions).toEqual(['totalCount', 'continuationCursor']);
+    });
+
     it('shows "No results" for empty list', async () => {
       mockFetch()
         .on('GET', '/api/v1/tasks')
