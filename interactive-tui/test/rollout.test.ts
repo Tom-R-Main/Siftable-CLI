@@ -5,16 +5,24 @@
  *
  * Run with: bun test   (from packages/exf-cli/interactive-tui)
  */
-import { describe, it, expect, afterEach } from "bun:test";
+import { describe, it, expect, afterAll, afterEach, beforeAll } from "bun:test";
 import { tmpdir } from "node:os";
 import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { appendTurn, loadHistory } from "../agent-harness/framework/rollout";
 
 const path = `${tmpdir()}/sift-rollout-test-${process.pid}.jsonl`;
+const previousCompactionFlag = process.env.SIFT_CONTEXT_COMPACTION;
 const reset = () => {
   if (existsSync(path)) rmSync(path);
 };
+beforeAll(() => {
+  process.env.SIFT_CONTEXT_COMPACTION = "1";
+});
 afterEach(reset);
+afterAll(() => {
+  if (previousCompactionFlag === undefined) delete process.env.SIFT_CONTEXT_COMPACTION;
+  else process.env.SIFT_CONTEXT_COMPACTION = previousCompactionFlag;
+});
 
 describe("rollout round-trip", () => {
   it("persists user/assistant turns and reloads them as ChatMessages", () => {

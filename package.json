@@ -22,7 +22,7 @@
     "bench:tui-actions": "tsx scripts/bench-tui-actions.ts",
     "explorer:eval": "tsx scripts/eval-repo-explorer.ts",
     "test": "jest",
-    "test:harness": "cd interactive-tui && bun test test/agentHarnessBoundary.test.ts test/agentHarnessWorkTools.test.ts test/agent-persistence.test.ts test/compact.test.ts test/compaction.test.ts test/packagedRuntime.test.ts test/rollout.test.ts",
+    "test:harness": "cd interactive-tui && bun test test/agentHarnessBoundary.test.ts test/agentHarnessWorkTools.test.ts test/compaction.test.ts test/packagedRuntime.test.ts && bun test test/agent-persistence.test.ts && bun test test/compact.test.ts && bun test test/rollout.test.ts",
     "test:jest": "jest",
     "test:tui": "cd interactive-tui && bun run pretest && bun test",
     "test:vitest": "vitest run --config vitest.config.ts",
