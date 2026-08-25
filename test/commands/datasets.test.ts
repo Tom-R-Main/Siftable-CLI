@@ -139,6 +139,61 @@ describe('dataset commands', () => {
       expect(parsed.fields[0]).not.toHaveProperty('issues');
     });
 
+    it('falls back to current compatibility issues and derives bounded output', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/datasets/ds-1/quality-check')
+        .reply(200, {
+          datasetId: 'ds-1',
+          summary: {issueCount: 9, warningCount: 9, observationCount: 0},
+          fields: [{
+            field: 'Author',
+            fieldType: 'text',
+            totalRows: 6,
+            findings: [],
+            issues: [
+              {
+                severity: 'warn',
+                message: 'Unique field has repeated values (5 distinct out of 6 non-missing)',
+              },
+              {
+                severity: 'note',
+                message: '6 frequently repeated values sampled; repetition may be valid and is not treated as a uniqueness violation',
+                examples: [
+                  '"Ada" (6x)',
+                  '"Grace" (5x)',
+                  '"Katherine" (4x)',
+                  '"Margaret" (3x)',
+                  '"Dorothy" (2x)',
+                  '"Mary" (2x)',
+                ],
+              },
+            ],
+          }],
+        })
+        .install();
+
+      const result = await runCommand([
+        'datasets', 'quality', 'ds-1', '--json', '--token', 'exf_pat_test',
+      ]);
+      const parsed = JSON.parse(result.stdout);
+
+      expect(parsed.summary).toEqual({issueCount: 1, warningCount: 1, observationCount: 1});
+      expect(parsed.fields[0].findings).toEqual([
+        expect.objectContaining({code: 'non_unique_values', classification: 'issue'}),
+        expect.objectContaining({
+          code: 'frequent_repeated_values',
+          classification: 'observation',
+          examples: [
+            {value: 'Ada', occurrences: 6},
+            {value: 'Grace', occurrences: 5},
+            {value: 'Katherine', occurrences: 4},
+            {value: 'Margaret', occurrences: 3},
+            {value: 'Dorothy', occurrences: 2},
+          ],
+        }),
+      ]);
+    });
+
     it('renders legacy repeated values as observations in human output', async () => {
       mockFetch()
         .on('POST', '/api/v1/datasets/ds-1/quality-check')

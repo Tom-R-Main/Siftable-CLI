@@ -7,6 +7,8 @@ interface QualityExample {
   occurrences?: number;
 }
 
+const DATASET_QUALITY_EXAMPLE_LIMIT = 5;
+
 type QualityFindingCode =
   | 'required_missing_values'
   | 'high_missing_rate'
@@ -68,6 +70,60 @@ function finiteNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function qualityFindingCode(value: unknown): QualityFindingCode | null {
+  switch (value) {
+    case 'required_missing_values':
+    case 'high_missing_rate':
+    case 'non_unique_values':
+    case 'invalid_select_values':
+    case 'frequent_repeated_values':
+      return value;
+    default:
+      return null;
+  }
+}
+
+function normalizeQualityFinding(value: unknown): QualityFinding | null {
+  const finding = record(value);
+  const code = qualityFindingCode(finding.code);
+  const classification = finding.classification;
+  const severity = finding.severity;
+  const message = finding.message;
+  if (
+    code === null
+    || (classification !== 'issue' && classification !== 'observation')
+    || (severity !== 'note' && severity !== 'warn')
+    || typeof message !== 'string'
+  ) {
+    return null;
+  }
+
+  const examples = Array.isArray(finding.examples)
+    ? finding.examples.flatMap(candidate => {
+      const example = record(candidate);
+      if (typeof example.value !== 'string') return [];
+      const occurrences = integer(example.occurrences);
+      return [{
+        value: example.value,
+        ...(occurrences === null ? {} : {occurrences}),
+      }];
+    }).slice(0, DATASET_QUALITY_EXAMPLE_LIMIT)
+    : [];
+  const metrics = Object.fromEntries(
+    Object.entries(record(finding.metrics))
+      .filter(([, metric]) => typeof metric === 'boolean' || finiteNumber(metric) !== null),
+  ) as Record<string, number | boolean>;
+  const repeatedValueObservation = code === 'frequent_repeated_values';
+  return {
+    code,
+    classification: repeatedValueObservation ? 'observation' : classification,
+    severity: repeatedValueObservation ? 'note' : severity,
+    message,
+    metrics,
+    ...(examples.length === 0 ? {} : {examples}),
+  };
+}
+
 function normalizeLegacyQualityIssue(value: unknown): QualityFinding | null {
   const issue = record(value);
   const severity = issue.severity;
@@ -82,7 +138,10 @@ function normalizeLegacyQualityIssue(value: unknown): QualityFinding | null {
     code = 'required_missing_values';
   } else if (/^\d+% missing /.test(message)) {
     code = 'high_missing_rate';
-  } else if (message.startsWith('Unique field has duplicate values')) {
+  } else if (
+    message.startsWith('Unique field has duplicate values')
+    || message.startsWith('Unique field has repeated values')
+  ) {
     code = 'non_unique_values';
   } else if (/^\d+ values? not in allowed options$/.test(message)) {
     code = 'invalid_select_values';
@@ -92,6 +151,10 @@ function normalizeLegacyQualityIssue(value: unknown): QualityFinding | null {
     classification = 'observation';
     normalizedSeverity = 'note';
     normalizedMessage = `${repeatedCount} frequently repeated value${repeatedCount === 1 ? '' : 's'} sampled; repetition may be valid and is not treated as a uniqueness violation`;
+  } else if (/^\d+ frequently repeated values? sampled(?:;|$)/.test(message)) {
+    code = 'frequent_repeated_values';
+    classification = 'observation';
+    normalizedSeverity = 'note';
   } else {
     return null;
   }
@@ -105,6 +168,7 @@ function normalizeLegacyQualityIssue(value: unknown): QualityFinding | null {
         : [{value: candidate}];
     })
     : [];
+  const boundedExamples = examples.slice(0, DATASET_QUALITY_EXAMPLE_LIMIT);
 
   return {
     code,
@@ -112,7 +176,7 @@ function normalizeLegacyQualityIssue(value: unknown): QualityFinding | null {
     severity: normalizedSeverity,
     message: normalizedMessage,
     metrics: {},
-    ...(examples.length === 0 ? {} : {examples}),
+    ...(boundedExamples.length === 0 ? {} : {examples: boundedExamples}),
   };
 }
 
@@ -123,13 +187,17 @@ function normalizeQualityResult(value: unknown, fallbackDatasetId: string): Data
     const field = record(candidate);
     const totalRows = integer(field.totalRows) ?? 0;
     const missingCount = integer(field.missingCount) ?? integer(field.nullCount) ?? 0;
-    const findings = Array.isArray(field.findings)
-      ? field.findings as QualityFinding[]
-      : Array.isArray(field.issues)
-        ? field.issues
-          .map(normalizeLegacyQualityIssue)
-          .filter((finding): finding is QualityFinding => finding !== null)
-        : [];
+    const structuredFindings = Array.isArray(field.findings)
+      ? field.findings
+        .map(normalizeQualityFinding)
+        .filter((finding): finding is QualityFinding => finding !== null)
+      : [];
+    const legacyFindings = Array.isArray(field.issues)
+      ? field.issues
+        .map(normalizeLegacyQualityIssue)
+        .filter((finding): finding is QualityFinding => finding !== null)
+      : [];
+    const findings = structuredFindings.length > 0 ? structuredFindings : legacyFindings;
     return {
       field: typeof field.field === 'string' ? field.field : '',
       fieldType: typeof field.fieldType === 'string' ? field.fieldType : 'unknown',
@@ -142,14 +210,10 @@ function normalizeQualityResult(value: unknown, fallbackDatasetId: string): Data
     };
   });
   const findings = fields.flatMap(field => field.findings);
-  const rawSummary = record(data.summary);
   const summary = {
-    issueCount: integer(rawSummary.issueCount)
-      ?? findings.filter(finding => finding.classification === 'issue').length,
-    warningCount: integer(rawSummary.warningCount)
-      ?? findings.filter(finding => finding.severity === 'warn').length,
-    observationCount: integer(rawSummary.observationCount)
-      ?? findings.filter(finding => finding.classification === 'observation').length,
+    issueCount: findings.filter(finding => finding.classification === 'issue').length,
+    warningCount: findings.filter(finding => finding.severity === 'warn').length,
+    observationCount: findings.filter(finding => finding.classification === 'observation').length,
   };
 
   return {
