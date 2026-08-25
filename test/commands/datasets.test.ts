@@ -44,6 +44,7 @@ describe('dataset commands', () => {
         .body(body => JSON.stringify(body) === JSON.stringify({
           fields: ['Author'],
           repeatThreshold: 2,
+          duplicateThreshold: 2,
         }))
         .reply(200, qualityResult)
         .install();
@@ -77,6 +78,97 @@ describe('dataset commands', () => {
       expect(JSON.parse(result.stdout).fields[0]).not.toHaveProperty('nullCount');
       expect(JSON.parse(result.stdout).fields[0]).not.toHaveProperty('nullRate');
       expect(JSON.parse(result.stdout).fields[0]).not.toHaveProperty('issues');
+    });
+
+    it('normalizes legacy backend aliases in JSON mode', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/datasets/ds-1/quality-check')
+        .reply(200, {
+          datasetId: 'ds-1',
+          title: 'Sources',
+          totalRows: 4,
+          fields: [{
+            field: 'Author',
+            fieldType: 'text',
+            totalRows: 4,
+            nullCount: 1,
+            nullRate: 0.25,
+            distinctCount: 2,
+            issues: [
+              {
+                severity: 'warn',
+                message: 'Unique field has duplicate values (2 distinct out of 3 non-missing)',
+              },
+              {
+                severity: 'warn',
+                message: '1 duplicate group found',
+                examples: ['"Ada" (2x)'],
+              },
+            ],
+          }],
+        })
+        .install();
+
+      const result = await runCommand([
+        'datasets', 'quality', 'ds-1', '--json', '--token', 'exf_pat_test',
+      ]);
+      const parsed = JSON.parse(result.stdout);
+
+      expect(parsed).toEqual(expect.objectContaining({
+        contractVersion: 1,
+        datasetId: 'ds-1',
+        fieldCount: 1,
+        summary: {issueCount: 1, warningCount: 1, observationCount: 1},
+      }));
+      expect(parsed.fields[0]).toEqual(expect.objectContaining({
+        missingCount: 1,
+        missingRate: 0.25,
+        nonMissingCount: 3,
+        findings: [
+          expect.objectContaining({code: 'non_unique_values', classification: 'issue'}),
+          expect.objectContaining({
+            code: 'frequent_repeated_values',
+            classification: 'observation',
+            severity: 'note',
+            examples: [{value: 'Ada', occurrences: 2}],
+          }),
+        ],
+      }));
+      expect(parsed.fields[0]).not.toHaveProperty('nullCount');
+      expect(parsed.fields[0]).not.toHaveProperty('nullRate');
+      expect(parsed.fields[0]).not.toHaveProperty('issues');
+    });
+
+    it('renders legacy repeated values as observations in human output', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/datasets/ds-1/quality-check')
+        .reply(200, {
+          datasetId: 'ds-1',
+          title: 'Sources',
+          totalRows: 2,
+          fields: [{
+            field: 'Author',
+            fieldType: 'text',
+            totalRows: 2,
+            nullCount: 0,
+            nullRate: 0,
+            distinctCount: 1,
+            issues: [{
+              severity: 'warn',
+              message: '1 duplicate group found',
+              examples: ['"Ada" (2x)'],
+            }],
+          }],
+        })
+        .install();
+
+      const result = await runCommand([
+        'datasets', 'quality', 'ds-1', '--token', 'exf_pat_test',
+      ]);
+
+      expect(result.stdout).toContain('[OBSERVATION] Author');
+      expect(result.stdout).toContain('repetition may be valid');
+      expect(result.stdout).not.toContain('duplicate group');
     });
 
     it('labels common repeated values as observations in human output', async () => {
