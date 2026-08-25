@@ -101,11 +101,11 @@ describe('dataset commands', () => {
           ...qualityResult,
           fields: [{
             ...qualityResult.fields[0],
-            field: '\u001B[31mAuthor\u001B[0m',
+            field: '\u001B[31mAuthor\u001B[0m\nInjected field',
             findings: [{
               ...qualityResult.fields[0].findings[0],
-              message: '\u001B[31mspoofed\u001B[0m message',
-              examples: [{value: '\u202Etxt.exe', occurrences: 2}],
+              message: '\u001B[31mspoofed\u001B[0m\r\nmessage',
+              examples: [{value: '\u202Etxt.exe\nInjected example', occurrences: 2}],
             }],
           }],
         })
@@ -115,10 +115,11 @@ describe('dataset commands', () => {
         'datasets', 'quality', 'ds-1', '--token', 'exf_pat_test',
       ]);
 
-      expect(result.stdout).toContain('[OBSERVATION] Author: spoofed message');
-      expect(result.stdout).toContain('"txt.exe" (2x)');
+      expect(result.stdout).toContain('[OBSERVATION] Author Injected field: spoofed message');
+      expect(result.stdout).toContain('"txt.exe Injected example" (2x)');
       expect(result.stdout).not.toContain('\u001B');
       expect(result.stdout).not.toContain('\u202E');
+      expect(result.stdout).not.toContain('\nInjected');
     });
   });
 
