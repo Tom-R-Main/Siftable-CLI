@@ -249,6 +249,89 @@ describe("Siftable agent-harness durability boundary", () => {
     }
   });
 
+  it("distinguishes durable cleanup from indeterminate post-publication sync", async () => {
+    const root = mkdtempSync(join(tmpdir(), "siftable-session-mailbox-published-"));
+    const mailboxModuleUrl = pathToFileURL(join(
+      testDirectory,
+      "..",
+      "sessionMailbox.ts",
+    )).href;
+    const childSource = `
+      import { mock } from "bun:test";
+      import * as fs from "node:fs";
+      const [mailboxModuleUrl, rootDir, mode] = process.argv.slice(1);
+      const realFs = { ...fs };
+      let published = false;
+      mock.module("node:fs", () => ({
+        ...realFs,
+        linkSync(existingPath, newPath) {
+          realFs.linkSync(existingPath, newPath);
+          published = true;
+        },
+        unlinkSync(path) {
+          if (mode === "unlink" && published && String(path).endsWith(".tmp")) {
+            throw new Error("post-publication-unlink");
+          }
+          return realFs.unlinkSync(path);
+        },
+        fsyncSync(fd) {
+          if (mode === "fsync" && published) {
+            throw new Error("post-publication-fsync");
+          }
+          return realFs.fsyncSync(fd);
+        },
+      }));
+      const mailbox = await import(mailboxModuleUrl + "?published=" + mode + "-" + Date.now());
+      const conversationKey = "published-test-" + mode;
+      const instructionId = "published-test-" + mode;
+      let record;
+      try {
+        record = mailbox.enqueueSessionInstruction(conversationKey, "instruction", {
+          rootDir,
+          idFactory: () => instructionId,
+        });
+        if (mode === "fsync") {
+          console.error("post-publication fsync unexpectedly reported durable success");
+          process.exitCode = 1;
+        }
+      } catch (error) {
+        if (
+          mode !== "fsync"
+          || !(error instanceof mailbox.SessionMailboxPublicationIndeterminateError)
+          || error.receipt.instructionId !== instructionId
+        ) {
+          console.error(error instanceof Error ? error.message : String(error));
+          process.exitCode = 1;
+        }
+        record = error.receipt;
+      }
+      const pending = mailbox.listPendingSessionInstructions(conversationKey, { rootDir });
+      if (record.instructionId !== instructionId || pending.length !== 1) {
+        console.error(JSON.stringify({ record, pending }));
+        process.exitCode = 1;
+      }
+    `;
+
+    try {
+      for (const mode of ["unlink", "fsync"]) {
+        const child = spawn(process.execPath, [
+          "--eval",
+          childSource,
+          mailboxModuleUrl,
+          root,
+          mode,
+        ], {
+          cwd: join(testDirectory, "..", "..", "..", ".."),
+          stdio: ["ignore", "ignore", "pipe"],
+        });
+        const result = await waitForChild(child);
+        expect(result.code, result.stderr).toBe(0);
+      }
+    } finally {
+      rmSync(root, {recursive: true, force: true});
+    }
+  });
+
   it("rejects forged model replay and orphan tool history", () => {
     const session = deterministicKernel(new InMemorySessionEventStore(), "forged-replay");
     const context = { turnId: "forged-turn", stepId: "forged-step" };
@@ -607,6 +690,89 @@ describe("Siftable agent-harness durability boundary", () => {
       });
       expect(() => store.set("unsafe", 1)).toThrow(/inconsistent link count \(1\)/);
     } finally {
+      removeStoreArtifacts(name);
+    }
+  });
+
+  it("preserves lock inspection failures while still reporting standalone close failures", async () => {
+    const storeModuleUrl = pathToFileURL(join(
+      testDirectory,
+      "..",
+      "agent-harness",
+      "framework",
+      "store.ts",
+    )).href;
+    const childSource = `
+      import { randomUUID } from "node:crypto";
+      import * as fs from "node:fs";
+      import { join } from "node:path";
+      import { mock } from "bun:test";
+      const [storeModuleUrl, dataDirectory, name, mode] = process.argv.slice(1);
+      fs.mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
+      const lockPath = join(dataDirectory, name + ".json.lock");
+      const claimPath = lockPath + ".fixture";
+      const owner = mode === "malformed"
+        ? "{not-json"
+        : mode === "invalid-owner"
+          ? JSON.stringify({ pid: 0, token: "not-a-uuid" }) + "\\n"
+          : JSON.stringify({ pid: process.pid, token: randomUUID() }) + "\\n";
+      fs.writeFileSync(claimPath, owner, { mode: 0o600 });
+      fs.linkSync(claimPath, lockPath);
+
+      const realFs = { ...fs };
+      let ownerRead = false;
+      mock.module("node:fs", () => ({
+        ...realFs,
+        readFileSync(target, ...args) {
+          if (typeof target === "number") ownerRead = true;
+          return realFs.readFileSync(target, ...args);
+        },
+        closeSync(fd) {
+          if (ownerRead) {
+            ownerRead = false;
+            throw new Error("cleanup-close");
+          }
+          return realFs.closeSync(fd);
+        },
+      }));
+
+      try {
+        const { createStore } = await import(storeModuleUrl + "?cleanup=" + mode + "-" + Date.now());
+        createStore(name).set("blocked", 1);
+        console.error("store mutation unexpectedly succeeded");
+        process.exitCode = 1;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const expected = mode === "malformed"
+          ? "is malformed"
+          : mode === "invalid-owner"
+            ? "invalid process owner"
+            : "could not close store lock";
+        if (!message.includes(expected)) {
+          console.error(message);
+          process.exitCode = 1;
+        }
+      } finally {
+        realFs.rmSync(claimPath, { force: true });
+        realFs.rmSync(lockPath, { force: true });
+      }
+    `;
+
+    for (const mode of ["valid", "malformed", "invalid-owner"]) {
+      const name = uniqueStoreName();
+      const child = spawn(process.execPath, [
+        "--eval",
+        childSource,
+        storeModuleUrl,
+        storeDataDirectory,
+        name,
+        mode,
+      ], {
+        cwd: join(testDirectory, "..", "..", "..", ".."),
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      const result = await waitForChild(child);
+      expect(result.code, result.stderr).toBe(0);
       removeStoreArtifacts(name);
     }
   });

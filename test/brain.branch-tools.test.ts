@@ -449,6 +449,7 @@ describe('lane E A2 — child-session brain tools', () => {
     const sendBackChild = mockControllerMethod<ChildSessionController['sendBackChild']>(() => ({
       ok: true,
       posted: true,
+      durability: 'durable',
       conversationKey: 'k',
     }));
     setSessionController(stubController({sendBackChild}));

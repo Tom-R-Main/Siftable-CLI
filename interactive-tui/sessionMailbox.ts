@@ -50,6 +50,24 @@ export interface SessionMailboxOptions {
 }
 
 /**
+ * Publication became observable, but its directory entry could not be proven
+ * crash-durable. Callers must not report a clean failure or roll back work that
+ * may already consume the instruction; they must surface this distinct state.
+ */
+export class SessionMailboxPublicationIndeterminateError extends Error {
+  constructor(
+    readonly receipt: SessionMailboxInstruction,
+    cause: unknown,
+  ) {
+    super(
+      `session mailbox instruction ${receipt.instructionId} was published but directory durability is indeterminate`,
+      {cause},
+    );
+    this.name = "SessionMailboxPublicationIndeterminateError";
+  }
+}
+
+/**
  * Stable, opaque journal identity for one logical TUI conversation. Keep this
  * as the single producer/consumer helper; changing its domain forks history.
  */
@@ -70,7 +88,11 @@ export function resolveSessionMailboxRoot(
   );
 }
 
-/** Atomically publish one durable instruction and return its receipt. */
+/**
+ * Atomically publish one instruction and return its durable receipt. Throws
+ * SessionMailboxPublicationIndeterminateError when publication is observable
+ * but the containing directory could not be proven crash-durable.
+ */
 export function enqueueSessionInstruction(
   conversationKey: string,
   instruction: string,
@@ -116,12 +138,23 @@ export function enqueueSessionInstruction(
     closeSync(fd);
     fd = undefined;
 
-    // A hard link publishes the fully written inode without replacing an
-    // existing instruction if an injected/custom id ever collides.
+    // A hard link atomically publishes the fully fsynced inode. The directory
+    // fsync below is the durability commit point. If it fails, finalPath is
+    // already observable, so return a distinct indeterminate outcome rather
+    // than either claiming durability or reporting a clean enqueue failure.
     linkSync(stagingPath, finalPath);
-    unlinkSync(stagingPath);
-    stagingExists = false;
-    fsyncDirectory(pendingDir);
+    try {
+      fsyncDirectory(pendingDir);
+    } catch (error) {
+      throw new SessionMailboxPublicationIndeterminateError(record, error);
+    }
+    try {
+      unlinkSync(stagingPath);
+      stagingExists = false;
+    } catch {
+      // Readers ignore private staging names. The finally block retries this
+      // cleanup, but its failure must not contradict the published receipt.
+    }
     return record;
   } finally {
     if (fd !== undefined) {

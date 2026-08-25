@@ -17,7 +17,10 @@ import {realpathSync} from "node:fs";
 import {homedir} from "node:os";
 import {join} from "node:path";
 import {getSessionCwd} from "./navigation";
-import {enqueueSessionInstruction} from "./sessionMailbox";
+import {
+  enqueueSessionInstruction,
+  SessionMailboxPublicationIndeterminateError,
+} from "./sessionMailbox";
 import {
   createChildWorktree,
   listWorktrees,
@@ -140,11 +143,20 @@ export interface ChildSessionControllerDeps {
   now?: () => number;
   /**
    * Post a parent instruction into a child's conversation thread (lane F
-   * send-back). Defaults to appending a user-role turn to the child's rollout;
-   * inject a spy in tests. Returns true when the message was persisted.
+   * send-back). Defaults to publishing into the child's durable mailbox; inject
+   * a spy in tests. Distinguishes confirmed durability from publication
+   * whose crash durability could not be confirmed.
    */
-  postToThread?: (conversationKey: string, instruction: string) => boolean;
+  postToThread?: (
+    conversationKey: string,
+    instruction: string,
+  ) => SessionInstructionPostResult;
 }
+
+export type SessionInstructionPostResult =
+  | {status: "durable"}
+  | {status: "indeterminate"}
+  | {status: "failed"};
 
 /** Options for {@link ChildSessionController.reviewChild}. */
 export interface ReviewChildOptions {
@@ -211,7 +223,12 @@ export type RebaseChildResult =
 
 /** Outcome of sending a child back to work with instructions (lane F). */
 export type SendBackChildResult =
-  | {ok: true; posted: boolean; conversationKey: string}
+  | {
+      ok: true;
+      posted: true;
+      durability: "durable" | "indeterminate";
+      conversationKey: string;
+    }
   | {ok: false; reason: string};
 
 export interface ChildSessionController {
@@ -260,14 +277,16 @@ export function createChildSessionController(
   const now = deps.now ?? (() => 0);
   const postToThread =
     deps.postToThread ??
-    ((conversationKey: string, instruction: string): boolean => {
+    ((conversationKey: string, instruction: string): SessionInstructionPostResult => {
       // The event journal is authoritative, so cross-session instructions use
       // an independent durable mailbox rather than the legacy rollout mirror.
       try {
         enqueueSessionInstruction(conversationKey, instruction);
-        return true;
-      } catch {
-        return false;
+        return {status: "durable"};
+      } catch (error) {
+        return error instanceof SessionMailboxPublicationIndeterminateError
+          ? {status: "indeterminate"}
+          : {status: "failed"};
       }
     });
 
@@ -789,20 +808,21 @@ export function createChildSessionController(
     const text = instruction.trim();
     if (!text) return {ok: false, reason: `send-back instruction is required for child #${sessionId}`};
 
-    // Resume the work first; only publish once the transition is legal. If the
-    // durable enqueue fails, restore the reviewed state so "running" never
-    // claims that a child received work it cannot observe.
+    // Resume the work first; only publish once the transition is legal. Restore
+    // the reviewed state only when publication definitely failed. An
+    // indeterminate post-publication sync keeps the child running because it
+    // may already observe and consume the instruction.
     const code = transitionSessionStatus(sessionId, "running", now());
     if (code !== 0) {
       return {ok: false, reason: `cannot resume child #${sessionId} from ${live.status}`};
     }
-    let posted = false;
+    let postResult: SessionInstructionPostResult = {status: "failed"};
     try {
-      posted = postToThread(rec.conversationKey, text);
+      postResult = postToThread(rec.conversationKey, text);
     } catch {
-      posted = false;
+      postResult = {status: "failed"};
     }
-    if (!posted) {
+    if (postResult.status === "failed") {
       const rollbackCode = transitionSessionStatus(sessionId, live.status, now());
       return {
         ok: false,
@@ -811,7 +831,12 @@ export function createChildSessionController(
           : `could not durably enqueue send-back instruction for child #${sessionId}; status rollback from running to ${live.status} also failed`,
       };
     }
-    return {ok: true, posted: true, conversationKey: rec.conversationKey};
+    return {
+      ok: true,
+      posted: true,
+      durability: postResult.status,
+      conversationKey: rec.conversationKey,
+    };
   }
 
   function rejectChild(sessionId: number, _reason?: string): {ok: boolean; reason?: string} {

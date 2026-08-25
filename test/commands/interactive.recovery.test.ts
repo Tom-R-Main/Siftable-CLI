@@ -53,7 +53,7 @@ describe("/sendback", () => {
   });
 
   it("posts the instruction (id + free text) to the child", () => {
-    const sendBack = jest.fn(() => ({ok: true as const, posted: true, conversationKey: "k"}));
+    const sendBack = jest.fn(() => ({ok: true as const, posted: true as const, durability: "durable" as const, conversationKey: "k"}));
     const {ctx, messages} = buildCommandContext({sessions: {...stubSessions(), sendBack}});
     run(ctx, "sendback", ["2", "rebase", "onto", "main", "and", "re-resolve"]);
     expect(sendBack).toHaveBeenCalledWith(2, "rebase onto main and re-resolve");
@@ -61,10 +61,22 @@ describe("/sendback", () => {
   });
 
   it("treats the whole arg string as the instruction for the active child", () => {
-    const sendBack = jest.fn(() => ({ok: true as const, posted: true, conversationKey: "k"}));
+    const sendBack = jest.fn(() => ({ok: true as const, posted: true as const, durability: "durable" as const, conversationKey: "k"}));
     const {ctx} = buildCommandContext({sessions: {...stubSessions(), activeChildId: jest.fn(() => 5), sendBack}});
     run(ctx, "sendback", ["fix", "the", "test"]);
     expect(sendBack).toHaveBeenCalledWith(5, "fix the test");
+  });
+
+  it("surfaces indeterminate mailbox durability without claiming failure", () => {
+    const sendBack = jest.fn(() => ({
+      ok: true as const,
+      posted: true as const,
+      durability: "indeterminate" as const,
+      conversationKey: "k",
+    }));
+    const {ctx, messages} = buildCommandContext({sessions: {...stubSessions(), sendBack}});
+    run(ctx, "sendback", ["2", "retry", "safely"]);
+    expect(lastText(messages)).toMatch(/durability is indeterminate; verify delivery/i);
   });
 
   it("surfaces a controller refusal", () => {

@@ -1945,7 +1945,9 @@ function sendBackCommand(ctx: InteractiveCommandContext, args: string[]): void {
     ctx.push({role: "system", text: `/sendback: ${res.reason}`});
     return;
   }
-  const posted = res.posted ? "instructions posted to its thread" : "instructions not persisted (thread off)";
+  const posted = res.durability === "durable"
+    ? "instructions durably posted to its thread"
+    : "instructions published, but crash durability is indeterminate; verify delivery before retrying";
   ctx.push({role: "system", text: `sent #${target.id} back to work (running) · ${posted}`});
 }
 

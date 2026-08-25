@@ -75,7 +75,7 @@ function makeController(fx: Awaited<ReturnType<typeof setupRepo>>) {
     worktreesRoot: fx.worktreesRoot,
     postToThread: (key, text) => {
       posts.push({key, text});
-      return true;
+      return {status: "durable"};
     },
   });
   return {controller, posts};
@@ -276,6 +276,7 @@ describe("lane F — controller recovery", () => {
       expect(res.ok).toBe(true);
       if (!res.ok) return;
       expect(res.posted).toBe(true);
+      expect(res.durability).toBe("durable");
       expect(getMergeMasterSession(c.session.sessionId)!.status).toBe("running");
       // The instruction was posted (trimmed) keyed to the child's own thread.
       expect(posts).toHaveLength(1);
@@ -318,6 +319,7 @@ describe("lane F — controller recovery", () => {
       expect(result).toEqual({
         ok: true,
         posted: true,
+        durability: "durable",
         conversationKey: child.session.conversationKey,
       });
       const pending = listPendingSessionInstructions(child.session.conversationKey, {rootDir});
@@ -341,7 +343,7 @@ describe("lane F — controller recovery", () => {
       const controller = createChildSessionController({
         runner: git,
         worktreesRoot: fx.worktreesRoot,
-        postToThread: () => false,
+        postToThread: () => ({status: "failed"}),
       });
       const child = controller.spawnChild({
         title: "mailbox-failure",
@@ -364,6 +366,43 @@ describe("lane F — controller recovery", () => {
       if (result.ok) throw new Error("expected durable enqueue to fail");
       expect(result.reason).toMatch(/could not durably enqueue.*status restored/i);
       expect(getMergeMasterSession(child.session.sessionId)?.status).toBe("merge_blocked");
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it("sendBackChild: keeps running when publication durability is indeterminate", async () => {
+    const fx = await setupRepo();
+    try {
+      const controller = createChildSessionController({
+        runner: git,
+        worktreesRoot: fx.worktreesRoot,
+        postToThread: () => ({status: "indeterminate"}),
+      });
+      const child = controller.spawnChild({
+        title: "mailbox-indeterminate",
+        accessMode: "read_write",
+        writeScope: ["shared.txt"],
+        cwd: fx.repoRoot,
+      });
+      expect(child.ok).toBe(true);
+      if (!child.ok) return;
+      await writeFile(join(child.session.worktreePath, "shared.txt"), "L1\nCHILD\n", "utf8");
+      controller.commitChild(child.session.sessionId, "child edits shared");
+      await fx.write("shared.txt", "L1\nMAIN\n");
+      fx.run(["commit", "-am", "base moves shared"]);
+      controller.reviewChild(child.session.sessionId);
+      expect(getMergeMasterSession(child.session.sessionId)?.status).toBe("merge_blocked");
+
+      const result = controller.sendBackChild(child.session.sessionId, "retry safely");
+
+      expect(result).toEqual({
+        ok: true,
+        posted: true,
+        durability: "indeterminate",
+        conversationKey: child.session.conversationKey,
+      });
+      expect(getMergeMasterSession(child.session.sessionId)?.status).toBe("running");
     } finally {
       await fx.cleanup();
     }

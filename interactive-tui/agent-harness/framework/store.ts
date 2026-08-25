@@ -746,8 +746,9 @@ function readLockOwner(lockPath: string): StoreLockOwner | undefined {
     throw new StorePersistenceError(`could not inspect store lock ${lockPath}`, { cause: error });
   }
 
-  let parsed: Partial<StoreLockOwner>;
-  let primaryFailure = false;
+  let parsed: StoreLockOwner | undefined;
+  let retired = false;
+  let primaryFailure: StorePersistenceError | undefined;
   try {
     const info = fstatSync(lockFd);
     if (!info.isFile()) {
@@ -760,34 +761,51 @@ function readLockOwner(lockPath: string): StoreLockOwner | undefined {
     // A lock can be unlinked after open while its claim link still exists.
     // Its descriptor then reports one (or eventually zero) links, but it no
     // longer excludes another contender at the well-known lock path.
-    if (!pathMatchesFile(lockPath, info)) return undefined;
-    if (info.nlink !== 2) {
+    retired = !pathMatchesFile(lockPath, info);
+    if (!retired && info.nlink !== 2) {
       throw new StorePersistenceError(
         `store lock ${lockPath} has an inconsistent link count (${info.nlink})`,
       );
     }
-    parsed = JSON.parse(readFileSync(lockFd, "utf8")) as Partial<StoreLockOwner>;
-  } catch (error) {
-    primaryFailure = true;
-    if (error instanceof StorePersistenceError) throw error;
-    throw new StorePersistenceError(`store lock ${lockPath} is malformed`, { cause: error });
-  } finally {
-    try {
-      closeSync(lockFd);
-    } catch (error) {
-      if (!primaryFailure) {
-        throw new StorePersistenceError(`could not close store lock ${lockPath}`, { cause: error });
+    if (!retired) {
+      const candidate = JSON.parse(readFileSync(lockFd, "utf8")) as unknown;
+      if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
+        throw new Error("lock owner must be an object");
       }
+      const owner = candidate as Partial<StoreLockOwner>;
+      if (!Number.isSafeInteger(owner.pid) || (owner.pid ?? 0) <= 0) {
+        throw new StorePersistenceError(`store lock ${lockPath} has an invalid process owner`);
+      }
+      if (typeof owner.token !== "string" || !isUuid(owner.token)) {
+        throw new StorePersistenceError(`store lock ${lockPath} has an invalid owner token`);
+      }
+      parsed = { pid: owner.pid!, token: owner.token };
     }
+  } catch (error) {
+    primaryFailure = error instanceof StorePersistenceError
+      ? error
+      : new StorePersistenceError(`store lock ${lockPath} is malformed`, { cause: error });
   }
 
-  if (!Number.isSafeInteger(parsed.pid) || (parsed.pid ?? 0) <= 0) {
-    throw new StorePersistenceError(`store lock ${lockPath} has an invalid process owner`);
+  let closeFailure: unknown;
+  try {
+    closeSync(lockFd);
+  } catch (error) {
+    closeFailure = error;
   }
-  if (typeof parsed.token !== "string" || !isUuid(parsed.token)) {
-    throw new StorePersistenceError(`store lock ${lockPath} has an invalid owner token`);
+
+  if (primaryFailure !== undefined) throw primaryFailure;
+  if (closeFailure !== undefined) {
+    throw new StorePersistenceError(`could not close store lock ${lockPath}`, {
+      cause: closeFailure,
+    });
   }
-  return { pid: parsed.pid!, token: parsed.token };
+  if (retired) return undefined;
+  if (parsed === undefined) {
+    throw new StorePersistenceError(`store lock ${lockPath} is malformed`);
+  }
+
+  return parsed;
 }
 
 function assertCurrentOwner(uid: number, description: string): void {

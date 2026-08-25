@@ -1212,8 +1212,13 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
       try {
         const res = sessionController.sendBackChild(id, instruction);
         if (res.ok === false) return of.err(`sendback_branch: ${res.reason}`);
-        const posted = res.posted ? 'posted to its thread' : 'not persisted (thread off)';
-        return of.ok({ posted: res.posted }, `sent #${id} back to work (running) · instruction ${posted}`);
+        const posted = res.durability === 'durable'
+          ? 'durably posted to its thread'
+          : 'published, but crash durability is indeterminate; verify delivery before retrying';
+        return of.ok(
+          {posted: res.posted, durability: res.durability},
+          `sent #${id} back to work (running) · instruction ${posted}`,
+        );
       } catch (e) {
         return of.err(e instanceof Error ? e.message : String(e));
       }

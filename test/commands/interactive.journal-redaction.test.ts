@@ -1,5 +1,9 @@
 import type {AIAdapter, ChatMessage} from '../../interactive-tui/agent-harness/framework/adapters/types';
 import {createChatAgent} from '../../interactive-tui/agent-harness/framework/chat-agent';
+import {
+  redactSensitiveText,
+  sanitizeSensitiveValue,
+} from '../../interactive-tui/agent-harness/framework/redaction';
 import {ToolRegistry} from '../../interactive-tui/agent-harness/framework/registry';
 import {
   InMemorySessionEventStore,
@@ -8,6 +12,60 @@ import {
 import {defineTool, ok} from '../../interactive-tui/agent-harness/framework/tool';
 
 describe('agent-harness durable privacy boundaries', () => {
+  it('preserves ordinary lookalike fields and serializes known non-plain values', () => {
+    class OpaqueResult {}
+    const secret = 'map-secret-must-not-persist';
+    const sanitized = sanitizeSensitiveValue({
+      tokens: ['input', 'output'],
+      tokenCount: 2,
+      keys: ['alpha'],
+      keyword: 'tokenization',
+      circleCiToken: secret,
+      authorizationHeader: secret,
+      cookieHeader: secret,
+      apiKeyValue: secret,
+      clientSecretValue: secret,
+      recordedAt: new Date('2026-08-25T12:00:00.000Z'),
+      metadata: new Map([
+        ['visible', 'retained'],
+        ['apiKey', secret],
+      ]),
+      labels: new Set(['one', 'two']),
+      matcher: /retained/giu,
+      opaque: new OpaqueResult(),
+    });
+
+    expect(sanitized).toEqual({
+      tokens: ['input', 'output'],
+      tokenCount: 2,
+      keys: ['alpha'],
+      keyword: 'tokenization',
+      circleCiToken: '[REDACTED]',
+      authorizationHeader: '[REDACTED]',
+      cookieHeader: '[REDACTED]',
+      apiKeyValue: '[REDACTED]',
+      clientSecretValue: '[REDACTED]',
+      recordedAt: '2026-08-25T12:00:00.000Z',
+      metadata: [
+        ['visible', 'retained'],
+        ['apiKey', '[REDACTED]'],
+      ],
+      labels: ['one', 'two'],
+      matcher: '/retained/giu',
+      opaque: '[OpaqueResult]',
+    });
+    expect(redactSensitiveText(
+      'tokens: 2 tokenCount: 2 keys: alpha keyword: tokenization circle_ci_token: hidden',
+    )).toBe(
+      'tokens: 2 tokenCount: 2 keys: alpha keyword: tokenization circle_ci_token: [REDACTED]',
+    );
+    expect(redactSensitiveText(
+      'authorizationHeader: Basic-Zm9v cookieHeader="part\\\"tail" apiKeyValue=visible-secret clientSecretValue=other-secret',
+    )).toBe(
+      'authorizationHeader: [REDACTED] cookieHeader="[REDACTED]" apiKeyValue=[REDACTED] clientSecretValue=[REDACTED]',
+    );
+  });
+
   it('redacts credential-shaped tool results before model, receipt, and journal boundaries', async () => {
     const secrets = {
       field: 'field-secret-must-not-persist',
@@ -15,6 +73,8 @@ describe('agent-harness durable privacy boundaries', () => {
       env: 'sk-proj-1234567890abcdefghijklmnop',
       query: 'query-secret-must-not-persist',
       objectKey: 'github_pat_1234567890abcdefghijklmnop',
+      semicolonHeader: 'semicolon-header-secret-must-not-persist',
+      semicolonToken: 'semicolon-token-secret-must-not-persist',
     };
     const observedRequests: ChatMessage[][] = [];
     let adapterCalls = 0;
@@ -41,6 +101,7 @@ describe('agent-harness durable privacy boundaries', () => {
           `Authorization: Bearer ${secrets.bearer}`,
           `OPENAI_API_KEY=${secrets.env}`,
           `https://example.test/result?token=${secrets.query}`,
+          `visible=ok;authorizationHeader=${secrets.semicolonHeader};circleCiToken=${secrets.semicolonToken}`,
           'ordinary output remains visible',
         ].join('\n'),
       }),
@@ -65,6 +126,7 @@ describe('agent-harness durable privacy boundaries', () => {
       expect(serializedBoundaries).not.toContain(secret);
     }
     expect(serializedBoundaries).toContain('[REDACTED]');
+    expect(serializedBoundaries).toContain('visible=ok');
     expect(serializedBoundaries).toContain('ordinary output remains visible');
   });
 
