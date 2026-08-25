@@ -287,8 +287,33 @@ describe('model connection interactive CLI transport', () => {
     ]);
     const surface = `${result.stdout}\n${result.error?.message ?? ''}`;
     expect(result.exitCode).toBe(403);
+    expect(result.error).toMatchObject({statusCode: 403});
     expect(surface).toContain('ai:invoke');
     expect(surface).not.toContain(canary);
+  });
+
+  it('attaches status and code to streamed AI failures', async () => {
+    const client = {
+      generateAiStream: jest.fn(async function* () {
+        yield {type: 'failed', code: 'ai_stream_truncated', statusCode: 503} as const;
+      }),
+    };
+    jest.spyOn(BaseCommand.prototype as never, 'client' as never)
+      .mockResolvedValueOnce(client as never);
+
+    const result = await runCommandEntry(AiInvoke, [
+      '--connection', model.connectionId,
+      '--model', model.model,
+      '--prompt', 'bounded prompt',
+      '--stream',
+      '--token', 'sift_pat_test',
+    ]);
+
+    expect(result.exitCode).toBe(503);
+    expect(result.error).toMatchObject({
+      code: 'ai_stream_truncated',
+      statusCode: 503,
+    });
   });
 
   it('surfaces a structured disabled-mode explanation instead of a generic 404', async () => {

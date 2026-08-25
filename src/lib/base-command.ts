@@ -298,7 +298,12 @@ export abstract class BaseCommand extends Command {
             : code === 'ai_resource_limit_exceeded'
               ? 'The connected-model request exceeded its configured resource limit.'
               : `AI request failed (${response.statusCode || 'transport'}${code ? `, ${code}` : ''}).`;
-    this.error(message, {exit: status});
+    const error = new Error(message) as Error & {code?: string; statusCode?: number};
+    if (code) error.code = code;
+    if (Number.isInteger(response.statusCode) && response.statusCode > 0) {
+      error.statusCode = response.statusCode;
+    }
+    this.error(error, {exit: status});
   }
 
   protected surfaceApiWarnings(response: {warnings?: string[]}): void {
