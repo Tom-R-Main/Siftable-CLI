@@ -19,6 +19,7 @@ describe('output helpers', () => {
     expect(sanitizeTerminalText('\u001B[31mred\u001B[0m\u202Eabc\u200B')).toBe('redabc');
     expect(sanitizeTerminalText('ordinary text')).toBe('ordinary text');
     expect(sanitizeTerminalLine('first\r\nsecond')).toBe('first second');
+    expect(sanitizeTerminalLine('first\tsecond')).toBe('first second');
   });
 
   it('sanitizes values rendered in tables and details', () => {

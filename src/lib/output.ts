@@ -20,7 +20,7 @@ export function sanitizeTerminalText(value: unknown): string {
 }
 
 export function sanitizeTerminalLine(value: unknown): string {
-  return sanitizeTerminalText(value).replace(/[\r\n]+/g, ' ');
+  return sanitizeTerminalText(value).replace(/[\t\r\n]+/g, ' ');
 }
 
 export function renderTable(data: Record<string, unknown>[], columns: Column[]): void {
