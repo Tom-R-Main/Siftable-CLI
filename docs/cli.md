@@ -100,7 +100,7 @@ Link work to a planning task with `sift work create --task <task-id>` rather tha
 
 ## Command reference
 
-All 307 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
+All 314 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
 
 **Topics:** [General](#general) · [Agents](#agents) · [Ai](#ai) · [Approvals](#approvals) · [Auth](#auth) · [Billing](#billing) · [Calendar](#calendar) · [Capabilities](#capabilities) · [Code](#code) · [Codex](#codex) · [Context](#context) · [Crm](#crm) · [Datasets](#datasets) · [Documents](#documents) · [Env](#env) · [Events](#events) · [Evidence](#evidence) · [Grants](#grants) · [Graph](#graph) · [Notes](#notes) · [Organizations](#organizations) · [People](#people) · [Projects](#projects) · [Recipes](#recipes) · [Relationships](#relationships) · [Research](#research) · [Skills](#skills) · [Tasks](#tasks) · [Timeline](#timeline) · [Vault](#vault) · [Work](#work) · [Worker](#worker) · [Workspaces](#workspaces)
 
@@ -609,6 +609,49 @@ Explain the current principal, owner, project, and local checkout context
 
 ### Crm
 
+#### `sift crm import apply`
+Apply only approved operations from an existing CRM import plan; replay is safe
+
+**Arguments**
+
+- `planId` *(required)* — Durable CRM import plan UUID
+
+**Flags**
+
+- `--yes` — Confirm canonical CRM writes without prompting
+
+#### `sift crm import approve`
+Approve all or selected pending operations in an existing CRM import plan
+
+**Arguments**
+
+- `planId` *(required)* — Durable CRM import plan UUID
+
+**Flags**
+
+- `--operation-id <value>` *(repeatable)* — Stable operation ID to approve; repeat to approve a subset
+- `--reason <value>` *(required)* — Human approval reason recorded on the plan
+- `--yes` — Confirm the approval without prompting
+
+#### `sift crm import get`
+Resume and inspect a durable CRM import plan by stable plan ID
+
+**Arguments**
+
+- `planId` *(required)* — Durable CRM import plan UUID
+
+#### `sift crm import plan`
+Create or reuse a durable CRM import plan from CSV, TSV, XLS, or XLSX without writing canonical CRM records
+
+**Arguments**
+
+- `file` *(required)* — Local CSV, TSV, XLS, or XLSX source (8 MiB maximum)
+
+**Flags**
+
+- `--mapping-mode <manual|workspace_auto>` *(default: "manual")* — Manual mapping or approved workspace mapping profile
+- `--provider <generic|salesforce>` *(default: "generic")* — Source provider mapping
+
 #### `sift crm organizations convert`
 Explain the governed boundary between a CRM organization and a workspace
 
@@ -944,6 +987,24 @@ Import CSV, JSON, or JSONL rows into a new or existing dataset
 - `--upsert-by <value>` — Field name used to update matching rows instead of creating duplicates
 - `--yes` — Confirm mutating imports without prompting
 
+#### `sift datasets inspect-file`
+Inspect the structure of a local CSV, TSV, XLS, or XLSX file without creating or changing a dataset
+
+**Arguments**
+
+- `file` *(required)* — Path to a local CSV, TSV, XLS, or XLSX file
+
+**Flags**
+
+- `--delimiter <value>` — Single-byte delimiter override for CSV/TSV
+- `--format <csv|tsv|xls|xlsx>` — Format override when the extension is absent or wrong
+- `--header-row <value>` — Zero-based header row index within the sheet grid
+- `--max-bytes <value>` — Refuse files larger than this many bytes
+- `--max-cols <value>` — Maximum columns returned per sheet
+- `--max-rows <value>` — Maximum data rows returned per sheet
+- `--max-sheets <value>` — Maximum sheets returned
+- `--sheet <value>` — Inspect only this sheet; the full sheet inventory is still reported
+
 #### `sift datasets join`
 Join a dataset to itself using alias-scoped fields such as left.Close and right.Close
 
@@ -1031,6 +1092,18 @@ Show bounded profile information for a dataset
 **Flags**
 
 - `--sample-limit <value>` *(default: 10)* — Number of sample rows to include
+
+#### `sift datasets quality`
+Check dataset quality with structured missing-value metrics and repeated-value observations
+
+**Arguments**
+
+- `id` *(required)* — Dataset ID
+
+**Flags**
+
+- `--fields <value>` — Comma-separated field names to check
+- `--repeat-threshold <value>` *(default: 3)* — Minimum occurrences for a repeated value to be reported
 
 #### `sift datasets query`
 Query records from a dataset
@@ -3426,6 +3499,8 @@ Create an executable agent work item
 - `--allow-network` — Allow network access in the authored contract
 - `--allow-vault` — Allow audited Vault access in the authored contract
 - `--allowed-actions <value>` — Allowed actions JSON object
+- `--capture-applicability <conversational_capture_required|non_conversational|unclassified>` — Prospective capture applicability; this does not determine study eligibility
+- `--capture-receipt <value>` *(repeatable)* — Finalized capture receipt UUID to bind atomically; repeat for multi-surface handoffs
 - `--context <value>` — Input context JSON object
 - `--contract <value>` — Complete Work Contract V1 JSON
 - `--contract-file <value>` — Path to a complete Work Contract V1 JSON file
@@ -3707,6 +3782,16 @@ Deprecated compatibility command. Hosted LLM verification is retired; use verifi
 ### Worker
 
 Local executable work runners.
+
+#### `sift worker dispatch`
+Build a no-spend, surface-neutral plan for exactly two AWS agent workers
+
+**Flags**
+
+- `--max-runtime-minutes <value>` *(default: 120)* — Per-worker runtime ceiling
+- `--source-sha <value>` — Reviewed 40-character source Git SHA; defaults to a clean current HEAD
+- `--surface <cli|t3|codex|claude-code|mcp>` *(default: "cli")* — Calling control surface; does not change dispatch identity
+- `--work-item <value>` *(required; repeatable)* — Queued Sift work-item UUID; repeat exactly twice
 
 #### `sift worker run`
 Claim executable work, run a local worker command, and report needs-review artifacts

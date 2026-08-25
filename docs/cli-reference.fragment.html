@@ -517,7 +517,48 @@
               </div>
             </details>
             <h2 id="cli-crm" data-i18n="docs.cli.crm.title">Crm</h2>
-            <details class="cli-topic"><summary><span data-i18n="docs.cli.crm.count">2 commands</span></summary>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.crm.count">6 commands</span></summary>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift crm import apply</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.crm.import-apply.desc">Apply only approved operations from an existing CRM import plan; replay is safe</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>planId</code> <span class="req">required</span> — Durable CRM import plan UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--yes</code> — Confirm canonical CRM writes without prompting</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift crm import approve</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.crm.import-approve.desc">Approve all or selected pending operations in an existing CRM import plan</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>planId</code> <span class="req">required</span> — Durable CRM import plan UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--operation-id &lt;value&gt;</code> <span class="flag-meta">repeatable</span> — Stable operation ID to approve; repeat to approve a subset</dd>
+                  <dd><code>--reason &lt;value&gt;</code> <span class="flag-meta">required</span> — Human approval reason recorded on the plan</dd>
+                  <dd><code>--yes</code> — Confirm the approval without prompting</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift crm import get</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.crm.import-get.desc">Resume and inspect a durable CRM import plan by stable plan ID</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>planId</code> <span class="req">required</span> — Durable CRM import plan UUID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift crm import plan</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.crm.import-plan.desc">Create or reuse a durable CRM import plan from CSV, TSV, XLS, or XLSX without writing canonical CRM records</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>file</code> <span class="req">required</span> — Local CSV, TSV, XLS, or XLSX source (8 MiB maximum)</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--mapping-mode &lt;manual|workspace_auto&gt;</code> <span class="flag-meta">default: "manual"</span> — Manual mapping or approved workspace mapping profile</dd>
+                  <dd><code>--provider &lt;generic|salesforce&gt;</code> <span class="flag-meta">default: "generic"</span> — Source provider mapping</dd>
+                </dl>
+              </div>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift crm organizations convert</code></div></div>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.crm.organizations-convert.desc">Explain the governed boundary between a CRM organization and a workspace</p>
@@ -538,7 +579,7 @@
             </details>
             <h2 id="cli-datasets" data-i18n="docs.cli.datasets.title">Datasets</h2>
             <p class="cli-topic__intro" data-i18n="docs.cli.datasets.intro">Structured datasets.</p>
-            <details class="cli-topic"><summary><span data-i18n="docs.cli.datasets.count">41 commands</span></summary>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.datasets.count">43 commands</span></summary>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift datasets add</code></div></div>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.add.desc">Add records to a dataset</p>
@@ -842,6 +883,23 @@
                 </dl>
               </div>
               <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift datasets inspect-file</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.inspect-file.desc">Inspect the structure of a local CSV, TSV, XLS, or XLSX file without creating or changing a dataset</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>file</code> <span class="req">required</span> — Path to a local CSV, TSV, XLS, or XLSX file</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--delimiter &lt;value&gt;</code> — Single-byte delimiter override for CSV/TSV</dd>
+                  <dd><code>--format &lt;csv|tsv|xls|xlsx&gt;</code> — Format override when the extension is absent or wrong</dd>
+                  <dd><code>--header-row &lt;value&gt;</code> — Zero-based header row index within the sheet grid</dd>
+                  <dd><code>--max-bytes &lt;value&gt;</code> — Refuse files larger than this many bytes</dd>
+                  <dd><code>--max-cols &lt;value&gt;</code> — Maximum columns returned per sheet</dd>
+                  <dd><code>--max-rows &lt;value&gt;</code> — Maximum data rows returned per sheet</dd>
+                  <dd><code>--max-sheets &lt;value&gt;</code> — Maximum sheets returned</dd>
+                  <dd><code>--sheet &lt;value&gt;</code> — Inspect only this sheet; the full sheet inventory is still reported</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift datasets join</code></div></div>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.join.desc">Join a dataset to itself using alias-scoped fields such as left.Close and right.Close</p>
                 <dl class="cli-cmd__params">
@@ -926,6 +984,17 @@
                   <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
                   <dt>Flags</dt>
                   <dd><code>--sample-limit &lt;value&gt;</code> <span class="flag-meta">default: 10</span> — Number of sample rows to include</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift datasets quality</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.datasets.quality.desc">Check dataset quality with structured missing-value metrics and repeated-value observations</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Dataset ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--fields &lt;value&gt;</code> — Comma-separated field names to check</dd>
+                  <dd><code>--repeat-threshold &lt;value&gt;</code> <span class="flag-meta">default: 3</span> — Minimum occurrences for a repeated value to be reported</dd>
                 </dl>
               </div>
               <div class="cli-cmd">
@@ -3315,6 +3384,8 @@
                   <dd><code>--allow-network</code> — Allow network access in the authored contract</dd>
                   <dd><code>--allow-vault</code> — Allow audited Vault access in the authored contract</dd>
                   <dd><code>--allowed-actions &lt;value&gt;</code> — Allowed actions JSON object</dd>
+                  <dd><code>--capture-applicability &lt;conversational_capture_required|non_conversational|unclassified&gt;</code> — Prospective capture applicability; this does not determine study eligibility</dd>
+                  <dd><code>--capture-receipt &lt;value&gt;</code> <span class="flag-meta">repeatable</span> — Finalized capture receipt UUID to bind atomically; repeat for multi-surface handoffs</dd>
                   <dd><code>--context &lt;value&gt;</code> — Input context JSON object</dd>
                   <dd><code>--contract &lt;value&gt;</code> — Complete Work Contract V1 JSON</dd>
                   <dd><code>--contract-file &lt;value&gt;</code> — Path to a complete Work Contract V1 JSON file</dd>
@@ -3591,7 +3662,18 @@
             </details>
             <h2 id="cli-worker" data-i18n="docs.cli.worker.title">Worker</h2>
             <p class="cli-topic__intro" data-i18n="docs.cli.worker.intro">Local executable work runners.</p>
-            <details class="cli-topic"><summary><span data-i18n="docs.cli.worker.count">1 command</span></summary>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.worker.count">2 commands</span></summary>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift worker dispatch</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.worker.dispatch.desc">Build a no-spend, surface-neutral plan for exactly two AWS agent workers</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--max-runtime-minutes &lt;value&gt;</code> <span class="flag-meta">default: 120</span> — Per-worker runtime ceiling</dd>
+                  <dd><code>--source-sha &lt;value&gt;</code> — Reviewed 40-character source Git SHA; defaults to a clean current HEAD</dd>
+                  <dd><code>--surface &lt;cli|t3|codex|claude-code|mcp&gt;</code> <span class="flag-meta">default: "cli"</span> — Calling control surface; does not change dispatch identity</dd>
+                  <dd><code>--work-item &lt;value&gt;</code> <span class="flag-meta">required; repeatable</span> — Queued Sift work-item UUID; repeat exactly twice</dd>
+                </dl>
+              </div>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift worker run</code></div></div>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.worker.run.desc">Claim executable work, run a local worker command, and report needs-review artifacts</p>

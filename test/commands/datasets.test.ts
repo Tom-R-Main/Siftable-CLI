@@ -10,6 +10,90 @@ afterAll(() => {
 });
 
 describe('dataset commands', () => {
+  describe('datasets quality', () => {
+    const qualityResult = {
+      contractVersion: 1,
+      datasetId: 'ds-1',
+      title: 'Sources',
+      totalRows: 3,
+      fieldCount: 1,
+      summary: {issueCount: 0, warningCount: 0, observationCount: 1},
+      fields: [{
+        field: 'Author',
+        fieldType: 'text',
+        totalRows: 3,
+        missingCount: 0,
+        missingRate: 0,
+        nonMissingCount: 3,
+        distinctCount: 2,
+        findings: [{
+          code: 'frequent_repeated_values',
+          classification: 'observation',
+          severity: 'note',
+          message: '1 frequently repeated value sampled; repetition may be valid and is not treated as a uniqueness violation',
+          metrics: {reportedValueCount: 1, repeatThreshold: 2, reportLimit: 5},
+          examples: [{value: 'Ada', occurrences: 2}],
+        }],
+      }],
+      generatedAt: '2026-08-25T00:00:00.000Z',
+    };
+
+    it('returns the versioned backend contract unchanged in JSON mode', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/datasets/ds-1/quality-check')
+        .body(body => JSON.stringify(body) === JSON.stringify({
+          fields: ['Author'],
+          repeatThreshold: 2,
+        }))
+        .reply(200, qualityResult)
+        .install();
+
+      const result = await runCommand([
+        'datasets', 'quality', 'ds-1', '--fields', 'Author', '--repeat-threshold', '2',
+        '--json', '--token', 'exf_pat_test',
+      ]);
+
+      expect(JSON.parse(result.stdout)).toEqual(qualityResult);
+    });
+
+    it('omits deprecated backend aliases from the JSON contract', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/datasets/ds-1/quality-check')
+        .reply(200, {
+          ...qualityResult,
+          fields: qualityResult.fields.map(field => ({
+            ...field,
+            nullCount: field.missingCount,
+            nullRate: field.missingRate,
+            issues: field.findings,
+          })),
+        })
+        .install();
+
+      const result = await runCommand([
+        'datasets', 'quality', 'ds-1', '--json', '--token', 'exf_pat_test',
+      ]);
+
+      expect(JSON.parse(result.stdout).fields[0]).not.toHaveProperty('nullCount');
+      expect(JSON.parse(result.stdout).fields[0]).not.toHaveProperty('issues');
+    });
+
+    it('labels common repeated values as observations in human output', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/datasets/ds-1/quality-check')
+        .reply(200, qualityResult)
+        .install();
+
+      const result = await runCommand([
+        'datasets', 'quality', 'ds-1', '--repeat-threshold', '2', '--token', 'exf_pat_test',
+      ]);
+
+      expect(result.stdout).toContain('[OBSERVATION] Author');
+      expect(result.stdout).toContain('repetition may be valid');
+      expect(result.stdout).not.toContain('duplicate group');
+    });
+  });
+
   describe('datasets list', () => {
     it('matches the backend collection limit', () => {
       expect(DatasetsList.flags.limit).toEqual(expect.objectContaining({
