@@ -16,13 +16,22 @@ import {collectDailyReviewContext} from '../../src/lib/daily-review-context';
 import {rejectAllConfirms, resetBypass, setConfirmListener} from '../../interactive-tui/confirmGate';
 import {buildCommandContext as buildContext} from '../helpers/interactive-command-context';
 import {existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
-import {homedir, tmpdir} from 'node:os';
+import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {rolloutPathForKey} from '../../interactive-tui/threadEngine';
 
 function restoreEnv(key: string, value: string | undefined): void {
   if (value === undefined) delete process.env[key];
   else process.env[key] = value;
+}
+
+async function withTemporaryHome(run: (temporaryHome: string) => Promise<void>): Promise<void> {
+  const temporaryHome = mkdtempSync(path.join(tmpdir(), 'sift-commands-home-'));
+  try {
+    await run(temporaryHome);
+  } finally {
+    rmSync(temporaryHome, {recursive: true, force: true});
+  }
 }
 
 describe('interactive command registry', () => {
@@ -274,60 +283,68 @@ describe('interactive command registry', () => {
   });
 
   it('clears the active journal before deleting the matching legacy rollout', async () => {
-    const previous = process.env.SIFT_CONTEXT_COMPACTION;
-    const key = `commands-thread-clear-${process.pid}-${Date.now()}`;
-    const rolloutPath = rolloutPathForKey(homedir(), key);
-    const resetThread = jest.fn(async () => true);
-    try {
-      process.env.SIFT_CONTEXT_COMPACTION = '1';
-      mkdirSync(path.dirname(rolloutPath), {recursive: true});
-      writeFileSync(rolloutPath, '{"r":0,"t":"old question"}\n', {mode: 0o600});
-      const {ctx, messages} = buildContext({conversationKey: () => key, resetThread});
+    await withTemporaryHome(async (temporaryHome) => {
+      const previous = process.env.SIFT_CONTEXT_COMPACTION;
+      const key = `commands-thread-clear-${process.pid}-${Date.now()}`;
+      const rolloutPath = rolloutPathForKey(temporaryHome, key);
+      const resetThread = jest.fn(async () => true);
+      try {
+        process.env.SIFT_CONTEXT_COMPACTION = '1';
+        mkdirSync(path.dirname(rolloutPath), {recursive: true});
+        writeFileSync(rolloutPath, '{"r":0,"t":"old question"}\n', {mode: 0o600});
+        const {ctx, messages} = buildContext({
+          conversationKey: () => key,
+          homeDir: () => temporaryHome,
+          resetThread,
+        });
 
-      await runInteractiveCommand(ctx, '/threads clear');
+        await runInteractiveCommand(ctx, '/threads clear');
 
-      expect(resetThread).toHaveBeenCalledTimes(1);
-      expect(existsSync(rolloutPath)).toBe(false);
-      expect(messages.at(-1)?.text).toContain(`Cleared persisted thread for ${key}`);
-    } finally {
-      restoreEnv('SIFT_CONTEXT_COMPACTION', previous);
-      if (existsSync(rolloutPath)) rmSync(rolloutPath);
-    }
+        expect(resetThread).toHaveBeenCalledTimes(1);
+        expect(existsSync(rolloutPath)).toBe(false);
+        expect(messages.at(-1)?.text).toContain(`Cleared persisted thread for ${key}`);
+      } finally {
+        restoreEnv('SIFT_CONTEXT_COMPACTION', previous);
+      }
+    });
   });
 
   it('preserves the legacy rollout when the active journal cannot be reset', async () => {
-    const previous = process.env.SIFT_CONTEXT_COMPACTION;
-    const key = `commands-thread-reset-failure-${process.pid}-${Date.now()}`;
-    const rolloutPath = rolloutPathForKey(homedir(), key);
-    try {
-      process.env.SIFT_CONTEXT_COMPACTION = '1';
-      mkdirSync(path.dirname(rolloutPath), {recursive: true});
-      writeFileSync(rolloutPath, '{"r":0,"t":"keep me"}\n', {mode: 0o600});
-      const {ctx, messages} = buildContext({
-        conversationKey: () => key,
-        resetThread: async () => {
-          throw new Error('journal unavailable');
-        },
-      });
+    await withTemporaryHome(async (temporaryHome) => {
+      const previous = process.env.SIFT_CONTEXT_COMPACTION;
+      const key = `commands-thread-reset-failure-${process.pid}-${Date.now()}`;
+      const rolloutPath = rolloutPathForKey(temporaryHome, key);
+      try {
+        process.env.SIFT_CONTEXT_COMPACTION = '1';
+        mkdirSync(path.dirname(rolloutPath), {recursive: true});
+        writeFileSync(rolloutPath, '{"r":0,"t":"keep me"}\n', {mode: 0o600});
+        const {ctx, messages} = buildContext({
+          conversationKey: () => key,
+          homeDir: () => temporaryHome,
+          resetThread: async () => {
+            throw new Error('journal unavailable');
+          },
+        });
 
-      await runInteractiveCommand(ctx, '/threads clear');
+        await runInteractiveCommand(ctx, '/threads clear');
 
-      expect(existsSync(rolloutPath)).toBe(true);
-      expect(messages.at(-1)?.text).toContain('journal unavailable');
-    } finally {
-      restoreEnv('SIFT_CONTEXT_COMPACTION', previous);
-      if (existsSync(rolloutPath)) rmSync(rolloutPath);
-    }
+        expect(existsSync(rolloutPath)).toBe(true);
+        expect(messages.at(-1)?.text).toContain('journal unavailable');
+      } finally {
+        restoreEnv('SIFT_CONTEXT_COMPACTION', previous);
+      }
+    });
   });
 
   it('fails closed when the active harness declines durable reset', async () => {
-    const key = `commands-thread-reset-unsupported-${process.pid}-${Date.now()}`;
-    const rolloutPath = rolloutPathForKey(homedir(), key);
-    try {
+    await withTemporaryHome(async (temporaryHome) => {
+      const key = `commands-thread-reset-unsupported-${process.pid}-${Date.now()}`;
+      const rolloutPath = rolloutPathForKey(temporaryHome, key);
       mkdirSync(path.dirname(rolloutPath), {recursive: true});
       writeFileSync(rolloutPath, '{"r":0,"t":"keep me"}\n', {mode: 0o600});
       const {ctx, messages} = buildContext({
         conversationKey: () => key,
+        homeDir: () => temporaryHome,
         resetThread: async () => false,
       });
 
@@ -335,9 +352,7 @@ describe('interactive command registry', () => {
 
       expect(existsSync(rolloutPath)).toBe(true);
       expect(messages.at(-1)?.text).toContain('does not expose durable thread reset');
-    } finally {
-      if (existsSync(rolloutPath)) rmSync(rolloutPath);
-    }
+    });
   });
 
   it('routes /copy targets to the right source (copy stays explicit via the command)', async () => {

@@ -93,6 +93,8 @@ export interface InteractiveCommandContext {
   workspaceRoot: () => string;
   /** Durable identity for the active parent or child conversation. */
   conversationKey?: () => string;
+  /** Home directory used for legacy rollout files. Defaults to os.homedir(). */
+  homeDir?: () => string;
   push: (message: CommandMessage) => void;
   setMessages: (messages: CommandMessage[]) => void;
   /** Start an agent turn (queues if the agent is busy). `displayText` is what the
@@ -2126,7 +2128,7 @@ export const interactiveCommands: InteractiveCommand[] = [
     usage: "/threads [clear]",
     run: async (ctx, args) => {
       const key = ctx.conversationKey?.() || ctx.workspaceRoot() || ctx.cwd();
-      const path = rolloutPathForKey(homedir(), key);
+      const path = rolloutPathForKey(ctx.homeDir?.() ?? homedir(), key);
       if (args[0] === "clear") {
         try {
           const reset = await ctx.resetThread?.();

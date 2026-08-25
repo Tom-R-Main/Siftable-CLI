@@ -82,6 +82,12 @@ import {
 import { digestJson, SessionKernel } from "./session.js";
 import type { SessionEventContext } from "./session.js";
 import { normalizeToolResult } from "./tool.js";
+import type { ToolResult } from "./types.js";
+import { redactSensitiveText, sanitizeSensitiveValue } from "./redaction.js";
+
+function sanitizeToolResult(result: ToolResult): ToolResult {
+  return sanitizeSensitiveValue(result) as ToolResult;
+}
 
 // ─── Factory ───────────────────────────────────────────────────────────────
 
@@ -163,7 +169,7 @@ export async function createChatAgent(
         }
       } catch (error) {
         const name = provider.metadata.name;
-        const msg = error instanceof Error ? error.message : "unknown error";
+        const msg = errorMessage(error);
         console.warn(`⚠️  ${name}: failed to connect — ${msg}`);
       }
     }
@@ -652,7 +658,8 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     }
 
     const execution = normalizeToolResult(call.name, result);
-    const { result: normalizedResult, modelContent } = execution;
+    const normalizedResult = sanitizeToolResult(execution.result);
+    const modelContent = JSON.stringify(normalizedResult);
     const executionOutcome = execution.outcome;
     const normalizedRecord = normalizedResult as unknown as Record<string, unknown>;
     rememberEffect(call, {
@@ -697,7 +704,9 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     result: Awaited<ReturnType<ToolRegistry["execute"]>>;
     modelContent: string;
   } {
-    const message = `Tool execution outcome is unknown: ${errorMessage(error)}`;
+    const message = redactSensitiveText(
+      `Tool execution outcome is unknown: ${errorMessage(error)}`,
+    );
     const result = {
       success: false,
       error: message,
@@ -1359,9 +1368,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
             }
           }
         } catch (err) {
-          console.error(
-            `\n  Error: ${err instanceof Error ? err.message : err}\n`,
-          );
+          console.error(`\n  Error: ${errorMessage(err)}\n`);
         }
 
         ask();
@@ -1465,6 +1472,10 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     const correlationId = `external-message:${externalId}`;
     const release = await this.acquireTurn();
     try {
+      // Legacy rollout migration must happen before the first mailbox event.
+      // Otherwise that event makes the journal look initialized and the prior
+      // conversation is silently skipped on the first post-upgrade turn.
+      this.ensureSeeded();
       if (this.session.getEvents().some((event) =>
         event.type === "message/appended" && event.correlationId === correlationId
       )) {
@@ -1633,8 +1644,8 @@ function completeRun(
 function failRun(run: RunRecord, error: unknown): RunRecord {
   requireRunning(run);
   const normalized = error instanceof Error
-    ? { name: error.name, message: error.message }
-    : { name: "Error", message: String(error) };
+    ? { name: redactSensitiveText(error.name), message: errorMessage(error) }
+    : { name: "Error", message: errorMessage(error) };
   return {
     ...run,
     status: "failed",
@@ -1711,7 +1722,7 @@ function attachToolEffects(
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return redactSensitiveText(error instanceof Error ? error.message : String(error));
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {

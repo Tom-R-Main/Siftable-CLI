@@ -124,12 +124,20 @@ export function enqueueSessionInstruction(
     fsyncDirectory(pendingDir);
     return record;
   } finally {
-    if (fd !== undefined) closeSync(fd);
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // A primary write/setup failure is already in flight. Cleanup is
+        // best-effort and must not replace the useful failure at the boundary.
+      }
+    }
     if (stagingExists) {
       try {
         unlinkSync(stagingPath);
-      } catch (error) {
-        if (!isErrnoCode(error, "ENOENT")) throw error;
+      } catch {
+        // The private staging file is ignored by mailbox readers. Preserve the
+        // primary publication failure even if the filesystem also rejects cleanup.
       }
     }
   }

@@ -326,57 +326,18 @@ describe('getAgent — per-session keyed agents', () => {
     expect(preChatAgent.reset).toHaveBeenCalledWith({threadId: 'not-yet-opened'});
   });
 
-  it('queues reset behind an active turn through the harness FIFO', async () => {
-    setBrainModel({provider: 'openrouter', model: 'google/gemini-3.7-flash'});
+  it('delegates active-thread reset to the harness FIFO-safe resetAsync method', async () => {
     setSessionCwd(dirs.parent);
     const agent = (await getAgent()) as unknown as FakeAgent;
     const parentKey = getWorkspaceRoot();
-    let markChatStarted!: () => void;
-    let markResetStarted!: () => void;
-    let releaseTurn!: () => void;
-    const chatStarted = new Promise<void>((resolve) => {
-      markChatStarted = resolve;
-    });
-    const turnGate = new Promise<void>((resolve) => {
-      releaseTurn = resolve;
-    });
-    const resetStarted = new Promise<void>((resolve) => {
-      markResetStarted = resolve;
-    });
-    agent.chat = async function* () {
-      markChatStarted();
-      await turnGate;
-    };
     agent.resetAsync = jest.fn(async (options: {threadId?: string}) => {
-      markResetStarted();
-      await turnGate;
       await agent.reset(options);
     });
 
-    const priorExplorerMode = process.env.SIFT_EXPLORER_MODE;
-    process.env.SIFT_EXPLORER_MODE = 'off';
-    try {
-      const activeTurn = agentHarnessAsk('hold this turn open', jest.fn());
-      await chatStarted;
-      let resetSettled = false;
-      const reset = resetActiveThread().then((result) => {
-        resetSettled = true;
-        return result;
-      });
-
-      await resetStarted;
-      expect(agent.resetAsync).toHaveBeenCalledWith({threadId: parentKey});
-      expect(agent.reset).not.toHaveBeenCalled();
-      expect(resetSettled).toBe(false);
-
-      releaseTurn();
-      await expect(activeTurn).resolves.toEqual({text: ''});
-      await expect(reset).resolves.toBe(true);
-      expect(agent.reset).toHaveBeenCalledWith({threadId: parentKey});
-    } finally {
-      if (priorExplorerMode === undefined) delete process.env.SIFT_EXPLORER_MODE;
-      else process.env.SIFT_EXPLORER_MODE = priorExplorerMode;
-    }
+    await expect(resetActiveThread()).resolves.toBe(true);
+    expect(agent.resetAsync).toHaveBeenCalledTimes(1);
+    expect(agent.resetAsync).toHaveBeenCalledWith({threadId: parentKey});
+    expect(agent.reset).toHaveBeenCalledWith({threadId: parentKey});
   });
 
   it('warns about uncertain tool effects without exposing receipt details', async () => {

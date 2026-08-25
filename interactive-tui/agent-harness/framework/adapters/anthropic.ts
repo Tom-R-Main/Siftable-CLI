@@ -133,11 +133,9 @@ export function createAnthropicAdapter(config?: Partial<AdapterConfig>): AIAdapt
       const tools: Anthropic.Tool[] = registry.toAnthropicFormat().map((tool) => ({
         name: tool.name,
         description: tool.description,
-        input_schema: {
-          type: "object",
-          properties: tool.input_schema.properties,
-          ...(tool.input_schema.required ? { required: tool.input_schema.required } : {}),
-        },
+        // Anthropic accepts complete JSON Schema objects. Forward the runtime
+        // schema verbatim so constraints beyond properties/required survive.
+        input_schema: { ...tool.input_schema },
       }));
       const body: Anthropic.MessageCreateParamsNonStreaming = {
         model,

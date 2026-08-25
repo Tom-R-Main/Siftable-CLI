@@ -19,7 +19,9 @@ import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
+  constants,
   fchmodSync,
+  fstatSync,
   fsyncSync,
   linkSync,
   lstatSync,
@@ -39,7 +41,10 @@ import { fileURLToPath } from "node:url";
 const storeFilename = fileURLToPath(import.meta.url);
 const storeDirectory = dirname(storeFilename);
 const DATA_DIR = join(storeDirectory, "..", "..", ".data");
-const LOCK_WAIT_TIMEOUT_MS = 30_000;
+// This Store API is intentionally synchronous. Keep contention fail-fast so a
+// wedged peer cannot freeze an interactive or HTTP event loop for many seconds.
+// A genuinely non-blocking wait requires an async Store contract.
+const LOCK_WAIT_TIMEOUT_MS = 500;
 const LOCK_POLL_INTERVAL_MS = 10;
 const LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
 
@@ -685,11 +690,6 @@ function tryAcquireReclaimGate(
   const visited = new Set<string>();
 
   for (;;) {
-    const generationKey = generationToken ?? "initial";
-    if (visited.has(generationKey)) {
-      throw new StorePersistenceError(`store ${storeName} has a cyclic stale-lock recovery chain`);
-    }
-    visited.add(generationKey);
     // Keep the first generation at the legacy path so mixed versions still
     // serialize recovery. Only a dead gate advances to a token-keyed child.
     const reclaimPath = generationToken === undefined
@@ -704,6 +704,10 @@ function tryAcquireReclaimGate(
         const owner = readLockOwner(reclaimPath);
         if (owner === undefined) continue;
         if (isProcessAlive(owner.pid)) return undefined;
+        if (visited.has(owner.token)) {
+          throw new StorePersistenceError(`store ${storeName} has a cyclic stale-lock recovery chain`);
+        }
+        visited.add(owner.token);
         generationToken = owner.token;
         continue;
       }
@@ -730,31 +734,51 @@ function tryAcquireReclaimGate(
 }
 
 function readLockOwner(lockPath: string): StoreLockOwner | undefined {
-  let info;
+  let lockFd: number;
   try {
-    info = lstatSync(lockPath);
+    const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
+    lockFd = openSync(lockPath, constants.O_RDONLY | constants.O_NONBLOCK | noFollow);
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") return undefined;
+    if (isNodeError(error) && error.code === "ELOOP") {
+      throw new StorePersistenceError(`store lock ${lockPath} must be a regular file`);
+    }
     throw new StorePersistenceError(`could not inspect store lock ${lockPath}`, { cause: error });
   }
 
-  if (info.isSymbolicLink() || !info.isFile()) {
-    throw new StorePersistenceError(`store lock ${lockPath} must be a regular file`);
-  }
-  assertCurrentOwner(info.uid, `store lock ${lockPath}`);
-  if (process.platform !== "win32" && (info.mode & 0o777) !== 0o600) {
-    throw new StorePersistenceError(`store lock ${lockPath} has unsafe permissions`);
-  }
-  if (info.nlink !== 2) {
-    throw new StorePersistenceError(`store lock ${lockPath} has an inconsistent link count`);
-  }
-
   let parsed: Partial<StoreLockOwner>;
+  let primaryFailure = false;
   try {
-    parsed = JSON.parse(readFileSync(lockPath, "utf8")) as Partial<StoreLockOwner>;
+    const info = fstatSync(lockFd);
+    if (!info.isFile()) {
+      throw new StorePersistenceError(`store lock ${lockPath} must be a regular file`);
+    }
+    assertCurrentOwner(info.uid, `store lock ${lockPath}`);
+    if (process.platform !== "win32" && (info.mode & 0o777) !== 0o600) {
+      throw new StorePersistenceError(`store lock ${lockPath} has unsafe permissions`);
+    }
+    // A lock can be unlinked after open while its claim link still exists.
+    // Its descriptor then reports one (or eventually zero) links, but it no
+    // longer excludes another contender at the well-known lock path.
+    if (!pathMatchesFile(lockPath, info)) return undefined;
+    if (info.nlink !== 2) {
+      throw new StorePersistenceError(
+        `store lock ${lockPath} has an inconsistent link count (${info.nlink})`,
+      );
+    }
+    parsed = JSON.parse(readFileSync(lockFd, "utf8")) as Partial<StoreLockOwner>;
   } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return undefined;
+    primaryFailure = true;
+    if (error instanceof StorePersistenceError) throw error;
     throw new StorePersistenceError(`store lock ${lockPath} is malformed`, { cause: error });
+  } finally {
+    try {
+      closeSync(lockFd);
+    } catch (error) {
+      if (!primaryFailure) {
+        throw new StorePersistenceError(`could not close store lock ${lockPath}`, { cause: error });
+      }
+    }
   }
 
   if (!Number.isSafeInteger(parsed.pid) || (parsed.pid ?? 0) <= 0) {
@@ -816,6 +840,16 @@ function sameFile(left: string, right: string): boolean {
     const leftInfo = statSync(left);
     const rightInfo = statSync(right);
     return leftInfo.dev === rightInfo.dev && leftInfo.ino === rightInfo.ino;
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function pathMatchesFile(path: string, expected: { dev: number; ino: number }): boolean {
+  try {
+    const current = lstatSync(path);
+    return !current.isSymbolicLink() && current.dev === expected.dev && current.ino === expected.ino;
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") return false;
     throw error;

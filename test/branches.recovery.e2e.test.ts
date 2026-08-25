@@ -361,9 +361,8 @@ describe("lane F — controller recovery", () => {
       const result = controller.sendBackChild(child.session.sessionId, "retry safely");
 
       expect(result.ok).toBe(false);
-      if ("reason" in result) {
-        expect(result.reason).toMatch(/could not durably enqueue.*status restored/i);
-      }
+      if (result.ok) throw new Error("expected durable enqueue to fail");
+      expect(result.reason).toMatch(/could not durably enqueue.*status restored/i);
       expect(getMergeMasterSession(child.session.sessionId)?.status).toBe("merge_blocked");
     } finally {
       await fx.cleanup();

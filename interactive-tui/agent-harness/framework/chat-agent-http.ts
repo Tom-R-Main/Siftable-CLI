@@ -13,8 +13,9 @@
 
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { ChatAgent, ServeOptions } from "./chat-agent-types.js";
+import type { ChatAgent, RunToolEffects, ServeOptions } from "./chat-agent-types.js";
 import { RunExecutionError } from "./chat-agent-types.js";
+import { redactSensitiveText } from "./redaction.js";
 
 // ─── Server ────────────────────────────────────────────────────────────────
 
@@ -145,19 +146,28 @@ export function createChatAgentHttpServer(
       });
     } catch (error) {
       if (res.destroyed || res.writableEnded) return;
-      const message = error instanceof Error ? error.message : "Internal server error";
+      const message = redactSensitiveText(
+        error instanceof Error ? error.message : "Internal server error",
+      );
       const hasPartialEffects = error instanceof RunExecutionError
         && error.toolEffects?.state === "partial";
       const failure = error instanceof RunExecutionError
-        ? {
-            error: message,
-            run: error.run,
-            ...(error.toolEffects === undefined ? {} : { toolEffects: error.toolEffects }),
-            ...(hasPartialEffects ? { retryable: false } : {}),
-            ...(error.toolEffects?.verificationRequired === undefined
-              ? {}
-              : { verificationRequired: error.toolEffects.verificationRequired }),
-          }
+        ? (() => {
+            const runToolEffects = clientSafeToolEffects(error.run.toolEffects);
+            const toolEffects = clientSafeToolEffects(error.toolEffects);
+            return {
+              error: message,
+              run: {
+                ...error.run,
+                ...(runToolEffects === undefined ? {} : { toolEffects: runToolEffects }),
+              },
+              ...(toolEffects === undefined ? {} : { toolEffects }),
+              ...(hasPartialEffects ? { retryable: false } : {}),
+              ...(error.toolEffects?.verificationRequired === undefined
+                ? {}
+                : { verificationRequired: error.toolEffects.verificationRequired }),
+            };
+          })()
         : { error: message };
       if (res.headersSent) {
         // SSE stream already started — emit an error frame and close cleanly
@@ -181,6 +191,27 @@ export function createChatAgentHttpServer(
 function sendJson(res: ServerResponse, status: number, data: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(data));
+}
+
+/** Remove tool inputs and result payloads before crossing the HTTP boundary. */
+function clientSafeToolEffects(toolEffects: RunToolEffects | undefined) {
+  if (toolEffects === undefined) return undefined;
+  return {
+    state: toolEffects.state,
+    certainty: toolEffects.certainty,
+    receipts: toolEffects.receipts.map((receipt) => ({
+      name: receipt.name,
+      result: {
+        success: receipt.result.success,
+        ...(receipt.result.executionOutcome === undefined
+          ? {}
+          : { executionOutcome: receipt.result.executionOutcome }),
+      },
+    })),
+    ...(toolEffects.verificationRequired === undefined
+      ? {}
+      : { verificationRequired: toolEffects.verificationRequired }),
+  };
 }
 
 function abortOnDisconnect(

@@ -333,7 +333,7 @@ async function callChatCompletions(input: {
   body: Record<string, unknown>;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
-}): Promise<any> {
+}): Promise<unknown> {
   const response = await (input.fetchImpl ?? fetch)(`${input.baseUrl}/chat/completions`, {
     method: "POST",
     signal: input.signal,
@@ -352,30 +352,58 @@ async function callChatCompletions(input: {
   return response.json();
 }
 
-function parseChatCompletionChoice(name: string, data: any): AdapterResponse | null {
-  const choice = data.choices?.[0];
+function parseChatCompletionChoice(name: string, data: unknown): AdapterResponse | null {
+  if (!isRecord(data) || !Array.isArray(data.choices)) {
+    throw new Error(`${name} response choices must be an array`);
+  }
+  const choice = data.choices[0];
   if (!choice) throw new Error(`No response from ${name}`);
+  if (!isRecord(choice)) {
+    throw new Error(`${name} response choice must be an object`);
+  }
+  const message = choice.message;
+  if (!isRecord(message)) {
+    throw new Error(`${name} response choice message must be an object`);
+  }
 
-  const rawToolCalls: any[] = choice.message?.tool_calls ?? [];
-  const parsedCalls = rawToolCalls.map((tc) => ({
-    id: tc.id,
-    name: tc.function.name,
-    args: JSON.parse(tc.function.arguments || "{}"),
-  }));
+  let rawToolCalls: unknown[] = [];
+  if (message.tool_calls !== undefined) {
+    if (!Array.isArray(message.tool_calls)) {
+      throw new Error(`${name} response tool_calls must be an array`);
+    }
+    rawToolCalls = message.tool_calls;
+  }
+  const parsedCalls = rawToolCalls.map((rawCall, index) => {
+    const label = `${name} response tool_calls[${index}]`;
+    if (!isRecord(rawCall)) throw new Error(`${label} must be an object`);
+    if (rawCall.type !== "function") {
+      throw new Error(`${label} type must be "function"`);
+    }
+    if (!isRecord(rawCall.function)) {
+      throw new Error(`${label}.function must be an object`);
+    }
+    return {
+      id: requiredString(rawCall.id, `${label}.id`),
+      name: requiredString(rawCall.function.name, `${label}.function.name`),
+      args: parseToolArguments(rawCall.function.arguments, `${label}.function.arguments`),
+    };
+  });
   // A lone call stays on `toolCall` (single-call path unchanged); only a
   // genuine fan-out uses `toolCalls`.
   if (parsedCalls.length === 1) return { toolCall: parsedCalls[0] };
   if (parsedCalls.length > 1) return { toolCalls: parsedCalls };
 
-  const content = choice.message?.content;
+  const content = message.content;
   if (typeof content === "string" && content.trim()) return { text: content };
   return null;
 }
 
-function emptyChatCompletionDiagnostic(name: string, data: any): string {
-  const choice = data.choices?.[0] ?? {};
+function emptyChatCompletionDiagnostic(name: string, data: unknown): string {
+  const choice = isRecord(data) && Array.isArray(data.choices) && isRecord(data.choices[0])
+    ? data.choices[0]
+    : {};
   const finish = choice.finish_reason ?? choice.native_finish_reason ?? "unknown";
-  const role = choice.message?.role ?? "unknown";
+  const role = isRecord(choice.message) ? choice.message.role ?? "unknown" : "unknown";
   return `${name} returned an empty assistant message (finish_reason: ${finish}, role: ${role}). Try /model codex or /key vault openrouter, or choose a different OpenRouter model.`;
 }
 

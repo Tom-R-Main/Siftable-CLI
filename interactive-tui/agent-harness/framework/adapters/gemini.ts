@@ -29,14 +29,21 @@ export function createGeminiAdapter(config?: Partial<AdapterConfig>): AIAdapter 
 
     async chat(messages: ChatMessage[], registry: ToolRegistry, options?: ChatOptions): Promise<AdapterResponse> {
       const contents: any[] = [];
+      // ToolCall IDs are mandatory inside the harness but optional in Gemini's
+      // wire format. Track the provider-native identity while replaying the
+      // assistant turn so a synthetic harness ID never leaks back to Gemini.
+      const providerCallIds = new Map<string, string | undefined>();
       for (const msg of messages) {
         if (msg.role === "tool") {
           // Gemini matches function responses by name. Multiple responses for a
           // parallel turn must share ONE function-role content — merge into the
           // open one rather than emitting consecutive function messages.
+          const providerCallId = providerCallIds.has(msg.toolCallId!)
+            ? providerCallIds.get(msg.toolCallId!)
+            : msg.toolCallId!;
           const fr = {
             functionResponse: {
-              id: msg.toolCallId!,
+              ...(providerCallId === undefined ? {} : { id: providerCallId }),
               name: msg.toolName!,
               response: safeJsonParse(chatContentToText(msg.content), { result: chatContentToText(msg.content) }),
             },
@@ -61,6 +68,13 @@ export function createGeminiAdapter(config?: Partial<AdapterConfig>): AIAdapter 
               part?.functionCall?.name === calls[index].name
               && (part.functionCall.id ?? calls[index].id) === calls[index].id
             );
+          calls.forEach((call, index) => {
+            const preservedPart: any = preserved[index];
+            const providerId = canReplayPreservedCalls
+              ? preservedPart?.functionCall?.id
+              : call.id;
+            providerCallIds.set(call.id, providerId);
+          });
           contents.push({
             role: "model",
             parts: canReplayPreservedCalls

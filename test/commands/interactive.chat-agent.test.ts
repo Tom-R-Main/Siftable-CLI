@@ -8,6 +8,7 @@ import {describe, it, expect, vi} from 'vitest';
 import type {AdapterResponse, AIAdapter, ChatMessage} from '../../interactive-tui/agent-harness/framework/adapters/types';
 import type {ChatAgentConfig} from '../../interactive-tui/agent-harness/framework/chat-agent-types';
 import {RunExecutionError} from '../../interactive-tui/agent-harness/framework/chat-agent-types';
+import {mimeFromPath} from '../../interactive-tui/agent-harness/framework/adapters/content';
 import {createOpenAIAdapter} from '../../interactive-tui/agent-harness/framework/adapters/openai';
 import {createChatAgent} from '../../interactive-tui/agent-harness/framework/chat-agent';
 import {createChatAgentHttpServer} from '../../interactive-tui/agent-harness/framework/chat-agent-http';
@@ -96,6 +97,9 @@ describe('Siftable agent-harness chat loop', () => {
         return Reflect.get(target, property, receiver);
       },
     });
+    void internals.events[0];
+    expect(priorEventIndexReads).toBe(1);
+    priorEventIndexReads = 0;
 
     for (let index = 0; index < 128; index += 1) {
       session.replaceHistory([], `constant-size-event-${index}`);
@@ -103,6 +107,14 @@ describe('Siftable agent-harness chat loop', () => {
 
     expect(priorEventIndexReads).toBe(0);
     expect(session.getEventCount()).toBe(129);
+  });
+
+  it('rejects unsupported image extensions instead of mislabelling them as PNG', () => {
+    expect(mimeFromPath('photo.PNG')).toBe('image/png');
+    expect(mimeFromPath('photo.jpeg')).toBe('image/jpeg');
+    expect(mimeFromPath('photo.webp')).toBe('image/webp');
+    expect(() => mimeFromPath('photo.bmp')).toThrow('unsupported image file extension: .bmp');
+    expect(() => mimeFromPath('photo')).toThrow('unsupported image file extension: (none)');
   });
 
   it('forwards the selected OpenAI reasoning effort without an incompatible temperature', async () => {
@@ -1200,16 +1212,23 @@ describe('Siftable agent-harness chat loop', () => {
     )?.content).toBe(event.data.modelContent);
   });
 
-  it('returns 409 and a known receipt when an HTTP chat fails after a committed effect', async () => {
+  it('returns 409 with safe receipt metadata when an HTTP chat fails after a committed effect', async () => {
     let adapterCalls = 0;
     let effectCount = 0;
+    const inputSecret = 'http-input-secret-7be2ac';
+    const resultSecret = 'http-result-secret-3fd184';
+    const errorSecret = 'http-error-secret-8a71c9';
     const effect = defineTool({
       name: 'http_known_partial_effect',
       description: 'Performs one known effect before an adapter failure',
-      inputSchema: {type: 'object', properties: {}},
+      inputSchema: {
+        type: 'object',
+        properties: {payload: {type: 'string'}},
+        required: ['payload'],
+      },
       handler: async () => {
         effectCount += 1;
-        return ok({effectCount});
+        return ok({effectCount, confirmation: resultSecret});
       },
     });
     const agent = await createChatAgent({
@@ -1219,9 +1238,9 @@ describe('Siftable agent-harness chat loop', () => {
         async chat() {
           adapterCalls += 1;
           if (adapterCalls === 1) {
-            return {toolCall: {id: 'http-effect', name: effect.name, args: {}}};
+            return {toolCall: {id: 'http-effect', name: effect.name, args: {payload: inputSecret}}};
           }
-          throw new Error('adapter failed after effect committed');
+          throw new Error(`adapter failed authorization=${errorSecret}`);
         },
       },
       tools: [effect],
@@ -1243,26 +1262,104 @@ describe('Siftable agent-harness chat loop', () => {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({message: 'perform effect'}),
       });
-      const body = await response.json() as {
+      const serialized = await response.text();
+      const body = JSON.parse(serialized) as {
         retryable?: boolean;
         toolEffects?: {state: string; certainty: string; receipts: unknown[]};
+        run?: {toolEffects?: {state: string; certainty: string; receipts: unknown[]}};
       };
       expect(response.status).toBe(409);
       expect(body.retryable).toBe(false);
+      expect(serialized).not.toContain(inputSecret);
+      expect(serialized).not.toContain(resultSecret);
+      expect(serialized).not.toContain(errorSecret);
       expect(body.toolEffects).toEqual({
         state: 'partial',
         certainty: 'known',
         receipts: [{
           name: effect.name,
-          args: {},
           result: {
             success: true,
-            data: {effectCount: 1},
             executionOutcome: 'succeeded',
           },
         }],
       });
+      expect(body.run?.toolEffects).toEqual(body.toolEffects);
       expect(effectCount).toBe(1);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+        server.closeAllConnections();
+      });
+    }
+  });
+
+  it('emits only safe receipt metadata when an SSE chat fails after a committed effect', async () => {
+    let adapterCalls = 0;
+    const inputSecret = 'sse-input-secret-45f0e1';
+    const resultSecret = 'sse-result-secret-9c86a4';
+    const errorSecret = 'sse-error-secret-c1ad73';
+    const effect = defineTool({
+      name: 'sse_known_partial_effect',
+      description: 'Performs one known effect before a streaming adapter failure',
+      inputSchema: {
+        type: 'object',
+        properties: {payload: {type: 'string'}},
+        required: ['payload'],
+      },
+      handler: async () => ok({confirmation: resultSecret}),
+    });
+    const agent = await createChatAgent({
+      adapter: {
+        name: 'sse-known-partial',
+        model: 'test-model',
+        async chat() {
+          adapterCalls += 1;
+          if (adapterCalls === 1) {
+            return {toolCall: {id: 'sse-effect', name: effect.name, args: {payload: inputSecret}}};
+          }
+          throw new Error(`streaming adapter failed authorization=${errorSecret}`);
+        },
+      },
+      tools: [effect],
+      memory: false,
+    });
+    const server = createChatAgentHttpServer(agent);
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => {
+        server.off('error', reject);
+        resolve();
+      });
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('server did not bind');
+      const response = await fetch(`http://127.0.0.1:${address.port}/chat/stream`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({message: 'perform streaming effect'}),
+      });
+      const serialized = await response.text();
+      expect(response.status).toBe(200);
+      expect(serialized).toContain('event: error');
+      const errorFrame = serialized.split('\n\n').find((frame) => frame.startsWith('event: error'));
+      expect(errorFrame).toBeDefined();
+      expect(errorFrame).not.toContain(inputSecret);
+      expect(errorFrame).not.toContain(resultSecret);
+      expect(errorFrame).not.toContain(errorSecret);
+      const dataLine = errorFrame!.split('\n').find((line) => line.startsWith('data: '));
+      expect(dataLine).toBeDefined();
+      const body = JSON.parse(dataLine!.slice('data: '.length));
+      expect(body.toolEffects).toEqual({
+        state: 'partial',
+        certainty: 'known',
+        receipts: [{
+          name: effect.name,
+          result: {success: true, executionOutcome: 'succeeded'},
+        }],
+      });
+      expect(body.run.toolEffects).toEqual(body.toolEffects);
     } finally {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => error ? reject(error) : resolve());
@@ -1383,7 +1480,13 @@ describe('Siftable agent-harness chat loop', () => {
     }));
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
-      await registry.execute('redacted_failure', {token: 'super-secret-value'});
+      const result = await registry.execute('redacted_failure', {token: 'super-secret-value'});
+      expect(result).toMatchObject({
+        success: false,
+        error: 'simulated failure',
+        executionOutcome: 'unknown',
+      });
+      expect(JSON.stringify(result)).not.toContain('super-secret-value');
       const output = error.mock.calls.flat().join('\n');
       expect(output).toContain('Input keys: token');
       expect(output).not.toContain('super-secret-value');

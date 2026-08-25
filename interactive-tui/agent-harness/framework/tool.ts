@@ -1,11 +1,10 @@
 /**
  * Siftable Agent Harness — Tool Builder
  *
- * The `defineTool` function is the main way students create tools.
- * It validates the definition and returns a properly typed ToolDefinition.
- *
- * Derived from ExecuFunction's tool registration pattern, simplified
- * to remove auth, RLS, activity events, and other production concerns.
+ * `defineTool` validates Siftable's harness-local tool definitions and returns
+ * a properly typed ToolDefinition. Runtime execution remains behind the
+ * registry so validation, result normalization, and error handling stay
+ * consistent across providers.
  */
 
 import type { ToolDefinition, InputSchema, ToolResult } from "./types.js";

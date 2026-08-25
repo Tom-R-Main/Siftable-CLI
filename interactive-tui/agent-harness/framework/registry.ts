@@ -18,6 +18,7 @@ import type {
   OpenAIFunction,
 } from "./types.js";
 import { validateParams, formatValidationErrors } from "./validate.js";
+import { redactSensitiveText } from "./redaction.js";
 
 export class ToolRegistry {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -123,10 +124,12 @@ export class ToolRegistry {
       return result;
     } catch (error) {
       const duration = Date.now() - start;
-      const message =
-        error instanceof Error ? error.message : "Unknown error";
-      const stack =
-        error instanceof Error ? error.stack?.split("\n")[1]?.trim() : "";
+      const message = redactSensitiveText(
+        error instanceof Error ? error.message : "Unknown error",
+      );
+      const stack = error instanceof Error
+        ? redactSensitiveText(error.stack?.split("\n")[1]?.trim() ?? "")
+        : "";
 
       // ── Rich error output ──────────────────────────────────────────────
       console.error(`\n❓ ${name} threw after ${duration}ms; outcome is unknown`);

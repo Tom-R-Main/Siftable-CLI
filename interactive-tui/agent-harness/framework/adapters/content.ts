@@ -47,7 +47,8 @@ export function imageMime(part: ImageContentPart): string {
 }
 
 export function mimeFromPath(path: string): string {
-  switch (extname(path).toLowerCase()) {
+  const extension = extname(path).toLowerCase();
+  switch (extension) {
     case ".jpg":
     case ".jpeg":
       return "image/jpeg";
@@ -56,7 +57,8 @@ export function mimeFromPath(path: string): string {
     case ".webp":
       return "image/webp";
     case ".png":
-    default:
       return "image/png";
+    default:
+      throw new Error(`unsupported image file extension: ${extension || "(none)"}`);
   }
 }

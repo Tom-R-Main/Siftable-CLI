@@ -43,9 +43,12 @@ export function loadHistory(path: string, maxTurns = 0): ChatMessage[] {
   for (const line of text.split("\n")) {
     if (!line) continue;
     try {
-      const rec = JSON.parse(line) as { r: number; t: string };
-      const role = CODE_ROLE[rec.r];
-      if (role === "user" || role === "assistant") out.push({ role, content: rec.t });
+      const parsed = JSON.parse(line) as unknown;
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+      const { r, t } = parsed as Record<string, unknown>;
+      if (typeof r !== "number" || typeof t !== "string") continue;
+      const role = CODE_ROLE[r];
+      if (role === "user" || role === "assistant") out.push({ role, content: t });
     } catch {
       // Skip a malformed line rather than abort the whole resume.
     }
