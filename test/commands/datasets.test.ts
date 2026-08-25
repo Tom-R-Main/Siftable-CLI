@@ -71,7 +71,7 @@ describe('dataset commands', () => {
       });
       expect(parsed.omissions).toEqual(['totalCount', 'continuationCursor']);
       expect(parsed.warnings).toEqual([
-        'The collection may contain more results, but this backend does not expose a continuation cursor. Narrow filters or raise the limit.',
+        'The collection may contain more results, but no safe continuation cursor is available. Narrow filters or raise the limit.',
       ]);
     });
   });

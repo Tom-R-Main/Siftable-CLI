@@ -32,7 +32,7 @@ export function collectionNavigation(
       ...(continuationMissing ? ['continuationCursor'] : []),
     ],
     warnings: continuationMissing
-      ? ['The collection may contain more results, but this backend does not expose a continuation cursor. Narrow filters or raise the limit.']
+      ? ['The collection may contain more results, but no safe continuation cursor is available. Narrow filters or raise the limit.']
       : [],
   };
 }
