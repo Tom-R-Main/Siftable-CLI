@@ -38,7 +38,7 @@ function mockAdapter(): AIAdapter {
   };
 }
 
-describe("ChatAgent.compact() (manual /compact)", () => {
+describe.serial("ChatAgent.compact() (manual /compact)", () => {
   it("forces a within-budget thread to summarize older turns and reports savings", async () => {
     const agent = await createChatAgent({
       name: "t",

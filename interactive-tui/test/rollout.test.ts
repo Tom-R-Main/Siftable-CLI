@@ -24,7 +24,7 @@ afterAll(() => {
   else process.env.SIFT_CONTEXT_COMPACTION = previousCompactionFlag;
 });
 
-describe("rollout round-trip", () => {
+describe.serial("rollout round-trip", () => {
   it("persists user/assistant turns and reloads them as ChatMessages", () => {
     reset();
     appendTurn(path, "first question", "first answer");

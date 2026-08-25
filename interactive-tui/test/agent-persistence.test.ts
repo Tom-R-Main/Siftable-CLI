@@ -35,7 +35,7 @@ function mockAdapter(answer: string): AIAdapter {
   return { name: "mock", model: "mock-1", chat: async () => ({ text: answer }) };
 }
 
-describe("agent rollout persistence", () => {
+describe.serial("agent rollout persistence", () => {
   it("resumes a prior turn in a fresh agent with the same persistKey", async () => {
     const a1 = await createChatAgent({
       name: "t",
