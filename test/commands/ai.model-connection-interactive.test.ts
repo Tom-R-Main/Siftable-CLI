@@ -45,6 +45,36 @@ async function runCommandEntry(
   return {stdout: lines.join('\n'), error, exitCode};
 }
 
+async function runCommandLifecycle(
+  CommandClass: typeof BaseCommand,
+  argv: string[],
+): Promise<{stdout: string; exitCode: number}> {
+  const originalLog = console.log;
+  const originalError = console.error;
+  const originalWarn = console.warn;
+  const originalExitCode = process.exitCode;
+  const lines: string[] = [];
+  console.log = (...args: unknown[]) => lines.push(args.map(String).join(' '));
+  console.error = () => {};
+  console.warn = () => {};
+  process.exitCode = undefined;
+  try {
+    await CommandClass.run(argv, {root: path.join(__dirname, '..', '..')});
+    const commandExitCode = process.exitCode;
+    return {
+      stdout: lines.join('\n'),
+      exitCode: typeof commandExitCode === 'number'
+        ? commandExitCode
+        : Number(commandExitCode ?? 0),
+    };
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+    console.warn = originalWarn;
+    process.exitCode = originalExitCode;
+  }
+}
+
 describe('model connection interactive CLI transport', () => {
   const model = {
     connectionId: 'connection-1',
@@ -301,18 +331,22 @@ describe('model connection interactive CLI transport', () => {
     jest.spyOn(BaseCommand.prototype as never, 'client' as never)
       .mockResolvedValueOnce(client as never);
 
-    const result = await runCommandEntry(AiInvoke, [
+    const result = await runCommandLifecycle(AiInvoke, [
       '--connection', model.connectionId,
       '--model', model.model,
       '--prompt', 'bounded prompt',
       '--stream',
       '--token', 'sift_pat_test',
+      '--json',
     ]);
 
-    expect(result.exitCode).toBe(503);
-    expect(result.error).toMatchObject({
-      code: 'ai_stream_truncated',
-      statusCode: 503,
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      error: {
+        code: 'ai_stream_truncated',
+        exit: 1,
+        statusCode: 503,
+      },
     });
   });
 
