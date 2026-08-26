@@ -164,7 +164,7 @@ describe("lane F — controller recovery", () => {
       await fx.write("other.txt", "O1\nO2\n");
       fx.run(["commit", "-am", "base moves"]);
 
-      const res = controller.rebaseChild(c.session.sessionId);
+      const res = await controller.rebaseChild(c.session.sessionId);
       expect(res.ok).toBe(true);
       if (!res.ok) return;
       expect(res.rebased).toBe(true);
@@ -173,7 +173,7 @@ describe("lane F — controller recovery", () => {
       expect(getMergeMasterSession(c.session.sessionId)!.status).toBe("ready_to_merge");
 
       // And it now actually lands.
-      const merged = controller.mergeChild(c.session.sessionId);
+      const merged = await controller.mergeChild(c.session.sessionId);
       expect(merged.ok).toBe(true);
     } finally {
       await fx.cleanup();
@@ -192,10 +192,10 @@ describe("lane F — controller recovery", () => {
       fx.run(["commit", "-am", "base moves shared"]);
 
       // Gate first → merge_blocked.
-      controller.reviewChild(c.session.sessionId);
+      await controller.reviewChild(c.session.sessionId);
       expect(getMergeMasterSession(c.session.sessionId)!.status).toBe("merge_blocked");
 
-      const res = controller.rebaseChild(c.session.sessionId);
+      const res = await controller.rebaseChild(c.session.sessionId);
       expect(res.ok).toBe(false);
       if (res.ok === true) return;
       expect(res.conflicts).toContain("shared.txt");
@@ -217,7 +217,7 @@ describe("lane F — controller recovery", () => {
       controller.commitChild(c.session.sessionId, "child edits shared");
       await fx.write("shared.txt", "L1\nMAIN\n");
       fx.run(["commit", "-am", "base moves shared"]);
-      controller.reviewChild(c.session.sessionId); // → merge_blocked
+      await controller.reviewChild(c.session.sessionId); // → merge_blocked
 
       const res = controller.sendBackChild(c.session.sessionId, "  rebase onto main and re-resolve shared.txt  ");
       expect(res.ok).toBe(true);
@@ -256,7 +256,7 @@ describe("lane F — controller recovery", () => {
       if (!c.ok) return;
       await writeFile(join(c.session.worktreePath, "feat.ts"), "export const f = 1;\n", "utf8");
       controller.commitChild(c.session.sessionId, "feat");
-      controller.reviewChild(c.session.sessionId); // → ready_to_merge
+      await controller.reviewChild(c.session.sessionId); // → ready_to_merge
 
       const res = controller.rejectChild(c.session.sessionId, "out of scope for this cycle");
       expect(res.ok).toBe(true);
@@ -300,6 +300,10 @@ describe("contracted work-run restart recovery", () => {
           data: {workItem: {
             id,
             title: "recover exact work",
+            revision: 1,
+            orgId: null,
+            projectId: null,
+            taskId: null,
             contractSummary: {classification: "bounded", profile: "coding", version: 1},
             writeScope: {include: ["shared.txt"], exclude: ["dist/**"]},
           }},
@@ -310,7 +314,17 @@ describe("contracted work-run restart recovery", () => {
       },
       async claimWorkItem(input) {
         counts.claims++;
-        return {statusCode: 200, data: {workItem: {id: input.workItemId, claimToken: "opaque-recovery-token"}}};
+        return {statusCode: 200, data: {workItem: {
+          id: input.workItemId,
+          title: "recover exact work",
+          revision: 1,
+          orgId: null,
+          projectId: null,
+          taskId: null,
+          contractSummary: {classification: "bounded", profile: "coding", version: 1},
+          writeScope: {include: ["shared.txt"], exclude: ["dist/**"]},
+          claimToken: "opaque-recovery-token",
+        }}};
       },
       async transitionWorkItem(id, action, input) {
         if (action === "start") counts.starts.push({id, owner: input.claimOwner, token: input.claimToken});

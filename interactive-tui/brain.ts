@@ -988,7 +988,7 @@ function buildLocalTools(of: OfModule): unknown[] {
       const id = Number(params.id);
       if (!Number.isInteger(id)) return of.err('ready_branch: id must be a session id (integer).');
       try {
-        const res = sessionController.reviewChild(id, {
+        const res = await sessionController.reviewChild(id, {
           autoCommit: params.autoCommit === true,
           message: typeof params.message === 'string' ? params.message : undefined,
         });
@@ -1036,7 +1036,7 @@ function buildLocalTools(of: OfModule): unknown[] {
       });
       if (!approved) return of.err('merge_branch declined by user');
       try {
-        const res = sessionController.mergeChild(id, {
+        const res = await sessionController.mergeChild(id, {
           keep: params.keep === true,
           message: typeof params.message === 'string' ? params.message : undefined,
         });
@@ -1073,7 +1073,7 @@ function buildLocalTools(of: OfModule): unknown[] {
       const id = Number(params.id);
       if (!Number.isInteger(id)) return of.err('rebase_branch: id must be a session id (integer).');
       try {
-        const res = sessionController.rebaseChild(id);
+        const res = await sessionController.rebaseChild(id);
         if (res.ok === false) {
           const conflicts = res.conflicts?.length ? ` conflicts: ${res.conflicts.join(', ')}` : '';
           return of.err(`rebase_branch: ${res.reason}${conflicts}`);

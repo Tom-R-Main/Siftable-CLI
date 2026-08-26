@@ -2,8 +2,11 @@ import {describe, expect, test} from "bun:test";
 import type {MergePacket} from "../mergeGate";
 import type {MergeMasterWorkIdentity} from "../mergeMaster";
 import {
+  evaluateReadyProof,
   formatReadyPacket,
+  loadReadyProof,
   loadReadyPacket,
+  parseReadyProofPolicy,
   redactWorkProofText,
   type WorkProofClient,
 } from "../workProof";
@@ -11,6 +14,10 @@ import {
 const identity: MergeMasterWorkIdentity = {
   workItemId: "work-123",
   title: "Bounded change",
+  revision: 4,
+  orgId: null,
+  projectId: "project-1",
+  taskId: null,
   contract: {classification: "bounded", profile: "coding", version: 1},
   plan: {planId: "plan-456", planVersion: 3, state: "active"},
   writeScope: {include: ["src/**"], exclude: ["src/secrets/**"]},
@@ -67,6 +74,12 @@ function client(overrides: Partial<WorkProofClient> = {}): WorkProofClient {
           workItem: {
             id: identity.workItemId,
             title: identity.title,
+            revision: identity.revision,
+            orgId: identity.orgId,
+            projectId: identity.projectId,
+            taskId: identity.taskId,
+            status: "needs_review",
+            verificationState: "commands_passed",
             contractSummary: identity.contract,
             acceptanceCriteria: [
               {text: "Typecheck passes", met: true},
@@ -106,7 +119,11 @@ function client(overrides: Partial<WorkProofClient> = {}): WorkProofClient {
                   ranAt: "2026-08-13T00:00:00.000Z",
                   output: `Authorization: Bearer do-not-render ${"x".repeat(2_000)}`,
                   artifactRefs: ["https://example.test/proof?token=do-not-render"],
-                  provenance: {runner: "codex", accessToken: "do-not-render"},
+                  provenance: {
+                    runner: "codex",
+                    accessToken: "do-not-render",
+                    siftReadyProofV1: {headCommit: "c".repeat(40)},
+                  },
                 },
               }],
             },
@@ -173,8 +190,14 @@ describe("work proof packets", () => {
     expect(packet.proof.identity).toEqual({
       workItemId: identity.workItemId,
       title: identity.title,
+      revision: identity.revision,
+      orgId: identity.orgId,
+      projectId: identity.projectId,
+      taskId: identity.taskId,
       contract: identity.contract,
       activePlan: identity.plan,
+      status: "needs_review",
+      verificationState: "commands_passed",
     });
     expect(packet.proof.commands).toMatchObject({
       state: "commands_passed",
@@ -204,6 +227,61 @@ describe("work proof packets", () => {
   test("does not inspect or execute verification specifications", async () => {
     const packet = await loadReadyPacket(merge(), client());
     expect(packet.proof.availability).toBe("available");
+  });
+
+  test("keeps absent acceptance criteria informational for an authoritative packet", async () => {
+    const packet = await loadReadyPacket(merge(), client({
+      async getWorkItem() {
+        const response = await client().getWorkItem(identity.workItemId);
+        delete (response.data as {workItem: Record<string, unknown>}).workItem.acceptanceCriteria;
+        return response;
+      },
+    }));
+
+    expect(packet.proof).toMatchObject({
+      availability: "available",
+      acceptance: {status: "unavailable", total: 0, criteria: []},
+    });
+    expect(evaluateReadyProof({policy: "enforce", merge: merge(), packet})).toMatchObject({
+      allowed: true,
+      code: "ready_proof_pass",
+    });
+  });
+
+  test("keeps malformed acceptance criteria informational for an authoritative packet", async () => {
+    const packet = await loadReadyPacket(merge(), client({
+      async getWorkItem() {
+        const response = await client().getWorkItem(identity.workItemId);
+        (response.data as {workItem: Record<string, unknown>}).workItem.acceptanceCriteria = [{}];
+        return response;
+      },
+    }));
+
+    expect(packet.proof).toMatchObject({
+      availability: "available",
+      acceptance: {status: "unavailable", total: 0, criteria: []},
+    });
+    expect(evaluateReadyProof({policy: "enforce", merge: merge(), packet})).toMatchObject({
+      allowed: true,
+      code: "ready_proof_pass",
+    });
+  });
+
+  test("keeps a rejected verifier-runs call informational for an authoritative packet", async () => {
+    const packet = await loadReadyPacket(merge(), client({
+      async listWorkItemVerifierRuns() {
+        throw new Error("verifier transport rejected");
+      },
+    }));
+
+    expect(packet.proof).toMatchObject({
+      availability: "available",
+      verifier: {status: "unavailable", verdict: null},
+    });
+    expect(evaluateReadyProof({policy: "enforce", merge: merge(), packet})).toMatchObject({
+      allowed: true,
+      code: "ready_proof_pass",
+    });
   });
 
   test("fails proof identity closed without changing the merge verdict", async () => {
@@ -254,5 +332,65 @@ describe("work proof packets", () => {
 
     expect(rendered.length).toBeLessThanOrEqual(16_000);
     expect(rendered).toContain("proof: unavailable (session_not_linked)");
+  });
+
+  test("enforces exact current command proof bound to the inspected head", async () => {
+    const mergePacket = merge();
+    const readyPacket = await loadReadyPacket(mergePacket, client());
+    expect(evaluateReadyProof({policy: "enforce", merge: mergePacket, packet: readyPacket})).toMatchObject({
+      allowed: true,
+      code: "ready_proof_pass",
+      receipt: {
+        childHead: mergePacket.headCommit,
+        baseTip: mergePacket.baseTip,
+        workRevision: identity.revision,
+        planId: identity.plan.planId,
+        planVersion: identity.plan.planVersion,
+      },
+    });
+  });
+
+  test("uses a closed independent policy and makes no calls in off", async () => {
+    expect(parseReadyProofPolicy(undefined)).toBe("warn");
+    expect(() => parseReadyProofPolicy("ENFORCE")).toThrow("ready_proof_config_invalid");
+    let calls = 0;
+    const result = loadReadyProof({
+      policy: "off",
+      merge: merge(),
+      client: {
+        async getWorkItem() { calls++; return {}; },
+        async getWorkVerificationPlan() { calls++; return {}; },
+        async listWorkItemVerifierRuns() { calls++; return {}; },
+      },
+    });
+    expect(result).toBeUndefined();
+    expect(calls).toBe(0);
+  });
+
+  test("fails stale, malformed, incomplete, and behind proof closed", async () => {
+    const mergePacket = merge();
+    const packet = await loadReadyPacket(mergePacket, client());
+    expect(evaluateReadyProof({policy: "enforce", merge: {...mergePacket, behindBy: 1}, packet}).code)
+      .toBe("base_not_contained");
+    expect(evaluateReadyProof({policy: "enforce", merge: {...mergePacket, work: undefined}, packet}).code)
+      .toBe("work_link_required");
+    expect(evaluateReadyProof({
+      policy: "enforce",
+      merge: {...mergePacket, work: {...identity, revision: undefined}},
+      packet,
+    }).code).toBe("identity_incomplete");
+    if (packet.proof.availability !== "available") throw new Error("proof unavailable");
+    const incomplete = structuredClone(packet);
+    if (incomplete.proof.availability !== "available") throw new Error("proof unavailable");
+    incomplete.proof.commands.required = 0;
+    expect(evaluateReadyProof({policy: "enforce", merge: mergePacket, packet: incomplete}).code)
+      .toBe("coverage_invalid");
+    const stale = structuredClone(packet);
+    if (stale.proof.availability !== "available") throw new Error("proof unavailable");
+    const attempt = stale.proof.commands.requiredSteps[0]?.latestAttempt;
+    if (!attempt) throw new Error("attempt unavailable");
+    attempt.provenance = {siftReadyProofV1: {headCommit: "d".repeat(40)}};
+    expect(evaluateReadyProof({policy: "enforce", merge: mergePacket, packet: stale}).code)
+      .toBe("attempt_stale");
   });
 });

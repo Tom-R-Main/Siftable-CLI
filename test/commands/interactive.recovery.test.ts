@@ -7,10 +7,10 @@
 import {interactiveCommands, type InteractiveCommandContext} from "../../interactive-tui/commands";
 import {buildCommandContext} from "../helpers/interactive-command-context";
 
-function run(ctx: InteractiveCommandContext, name: string, args: string[] = []): void {
+function run(ctx: InteractiveCommandContext, name: string, args: string[] = []): void | Promise<void> {
   const cmd = interactiveCommands.find((c) => c.name === name || c.aliases?.includes(name));
   if (!cmd) throw new Error(`command not found: ${name}`);
-  void cmd.run(ctx, args);
+  return cmd.run(ctx, args);
 }
 
 function lastText(messages: {text: string}[]): string {
@@ -18,27 +18,27 @@ function lastText(messages: {text: string}[]): string {
 }
 
 describe("/rebase", () => {
-  it("rebases the given child and reports the new verdict", () => {
+  it("rebases the given child and reports the new verdict", async () => {
     const rebase = jest.fn(() => ({ok: true as const, rebased: true, headCommit: "abcdef1234567", verdict: "ready_to_merge" as const, statusApplied: true}));
     const {ctx, messages} = buildCommandContext({sessions: {...stubSessions(), rebase}});
-    run(ctx, "rebase", ["2"]);
+    await run(ctx, "rebase", ["2"]);
     expect(rebase).toHaveBeenCalledWith(2);
     expect(lastText(messages)).toContain("rebased #2");
     expect(lastText(messages)).toContain("ready to merge");
   });
 
-  it("surfaces conflicts and points at /sendback when the rebase is refused", () => {
+  it("surfaces conflicts and points at /sendback when the rebase is refused", async () => {
     const rebase = jest.fn(() => ({ok: false as const, reason: "rebase onto main conflicts", conflicts: ["shared.txt"]}));
     const {ctx, messages} = buildCommandContext({sessions: {...stubSessions(), rebase}});
-    run(ctx, "rebase", ["2"]);
+    await run(ctx, "rebase", ["2"]);
     expect(lastText(messages)).toContain("shared.txt");
     expect(lastText(messages)).toContain("/sendback 2");
   });
 
-  it("falls back to the active child when no id is given", () => {
+  it("falls back to the active child when no id is given", async () => {
     const rebase = jest.fn(() => ({ok: true as const, rebased: false, headCommit: "0000000aaaa", verdict: "ready_to_merge" as const, statusApplied: true}));
     const {ctx} = buildCommandContext({sessions: {...stubSessions(), activeChildId: jest.fn(() => 7), rebase}});
-    run(ctx, "rebase", []);
+    await run(ctx, "rebase", []);
     expect(rebase).toHaveBeenCalledWith(7);
   });
 });

@@ -441,6 +441,10 @@ export interface MergeMasterWorkPlan {
 export interface MergeMasterWorkIdentity {
   workItemId: string;
   title: string;
+  revision?: number;
+  orgId?: string | null;
+  projectId?: string | null;
+  taskId?: string | null;
   contract: MergeMasterWorkContract;
   plan: MergeMasterWorkPlan;
   writeScope: {

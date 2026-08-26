@@ -64,7 +64,7 @@ describe("lane E E3 — mergeChild / listMergeReadiness", () => {
       await writeFile(join(spawn.session.worktreePath, "a.ts"), "export const a = 1;\n", "utf8");
       controller.commitChild(id, "feat: a.ts");
 
-      const res = controller.mergeChild(id);
+      const res = await controller.mergeChild(id);
       expect(res.ok).toBe(true);
       if (!res.ok) return;
       expect(res.merged).toBe(true);
@@ -81,7 +81,7 @@ describe("lane E E3 — mergeChild / listMergeReadiness", () => {
       expect(controller.getChild(id)).toBeUndefined();
 
       // idempotent: second merge has nothing to act on.
-      expect(controller.mergeChild(id)).toEqual({ok: false, reason: "unknown child session"});
+      expect(await controller.mergeChild(id)).toEqual({ok: false, reason: "unknown child session"});
     } finally {
       await fx.cleanup();
     }
@@ -97,12 +97,12 @@ describe("lane E E3 — mergeChild / listMergeReadiness", () => {
       await writeFile(join(spawn.session.worktreePath, "k.ts"), "1\n", "utf8");
       controller.commitChild(id, "keep: k.ts");
 
-      const res = controller.mergeChild(id, {keep: true});
+      const res = await controller.mergeChild(id, {keep: true});
       expect(res.ok && res.merged && !res.cleaned).toBe(true);
       expect(existsSync(spawn.session.worktreePath)).toBe(true);
       expect(git(["rev-parse", "--verify", "--quiet", `refs/heads/${spawn.session.branch}`], fx.repoRoot).status).toBe(0);
 
-      const again = controller.mergeChild(id);
+      const again = await controller.mergeChild(id);
       expect(again.ok).toBe(false);
       if (again.ok === false) expect(again.reason).toMatch(/terminal/);
     } finally {
@@ -123,7 +123,7 @@ describe("lane E E3 — mergeChild / listMergeReadiness", () => {
       await writeFile(join(spawn.session.worktreePath, "sneaky.ts"), "nope\n", "utf8");
       controller.commitChild(id, "oos: sneaky");
 
-      const res = controller.mergeChild(id);
+      const res = await controller.mergeChild(id);
       expect(res.ok).toBe(false);
       if (res.ok) return;
       expect(res.packet?.verdict).toBe("merge_blocked");
@@ -148,7 +148,7 @@ describe("lane E E3 — mergeChild / listMergeReadiness", () => {
       // Park the child in needs_input — ready_to_merge is illegal from there.
       transitionSessionStatus(id, "needs_input", 0);
 
-      const res = controller.mergeChild(id);
+      const res = await controller.mergeChild(id);
       expect(res.ok).toBe(false);
       if (res.ok === true) return;
       expect(res.reason).toMatch(/needs_input|resume/);
@@ -174,7 +174,7 @@ describe("lane E E3 — mergeChild / listMergeReadiness", () => {
       fx.run(["commit", "-am", "main moves shared"]);
       const baseBefore = fx.baseTip();
 
-      const res = controller.mergeChild(id);
+      const res = await controller.mergeChild(id);
       expect(res.ok).toBe(false);
       if (res.ok) return;
       expect(getMergeMasterSession(id)!.status).toBe("merge_blocked");

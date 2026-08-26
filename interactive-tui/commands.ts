@@ -44,7 +44,7 @@ import type {
 } from "./childSessionController";
 import type {MergePacket} from "./mergeGate";
 import type {ParentMergeView} from "./mergeView";
-import {formatReadyPacket, loadReadyPacket} from "./workProof";
+import {formatReadyProofDecision} from "./workProof";
 import {formatWorkRow, type WorkBoardItem, type WorkBoardData, type WorkContractDisplay} from "./workHubOverlay";
 import {requireBuiltWorkContract} from "../src/lib/work-contract.js";
 import type {WorkContractV1} from "@siftable/mcp-server/dist/exfClient.js";
@@ -65,13 +65,13 @@ export interface ChildSessionActions {
   enter: (sessionId: number) => {ok: boolean; reason?: string; session?: ChildSessionRecord};
   leave: () => {ok: boolean; reason?: string};
   /** Run the lane-D ready-to-merge gate on a child (sets its status). */
-  review: (sessionId: number, opts?: ReviewChildOptions) => ReviewChildResult;
+  review: (sessionId: number, opts?: ReviewChildOptions) => ReviewChildResult | Promise<ReviewChildResult>;
   /** Read-only dashboard of every child's mergeability (lane E). */
   mergeView: () => ParentMergeView;
   /** Land a ready child onto the base via squash-merge (lane E). */
-  merge: (sessionId: number, opts?: MergeChildOptions) => MergeChildResult;
+  merge: (sessionId: number, opts?: MergeChildOptions) => MergeChildResult | Promise<MergeChildResult>;
   /** Replay a child onto the moved base; re-gate on success (lane F). */
-  rebase: (sessionId: number) => RebaseChildResult;
+  rebase: (sessionId: number) => RebaseChildResult | Promise<RebaseChildResult>;
   /** Resume a reviewed child, posting instructions into its thread (lane F). */
   sendBack: (sessionId: number, instruction: string) => SendBackChildResult;
   /** Reject a reviewed child (terminal, worktree + branch kept) (lane F). */
@@ -1796,14 +1796,13 @@ async function readyCommand(ctx: InteractiveCommandContext, args: string[]): Pro
     ctx.push({role: "system", text: `/ready: ${target.error}\n${READY_USAGE}`});
     return;
   }
-  const res = ctx.sessions.review(target.id, {autoCommit});
+  const res = await ctx.sessions.review(target.id, {autoCommit});
   if (res.ok === false) {
     ctx.push({role: "system", text: `/ready: ${res.reason}`});
     return;
   }
-  const loading = loadReadyPacket(res.packet, ctx.apiClient);
-  const packet = loading instanceof Promise ? await loading : loading;
-  let text = formatReadyPacket(packet);
+  let text = formatPacket(res.packet);
+  if (res.proofDecision) text += `\n  ${formatReadyProofDecision(res.proofDecision)}`;
   if (res.committed) text = `committed working changes first.\n${text}`;
   // If blocked solely because the tree is dirty, point at the one-step fix.
   if (res.packet.verdict === "merge_blocked" && res.packet.dirty && !autoCommit) {
@@ -1857,7 +1856,7 @@ function formatMergeView(view: ParentMergeView): string {
   return ["Branches (/branches to open · /merge <id> to land · --keep to retain):", ...rows, footer].join("\n");
 }
 
-function mergeCommand(ctx: InteractiveCommandContext, args: string[]): void {
+async function mergeCommand(ctx: InteractiveCommandContext, args: string[]): Promise<void> {
   const parsed = parseMergeArgs(args);
   if (parsed.error) {
     ctx.push({role: "system", text: `/merge: ${parsed.error}\n${MERGE_USAGE}`});
@@ -1868,7 +1867,7 @@ function mergeCommand(ctx: InteractiveCommandContext, args: string[]): void {
     ctx.push({role: "system", text: formatMergeView(ctx.sessions.mergeView())});
     return;
   }
-  const res = ctx.sessions.merge(parsed.id, {keep: parsed.keep, message: parsed.message});
+  const res = await ctx.sessions.merge(parsed.id, {keep: parsed.keep, message: parsed.message});
   if (res.ok === false) {
     let text = `/merge: ${res.reason}`;
     if (res.packet) text = `${formatPacket(res.packet)}\n  → ${res.reason}`;
@@ -1887,13 +1886,13 @@ const REBASE_USAGE = "/rebase [<session-id>]";
 const SENDBACK_USAGE = '/sendback [<session-id>] <instructions>';
 const REJECT_USAGE = "/reject [<session-id>] [reason]";
 
-function rebaseCommand(ctx: InteractiveCommandContext, args: string[]): void {
+async function rebaseCommand(ctx: InteractiveCommandContext, args: string[]): Promise<void> {
   const target = resolveTargetChild(ctx, args.find((a) => !a.startsWith("-")));
   if ("error" in target) {
     ctx.push({role: "system", text: `/rebase: ${target.error}\n${REBASE_USAGE}`});
     return;
   }
-  const res = ctx.sessions.rebase(target.id);
+  const res = await ctx.sessions.rebase(target.id);
   if (res.ok === false) {
     let text = `/rebase: ${res.reason}`;
     if (res.conflicts?.length) text += `\n  conflicts: ${res.conflicts.join(", ")}\n  → /sendback ${target.id} <how to resolve>`;

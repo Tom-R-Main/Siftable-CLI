@@ -13,10 +13,10 @@ import {
 import {buildCommandContext} from "../helpers/interactive-command-context";
 import type {MergePacket} from "../../interactive-tui/mergeGate";
 
-function run(ctx: InteractiveCommandContext, name: string, args: string[] = []): void {
+function run(ctx: InteractiveCommandContext, name: string, args: string[] = []): void | Promise<void> {
   const cmd = interactiveCommands.find((c) => c.name === name || c.aliases?.includes(name));
   if (!cmd) throw new Error(`command not found: ${name}`);
-  void cmd.run(ctx, args);
+  return cmd.run(ctx, args);
 }
 
 function packet(over: Partial<MergePacket> = {}): MergePacket {
@@ -53,28 +53,28 @@ function fakeSessions(overrides: Partial<ChildSessionActions> = {}): ChildSessio
 }
 
 describe("/ready", () => {
-  it("reviews the active child when no id is given, rendering the ready verdict", () => {
+  it("reviews the active child when no id is given, rendering the ready verdict", async () => {
     const review = jest.fn(() => ({ok: true as const, packet: packet(), statusApplied: true, committed: false}));
     const {ctx, messages} = buildCommandContext({
       sessions: fakeSessions({activeChildId: jest.fn(() => 2), review}),
     });
-    run(ctx, "ready", []);
+    await run(ctx, "ready", []);
     expect(review).toHaveBeenCalledWith(2, {autoCommit: false});
     expect(lastText(messages)).toContain("ready to merge");
     expect(lastText(messages)).toContain("+3 −1");
   });
 
-  it("errors when there is no active child and no id", () => {
+  it("errors when there is no active child and no id", async () => {
     const review = jest.fn();
     const {ctx, messages} = buildCommandContext({
       sessions: fakeSessions({activeChildId: jest.fn(() => null), review}),
     });
-    run(ctx, "ready", []);
+    await run(ctx, "ready", []);
     expect(review).not.toHaveBeenCalled();
     expect(lastText(messages)).toContain("no active child");
   });
 
-  it("targets the named child id and renders blockers", () => {
+  it("targets the named child id and renders blockers", async () => {
     const review = jest.fn(() => ({
       ok: true as const,
       statusApplied: true,
@@ -84,23 +84,23 @@ describe("/ready", () => {
     const {ctx, messages} = buildCommandContext({
       sessions: fakeSessions({activeChildId: jest.fn(() => null), review}),
     });
-    run(ctx, "ready", ["7"]);
+    await run(ctx, "ready", ["7"]);
     expect(review).toHaveBeenCalledWith(7, {autoCommit: false});
     expect(lastText(messages)).toContain("merge blocked");
     expect(lastText(messages)).toContain("conflicts with main");
   });
 
-  it("passes --commit through as autoCommit and notes the commit", () => {
+  it("passes --commit through as autoCommit and notes the commit", async () => {
     const review = jest.fn(() => ({ok: true as const, statusApplied: true, committed: true, packet: packet()}));
     const {ctx, messages} = buildCommandContext({
       sessions: fakeSessions({activeChildId: jest.fn(() => 2), review}),
     });
-    run(ctx, "ready", ["--commit"]);
+    await run(ctx, "ready", ["--commit"]);
     expect(review).toHaveBeenCalledWith(2, {autoCommit: true});
     expect(lastText(messages)).toContain("committed working changes first");
   });
 
-  it("points a dirty-blocked child at the one-step --commit fix", () => {
+  it("points a dirty-blocked child at the one-step --commit fix", async () => {
     const review = jest.fn(() => ({
       ok: true as const,
       statusApplied: true,
@@ -110,16 +110,16 @@ describe("/ready", () => {
     const {ctx, messages} = buildCommandContext({
       sessions: fakeSessions({activeChildId: jest.fn(() => 2), review}),
     });
-    run(ctx, "ready", []);
+    await run(ctx, "ready", []);
     expect(lastText(messages)).toContain("/ready 2 --commit");
   });
 
-  it("surfaces a hard failure (unknown/terminal child)", () => {
+  it("surfaces a hard failure (unknown/terminal child)", async () => {
     const review = jest.fn(() => ({ok: false as const, reason: "child #9 is merged (terminal) — nothing to review"}));
     const {ctx, messages} = buildCommandContext({
       sessions: fakeSessions({activeChildId: jest.fn(() => null), review}),
     });
-    run(ctx, "ready", ["9"]);
+    await run(ctx, "ready", ["9"]);
     expect(lastText(messages)).toContain("terminal");
   });
 });

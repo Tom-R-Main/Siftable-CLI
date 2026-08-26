@@ -29,6 +29,7 @@ describe("assembleParentMergeView", () => {
       blockedCount: 0,
       totalAdditions: 0,
       totalDeletions: 0,
+      eligibleCount: 0,
     });
   });
 

@@ -71,6 +71,8 @@ export type WorktreeErrorKind =
   | "merge_conflict"
   /** The parent worktree is not on the branch the merge targets. */
   | "wrong_branch"
+  /** The inspected base or child ref moved before the landing mutation. */
+  | "ref_mismatch"
   /** The squash commit was rejected (commit hook, signing, validation…). */
   | "commit_failed"
   /** The underlying `git` invocation failed (non-zero exit or spawn error). */
@@ -861,6 +863,8 @@ export interface SquashMergeOptions {
   childBranch: string;
   /** Message for the squash commit. */
   message: string;
+  expectedChildHead?: string;
+  expectedBaseTip?: string;
 }
 
 export interface SquashMergeResult {
@@ -929,6 +933,16 @@ export function squashMergeChild(
   const childHead = resolveCommit(repoRoot, opts.childBranch, runner);
   if (!baseTip) throw new WorktreeError("not_found", `base branch not found: ${opts.baseBranch}`);
   if (!childHead) throw new WorktreeError("not_found", `child branch not found: ${opts.childBranch}`);
+  if (
+    (opts.expectedBaseTip !== undefined && opts.expectedBaseTip !== baseTip)
+    || (opts.expectedChildHead !== undefined && opts.expectedChildHead !== childHead)
+  ) {
+    throw new WorktreeError(
+      "ref_mismatch",
+      "base or child ref moved after readiness proof",
+      "Re-run readiness proof against the current exact object IDs.",
+    );
+  }
 
   // 4. Already-landed: child tip is reachable from the base tip → nothing to do.
   const ancestor = runner(["merge-base", "--is-ancestor", childHead, baseTip], repoRoot);
@@ -949,7 +963,7 @@ export function squashMergeChild(
   // --- mutate: stage the squashed changeset, then commit it ---
   const rollback = () => runner(["reset", "--hard", baseTip], parent);
 
-  const squash = runner(["merge", "--squash", opts.childBranch], parent);
+  const squash = runner(["merge", "--squash", childHead], parent);
   if (squash.status !== 0 || worktreeStatus(parent, runner).entries.some((e) => /^(U.|.U|DD|AA)/.test(e))) {
     rollback();
     throw new WorktreeError(

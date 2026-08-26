@@ -307,7 +307,7 @@ function App() {
   // and swap cwd + the visible transcript on enter/leave (sessionContext owns the
   // active-session pointer + per-session transcript buffers). The parent (root)
   // session is anchored at the workspace the TUI launched in.
-  const childController = createChildSessionController();
+  const childController = createChildSessionController({readyProof: {client: apiClient, env: process.env}});
   // Register the live controller with the in-process brain so its agent tools
   // (list_branches, …) drive the SAME safe lanes A–E controller the human UI
   // uses — not raw shell git. A direct in-process handle (the control transport
@@ -1523,24 +1523,27 @@ function App() {
           setBranchesPicker(null);
           commandCtx().sessions.enter(action.sessionId);
         } else if (action.kind === "ready") {
-          const res = childController.reviewChild(action.sessionId);
-          refreshBranchesPicker(
-            res.ok === true ? `#${action.sessionId} → ${res.packet.verdict}` : `ready: ${res.reason}`,
-          );
+          void Promise.resolve(childController.reviewChild(action.sessionId)).then((res) => {
+            refreshBranchesPicker(
+              res.ok === true ? `#${action.sessionId} → ${res.packet.verdict}` : `ready: ${res.reason}`,
+            );
+          });
         } else if (action.kind === "merge") {
-          const res = childController.mergeChild(action.sessionId);
-          refreshBranchesPicker(
-            res.ok === true
-              ? `${res.merged ? "merged" : "up-to-date"} #${action.sessionId} → ${res.packet.baseBranch} (${res.baseCommit.slice(0, 7)})${res.cleaned ? " · cleaned" : ""}`
-              : `merge: ${res.reason}`,
-          );
+          void Promise.resolve(childController.mergeChild(action.sessionId)).then((res) => {
+            refreshBranchesPicker(
+              res.ok === true
+                ? `${res.merged ? "merged" : "up-to-date"} #${action.sessionId} → ${res.packet.baseBranch} (${res.baseCommit.slice(0, 7)})${res.cleaned ? " · cleaned" : ""}`
+                : `merge: ${res.reason}`,
+            );
+          });
         } else if (action.kind === "rebase") {
-          const res = childController.rebaseChild(action.sessionId);
-          refreshBranchesPicker(
-            res.ok === true
-              ? `${res.rebased ? "rebased" : "current"} #${action.sessionId} → ${res.verdict}`
-              : `rebase: ${res.reason}${res.conflicts?.length ? ` (${res.conflicts.join(", ")})` : ""}`,
-          );
+          void Promise.resolve(childController.rebaseChild(action.sessionId)).then((res) => {
+            refreshBranchesPicker(
+              res.ok === true
+                ? `${res.rebased ? "rebased" : "current"} #${action.sessionId} → ${res.verdict}`
+                : `rebase: ${res.reason}${res.conflicts?.length ? ` (${res.conflicts.join(", ")})` : ""}`,
+            );
+          });
         } else if (action.kind === "reject") {
           const res = childController.rejectChild(action.sessionId);
           refreshBranchesPicker(

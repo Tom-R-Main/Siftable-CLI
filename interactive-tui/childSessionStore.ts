@@ -142,6 +142,12 @@ function isWorkIdentity(value: unknown): value is MergeMasterWorkIdentity {
     && identity.workItemId.length > 0
     && typeof identity.title === "string"
     && identity.title.length > 0
+    && (identity.revision === undefined || (
+      typeof identity.revision === "number" && Number.isInteger(identity.revision) && identity.revision > 0
+    ))
+    && (["orgId", "projectId", "taskId"] as const).every((key) => (
+      identity[key] === undefined || identity[key] === null || typeof identity[key] === "string"
+    ))
     && contract?.classification === "bounded"
     && (contract.profile === "coding" || contract.profile === "read_only")
     && (

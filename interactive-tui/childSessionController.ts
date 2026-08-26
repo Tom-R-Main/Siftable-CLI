@@ -54,6 +54,15 @@ import {
 } from "./mergeMaster";
 import {commitChild as gitCommitChild, evaluateMerge, type MergePacket} from "./mergeGate";
 import {isWorktreeDirty} from "./worktreeService";
+import {
+  evaluateReadyProof,
+  loadReadyProof,
+  receiptMatches,
+  resolveReadyProofPolicy,
+  type ReadyProofDecision,
+  type ReadyProofReceipt,
+  type WorkProofClient,
+} from "./workProof";
 
 /** A child session this controller created and tracks for enter/list/remove. */
 export interface ChildSessionRecord {
@@ -144,6 +153,8 @@ export interface ChildSessionControllerDeps {
    * inject a spy in tests. Returns true when the message was persisted.
    */
   postToThread?: (conversationKey: string, instruction: string) => boolean;
+  /** Optional for compatibility; production supplies it to activate the independent proof policy. */
+  readyProof?: {client?: WorkProofClient; env?: NodeJS.ProcessEnv};
 }
 
 /** Options for {@link ChildSessionController.reviewChild}. */
@@ -166,6 +177,7 @@ export type ReviewChildResult =
       committed: boolean;
       /** Set when the verdict could not be applied (e.g. illegal transition). */
       note?: string;
+      proofDecision?: ReadyProofDecision;
     }
   | {ok: false; reason: string};
 
@@ -191,6 +203,7 @@ export type MergeChildResult =
       cleaned: boolean;
       /** Extra context (already-up-to-date, cleanup skipped/failed, …). */
       note?: string;
+      proofDecision?: ReadyProofDecision;
     }
   | {ok: false; reason: string; packet?: MergePacket};
 
@@ -225,15 +238,15 @@ export interface ChildSessionController {
   listChildSessions(): ChildSessionView[];
   getChild(sessionId: number): ChildSessionRecord | undefined;
   /** Run the ready-to-merge gate (lane D) and set ready_to_merge / merge_blocked. */
-  reviewChild(sessionId: number, opts?: ReviewChildOptions): ReviewChildResult;
+  reviewChild(sessionId: number, opts?: ReviewChildOptions): ReviewChildResult | Promise<ReviewChildResult>;
   /** Stage + commit a child's working changes (no gate). Returns the new tip. */
   commitChild(sessionId: number, message?: string): {ok: boolean; committed?: boolean; headCommit?: string; reason?: string};
   /** Read-only dashboard: every child's mergeability as the parent sees it. */
   listMergeReadiness(): ParentMergeView;
   /** Land a ready child onto the base via squash-merge (lane E). */
-  mergeChild(sessionId: number, opts?: MergeChildOptions): MergeChildResult;
+  mergeChild(sessionId: number, opts?: MergeChildOptions): MergeChildResult | Promise<MergeChildResult>;
   /** Replay a (usually blocked) child onto the moved base; re-gate on success (lane F). */
-  rebaseChild(sessionId: number): RebaseChildResult;
+  rebaseChild(sessionId: number): RebaseChildResult | Promise<RebaseChildResult>;
   /** Resume a reviewed child, posting the parent's instructions into its thread (lane F). */
   sendBackChild(sessionId: number, instruction: string): SendBackChildResult;
   /** Reject a reviewed child: terminal, but keep its worktree + branch inspectable (lane F). */
@@ -273,6 +286,7 @@ export function createChildSessionController(
     });
 
   const records = new Map<number, ChildSessionRecord>();
+  const receipts = new Map<number, ReadyProofReceipt>();
   const parents = new Map<string, number>(); // repoRoot → parent sessionId
   let seedCounter = 0;
 
@@ -575,7 +589,7 @@ export function createChildSessionController(
     }
   }
 
-  function reviewChild(sessionId: number, opts: ReviewChildOptions = {}): ReviewChildResult {
+  function legacyReviewChild(sessionId: number, opts: ReviewChildOptions = {}): ReviewChildResult {
     const rec = records.get(sessionId);
     if (!rec) return {ok: false, reason: "unknown child session"};
     const live = getMergeMasterSession(sessionId);
@@ -612,6 +626,9 @@ export function createChildSessionController(
 
   function listMergeReadiness(): ParentMergeView {
     const rows: MergeReadinessRow[] = [];
+    const configured = deps.readyProof
+      ? resolveReadyProofPolicy(deps.readyProof.env ?? process.env)
+      : {ok: true as const, policy: "off" as const};
     for (const rec of records.values()) {
       const live = getMergeMasterSession(rec.sessionId);
       const status = live?.status ?? "unknown";
@@ -633,6 +650,19 @@ export function createChildSessionController(
       }
       try {
         const packet = evaluateMerge(rec, runner);
+        const identity = packet.work;
+        const receipt = receipts.get(rec.sessionId);
+        const exactReceipt = configured.ok && configured.policy === "enforce"
+          && identity?.revision !== undefined
+          ? receiptMatches(receipt, {
+              policy: configured.policy,
+              childHead: packet.headCommit,
+              baseTip: packet.baseTip,
+              workRevision: identity.revision,
+              planId: identity.plan.planId,
+              planVersion: identity.plan.planVersion,
+            })
+          : configured.ok && configured.policy !== "enforce";
         rows.push({
           sessionId: rec.sessionId,
           branch: rec.branch,
@@ -644,6 +674,12 @@ export function createChildSessionController(
           deletions: packet.totalDeletions,
           behindBy: packet.behindBy,
           blockers: packet.blockers,
+          mergeEligibility: packet.verdict === "ready_to_merge" && exactReceipt,
+          proofCode: configured.ok
+            ? (configured.policy === "enforce"
+                ? (exactReceipt ? "ready_proof_pass" : receipt ? "proof_receipt_stale" : "proof_receipt_missing")
+                : configured.policy === "warn" ? "proof_warn" : "proof_not_required")
+            : "ready_proof_config_invalid",
         });
       } catch (err) {
         rows.push({
@@ -660,10 +696,11 @@ export function createChildSessionController(
         });
       }
     }
-    return assembleParentMergeView(rows);
+    const view = assembleParentMergeView(rows);
+    return {...view, proofPolicy: configured.ok ? configured.policy : undefined};
   }
 
-  function mergeChild(sessionId: number, opts: MergeChildOptions = {}): MergeChildResult {
+  function legacyMergeChild(sessionId: number, opts: MergeChildOptions = {}): MergeChildResult {
     const rec = records.get(sessionId);
     if (!rec) return {ok: false, reason: "unknown child session"};
     const live = getMergeMasterSession(sessionId);
@@ -734,7 +771,7 @@ export function createChildSessionController(
     return {ok: true, merged: result.merged, packet, baseCommit: result.baseCommitAfter, cleaned, note};
   }
 
-  function rebaseChild(sessionId: number): RebaseChildResult {
+  function legacyRebaseChild(sessionId: number): RebaseChildResult {
     const rec = records.get(sessionId);
     if (!rec) return {ok: false, reason: "unknown child session"};
     const live = getMergeMasterSession(sessionId);
@@ -772,6 +809,204 @@ export function createChildSessionController(
     } catch (err) {
       return {ok: false, reason: err instanceof Error ? err.message : String(err)};
     }
+  }
+
+  async function resolveProof(rec: ChildSessionRecord): Promise<{
+    packet: MergePacket;
+    decision: ReadyProofDecision;
+  }> {
+    const configured = resolveReadyProofPolicy(deps.readyProof?.env ?? process.env);
+    const p1 = evaluateMerge(rec, runner);
+    if (!configured.ok) {
+      return {
+        packet: p1,
+        decision: {policy: "enforce", allowed: false, code: "ready_proof_config_invalid"},
+      };
+    }
+    const loaded = await Promise.resolve(loadReadyProof({
+      policy: configured.policy,
+      merge: p1,
+      client: deps.readyProof?.client,
+    }));
+    const p2 = evaluateMerge(rec, runner);
+    if (p1.headCommit !== p2.headCommit) {
+      return {packet: p2, decision: {policy: configured.policy, allowed: false, code: "head_drift"}};
+    }
+    if (p1.baseTip !== p2.baseTip) {
+      return {packet: p2, decision: {policy: configured.policy, allowed: false, code: "base_drift"}};
+    }
+    return {
+      packet: p2,
+      decision: evaluateReadyProof({policy: configured.policy, merge: p2, packet: loaded}),
+    };
+  }
+
+  function reviewChild(
+    sessionId: number,
+    opts: ReviewChildOptions = {},
+  ): ReviewChildResult | Promise<ReviewChildResult> {
+    if (!deps.readyProof) return legacyReviewChild(sessionId, opts);
+    return (async () => {
+      const rec = records.get(sessionId);
+      if (!rec) return {ok: false, reason: "unknown child session"};
+      const initial = getMergeMasterSession(sessionId);
+      if (initial && isTerminalStatus(initial.status)) {
+        return {ok: false, reason: `child #${sessionId} is ${initial.status} (terminal) — nothing to review`};
+      }
+      let committed = false;
+      try {
+        if (opts.autoCommit && isWorktreeDirty(rec.worktreePath, runner)) {
+          const commit = gitCommitChild(rec, opts.message ?? `sift: child #${sessionId} work`, runner);
+          committed = commit.committed;
+          if (commit.committed) {
+            receipts.delete(sessionId);
+            setSessionHeadCommit(sessionId, commit.headCommit, now());
+          }
+        }
+        const previousReceipt = receipts.get(sessionId);
+        const currentHead = resolveCommit(rec.repoRoot, rec.branch, runner);
+        if (previousReceipt && currentHead !== previousReceipt.childHead) {
+          receipts.delete(sessionId);
+          const live = getMergeMasterSession(sessionId);
+          if (live?.status === "ready_to_merge" || live?.status === "merge_blocked") {
+            transitionSessionStatus(sessionId, "running", now());
+          }
+        }
+        const resolved = await resolveProof(rec);
+        setSessionHeadCommit(sessionId, resolved.packet.headCommit, now());
+        const effectiveVerdict = resolved.packet.verdict === "ready_to_merge" && resolved.decision.allowed
+          ? "ready_to_merge"
+          : "merge_blocked";
+        const before = getMergeMasterSession(sessionId);
+        const code = before?.status === effectiveVerdict
+          ? 0
+          : transitionSessionStatus(sessionId, effectiveVerdict, now());
+        if (effectiveVerdict === "ready_to_merge" && resolved.decision.receipt) {
+          receipts.set(sessionId, resolved.decision.receipt);
+        } else {
+          receipts.delete(sessionId);
+        }
+        return {
+          ok: true,
+          packet: {...resolved.packet, verdict: effectiveVerdict},
+          statusApplied: code === 0,
+          committed,
+          proofDecision: resolved.decision,
+          note: code === 0 ? undefined : `verdict ${effectiveVerdict} not applied`,
+        };
+      } catch (error) {
+        return {ok: false, reason: error instanceof Error ? error.message : String(error)};
+      }
+    })();
+  }
+
+  function mergeChild(
+    sessionId: number,
+    opts: MergeChildOptions = {},
+  ): MergeChildResult | Promise<MergeChildResult> {
+    if (!deps.readyProof) return legacyMergeChild(sessionId, opts);
+    return (async () => {
+      const rec = records.get(sessionId);
+      if (!rec) return {ok: false, reason: "unknown child session"};
+      const live = getMergeMasterSession(sessionId);
+      if (live && isTerminalStatus(live.status)) {
+        return {ok: false, reason: `child #${sessionId} is ${live.status} (terminal) — nothing to merge`};
+      }
+      let resolved: Awaited<ReturnType<typeof resolveProof>>;
+      try {
+        resolved = await resolveProof(rec);
+      } catch (error) {
+        return {ok: false, reason: error instanceof Error ? error.message : String(error)};
+      }
+      setSessionHeadCommit(sessionId, resolved.packet.headCommit, now());
+      if (!resolved.decision.allowed || resolved.packet.verdict !== "ready_to_merge") {
+        return {
+          ok: false,
+          reason: `merge blocked: ${resolved.decision.code}`,
+          packet: {...resolved.packet, verdict: "merge_blocked"},
+        };
+      }
+      if (live?.status !== "ready_to_merge") {
+        return {ok: false, reason: `child #${sessionId} is ${live?.status ?? "unknown"} — run ready before merging`, packet: resolved.packet};
+      }
+      try {
+        const result = squashMergeChild({
+          repoRoot: rec.repoRoot,
+          parentWorktreePath: rec.repoRoot,
+          baseBranch: rec.baseBranch,
+          childBranch: rec.branch,
+          expectedChildHead: resolved.packet.headCommit,
+          expectedBaseTip: resolved.packet.baseTip,
+          message: opts.message ?? `sift: merge child #${sessionId} (${rec.branch}) — ${rec.title}`,
+        }, runner);
+        transitionSessionStatus(sessionId, "merged", now());
+        setSessionHeadCommit(rec.parentSessionId, result.baseCommitAfter, now());
+        receipts.delete(sessionId);
+        let cleaned = false;
+        let note = result.alreadyUpToDate ? "child had no net changes (already up-to-date)" : undefined;
+        if (!opts.keep) {
+          const removal = removeChild_internal(rec, {deleteBranch: true, forceBranchDelete: true});
+          cleaned = removal.ok;
+          if (removal.ok) records.delete(sessionId);
+          else note = `merged, but cleanup failed: ${removal.reason}`;
+        }
+        return {
+          ok: true,
+          merged: result.merged,
+          packet: resolved.packet,
+          baseCommit: result.baseCommitAfter,
+          cleaned,
+          note,
+          proofDecision: resolved.decision,
+        };
+      } catch (error) {
+        if (error instanceof WorktreeError && (error.kind === "merge_conflict" || error.kind === "ref_mismatch")) {
+          transitionSessionStatus(sessionId, "merge_blocked", now());
+        }
+        return {ok: false, reason: error instanceof Error ? error.message : String(error), packet: resolved.packet};
+      }
+    })();
+  }
+
+  function rebaseChild(sessionId: number): RebaseChildResult | Promise<RebaseChildResult> {
+    if (!deps.readyProof) return legacyRebaseChild(sessionId);
+    return (async () => {
+      const rec = records.get(sessionId);
+      if (!rec) return {ok: false, reason: "unknown child session"};
+      const live = getMergeMasterSession(sessionId);
+      if (live && isTerminalStatus(live.status)) {
+        return {ok: false, reason: `child #${sessionId} is ${live.status} (terminal) — nothing to rebase`};
+      }
+      receipts.delete(sessionId);
+      try {
+        const result = rebaseChildOntoBase(
+          {worktreePath: rec.worktreePath, childBranch: rec.branch, baseBranch: rec.baseBranch},
+          runner,
+        );
+        setSessionHeadCommit(sessionId, result.headCommitAfter, now());
+        const current = getMergeMasterSession(sessionId);
+        if (current?.status === "ready_to_merge" || current?.status === "merge_blocked") {
+          transitionSessionStatus(sessionId, "running", now());
+        }
+        const reviewed = await reviewChild(sessionId);
+        if (!reviewed.ok) {
+          return {ok: false, reason: "reason" in reviewed ? reviewed.reason : "ready review failed"};
+        }
+        return {
+          ok: true,
+          rebased: result.rebased,
+          headCommit: reviewed.packet.headCommit,
+          verdict: reviewed.packet.verdict,
+          statusApplied: reviewed.statusApplied,
+        };
+      } catch (error) {
+        if (error instanceof WorktreeError && error.kind === "merge_conflict") {
+          transitionSessionStatus(sessionId, "merge_blocked", now());
+          return {ok: false, reason: error.message, conflicts: error.paths ?? []};
+        }
+        return {ok: false, reason: error instanceof Error ? error.message : String(error)};
+      }
+    })();
   }
 
   function sendBackChild(sessionId: number, instruction: string): SendBackChildResult {

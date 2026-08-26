@@ -33,6 +33,7 @@ export interface WorkRunClient {
     workItemId: string;
     claimOwner: string;
     leaseSeconds: number;
+    expectedRevision?: number;
   }): Promise<ApiResponse>;
   transitionWorkItem(
     workItemId: string,
@@ -160,6 +161,14 @@ function parseWorkIdentity(
   if (typeof workItem.title !== "string" || workItem.title.trim() === "") {
     throw new WorkRunError("load_work_item", "loaded work item has no authoritative title");
   }
+  if (typeof workItem.revision !== "number" || !Number.isInteger(workItem.revision) || workItem.revision < 1) {
+    throw new WorkRunError("load_work_item", "loaded work item has no positive revision");
+  }
+  for (const key of ["orgId", "projectId", "taskId"] as const) {
+    if (!Object.hasOwn(workItem, key) || (workItem[key] !== null && typeof workItem[key] !== "string")) {
+      throw new WorkRunError("load_work_item", `loaded work item has invalid ${key}`);
+    }
+  }
 
   const summary = object(workItem.contractSummary);
   if (!summary || summary.classification !== "bounded") {
@@ -195,6 +204,10 @@ function parseWorkIdentity(
     identity: {
       workItemId: requestedWorkItemId,
       title: workItem.title,
+      revision: workItem.revision,
+      orgId: workItem.orgId as string | null,
+      projectId: workItem.projectId as string | null,
+      taskId: workItem.taskId as string | null,
       contract,
       plan: {planId: "", planVersion: 0, state: "active"},
       writeScope: {include, exclude},
@@ -227,21 +240,23 @@ function attachPlan(
   };
 }
 
-function claimToken(
-  requestedWorkItemId: string,
+function claimedIdentity(
+  expected: MergeMasterWorkIdentity,
   response: ApiResponse,
-): string {
+): {token: string; matches: boolean} {
   const data = responseData(response, "claim", "claim work item");
   const workItem = object(data.workItem);
-  if (
-    !workItem
-    || workItem.id !== requestedWorkItemId
-    || typeof workItem.claimToken !== "string"
-    || workItem.claimToken.length === 0
-  ) {
+  if (!workItem || typeof workItem.claimToken !== "string" || workItem.claimToken.length === 0) {
     throw new WorkRunError("claim", "claim work item returned no matching opaque lease");
   }
-  return workItem.claimToken;
+  let parsed: MergeMasterWorkIdentity;
+  try {
+    parsed = parseWorkIdentity(expected.workItemId, response).identity;
+  } catch {
+    return {token: workItem.claimToken, matches: false};
+  }
+  parsed.plan = {...expected.plan};
+  return {token: workItem.claimToken, matches: workIdentitiesMatch(expected, parsed)};
 }
 
 function assertTransition(
@@ -360,6 +375,10 @@ function workIdentitiesMatch(
 ): boolean {
   return left.workItemId === right.workItemId
     && left.title === right.title
+    && left.revision === right.revision
+    && left.orgId === right.orgId
+    && left.projectId === right.projectId
+    && left.taskId === right.taskId
     && left.contract.classification === right.contract.classification
     && left.contract.profile === right.contract.profile
     && left.contract.version === right.contract.version
@@ -799,11 +818,16 @@ export function createWorkRunController(
 
     const claimOwner = makeOwner();
     let token: string;
+    let claimMatches = false;
     try {
-      token = claimToken(
+      const claim = claimedIdentity(identity, await options.client.claimWorkItem({
         workItemId,
-        await options.client.claimWorkItem({workItemId, claimOwner, leaseSeconds}),
-      );
+        claimOwner,
+        leaseSeconds,
+        expectedRevision: identity.revision,
+      }));
+      token = claim.token;
+      claimMatches = claim.matches;
     } catch (error) {
       await lock.release();
       return {
@@ -832,6 +856,41 @@ export function createWorkRunController(
       },
       credentials: {claimOwner, claimToken: token},
     };
+    if (!claimMatches) {
+      const compensation: CompensationResult = {attempted: ["lease"], failures: []};
+      try {
+        await releaseLease(claimed);
+      } catch (releaseError) {
+        compensation.failures.push({step: "lease", reason: errorReason(releaseError, [claimOwner, token])});
+      }
+      await lock.release();
+      return {
+        ok: false,
+        stage: "claim",
+        reason: "claimed work identity did not match the loaded item",
+        compensation,
+      };
+    }
+    try {
+      const reloaded = attachPlan(identity, await options.client.getWorkVerificationPlan(workItemId));
+      if (!workIdentitiesMatch(identity, reloaded)) {
+        throw new WorkRunError("claim", "active verification plan changed after claim");
+      }
+    } catch (error) {
+      const compensation: CompensationResult = {attempted: ["lease"], failures: []};
+      try {
+        await releaseLease(claimed);
+      } catch (releaseError) {
+        compensation.failures.push({step: "lease", reason: errorReason(releaseError, [claimOwner, token])});
+      }
+      await lock.release();
+      return {
+        ok: false,
+        stage: "claim",
+        reason: errorReason(error, [claimOwner, token]),
+        compensation,
+      };
+    }
     try {
       await options.store.putExclusive(claimed);
     } catch (error) {

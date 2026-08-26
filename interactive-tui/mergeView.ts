@@ -12,6 +12,7 @@
  */
 import type {MergeMasterStatus} from "./mergeMaster";
 import type {MergeVerdict} from "./mergeGate";
+import type {ReadyProofCode, ReadyProofPolicy} from "./workProof";
 
 /** One child's mergeability, as the parent dashboard sees it. */
 export interface MergeReadinessRow {
@@ -33,6 +34,8 @@ export interface MergeReadinessRow {
   behindBy: number;
   /** Human-readable blockers (present iff verdict is merge_blocked). */
   blockers: string[];
+  mergeEligibility?: boolean;
+  proofCode?: ReadyProofCode;
 }
 
 /** The aggregate the parent merge dashboard renders. */
@@ -44,6 +47,8 @@ export interface ParentMergeView {
   /** Totals across the *ready* rows only — what would land if all ready merged. */
   totalAdditions: number;
   totalDeletions: number;
+  proofPolicy?: ReadyProofPolicy;
+  eligibleCount?: number;
 }
 
 /** Sort key: ready (0) before blocked (1) before non-evaluable (2). */
@@ -73,5 +78,12 @@ export function assembleParentMergeView(rows: MergeReadinessRow[]): ParentMergeV
       blockedCount++;
     }
   }
-  return {rows: sorted, readyCount, blockedCount, totalAdditions, totalDeletions};
+  return {
+    rows: sorted,
+    readyCount,
+    blockedCount,
+    totalAdditions,
+    totalDeletions,
+    eligibleCount: sorted.filter((row) => row.mergeEligibility === true).length,
+  };
 }

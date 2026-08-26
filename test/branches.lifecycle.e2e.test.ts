@@ -102,7 +102,7 @@ describe("lane G — full /branches lifecycle on a real repo", () => {
       expect(existsSync(join(fx.repoRoot, "greeter.ts"))).toBe(false);
 
       // ── review: clean against the live base → ready_to_merge ─────────────────
-      const review = controller.reviewChild(id);
+      const review = await controller.reviewChild(id);
       expect(review.ok).toBe(true);
       if (!review.ok) return;
       expect(review.packet.verdict).toBe("ready_to_merge");
@@ -113,7 +113,7 @@ describe("lane G — full /branches lifecycle on a real repo", () => {
 
       // ── squash-merge: exactly one single-parent commit on base ───────────────
       const baseBeforeMerge = fx.baseTip();
-      const merged = controller.mergeChild(id);
+      const merged = await controller.mergeChild(id);
       expect(merged.ok).toBe(true);
       if (!merged.ok) return;
       expect(merged.merged).toBe(true);
@@ -150,7 +150,7 @@ describe("lane G — full /branches lifecycle on a real repo", () => {
       const baseBeforeRefusal = fx.baseTip();
       const sigBefore = graphSignature(fx.repoRoot);
 
-      const refusal = controller.mergeChild(bid);
+      const refusal = await controller.mergeChild(bid);
       expect(refusal.ok).toBe(false);
       if (refusal.ok) return;
       expect(getMergeMasterSession(bid)!.status).toBe("merge_blocked");
@@ -215,6 +215,10 @@ describe("contracted work-run lifecycle on a real repo", () => {
             data: {workItem: {
               id,
               title: "contracted child",
+              revision: 1,
+              orgId: null,
+              projectId: null,
+              taskId: null,
               contractSummary: {classification: "bounded", profile: "coding", version: 1},
               writeScope: {include: ["shared.txt"], exclude: ["dist/**"]},
             }},
@@ -226,7 +230,17 @@ describe("contracted work-run lifecycle on a real repo", () => {
         },
         async claimWorkItem(input) {
           log.push(`claim:${input.workItemId}`);
-          return {statusCode: 200, data: {workItem: {id: input.workItemId, claimToken: "lease-real"}}};
+          return {statusCode: 200, data: {workItem: {
+            id: input.workItemId,
+            title: "contracted child",
+            revision: 1,
+            orgId: null,
+            projectId: null,
+            taskId: null,
+            contractSummary: {classification: "bounded", profile: "coding", version: 1},
+            writeScope: {include: ["shared.txt"], exclude: ["dist/**"]},
+            claimToken: "lease-real",
+          }}};
         },
         async transitionWorkItem(id, action) {
           if (action === "start") {
@@ -261,6 +275,7 @@ describe("contracted work-run lifecycle on a real repo", () => {
         "load:work-real",
         "plan:work-real",
         "claim:work-real",
+        "plan:work-real",
         "persist:spawned",
         "start:work-real",
         "persist:started",

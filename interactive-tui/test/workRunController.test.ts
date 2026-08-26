@@ -31,6 +31,10 @@ function workResponse(overrides: Record<string, unknown> = {}) {
       workItem: {
         id: workItemId,
         title: "authoritative title",
+        revision: 7,
+        orgId: null,
+        projectId: null,
+        taskId: null,
         contractSummary: {classification: "bounded", profile: "coding", version: 1},
         writeScope: {include: ["src/a.ts"], exclude: ["dist/**"]},
         ...overrides,
@@ -58,6 +62,10 @@ function identity(): MergeMasterWorkIdentity {
   return {
     workItemId,
     title: "authoritative title",
+    revision: 7,
+    orgId: null,
+    projectId: null,
+    taskId: null,
     contract: {classification: "bounded", profile: "coding", version: 1},
     plan: {planId: "plan-1", planVersion: 3, state: "active"},
     writeScope: {include: ["src/a.ts"], exclude: ["dist/**"]},
@@ -129,9 +137,10 @@ function fakeClient(log: string[], options: {
       if (options.claimMalformed) {
         return {statusCode: 200, data: {workItem: {id: input.workItemId}}};
       }
+      const response = options.work ?? workResponse();
       return {
-        statusCode: 200,
-        data: {workItem: {id: input.workItemId, claimToken: token}},
+        ...response,
+        data: {workItem: {...response.data.workItem, claimToken: token}},
       };
     },
     async transitionWorkItem(id, action, input, request) {
@@ -368,6 +377,7 @@ describe("workRunController contracted orchestration", () => {
       "admit",
       "resolve-launch",
       `claim:${workItemId}`,
+      `plan:${workItemId}`,
       "spawn",
       "put:spawned",
       `start:${workItemId}`,

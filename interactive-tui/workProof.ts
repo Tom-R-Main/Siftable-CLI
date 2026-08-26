@@ -20,6 +20,52 @@ const SENSITIVE_KEY = /(authorization|cookie|password|secret|token|api[_-]?key|a
 const VERIFIER_VERDICTS = new Set(["verified", "needs_review", "failed", "insufficient_evidence"]);
 const COVERAGE_STATES = new Set(["unverified", "commands_passed", "verified", "failed"]);
 const ATTEMPT_OUTCOMES = new Set(["passed", "failed", "error"]);
+export const PROOF_HEAD_PROVENANCE_KEY = "siftReadyProofV1";
+
+export const READY_PROOF_POLICIES = ["off", "warn", "enforce"] as const;
+export type ReadyProofPolicy = typeof READY_PROOF_POLICIES[number];
+export const DEFAULT_READY_PROOF_POLICY: ReadyProofPolicy = "warn";
+
+export type ReadyProofCode =
+  | "ready_proof_config_invalid"
+  | "proof_not_required"
+  | "proof_warn"
+  | "work_link_required"
+  | "identity_incomplete"
+  | "identity_mismatch"
+  | "scope_mismatch"
+  | "work_status_invalid"
+  | "work_verification_state_invalid"
+  | "proof_load_failed"
+  | "proof_receipt_missing"
+  | "proof_receipt_stale"
+  | "plan_stale"
+  | "coverage_invalid"
+  | "coverage_incomplete"
+  | "coverage_duplicate"
+  | "attempt_invalid"
+  | "attempt_stale"
+  | "base_not_contained"
+  | "head_drift"
+  | "base_drift"
+  | "ready_proof_pass";
+
+export function parseReadyProofPolicy(raw: string | undefined): ReadyProofPolicy {
+  const value = raw?.trim();
+  if (!value) return DEFAULT_READY_PROOF_POLICY;
+  if ((READY_PROOF_POLICIES as readonly string[]).includes(value)) return value as ReadyProofPolicy;
+  throw new Error("ready_proof_config_invalid");
+}
+
+export function resolveReadyProofPolicy(
+  source: {SIFT_READY_PROOF_POLICY?: string} = process.env,
+): {ok: true; policy: ReadyProofPolicy} | {ok: false; code: "ready_proof_config_invalid"} {
+  try {
+    return {ok: true, policy: parseReadyProofPolicy(source.SIFT_READY_PROOF_POLICY)};
+  } catch {
+    return {ok: false, code: "ready_proof_config_invalid"};
+  }
+}
 
 type ApiResponse = {data?: unknown; error?: string; statusCode?: number};
 
@@ -84,8 +130,14 @@ export interface AvailableWorkProof {
   identity: {
     workItemId: string;
     title: string;
+    revision: number;
+    orgId: string | null;
+    projectId: string | null;
+    taskId: string | null;
     contract: MergeMasterWorkIdentity["contract"];
     activePlan: MergeMasterWorkIdentity["plan"];
+    status: string;
+    verificationState: string;
   };
   commands: {
     state: string;
@@ -98,10 +150,12 @@ export interface AvailableWorkProof {
   };
   verifier: WorkProofVerifier;
   acceptance: {
+    status: "recorded" | "unavailable";
     total: number;
     met: number;
     unmet: number;
     criteria: Array<{ordinal: number; text: string; met: boolean}>;
+    reason?: string;
   };
 }
 
@@ -160,14 +214,6 @@ function sanitize(value: unknown, depth = 0): unknown {
   }
   if (Object.keys(record).length > MAX_SAFE_ENTRIES) safe[TRUNCATED] = true;
   return safe;
-}
-
-function safeRecord(value: unknown): Record<string, unknown> {
-  return object(sanitize(value)) ?? {};
-}
-
-function safeArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? sanitize(value) as unknown[] : [];
 }
 
 function boundedList<T>(values: readonly T[], limit: number, project: (value: T) => T): BoundedList<T> {
@@ -259,8 +305,15 @@ function parseAttempt(value: unknown, identity: MergeMasterWorkIdentity, stepId:
     output: attempt.output === null || attempt.output === undefined
       ? null
       : redactWorkProofText(attempt.output),
-    artifactRefs: safeArray(attempt.artifactRefs),
-    provenance: safeRecord(attempt.provenance),
+    artifactRefs: Array.isArray(attempt.artifactRefs)
+      ? attempt.artifactRefs.slice(0, MAX_SAFE_ARRAY).map(() => REDACTED)
+      : [],
+    provenance: (() => {
+      const provenance = object(attempt.provenance);
+      const binding = object(provenance?.[PROOF_HEAD_PROVENANCE_KEY]);
+      const headCommit = string(binding?.headCommit);
+      return headCommit ? {[PROOF_HEAD_PROVENANCE_KEY]: {headCommit: redactWorkProofText(headCommit, 128)}} : {};
+    })(),
   };
 }
 
@@ -313,7 +366,22 @@ function parseAcceptance(value: unknown): AvailableWorkProof["acceptance"] {
     return {ordinal: index + 1, text: redactWorkProofText(text), met: record?.met === true};
   });
   const met = criteria.filter((criterion) => criterion.met).length;
-  return {total: criteria.length, met, unmet: criteria.length - met, criteria};
+  return {status: "recorded", total: criteria.length, met, unmet: criteria.length - met, criteria};
+}
+
+function acceptanceFromValue(value: unknown): AvailableWorkProof["acceptance"] {
+  try {
+    return parseAcceptance(value);
+  } catch (error) {
+    return {
+      status: "unavailable",
+      total: 0,
+      met: 0,
+      unmet: 0,
+      criteria: [],
+      reason: redactWorkProofText(error instanceof Error ? error.message : error, MAX_SHORT_TEXT),
+    };
+  }
 }
 
 function verifierFromResponse(response: ApiResponse, identity: MergeMasterWorkIdentity): WorkProofVerifier {
@@ -400,7 +468,9 @@ async function loadLinkedReadyPacket(
     const [workResponse, planResponse, verifierResponse] = await Promise.all([
       client.getWorkItem(identity.workItemId),
       client.getWorkVerificationPlan(identity.workItemId),
-      client.listWorkItemVerifierRuns(identity.workItemId),
+      Promise.resolve()
+        .then(() => client.listWorkItemVerifierRuns(identity.workItemId))
+        .catch(() => ({error: "verifier history unavailable"})),
     ]);
     const workItem = object(responseData(workResponse, "work item").workItem);
     const plan = object(responseData(planResponse, "verification plan").plan);
@@ -409,9 +479,13 @@ async function loadLinkedReadyPacket(
       !workItem
       || workItem.id !== identity.workItemId
       || workItem.title !== identity.title
+      || workItem.revision !== identity.revision
+      || workItem.orgId !== identity.orgId
+      || workItem.projectId !== identity.projectId
+      || workItem.taskId !== identity.taskId
       || summary?.classification !== identity.contract.classification
-      || summary.profile !== identity.contract.profile
-      || (identity.contract.version !== undefined && summary.version !== identity.contract.version)
+      || summary?.profile !== identity.contract.profile
+      || (identity.contract.version !== undefined && summary?.version !== identity.contract.version)
       || !plan
       || plan.id !== identity.plan.planId
       || plan.workItemId !== identity.workItemId
@@ -440,11 +514,17 @@ async function loadLinkedReadyPacket(
         identity: {
           workItemId: redactWorkProofText(identity.workItemId, MAX_SHORT_TEXT),
           title: redactWorkProofText(identity.title, MAX_SHORT_TEXT),
+          revision: identity.revision as number,
+          orgId: identity.orgId as string | null,
+          projectId: identity.projectId as string | null,
+          taskId: identity.taskId as string | null,
           contract: structuredClone(identity.contract),
           activePlan: {
             ...structuredClone(identity.plan),
             planId: redactWorkProofText(identity.plan.planId, MAX_SHORT_TEXT),
           },
+          status: string(workItem.status) ?? "unknown",
+          verificationState: string(workItem.verificationState) ?? "unknown",
         },
         commands: {
           state,
@@ -456,7 +536,7 @@ async function loadLinkedReadyPacket(
           requiredSteps,
         },
         verifier: verifierFromResponse(verifierResponse, identity),
-        acceptance: parseAcceptance(workItem.acceptanceCriteria),
+        acceptance: acceptanceFromValue(workItem.acceptanceCriteria),
       },
     });
   } catch (error) {
@@ -505,7 +585,9 @@ export function formatReadyPacket(packet: ReadyPacket): string {
       `  work: ${proof.identity.workItemId} · Contract V${contractVersion} ${proof.identity.contract.profile}`,
       `  plan: ${proof.identity.activePlan.planId} v${proof.identity.activePlan.planVersion}`,
       `  commands: ${proof.commands.state} · ${proof.commands.passed}/${proof.commands.required} passed · ${proof.commands.covered}/${proof.commands.required} covered`,
-      `  acceptance: ${proof.acceptance.met}/${proof.acceptance.total} met`,
+      `  acceptance: ${proof.acceptance.status === "recorded"
+        ? `${proof.acceptance.met}/${proof.acceptance.total} met`
+        : `unavailable · ${proof.acceptance.reason ?? "presentation unavailable"}`}`,
       `  verifier: ${formatVerifier(proof.verifier)}`,
     );
   }
@@ -541,11 +623,161 @@ export function formatReadyPacket(packet: ReadyPacket): string {
       `       ran: ${attempt.environmentLabel} · ${attempt.ranAt}`,
     );
     if (attempt.output) lines.push(`       output: ${attempt.output}`);
-    if (attempt.artifactRefs.length > 0) lines.push(`       artifacts: ${JSON.stringify(attempt.artifactRefs)}`);
-    if (Object.keys(attempt.provenance).length > 0) lines.push(`       provenance: ${JSON.stringify(attempt.provenance)}`);
+    if (attempt.artifactRefs.length > 0) lines.push(`       artifacts: ${attempt.artifactRefs.length}`);
+    const head = object(attempt.provenance[PROOF_HEAD_PROVENANCE_KEY])?.headCommit;
+    if (typeof head === "string") lines.push(`       proof head: ${head}`);
   }
   for (const criterion of proof.acceptance.criteria) {
     lines.push(`    ${criterion.met ? "✓" : "○"} acceptance ${criterion.ordinal}: ${criterion.text}`);
   }
   return bounded(lines.join("\n"), MAX_RENDERED_PACKET_LENGTH);
+}
+
+export interface ReadyProofDecision {
+  policy: ReadyProofPolicy;
+  allowed: boolean;
+  code: ReadyProofCode;
+  receipt?: ReadyProofReceipt;
+}
+
+export interface ReadyProofReceipt {
+  policy: ReadyProofPolicy;
+  childHead: string;
+  baseTip: string;
+  workRevision: number;
+  planId: string;
+  planVersion: number;
+  decisionKey: string;
+}
+
+function completeIdentity(identity: MergeMasterWorkIdentity | undefined): identity is MergeMasterWorkIdentity & {
+  revision: number;
+  orgId: string | null;
+  projectId: string | null;
+  taskId: string | null;
+} {
+  return Boolean(identity)
+    && identity?.contract.classification === "bounded"
+    && identity.contract.profile === "coding"
+    && identity.contract.version === 1
+    && typeof identity.revision === "number"
+    && Number.isInteger(identity.revision)
+    && identity.revision > 0
+    && (["orgId", "projectId", "taskId"] as const).every((key) => (
+      Object.hasOwn(identity, key) && (identity[key] === null || typeof identity[key] === "string")
+    ));
+}
+
+function receiptKey(input: Omit<ReadyProofReceipt, "decisionKey">): string {
+  return [input.policy, input.childHead, input.baseTip, input.workRevision, input.planId, input.planVersion].join(":");
+}
+
+export function evaluateReadyProof(input: {
+  policy: ReadyProofPolicy;
+  merge: MergePacket;
+  packet?: ReadyPacket;
+}): ReadyProofDecision {
+  if (input.policy === "off") return {policy: "off", allowed: true, code: "proof_not_required"};
+  if (input.policy === "warn") return {policy: "warn", allowed: true, code: "proof_warn"};
+  const identity = input.merge.work;
+  if (!identity) return {policy: "enforce", allowed: false, code: "work_link_required"};
+  if (identity.contract.profile === "read_only") return {policy: "enforce", allowed: false, code: "work_link_required"};
+  if (!completeIdentity(identity)) return {policy: "enforce", allowed: false, code: "identity_incomplete"};
+  if (input.merge.behindBy !== 0) return {policy: "enforce", allowed: false, code: "base_not_contained"};
+  const packet = input.packet;
+  if (!packet || packet.proof.availability !== "available") {
+    const code = packet?.proof.availability === "unavailable" && packet.proof.reason === "identity_mismatch"
+      ? "identity_mismatch"
+      : "proof_load_failed";
+    return {policy: "enforce", allowed: false, code};
+  }
+  const proof = packet.proof;
+  const live = proof.identity;
+  if (live.workItemId !== identity.workItemId || live.title !== identity.title || live.revision !== identity.revision) {
+    return {policy: "enforce", allowed: false, code: "identity_mismatch"};
+  }
+  if (live.orgId !== identity.orgId || live.projectId !== identity.projectId || live.taskId !== identity.taskId) {
+    return {policy: "enforce", allowed: false, code: "scope_mismatch"};
+  }
+  if (live.status !== "needs_review" && live.status !== "done") {
+    return {policy: "enforce", allowed: false, code: "work_status_invalid"};
+  }
+  if (live.verificationState !== "commands_passed") {
+    return {policy: "enforce", allowed: false, code: "work_verification_state_invalid"};
+  }
+  if (
+    live.activePlan.planId !== identity.plan.planId
+    || live.activePlan.planVersion !== identity.plan.planVersion
+    || live.activePlan.state !== "active"
+  ) return {policy: "enforce", allowed: false, code: "plan_stale"};
+  const commands = proof.commands;
+  if (!Number.isInteger(commands.required) || commands.required <= 0) {
+    return {policy: "enforce", allowed: false, code: "coverage_invalid"};
+  }
+  if (
+    commands.state !== "commands_passed"
+    || commands.covered !== commands.required
+    || commands.passed !== commands.required
+    || commands.missingStepIds.length !== 0
+    || commands.failedStepIds.length !== 0
+    || commands.requiredSteps.length !== commands.required
+  ) return {policy: "enforce", allowed: false, code: "coverage_incomplete"};
+  const ids = new Set<string>();
+  const keys = new Set<string>();
+  const ordinals = new Set<number>();
+  for (const step of commands.requiredSteps) {
+    if (ids.has(step.id) || keys.has(step.key) || ordinals.has(step.ordinal)) {
+      return {policy: "enforce", allowed: false, code: "coverage_duplicate"};
+    }
+    ids.add(step.id); keys.add(step.key); ordinals.add(step.ordinal);
+    if (!step.latestAttempt || step.latestAttempt.outcome !== "passed") {
+      return {policy: "enforce", allowed: false, code: "attempt_invalid"};
+    }
+    const binding = object(step.latestAttempt.provenance[PROOF_HEAD_PROVENANCE_KEY]);
+    if (binding?.headCommit !== input.merge.headCommit) {
+      return {policy: "enforce", allowed: false, code: "attempt_stale"};
+    }
+  }
+  const receiptBase = {
+    policy: "enforce" as const,
+    childHead: input.merge.headCommit,
+    baseTip: input.merge.baseTip,
+    workRevision: identity.revision,
+    planId: identity.plan.planId,
+    planVersion: identity.plan.planVersion,
+  };
+  return {
+    policy: "enforce",
+    allowed: true,
+    code: "ready_proof_pass",
+    receipt: {...receiptBase, decisionKey: receiptKey(receiptBase)},
+  };
+}
+
+export function receiptMatches(
+  receipt: ReadyProofReceipt | undefined,
+  input: Omit<ReadyProofReceipt, "decisionKey">,
+): boolean {
+  return Boolean(receipt)
+    && receipt?.decisionKey === receiptKey(input)
+    && receipt.policy === input.policy
+    && receipt.childHead === input.childHead
+    && receipt.baseTip === input.baseTip
+    && receipt.workRevision === input.workRevision
+    && receipt.planId === input.planId
+    && receipt.planVersion === input.planVersion;
+}
+
+export function loadReadyProof(input: {
+  policy: ReadyProofPolicy;
+  merge: MergePacket;
+  client?: WorkProofClient;
+}): ReadyPacket | Promise<ReadyPacket> | undefined {
+  if (input.policy === "off") return undefined;
+  if (!input.client) return unavailable(input.merge, "evidence_load_failed", "proof client unavailable");
+  return loadReadyPacket(input.merge, input.client);
+}
+
+export function formatReadyProofDecision(decision: ReadyProofDecision): string {
+  return `proof: ${decision.code}`;
 }
