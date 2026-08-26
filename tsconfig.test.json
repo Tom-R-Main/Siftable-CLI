@@ -16,6 +16,7 @@
   },
   "files": [
     "test/jest.setup.ts",
+    "test/agent-runtime/provider.test.ts",
     "test/commands/agents-work.test.ts",
     "test/commands/ai.model-connection-interactive.test.ts",
     "test/commands/ai.stream.test.ts",
@@ -23,6 +24,7 @@
     "test/commands/auth.test.ts",
     "test/commands/calendar.test.ts",
     "test/commands/code.test.ts",
+    "test/commands/crm-import.test.ts",
     "test/commands/datasets.test.ts",
     "test/commands/documents.test.ts",
     "test/commands/events.test.ts",
@@ -35,6 +37,12 @@
     "test/commands/output.test.ts",
     "test/commands/people.test.ts",
     "test/commands/projects.test.ts",
+    "test/commands/rel009-relationships.test.ts",
+    "test/commands/relationships-cli-first.test.ts",
+    "test/commands/relationships-meetings.test.ts",
+    "test/commands/relationships-outcomes.test.ts",
+    "test/commands/relationships/contact-plan.test.ts",
+    "test/commands/relationships/dispatch.test.ts",
     "test/commands/research.test.ts",
     "test/commands/relationships.test.ts",
     "test/commands/self-awareness.test.ts",
@@ -42,6 +50,15 @@
     "test/commands/tasks.test.ts",
     "test/commands/timeline.test.ts",
     "test/commands/vault.test.ts",
-    "test/commands/work-verification-plan.test.ts"
+    "test/commands/work-verification-plan.test.ts",
+    "test/commands/worker-dispatch.test.ts",
+    "test/dotenvImport.test.ts",
+    "test/dotenvImportCommands.test.ts",
+    "test/env-commands.test.ts",
+    "test/environmentCheckoutSafety.test.ts",
+    "test/environmentManifest.test.ts",
+    "test/environmentState.test.ts",
+    "test/error-exit-contract.test.ts",
+    "test/lib/dataset-query.test.ts"
   ]
 }

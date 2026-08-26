@@ -9,6 +9,7 @@
   "files": [
     "interactive-tui/globals.d.ts",
     "test/vitest.setup.ts",
+    "test/agent-runtime/localWorktreeProvider.test.ts",
     "test/brain.branch-tools.test.ts",
     "test/brain.session.test.ts",
     "test/branches.lifecycle.e2e.test.ts",
@@ -52,15 +53,20 @@
     "test/commands/vault-scopes.test.ts",
     "test/commands/work.test.ts",
     "test/interactive.childSession.e2e.test.ts",
+    "test/interactive.commands.test.ts",
     "test/mergeChild.e2e.test.ts",
     "test/mergeChild.wiring.test.ts",
     "test/mergeEval.gitops.test.ts",
     "test/mergeGate.e2e.test.ts",
     "test/mergeGate.packet.test.ts",
+    "test/mergeGate.readyProof.wiring.test.ts",
     "test/mergeGate.wiring.test.ts",
     "test/mergeView.projection.test.ts",
     "test/sessionContext.test.ts",
     "test/squashMerge.gitops.test.ts",
     "test/workHubOverlay.test.ts"
+  ],
+  "include": [
+    "test/workContract.e2e.test.ts"
   ]
 }

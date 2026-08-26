@@ -40,6 +40,10 @@
       },
       "test-coverage": {
         "dependsOn": ["build"]
+      },
+      "verify:test-typecheck-boundaries": {
+        "dependsOn": ["build"],
+        "cache": false
       }
     }
   },
