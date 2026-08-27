@@ -183,6 +183,7 @@ const GPT5_EFFORTS = ["low", "medium", "high", "xhigh"];
 const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const GEMINI_EFFORTS = ["low", "medium", "high"];
 const GLM_EFFORTS = ["high", "xhigh"];
+const GLM_53_FLASH_EFFORTS = ["low", "high", "max"];
 
 // Ordered by tier, not by when each was added: flagship brains first (best for
 // the main chat loop), then fast/scout models (Explorer defaults live here),
@@ -323,12 +324,47 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     auth: "api-key",
   },
   {
+    id: "openrouter/z-ai/glm-5.3-flash",
+    provider: "openrouter",
+    model: "z-ai/glm-5.3-flash",
+    label: "GLM 5.3 Flash · Normal",
+    description: "OpenRouter · lowest eligible price · 1× ceiling",
+    aliases: [
+      "glm",
+      "glm-5.3",
+      "glm-5.3-flash",
+      "glm-5-3-flash",
+      "z-ai/glm-5.3-flash",
+      "openrouter:z-ai/glm-5.3-flash",
+    ],
+    auth: "api-key",
+    reasoningEfforts: GLM_53_FLASH_EFFORTS,
+    defaultEffort: "max",
+  },
+  {
+    id: "openrouter/z-ai/glm-5.3-flash:nitro",
+    provider: "openrouter",
+    model: "z-ai/glm-5.3-flash:nitro",
+    label: "GLM 5.3 Flash · Fast",
+    description: "OpenRouter · throughput-first · ≤2× ceiling",
+    aliases: [
+      "glm-fast",
+      "glm-nitro",
+      "glm-5.3-flash:nitro",
+      "z-ai/glm-5.3-flash:nitro",
+      "openrouter:z-ai/glm-5.3-flash:nitro",
+    ],
+    auth: "api-key",
+    reasoningEfforts: GLM_53_FLASH_EFFORTS,
+    defaultEffort: "max",
+  },
+  {
     id: "openrouter/z-ai/glm-5.2",
     provider: "openrouter",
     model: "z-ai/glm-5.2",
     label: "GLM 5.2",
     description: "OpenRouter · 1M-context coding/reasoning",
-    aliases: ["glm", "glm-5.2", "glm-5", "glm-5.1", "glm-5-turbo", "z-ai/glm-5.2"],
+    aliases: ["glm-5.2", "glm-5", "glm-5.1", "glm-5-turbo", "z-ai/glm-5.2"],
     auth: "api-key",
     reasoningEfforts: GLM_EFFORTS,
     defaultEffort: "high",
@@ -817,13 +853,27 @@ export async function applyModelChoice(
   }
 
   try {
-    const result = await ctx.client.config({provider: choice.provider, model: choice.model, ...(effort ? {effort} : {})});
+    const selectedEffort = resolveModelChoiceEffort(choice, effort);
+    const result = await ctx.client.config({
+      provider: choice.provider,
+      model: choice.model,
+      ...(selectedEffort ? {effort: selectedEffort} : {}),
+    });
     ctx.setModel(result.model);
-    persistModelChoice(choice, effort);
-    if (!opts.quiet) ctx.push({role: "system", text: `model -> ${result.provider}/${result.model}${effortSuffix(effort)}`});
+    persistModelChoice(choice, selectedEffort);
+    if (!opts.quiet) {
+      ctx.push({role: "system", text: `model -> ${result.provider}/${result.model}${effortSuffix(selectedEffort)}`});
+    }
   } catch (err) {
     ctx.push({role: "system", text: `/model failed: ${err instanceof Error ? err.message : String(err)}`});
   }
+}
+
+export function resolveModelChoiceEffort(
+  choice: InteractiveModelChoice,
+  effort?: string,
+): string | undefined {
+  return effort ?? choice.defaultEffort;
 }
 
 /**
@@ -870,6 +920,11 @@ async function selectModel(ctx: InteractiveCommandContext, raw: string, effort?:
 
 function normalizeAdHocOpenRouterModel(model: string): string {
   const lower = model.trim().toLowerCase();
+  if (lower.includes("glm-5.3-flash") || lower.includes("glm-5-3-flash")) {
+    return lower.endsWith(":nitro")
+      ? "z-ai/glm-5.3-flash:nitro"
+      : "z-ai/glm-5.3-flash";
+  }
   const glmLike =
     lower === "glm"
     || /^glm[-_.]/.test(lower)

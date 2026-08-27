@@ -211,6 +211,7 @@ interface ChatCompletionsConfig {
   baseUrl: string;
   systemPrompt?: string;
   reasoningEffort?: ReasoningEffort;
+  provider?: Record<string, unknown>;
   fetchImpl?: typeof fetch;
 }
 
@@ -219,7 +220,7 @@ interface ChatCompletionsConfig {
  * Used by OpenRouter and any other compatible provider.
  */
 function createChatCompletionsAdapter(config: ChatCompletionsConfig): AIAdapter {
-  const { name, model, apiKey, baseUrl, reasoningEffort } = config;
+  const { name, model, apiKey, baseUrl, reasoningEffort, provider } = config;
   const doFetch = config.fetchImpl ?? fetch;
   const sysPrompt = config.systemPrompt ?? "You are a helpful assistant with access to tools. Use tools when they're relevant.";
 
@@ -276,6 +277,7 @@ function createChatCompletionsAdapter(config: ChatCompletionsConfig): AIAdapter 
         model,
         messages: openaiMessages,
         tools: registry.toOpenAIFormat(),
+        ...(provider ? { provider } : {}),
         // Allow the model to fan out — the agent loop executes parallel tool
         // calls concurrently and returns one tool result per call id.
         parallel_tool_calls: true,
@@ -725,13 +727,26 @@ export function createOpenRouterAdapter(config?: Partial<AdapterConfig>): AIAdap
     );
   }
 
+  const model = config?.model ?? "google/gemini-3-flash-preview";
   return createChatCompletionsAdapter({
     name: config?.name ?? "OpenRouter",
-    model: config?.model ?? "google/gemini-3-flash-preview",
+    model,
     apiKey,
     baseUrl: "https://openrouter.ai/api/v1",
     systemPrompt: config?.systemPrompt,
     reasoningEffort: config?.reasoningEffort,
+    provider: openRouterProviderPriceCeiling(model),
     fetchImpl: config?.fetchImpl,
   });
+}
+
+function openRouterProviderPriceCeiling(model: string): Record<string, unknown> | undefined {
+  const normalized = model.trim().toLowerCase();
+  if (normalized.endsWith("z-ai/glm-5.3-flash:nitro")) {
+    return { max_price: { prompt: 0.15, completion: 0.5 } };
+  }
+  if (normalized.endsWith("z-ai/glm-5.3-flash")) {
+    return { max_price: { prompt: 0.075, completion: 0.25 } };
+  }
+  return undefined;
 }

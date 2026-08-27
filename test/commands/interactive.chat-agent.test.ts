@@ -9,7 +9,10 @@ import type {AdapterResponse, AIAdapter, ChatMessage} from '../../interactive-tu
 import type {ChatAgentConfig} from '../../interactive-tui/agent-harness/framework/chat-agent-types';
 import {RunExecutionError} from '../../interactive-tui/agent-harness/framework/chat-agent-types';
 import {mimeFromPath} from '../../interactive-tui/agent-harness/framework/adapters/content';
-import {createOpenAIAdapter} from '../../interactive-tui/agent-harness/framework/adapters/openai';
+import {
+  createOpenAIAdapter,
+  createOpenRouterAdapter,
+} from '../../interactive-tui/agent-harness/framework/adapters/openai';
 import {createChatAgent} from '../../interactive-tui/agent-harness/framework/chat-agent';
 import {createChatAgentHttpServer} from '../../interactive-tui/agent-harness/framework/chat-agent-http';
 import {ToolRegistry} from '../../interactive-tui/agent-harness/framework/registry';
@@ -143,6 +146,29 @@ describe('Siftable agent-harness chat loop', () => {
 
     expect(requestBody?.reasoning).toEqual({effort: 'high'});
     expect(requestBody).not.toHaveProperty('temperature');
+  });
+
+  it('caps GLM 5.3 Flash OpenRouter routes at the advertised Normal and Fast prices', async () => {
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({
+        choices: [{message: {role: 'assistant', content: 'ok'}, finish_reason: 'stop'}],
+      }), {
+        status: 200,
+        headers: {'Content-Type': 'application/json'},
+      });
+    }) as typeof fetch;
+
+    for (const model of ['z-ai/glm-5.3-flash', 'z-ai/glm-5.3-flash:nitro']) {
+      const adapter = createOpenRouterAdapter({apiKey: 'test-key', model, fetchImpl});
+      await adapter.chat([{role: 'user', content: 'hello'}], new ToolRegistry());
+    }
+
+    expect(requestBodies.map(body => body.provider)).toEqual([
+      {max_price: {prompt: 0.075, completion: 0.25}},
+      {max_price: {prompt: 0.15, completion: 0.5}},
+    ]);
   });
 
   it('uses the session journal as the model-history source of truth', async () => {

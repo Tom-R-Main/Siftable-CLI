@@ -7,6 +7,7 @@ import {
   ensureExplorerProviderKey,
   interactiveCommands,
   findModelChoice,
+  resolveModelChoiceEffort,
   runInteractiveCommand,
   commandSuggestions,
   type CommandMessage,
@@ -44,6 +45,22 @@ describe('interactive command registry', () => {
   it('routes DeepSeek aliases to V4 Flash 0731 only', () => {
     expect(findModelChoice('deepseek')?.model).toBe('deepseek/deepseek-v4-flash-0731');
     expect(findModelChoice('deepseek-v4-pro')?.model).toBe('deepseek/deepseek-v4-flash-0731');
+  });
+
+  it('routes GLM aliases to 5.3 Flash and exposes Normal/Fast at Max by default', () => {
+    const normal = findModelChoice('glm');
+    const fast = findModelChoice('glm-fast');
+    expect(normal).toMatchObject({
+      model: 'z-ai/glm-5.3-flash',
+      defaultEffort: 'max',
+    });
+    expect(fast).toMatchObject({
+      model: 'z-ai/glm-5.3-flash:nitro',
+      defaultEffort: 'max',
+    });
+    expect(resolveModelChoiceEffort(normal!)).toBe('max');
+    expect(resolveModelChoiceEffort(fast!, 'low')).toBe('low');
+    expect(findModelChoice('glm-5.2')?.model).toBe('z-ai/glm-5.2');
   });
 
   it('exposes command suggestions from registry metadata (visible commands only)', () => {
