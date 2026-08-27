@@ -41,8 +41,8 @@ function packet(over: Partial<MergePacket> = {}): MergePacket {
 function view(over: Partial<ParentMergeView> = {}): ParentMergeView {
   return {
     rows: [
-      {sessionId: 2, branch: "sift/a", baseBranch: "main", status: "running", verdict: "ready_to_merge", files: 1, additions: 3, deletions: 1, behindBy: 0, blockers: []},
-      {sessionId: 3, branch: "sift/b", baseBranch: "main", status: "merge_blocked", verdict: "merge_blocked", files: 1, additions: 0, deletions: 0, behindBy: 2, blockers: ["conflicts with main in: x.ts"]},
+      {sessionId: 2, branch: "sift/a", baseBranch: "main", status: "running", verdict: "ready_to_merge", files: 1, additions: 3, deletions: 1, behindBy: 0, blockers: [], mergeEligibility: true, proofCode: "ready_proof_pass"},
+      {sessionId: 3, branch: "sift/b", baseBranch: "main", status: "merge_blocked", verdict: "merge_blocked", files: 1, additions: 0, deletions: 0, behindBy: 2, blockers: ["conflicts with main in: x.ts"], mergeEligibility: false, proofCode: "proof_receipt_missing"},
     ],
     readyCount: 1,
     blockedCount: 1,
@@ -78,6 +78,8 @@ describe("/merge", () => {
     expect(merge).not.toHaveBeenCalled();
     expect(lastText(messages)).toContain("Branches (");
     expect(lastText(messages)).toContain("1 ready · 1 blocked");
+    expect(lastText(messages)).toContain("proof: ready_proof_pass · merge eligible: yes");
+    expect(lastText(messages)).toContain("proof: proof_receipt_missing · merge eligible: no");
   });
 
   it("lands a child and reports the new base + cleanup", async () => {

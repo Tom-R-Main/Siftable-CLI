@@ -9,6 +9,7 @@ import {
   loadReadyPacket,
   parseReadyProofPolicy,
   redactWorkProofText,
+  type ReadyPacket,
   type WorkProofClient,
 } from "../workProof";
 
@@ -392,6 +393,84 @@ describe("work proof packets", () => {
       code: "proof_warn",
       advisoryCode: "attempt_stale",
     });
+  });
+
+  test("maps every enforced evidence failure to one non-enforcing warn advisory without a receipt", async () => {
+    const mergePacket = merge();
+    const packet = await loadReadyPacket(mergePacket, client());
+    if (packet.proof.availability !== "available") throw new Error("proof unavailable");
+
+    type Case = {
+      code: string;
+      merge?: Partial<MergePacket>;
+      omitPacket?: boolean;
+      mutate?: (candidate: ReadyPacket) => void;
+    };
+    const cases: Case[] = [
+      {code: "work_link_required", merge: {work: undefined}},
+      {code: "identity_incomplete", merge: {work: {...identity, revision: undefined}}},
+      {code: "base_not_contained", merge: {behindBy: 1}},
+      {code: "proof_load_failed", omitPacket: true},
+      {code: "identity_mismatch", mutate: (candidate) => {
+        if (candidate.proof.availability === "available") candidate.proof.identity.revision += 1;
+      }},
+      {code: "scope_mismatch", mutate: (candidate) => {
+        if (candidate.proof.availability === "available") candidate.proof.identity.projectId = "other-project";
+      }},
+      {code: "work_status_invalid", mutate: (candidate) => {
+        if (candidate.proof.availability === "available") candidate.proof.identity.status = "running";
+      }},
+      {code: "work_verification_state_invalid", mutate: (candidate) => {
+        if (candidate.proof.availability === "available") candidate.proof.identity.verificationState = "unverified";
+      }},
+      {code: "plan_stale", mutate: (candidate) => {
+        if (candidate.proof.availability === "available") candidate.proof.identity.activePlan.planVersion += 1;
+      }},
+      {code: "coverage_invalid", mutate: (candidate) => {
+        if (candidate.proof.availability === "available") candidate.proof.commands.required = 0;
+      }},
+      {code: "coverage_incomplete", mutate: (candidate) => {
+        if (candidate.proof.availability === "available") candidate.proof.commands.passed = 0;
+      }},
+      {code: "coverage_duplicate", mutate: (candidate) => {
+        if (candidate.proof.availability !== "available") return;
+        const step = candidate.proof.commands.requiredSteps[0];
+        if (!step) throw new Error("step unavailable");
+        candidate.proof.commands.required = 2;
+        candidate.proof.commands.covered = 2;
+        candidate.proof.commands.passed = 2;
+        candidate.proof.commands.requiredSteps.push(structuredClone(step));
+      }},
+      {code: "attempt_invalid", mutate: (candidate) => {
+        if (candidate.proof.availability !== "available") return;
+        const attempt = candidate.proof.commands.requiredSteps[0]?.latestAttempt;
+        if (!attempt) throw new Error("attempt unavailable");
+        attempt.outcome = "failed";
+      }},
+      {code: "attempt_stale", mutate: (candidate) => {
+        if (candidate.proof.availability !== "available") return;
+        const attempt = candidate.proof.commands.requiredSteps[0]?.latestAttempt;
+        if (!attempt) throw new Error("attempt unavailable");
+        attempt.provenance = {siftReadyProofV1: {headCommit: "d".repeat(40)}};
+      }},
+    ];
+
+    for (const scenario of cases) {
+      const candidate = structuredClone(packet);
+      scenario.mutate?.(candidate);
+      const decision = evaluateReadyProof({
+        policy: "warn",
+        merge: {...mergePacket, ...scenario.merge},
+        packet: scenario.omitPacket ? undefined : candidate,
+      });
+      expect(decision).toEqual({
+        policy: "warn",
+        allowed: true,
+        code: "proof_warn",
+        advisoryCode: scenario.code,
+      });
+      expect("receipt" in decision).toBe(false);
+    }
   });
 
   test("fails stale, malformed, incomplete, and behind proof closed", async () => {

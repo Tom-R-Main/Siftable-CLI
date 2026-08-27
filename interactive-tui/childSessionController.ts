@@ -61,7 +61,6 @@ import {
   evaluateReadyProof,
   isCompleteReadyProofIdentity,
   loadReadyProof,
-  rebindReadyPacketMerge,
   receiptMatches,
   resolveReadyProofPolicy,
   type ReadyProofDecision,
@@ -685,7 +684,7 @@ export function createChildSessionController(
               planVersion: identity.plan.planVersion,
             })
           : configured.ok && configured.policy !== "enforce";
-        rows.push({
+        const row: MergeReadinessRow = {
           sessionId: rec.sessionId,
           branch: rec.branch,
           baseBranch: rec.baseBranch,
@@ -696,17 +695,20 @@ export function createChildSessionController(
           deletions: packet.totalDeletions,
           behindBy: packet.behindBy,
           blockers: packet.blockers,
-          mergeEligibility: packet.verdict === "ready_to_merge" && exactReceipt,
-          proofCode: configured.ok
+        };
+        if (!(configured.ok && configured.policy === "off")) {
+          row.mergeEligibility = packet.verdict === "ready_to_merge" && exactReceipt;
+          row.proofCode = configured.ok
             ? (configured.policy === "enforce"
                 ? (!identity
                     ? "work_link_required"
                     : !isCompleteReadyProofIdentity(identity)
                       ? "identity_incomplete"
                       : exactReceipt ? "ready_proof_pass" : receipt ? "proof_receipt_stale" : "proof_receipt_missing")
-                : configured.policy === "warn" ? "proof_warn" : "proof_not_required")
-            : "ready_proof_config_invalid",
-        });
+                : "proof_warn")
+            : "ready_proof_config_invalid";
+        }
+        rows.push(row);
       } catch (err) {
         rows.push({
           sessionId: rec.sessionId,
@@ -723,7 +725,9 @@ export function createChildSessionController(
       }
     }
     const view = assembleParentMergeView(rows);
-    return {...view, proofPolicy: configured.ok ? configured.policy : undefined};
+    return configured.ok && configured.policy === "off"
+      ? view
+      : {...view, proofPolicy: configured.ok ? configured.policy : undefined};
   }
 
   function legacyMergeChild(sessionId: number, opts: MergeChildOptions = {}): MergeChildResult {
@@ -850,27 +854,29 @@ export function createChildSessionController(
         decision: {policy: "enforce", allowed: false, code: "ready_proof_config_invalid"},
       };
     }
+    if (configured.policy === "off") {
+      return {
+        packet: p1,
+        decision: {policy: "off", allowed: true, code: "proof_not_required"},
+      };
+    }
     const loaded = await Promise.resolve(loadReadyProof({
       policy: configured.policy,
       merge: p1,
       client: deps.readyProof?.client,
     }));
     const p2 = evaluateMerge(rec, runner);
-    const proofPacket = loaded ? rebindReadyPacketMerge(loaded, p2) : undefined;
+    const proofPacket = loaded;
     if (p1.headCommit !== p2.headCommit) {
-      const decision = configured.policy === "enforce"
-        ? {policy: "enforce" as const, allowed: false, code: "head_drift" as const}
-        : configured.policy === "warn"
-          ? {policy: "warn" as const, allowed: true, code: "proof_warn" as const, advisoryCode: "head_drift" as const}
-          : {policy: "off" as const, allowed: true, code: "proof_not_required" as const};
+      const decision: ReadyProofDecision = configured.policy === "enforce"
+        ? {policy: "enforce", allowed: false, code: "head_drift"}
+        : {policy: "warn", allowed: true, code: "proof_warn", advisoryCode: "head_drift"};
       return {packet: p2, decision, proofPacket};
     }
     if (p1.baseTip !== p2.baseTip) {
-      const decision = configured.policy === "enforce"
-        ? {policy: "enforce" as const, allowed: false, code: "base_drift" as const}
-        : configured.policy === "warn"
-          ? {policy: "warn" as const, allowed: true, code: "proof_warn" as const, advisoryCode: "base_drift" as const}
-          : {policy: "off" as const, allowed: true, code: "proof_not_required" as const};
+      const decision: ReadyProofDecision = configured.policy === "enforce"
+        ? {policy: "enforce", allowed: false, code: "base_drift"}
+        : {policy: "warn", allowed: true, code: "proof_warn", advisoryCode: "base_drift"};
       return {packet: p2, decision, proofPacket};
     }
     return {
@@ -885,6 +891,8 @@ export function createChildSessionController(
     opts: ReviewChildOptions = {},
   ): ReviewChildResult | Promise<ReviewChildResult> {
     if (!deps.readyProof) return legacyReviewChild(sessionId, opts);
+    const configured = resolveReadyProofPolicy(deps.readyProof.env ?? process.env);
+    if (configured.ok && configured.policy === "off") return legacyReviewChild(sessionId, opts);
     return (async () => {
       const rec = records.get(sessionId);
       if (!rec) return {ok: false, reason: "unknown child session"};
@@ -920,7 +928,12 @@ export function createChildSessionController(
         const code = before?.status === effectiveVerdict
           ? 0
           : transitionSessionStatus(sessionId, effectiveVerdict, now());
-        if (code === 0 && effectiveVerdict === "ready_to_merge" && resolved.decision.receipt) {
+        if (
+          code === 0
+          && effectiveVerdict === "ready_to_merge"
+          && resolved.decision.policy === "enforce"
+          && resolved.decision.allowed
+        ) {
           receipts.set(sessionId, resolved.decision.receipt);
         } else {
           receipts.delete(sessionId);
@@ -945,6 +958,8 @@ export function createChildSessionController(
     opts: MergeChildOptions = {},
   ): MergeChildResult | Promise<MergeChildResult> {
     if (!deps.readyProof) return legacyMergeChild(sessionId, opts);
+    const configured = resolveReadyProofPolicy(deps.readyProof.env ?? process.env);
+    if (configured.ok && configured.policy === "off") return legacyMergeChild(sessionId, opts);
     return (async () => {
       const rec = records.get(sessionId);
       if (!rec) return {ok: false, reason: "unknown child session"};

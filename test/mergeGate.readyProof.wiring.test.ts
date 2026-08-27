@@ -49,7 +49,20 @@ describe("/ready contracted proof wiring", () => {
         packet: packet(),
         statusApplied: true,
         committed: false,
-        proofDecision: {policy: "enforce", allowed: true, code: "ready_proof_pass"},
+        proofDecision: {
+          policy: "enforce",
+          allowed: true,
+          code: "ready_proof_pass",
+          receipt: {
+            policy: "enforce",
+            childHead: "head",
+            baseTip: "tip",
+            workRevision: 2,
+            planId: "plan-123",
+            planVersion: 1,
+            decisionKey: "test-receipt",
+          },
+        },
       })),
     };
     const {ctx, apiClient, messages} = buildCommandContext({sessions});

@@ -44,7 +44,7 @@ import type {
 } from "./childSessionController";
 import type {MergePacket} from "./mergeGate";
 import type {ParentMergeView} from "./mergeView";
-import {formatReadyPacket, formatReadyProofDecision} from "./workProof";
+import {formatReadyPacket, formatReadyProofDecision, type ReadyPacket} from "./workProof";
 import {formatWorkRow, type WorkBoardItem, type WorkBoardData, type WorkContractDisplay} from "./workHubOverlay";
 import {requireBuiltWorkContract} from "../src/lib/work-contract.js";
 import type {WorkContractV1} from "@siftable/mcp-server/dist/exfClient.js";
@@ -1789,6 +1789,17 @@ function formatPacket(p: MergePacket): string {
   return lines.join("\n");
 }
 
+function formatProofSnapshotBinding(proofPacket: ReadyPacket, current: MergePacket): string | undefined {
+  const headStale = proofPacket.merge.headCommit !== current.headCommit;
+  const baseStale = proofPacket.merge.baseTip !== current.baseTip;
+  if (!headStale && !baseStale) return undefined;
+  const differences = [
+    headStale ? `head ${proofPacket.merge.headCommit} → ${current.headCommit}` : undefined,
+    baseStale ? `base ${proofPacket.merge.baseTip} → ${current.baseTip}` : undefined,
+  ].filter((value): value is string => Boolean(value));
+  return `proof snapshot: stale (${differences.join(" · ")})`;
+}
+
 function resolveTargetChild(ctx: InteractiveCommandContext, raw: string | undefined): {id: number} | {error: string} {
   if (raw) {
     const id = Number(raw);
@@ -1816,6 +1827,10 @@ async function readyCommand(ctx: InteractiveCommandContext, args: string[]): Pro
   let text = res.proofPacket && res.proofDecision?.policy === "warn"
     ? formatReadyPacket(res.proofPacket)
     : formatPacket(res.packet);
+  if (res.proofPacket && res.proofDecision?.policy === "warn") {
+    const binding = formatProofSnapshotBinding(res.proofPacket, res.packet);
+    if (binding) text += `\n  ${binding}`;
+  }
   if (res.proofDecision) text += `\n  ${formatReadyProofDecision(res.proofDecision)}`;
   if (res.committed) text = `committed working changes first.\n${text}`;
   // If blocked solely because the tree is dirty, point at the one-step fix.
@@ -1863,7 +1878,11 @@ function formatMergeView(view: ParentMergeView): string {
     const stat = r.verdict ? `${r.files} file(s), +${r.additions} −${r.deletions}` : r.status;
     const drift = r.behindBy > 0 ? `, base +${r.behindBy}` : "";
     const head = `${mark} #${r.sessionId} ${r.branch} → ${r.baseBranch}: ${stat}${drift}`;
-    return r.blockers.length ? [head, ...r.blockers.map((b) => `    • ${b}`)].join("\n") : head;
+    const proof = r.proofCode
+      ? `    proof: ${r.proofCode} · merge eligible: ${r.mergeEligibility === true ? "yes" : "no"}`
+      : undefined;
+    const details = [proof, ...r.blockers.map((b) => `    • ${b}`)].filter((value): value is string => Boolean(value));
+    return details.length > 0 ? [head, ...details].join("\n") : head;
   });
   const footer = `${view.readyCount} ready · ${view.blockedCount} blocked` +
     (view.readyCount > 0 ? `  (+${view.totalAdditions} −${view.totalDeletions} if all land)` : "");

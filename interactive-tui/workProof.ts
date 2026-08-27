@@ -250,10 +250,6 @@ function mergeEvidence(merge: MergePacket): ReadyMergeEvidence {
   };
 }
 
-export function rebindReadyPacketMerge(packet: ReadyPacket, merge: MergePacket): ReadyPacket {
-  return {...packet, merge: mergeEvidence(merge)};
-}
-
 function string(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
@@ -637,16 +633,17 @@ export function formatReadyPacket(packet: ReadyPacket): string {
   return bounded(lines.join("\n"), MAX_RENDERED_PACKET_LENGTH);
 }
 
-export interface ReadyProofDecision {
-  policy: ReadyProofPolicy;
-  allowed: boolean;
-  code: ReadyProofCode;
-  advisoryCode?: ReadyProofCode;
-  receipt?: ReadyProofReceipt;
-}
+export type EnforceReadyProofCode = Exclude<ReadyProofCode, "proof_not_required" | "proof_warn">;
+type FailedEnforceReadyProofCode = Exclude<EnforceReadyProofCode, "ready_proof_pass">;
+
+export type ReadyProofDecision =
+  | {policy: "off"; allowed: true; code: "proof_not_required"}
+  | {policy: "warn"; allowed: true; code: "proof_warn"; advisoryCode: EnforceReadyProofCode}
+  | {policy: "enforce"; allowed: false; code: FailedEnforceReadyProofCode}
+  | {policy: "enforce"; allowed: true; code: "ready_proof_pass"; receipt: ReadyProofReceipt};
 
 export interface ReadyProofReceipt {
-  policy: ReadyProofPolicy;
+  policy: "enforce";
   childHead: string;
   baseTip: string;
   workRevision: number;
@@ -685,6 +682,7 @@ export function evaluateReadyProof(input: {
   if (input.policy === "off") return {policy: "off", allowed: true, code: "proof_not_required"};
   if (input.policy === "warn") {
     const advisory = evaluateReadyProof({...input, policy: "enforce"});
+    if (advisory.policy !== "enforce") throw new Error("ready proof policy recursion invariant failed");
     return {policy: "warn", allowed: true, code: "proof_warn", advisoryCode: advisory.code};
   }
   const identity = input.merge.work;
@@ -787,6 +785,6 @@ export function loadReadyProof(input: {
 }
 
 export function formatReadyProofDecision(decision: ReadyProofDecision): string {
-  const advisory = decision.advisoryCode ? ` · advisory: ${decision.advisoryCode}` : "";
+  const advisory = decision.policy === "warn" ? ` · advisory: ${decision.advisoryCode}` : "";
   return `proof: ${decision.code}${advisory}`;
 }

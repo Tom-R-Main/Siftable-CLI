@@ -127,16 +127,17 @@ describe("/ready", () => {
   });
 
   it("renders the bounded warn proof packet and advisory without blocking Git readiness", async () => {
-    const merge = packet();
+    const proofMerge = packet();
+    const merge = packet({headCommit: "head1", baseTip: "tip1"});
     const review = jest.fn(() => ({
       ok: true as const,
       statusApplied: true,
       committed: false,
       packet: merge,
-      proofPacket: proofPacket(merge),
+      proofPacket: proofPacket(proofMerge),
       proofDecision: {
         policy: "warn" as const,
-        allowed: true,
+        allowed: true as const,
         code: "proof_warn" as const,
         advisoryCode: "proof_load_failed" as const,
       },
@@ -149,6 +150,7 @@ describe("/ready", () => {
 
     expect(lastText(messages)).toContain("ready to merge");
     expect(lastText(messages)).toContain("proof: unavailable (evidence_load_failed)");
+    expect(lastText(messages)).toContain("proof snapshot: stale (head head0 → head1 · base tip0 → tip1)");
     expect(lastText(messages)).toContain("proof: proof_warn · advisory: proof_load_failed");
   });
 

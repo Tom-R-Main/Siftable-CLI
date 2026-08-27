@@ -1008,8 +1008,11 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
           const verdict = r.verdict ?? r.status;
           const stat = r.verdict ? `${r.files} file(s), +${r.additions} -${r.deletions}` : r.status;
           const drift = r.behindBy > 0 ? `, base +${r.behindBy}` : '';
+          const proof = r.proofCode
+            ? ` — proof: ${r.proofCode}; merge eligible: ${r.mergeEligibility === true ? 'yes' : 'no'}`
+            : '';
           const blockers = r.blockers.length ? ` — ${r.blockers.join('; ')}` : '';
-          return `#${r.sessionId} ${r.branch} → ${r.baseBranch}: ${verdict} (${stat}${drift})${blockers}`;
+          return `#${r.sessionId} ${r.branch} → ${r.baseBranch}: ${verdict} (${stat}${drift})${proof}${blockers}`;
         });
         const summary = `${view.readyCount} ready · ${view.blockedCount} blocked`;
         return of.ok({ ...view }, [`Child branches (${summary}):`, ...lines].join('\n'));

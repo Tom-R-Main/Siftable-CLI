@@ -158,7 +158,7 @@ describe('lane E A2 — child-session brain tools', () => {
 
   it('list_branches passes the readiness view through', async () => {
     const view: ReturnType<ChildSessionController['listMergeReadiness']> = {
-      rows: [{sessionId: 2, branch: 'sift/a', baseBranch: 'main', status: 'running', verdict: 'ready_to_merge', files: 1, additions: 3, deletions: 1, behindBy: 0, blockers: []}],
+      rows: [{sessionId: 2, branch: 'sift/a', baseBranch: 'main', status: 'running', verdict: 'ready_to_merge', files: 1, additions: 3, deletions: 1, behindBy: 0, blockers: [], mergeEligibility: true, proofCode: 'ready_proof_pass'}],
       readyCount: 1, blockedCount: 0, totalAdditions: 3, totalDeletions: 1,
     };
     const listMergeReadiness = mockControllerMethod<ChildSessionController['listMergeReadiness']>(() => view);
@@ -167,7 +167,10 @@ describe('lane E A2 — child-session brain tools', () => {
     const res = (await tools.list_branches.handler({})) as ToolResult;
     expect(listMergeReadiness).toHaveBeenCalled();
     expect(res.ok).toBe(true);
-    if (res.ok) expect(res.message).toContain('1 ready · 0 blocked');
+    if (res.ok) {
+      expect(res.message).toContain('1 ready · 0 blocked');
+      expect(res.message).toContain('proof: ready_proof_pass; merge eligible: yes');
+    }
   });
 
   it('spawn_branch requires scope for a writer, then passes through', async () => {

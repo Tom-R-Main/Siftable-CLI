@@ -163,13 +163,15 @@ async function spawnCommitted(
   work: MergeMasterWorkIdentity | undefined,
   scenario: ProofScenario = {},
   policy = "enforce",
+  runner: GitRunner = git,
+  enableProof = true,
 ) {
   let head = () => fx.baseTip();
   const client = proofClient(work ?? identity, () => head(), scenario);
   const controller = createChildSessionController({
-    runner: git,
+    runner,
     worktreesRoot: fx.worktreesRoot,
-    readyProof: {client, env: {SIFT_READY_PROOF_POLICY: policy}},
+    readyProof: enableProof ? {client, env: {SIFT_READY_PROOF_POLICY: policy}} : undefined,
   });
   const spawned = controller.spawnChild({
     title: work?.title ?? "manual session",
@@ -182,8 +184,19 @@ async function spawnCommitted(
   await writeFile(join(spawned.session.worktreePath, "allowed.ts"), "export const allowed = true;\n", "utf8");
   const committed = controller.commitChild(spawned.session.sessionId, "bounded work");
   if (!committed.ok) throw new Error(committed.reason);
-  head = () => resolveCommit(fx.repoRoot, spawned.session.branch, git);
+  head = () => resolveCommit(fx.repoRoot, spawned.session.branch, runner);
   return {controller, session: spawned.session, client};
+}
+
+function countingRunner(): {runner: GitRunner; count: () => number} {
+  let calls = 0;
+  return {
+    runner: (args, cwd) => {
+      calls += 1;
+      return git(args, cwd);
+    },
+    count: () => calls,
+  };
 }
 
 beforeEach(() => resetMergeMasterForTests());
@@ -505,12 +518,48 @@ describe("Work Contract V1 enforce negatives", () => {
 });
 
 describe("Work Contract V1 warn observations", () => {
+  it("keeps off exactly on the legacy single-snapshot path with zero proof calls", async () => {
+    const offRepo = await setupRepo();
+    const legacyRepo = await setupRepo();
+    try {
+      let proofLoads = 0;
+      const offGit = countingRunner();
+      const off = await spawnCommitted(offRepo, identity, {
+        onProofLoad: () => { proofLoads += 1; },
+      }, "off", offGit.runner);
+      const offBefore = offGit.count();
+      const offReady = await off.controller.reviewChild(off.session.sessionId);
+      const offCalls = offGit.count() - offBefore;
+
+      resetMergeMasterForTests();
+      const legacyGit = countingRunner();
+      const legacy = await spawnCommitted(legacyRepo, identity, {}, "off", legacyGit.runner, false);
+      const legacyBefore = legacyGit.count();
+      const legacyReady = await legacy.controller.reviewChild(legacy.session.sessionId);
+      const legacyCalls = legacyGit.count() - legacyBefore;
+
+      expect(proofLoads).toBe(0);
+      expect(offCalls).toBe(legacyCalls);
+      expect(offReady).toMatchObject({
+        ok: true,
+        packet: {verdict: "ready_to_merge"},
+      });
+      expect(offReady).not.toHaveProperty("proofDecision");
+      expect(legacyReady).toMatchObject({ok: true, packet: {verdict: "ready_to_merge"}});
+    } finally {
+      await offRepo.cleanup();
+      await legacyRepo.cleanup();
+    }
+  });
+
   it.each(["head-drift", "base-drift"] as const)("preserves the Git outcome and reports %s", async (mode) => {
     const fx = await setupRepo();
     const scenario: ProofScenario = {};
     let loaded = false;
     try {
       const spawned = await spawnCommitted(fx, identity, scenario, "warn");
+      const proofHead = resolveCommit(fx.repoRoot, spawned.session.branch, git);
+      const proofBase = fx.baseTip();
       scenario.onProofLoad = async () => {
         if (loaded) return;
         loaded = true;
@@ -536,7 +585,13 @@ describe("Work Contract V1 warn observations", () => {
       });
       if (!ready.ok) return;
       expect(ready.packet.verdict).toBe("ready_to_merge");
+      expect(ready.proofPacket?.merge).toMatchObject({headCommit: proofHead, baseTip: proofBase});
+      if (mode === "head-drift") expect(ready.packet.headCommit).not.toBe(proofHead);
+      else expect(ready.packet.baseTip).not.toBe(proofBase);
       expect(getMergeMasterSession(spawned.session.sessionId)?.status).toBe(ready.packet.verdict);
+      const baseBeforeLanding = fx.baseTip();
+      expect(await spawned.controller.mergeChild(spawned.session.sessionId, {keep: true})).toMatchObject({ok: true});
+      expect(fx.baseTip()).not.toBe(baseBeforeLanding);
     } finally {
       await fx.cleanup();
     }
