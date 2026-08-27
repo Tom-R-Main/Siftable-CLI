@@ -443,7 +443,7 @@ describe('model catalog + reasoning effort', () => {
     expect(kimiModels).toEqual(['moonshotai/kimi-k3', 'moonshotai/kimi-k2.6']);
 
     await runInteractiveCommand(ctx, '/model kimi');
-    expect(config).toHaveBeenCalledWith({provider: 'openrouter', model: 'moonshotai/kimi-k3'});
+    expect(config).toHaveBeenCalledWith({provider: 'openrouter', model: 'moonshotai/kimi-k3', effort: 'max'});
     expect(messages.at(-1)?.text).toContain('openrouter/moonshotai/kimi-k3');
   });
 
@@ -479,7 +479,7 @@ describe('model catalog + reasoning effort', () => {
     expect(config).toHaveBeenLastCalledWith({provider: 'openrouter', model: 'z-ai/glm-5.2'});
 
     await runInteractiveCommand(ctx, '/model glm-5');
-    expect(config).toHaveBeenLastCalledWith({provider: 'openrouter', model: 'z-ai/glm-5.2'});
+    expect(config).toHaveBeenLastCalledWith({provider: 'openrouter', model: 'z-ai/glm-5.2', effort: 'high'});
   });
 
   it('gates the direct-Anthropic door behind an API key instead of failing a turn', async () => {
