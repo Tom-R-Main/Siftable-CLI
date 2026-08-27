@@ -58,7 +58,7 @@ export function parseReadyProofPolicy(raw: string | undefined): ReadyProofPolicy
 }
 
 export function resolveReadyProofPolicy(
-  source: {SIFT_READY_PROOF_POLICY?: string} = process.env,
+  source: NodeJS.ProcessEnv | {SIFT_READY_PROOF_POLICY?: string} = process.env,
 ): {ok: true; policy: ReadyProofPolicy} | {ok: false; code: "ready_proof_config_invalid"} {
   try {
     return {ok: true, policy: parseReadyProofPolicy(source.SIFT_READY_PROOF_POLICY)};
