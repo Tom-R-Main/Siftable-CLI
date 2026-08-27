@@ -7,6 +7,7 @@ import {createChildSessionStore} from "../interactive-tui/childSessionStore";
 import {
   getMergeMasterSession,
   resetMergeMasterForTests,
+  transitionSessionStatus,
   type MergeMasterWorkIdentity,
 } from "../interactive-tui/mergeMaster";
 import {createWorkRunController, type WorkRunClient} from "../interactive-tui/workRunController";
@@ -285,6 +286,43 @@ describe("Work Contract V1 golden landing", () => {
 });
 
 describe("Work Contract V1 enforce negatives", () => {
+  it("classifies incomplete enforce identities before dashboard receipt state", async () => {
+    const fx = await setupRepo();
+    try {
+      const incomplete = {...identity, revision: undefined};
+      const {controller} = await spawnCommitted(fx, incomplete);
+      expect(controller.listMergeReadiness().rows[0]).toMatchObject({
+        mergeEligibility: false,
+        proofCode: "identity_incomplete",
+      });
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it("does not retain a proof receipt when the ready transition is refused", async () => {
+    const fx = await setupRepo();
+    const scenario: ProofScenario = {};
+    try {
+      const {controller, session} = await spawnCommitted(fx, identity, scenario);
+      scenario.onProofLoad = () => {
+        expect(transitionSessionStatus(session.sessionId, "needs_input")).toBe(0);
+      };
+      expect(await controller.reviewChild(session.sessionId)).toMatchObject({
+        ok: true,
+        statusApplied: false,
+        proofDecision: {allowed: true, code: "ready_proof_pass"},
+      });
+      expect(getMergeMasterSession(session.sessionId)?.status).toBe("needs_input");
+      expect(controller.listMergeReadiness().rows[0]).toMatchObject({
+        mergeEligibility: false,
+        proofCode: "proof_receipt_missing",
+      });
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
   it("keeps the synchronous dashboard network-free and distinguishes missing and stale receipts", async () => {
     const fx = await setupRepo();
     let proofLoads = 0;
@@ -462,6 +500,45 @@ describe("Work Contract V1 enforce negatives", () => {
       } finally {
         await local.cleanup();
       }
+    }
+  });
+});
+
+describe("Work Contract V1 warn observations", () => {
+  it.each(["head-drift", "base-drift"] as const)("preserves the Git outcome and reports %s", async (mode) => {
+    const fx = await setupRepo();
+    const scenario: ProofScenario = {};
+    let loaded = false;
+    try {
+      const spawned = await spawnCommitted(fx, identity, scenario, "warn");
+      scenario.onProofLoad = async () => {
+        if (loaded) return;
+        loaded = true;
+        if (mode === "head-drift") {
+          await writeFile(join(spawned.session.worktreePath, "allowed.ts"), "export const allowed = 2;\n", "utf8");
+          spawned.controller.commitChild(spawned.session.sessionId, "move head during warn proof");
+        } else {
+          await writeFile(join(fx.repoRoot, "README.md"), "base moved during warn proof\n", "utf8");
+          fx.run(["commit", "-am", "move base during warn proof"]);
+        }
+      };
+
+      const ready = await spawned.controller.reviewChild(spawned.session.sessionId);
+      expect(ready).toMatchObject({
+        ok: true,
+        proofDecision: {
+          policy: "warn",
+          allowed: true,
+          code: "proof_warn",
+          advisoryCode: mode === "head-drift" ? "head_drift" : "base_drift",
+        },
+        proofPacket: {version: 1},
+      });
+      if (!ready.ok) return;
+      expect(ready.packet.verdict).toBe("ready_to_merge");
+      expect(getMergeMasterSession(spawned.session.sessionId)?.status).toBe(ready.packet.verdict);
+    } finally {
+      await fx.cleanup();
     }
   });
 });

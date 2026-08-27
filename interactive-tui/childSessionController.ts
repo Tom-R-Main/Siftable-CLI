@@ -59,10 +59,13 @@ import {commitChild as gitCommitChild, evaluateMerge, type MergePacket} from "./
 import {isWorktreeDirty} from "./worktreeService";
 import {
   evaluateReadyProof,
+  isCompleteReadyProofIdentity,
   loadReadyProof,
+  rebindReadyPacketMerge,
   receiptMatches,
   resolveReadyProofPolicy,
   type ReadyProofDecision,
+  type ReadyPacket,
   type ReadyProofReceipt,
   type WorkProofClient,
 } from "./workProof";
@@ -190,6 +193,7 @@ export type ReviewChildResult =
       /** Set when the verdict could not be applied (e.g. illegal transition). */
       note?: string;
       proofDecision?: ReadyProofDecision;
+      proofPacket?: ReadyPacket;
     }
   | {ok: false; reason: string};
 
@@ -695,7 +699,11 @@ export function createChildSessionController(
           mergeEligibility: packet.verdict === "ready_to_merge" && exactReceipt,
           proofCode: configured.ok
             ? (configured.policy === "enforce"
-                ? (exactReceipt ? "ready_proof_pass" : receipt ? "proof_receipt_stale" : "proof_receipt_missing")
+                ? (!identity
+                    ? "work_link_required"
+                    : !isCompleteReadyProofIdentity(identity)
+                      ? "identity_incomplete"
+                      : exactReceipt ? "ready_proof_pass" : receipt ? "proof_receipt_stale" : "proof_receipt_missing")
                 : configured.policy === "warn" ? "proof_warn" : "proof_not_required")
             : "ready_proof_config_invalid",
         });
@@ -832,6 +840,7 @@ export function createChildSessionController(
   async function resolveProof(rec: ChildSessionRecord): Promise<{
     packet: MergePacket;
     decision: ReadyProofDecision;
+    proofPacket?: ReadyPacket;
   }> {
     const configured = resolveReadyProofPolicy(deps.readyProof?.env ?? process.env);
     const p1 = evaluateMerge(rec, runner);
@@ -847,15 +856,27 @@ export function createChildSessionController(
       client: deps.readyProof?.client,
     }));
     const p2 = evaluateMerge(rec, runner);
+    const proofPacket = loaded ? rebindReadyPacketMerge(loaded, p2) : undefined;
     if (p1.headCommit !== p2.headCommit) {
-      return {packet: p2, decision: {policy: configured.policy, allowed: false, code: "head_drift"}};
+      const decision = configured.policy === "enforce"
+        ? {policy: "enforce" as const, allowed: false, code: "head_drift" as const}
+        : configured.policy === "warn"
+          ? {policy: "warn" as const, allowed: true, code: "proof_warn" as const, advisoryCode: "head_drift" as const}
+          : {policy: "off" as const, allowed: true, code: "proof_not_required" as const};
+      return {packet: p2, decision, proofPacket};
     }
     if (p1.baseTip !== p2.baseTip) {
-      return {packet: p2, decision: {policy: configured.policy, allowed: false, code: "base_drift"}};
+      const decision = configured.policy === "enforce"
+        ? {policy: "enforce" as const, allowed: false, code: "base_drift" as const}
+        : configured.policy === "warn"
+          ? {policy: "warn" as const, allowed: true, code: "proof_warn" as const, advisoryCode: "base_drift" as const}
+          : {policy: "off" as const, allowed: true, code: "proof_not_required" as const};
+      return {packet: p2, decision, proofPacket};
     }
     return {
       packet: p2,
-      decision: evaluateReadyProof({policy: configured.policy, merge: p2, packet: loaded}),
+      decision: evaluateReadyProof({policy: configured.policy, merge: p2, packet: proofPacket}),
+      proofPacket,
     };
   }
 
@@ -899,7 +920,7 @@ export function createChildSessionController(
         const code = before?.status === effectiveVerdict
           ? 0
           : transitionSessionStatus(sessionId, effectiveVerdict, now());
-        if (effectiveVerdict === "ready_to_merge" && resolved.decision.receipt) {
+        if (code === 0 && effectiveVerdict === "ready_to_merge" && resolved.decision.receipt) {
           receipts.set(sessionId, resolved.decision.receipt);
         } else {
           receipts.delete(sessionId);
@@ -910,6 +931,7 @@ export function createChildSessionController(
           statusApplied: code === 0,
           committed,
           proofDecision: resolved.decision,
+          proofPacket: resolved.proofPacket,
           note: code === 0 ? undefined : `verdict ${effectiveVerdict} not applied`,
         };
       } catch (error) {

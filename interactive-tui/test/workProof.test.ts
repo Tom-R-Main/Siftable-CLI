@@ -4,6 +4,7 @@ import type {MergeMasterWorkIdentity} from "../mergeMaster";
 import {
   evaluateReadyProof,
   formatReadyPacket,
+  formatReadyProofDecision,
   loadReadyProof,
   loadReadyPacket,
   parseReadyProofPolicy,
@@ -365,6 +366,32 @@ describe("work proof packets", () => {
     });
     expect(result).toBeUndefined();
     expect(calls).toBe(0);
+  });
+
+  test("keeps warn non-enforcing while reporting the enforce advisory", async () => {
+    const mergePacket = merge();
+    const packet = await loadReadyPacket(mergePacket, client());
+    const passing = evaluateReadyProof({policy: "warn", merge: mergePacket, packet});
+    expect(passing).toEqual({
+      policy: "warn",
+      allowed: true,
+      code: "proof_warn",
+      advisoryCode: "ready_proof_pass",
+    });
+    expect(formatReadyProofDecision(passing)).toBe("proof: proof_warn · advisory: ready_proof_pass");
+
+    if (packet.proof.availability !== "available") throw new Error("proof unavailable");
+    const stale = structuredClone(packet);
+    if (stale.proof.availability !== "available") throw new Error("proof unavailable");
+    const attempt = stale.proof.commands.requiredSteps[0]?.latestAttempt;
+    if (!attempt) throw new Error("attempt unavailable");
+    attempt.provenance = {siftReadyProofV1: {headCommit: "d".repeat(40)}};
+    expect(evaluateReadyProof({policy: "warn", merge: mergePacket, packet: stale})).toEqual({
+      policy: "warn",
+      allowed: true,
+      code: "proof_warn",
+      advisoryCode: "attempt_stale",
+    });
   });
 
   test("fails stale, malformed, incomplete, and behind proof closed", async () => {

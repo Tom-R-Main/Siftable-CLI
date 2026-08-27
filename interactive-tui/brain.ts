@@ -75,6 +75,7 @@ import { runCollabBranches, type CollabBranchRunContext } from './collabRunner';
 import { renderMermaidFile, renderMermaidSource } from './cellRender';
 import { discoverSkills, formatSkillsForPrompt, loadSkill, type SkillInfo } from './skillsEngine';
 import type { ChildSessionController } from './childSessionController';
+import { formatReadyProofDecision } from './workProof';
 import type { CompactionReport } from './controlClient';
 import {
   acknowledgeSessionInstruction,
@@ -1096,9 +1097,10 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
         const stat = `${p.files.length} file(s), +${p.totalAdditions} -${p.totalDeletions}`;
         const blockers = p.blockers.length ? `\nblockers: ${p.blockers.join('; ')}` : '';
         const note = res.note ? `\nnote: ${res.note}` : '';
+        const proof = res.proofDecision ? `\n${formatReadyProofDecision(res.proofDecision)}` : '';
         return of.ok(
-          { verdict: p.verdict, blockers: p.blockers, packet: p },
-          `#${id} ${p.childBranch} → ${p.baseBranch}: ${p.verdict} (${stat})${blockers}${note}`,
+          { verdict: p.verdict, blockers: p.blockers, packet: p, proofDecision: res.proofDecision },
+          `#${id} ${p.childBranch} → ${p.baseBranch}: ${p.verdict} (${stat})${blockers}${proof}${note}`,
         );
       } catch (e) {
         return of.err(e instanceof Error ? e.message : String(e));

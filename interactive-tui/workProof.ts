@@ -250,6 +250,10 @@ function mergeEvidence(merge: MergePacket): ReadyMergeEvidence {
   };
 }
 
+export function rebindReadyPacketMerge(packet: ReadyPacket, merge: MergePacket): ReadyPacket {
+  return {...packet, merge: mergeEvidence(merge)};
+}
+
 function string(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
@@ -637,6 +641,7 @@ export interface ReadyProofDecision {
   policy: ReadyProofPolicy;
   allowed: boolean;
   code: ReadyProofCode;
+  advisoryCode?: ReadyProofCode;
   receipt?: ReadyProofReceipt;
 }
 
@@ -650,7 +655,7 @@ export interface ReadyProofReceipt {
   decisionKey: string;
 }
 
-function completeIdentity(identity: MergeMasterWorkIdentity | undefined): identity is MergeMasterWorkIdentity & {
+export function isCompleteReadyProofIdentity(identity: MergeMasterWorkIdentity | undefined): identity is MergeMasterWorkIdentity & {
   revision: number;
   orgId: string | null;
   projectId: string | null;
@@ -678,11 +683,14 @@ export function evaluateReadyProof(input: {
   packet?: ReadyPacket;
 }): ReadyProofDecision {
   if (input.policy === "off") return {policy: "off", allowed: true, code: "proof_not_required"};
-  if (input.policy === "warn") return {policy: "warn", allowed: true, code: "proof_warn"};
+  if (input.policy === "warn") {
+    const advisory = evaluateReadyProof({...input, policy: "enforce"});
+    return {policy: "warn", allowed: true, code: "proof_warn", advisoryCode: advisory.code};
+  }
   const identity = input.merge.work;
   if (!identity) return {policy: "enforce", allowed: false, code: "work_link_required"};
   if (identity.contract.profile === "read_only") return {policy: "enforce", allowed: false, code: "work_link_required"};
-  if (!completeIdentity(identity)) return {policy: "enforce", allowed: false, code: "identity_incomplete"};
+  if (!isCompleteReadyProofIdentity(identity)) return {policy: "enforce", allowed: false, code: "identity_incomplete"};
   if (input.merge.behindBy !== 0) return {policy: "enforce", allowed: false, code: "base_not_contained"};
   const packet = input.packet;
   if (!packet || packet.proof.availability !== "available") {
@@ -779,5 +787,6 @@ export function loadReadyProof(input: {
 }
 
 export function formatReadyProofDecision(decision: ReadyProofDecision): string {
-  return `proof: ${decision.code}`;
+  const advisory = decision.advisoryCode ? ` · advisory: ${decision.advisoryCode}` : "";
+  return `proof: ${decision.code}${advisory}`;
 }

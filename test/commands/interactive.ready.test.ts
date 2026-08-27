@@ -12,6 +12,7 @@ import {
 } from "../../interactive-tui/commands";
 import {buildCommandContext} from "../helpers/interactive-command-context";
 import type {MergePacket} from "../../interactive-tui/mergeGate";
+import type {ReadyPacket} from "../../interactive-tui/workProof";
 
 function run(ctx: InteractiveCommandContext, name: string, args: string[] = []): void | Promise<void> {
   const cmd = interactiveCommands.find((c) => c.name === name || c.aliases?.includes(name));
@@ -38,6 +39,31 @@ function packet(over: Partial<MergePacket> = {}): MergePacket {
     verdict: "ready_to_merge",
     blockers: [],
     ...over,
+  };
+}
+
+function proofPacket(merge = packet()): ReadyPacket {
+  return {
+    version: 1,
+    merge: {
+      childSessionId: merge.childSessionId,
+      parentSessionId: merge.parentSessionId,
+      baseBranch: merge.baseBranch,
+      childBranch: merge.childBranch,
+      baseCommit: merge.baseCommit,
+      baseTip: merge.baseTip,
+      behindBy: merge.behindBy,
+      headCommit: merge.headCommit,
+      changedFiles: {items: merge.files, total: merge.files.length, truncated: false},
+      totalAdditions: merge.totalAdditions,
+      totalDeletions: merge.totalDeletions,
+      conflicts: {items: merge.conflicts, total: merge.conflicts.length, truncated: false},
+      outOfScope: {items: merge.outOfScope, total: merge.outOfScope.length, truncated: false},
+      dirty: merge.dirty,
+      verdict: merge.verdict,
+      blockers: {items: merge.blockers, total: merge.blockers.length, truncated: false},
+    },
+    proof: {availability: "unavailable", reason: "evidence_load_failed", detail: "proof service unavailable"},
   };
 }
 
@@ -98,6 +124,32 @@ describe("/ready", () => {
     await run(ctx, "ready", ["--commit"]);
     expect(review).toHaveBeenCalledWith(2, {autoCommit: true});
     expect(lastText(messages)).toContain("committed working changes first");
+  });
+
+  it("renders the bounded warn proof packet and advisory without blocking Git readiness", async () => {
+    const merge = packet();
+    const review = jest.fn(() => ({
+      ok: true as const,
+      statusApplied: true,
+      committed: false,
+      packet: merge,
+      proofPacket: proofPacket(merge),
+      proofDecision: {
+        policy: "warn" as const,
+        allowed: true,
+        code: "proof_warn" as const,
+        advisoryCode: "proof_load_failed" as const,
+      },
+    }));
+    const {ctx, messages} = buildCommandContext({
+      sessions: fakeSessions({activeChildId: jest.fn(() => 2), review}),
+    });
+
+    await run(ctx, "ready", []);
+
+    expect(lastText(messages)).toContain("ready to merge");
+    expect(lastText(messages)).toContain("proof: unavailable (evidence_load_failed)");
+    expect(lastText(messages)).toContain("proof: proof_warn · advisory: proof_load_failed");
   });
 
   it("points a dirty-blocked child at the one-step --commit fix", async () => {

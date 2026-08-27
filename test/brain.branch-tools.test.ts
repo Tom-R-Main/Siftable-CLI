@@ -202,13 +202,18 @@ describe('lane E A2 — child-session brain tools', () => {
       packet,
       statusApplied: true,
       committed: false,
+      proofDecision: {policy: 'warn', allowed: true, code: 'proof_warn', advisoryCode: 'proof_load_failed'},
     }));
     setSessionController(stubController({reviewChild}));
     const tools = await branchTools();
     const res = (await tools.ready_branch.handler({id: 2})) as ToolResult;
     expect(reviewChild).toHaveBeenCalledWith(2, {autoCommit: false, message: undefined});
     expect(res.ok).toBe(true);
-    if (res.ok) expect(res.message).toContain('merge_blocked');
+    if (res.ok) {
+      expect(res.message).toContain('merge_blocked');
+      expect(res.message).toContain('proof: proof_warn · advisory: proof_load_failed');
+      expect(res.data).toMatchObject({proofDecision: {code: 'proof_warn', advisoryCode: 'proof_load_failed'}});
+    }
   });
 
   it('merge_branch is approval-gated — declined means the controller is never called', async () => {

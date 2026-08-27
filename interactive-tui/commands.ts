@@ -44,7 +44,7 @@ import type {
 } from "./childSessionController";
 import type {MergePacket} from "./mergeGate";
 import type {ParentMergeView} from "./mergeView";
-import {formatReadyProofDecision} from "./workProof";
+import {formatReadyPacket, formatReadyProofDecision} from "./workProof";
 import {formatWorkRow, type WorkBoardItem, type WorkBoardData, type WorkContractDisplay} from "./workHubOverlay";
 import {requireBuiltWorkContract} from "../src/lib/work-contract.js";
 import type {WorkContractV1} from "@siftable/mcp-server/dist/exfClient.js";
@@ -1813,7 +1813,9 @@ async function readyCommand(ctx: InteractiveCommandContext, args: string[]): Pro
     ctx.push({role: "system", text: `/ready: ${res.reason}`});
     return;
   }
-  let text = formatPacket(res.packet);
+  let text = res.proofPacket && res.proofDecision?.policy === "warn"
+    ? formatReadyPacket(res.proofPacket)
+    : formatPacket(res.packet);
   if (res.proofDecision) text += `\n  ${formatReadyProofDecision(res.proofDecision)}`;
   if (res.committed) text = `committed working changes first.\n${text}`;
   // If blocked solely because the tree is dirty, point at the one-step fix.
