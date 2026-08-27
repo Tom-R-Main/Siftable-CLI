@@ -18,6 +18,7 @@
     "test/jest.setup.ts",
     "test/agent-runtime/provider.test.ts",
     "test/commands/agents-work.test.ts",
+    "test/commands/work-lease-session.contract.test.ts",
     "test/commands/ai.model-connection-interactive.test.ts",
     "test/commands/ai.stream.test.ts",
     "test/commands/auth-login-scopes.test.ts",

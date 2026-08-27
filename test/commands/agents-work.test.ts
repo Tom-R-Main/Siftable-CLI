@@ -375,7 +375,12 @@ describe('work commands', () => {
     ]);
     const json = JSON.parse(result.stdout);
     expect(json.workItem.status).toBe('claimed');
-    expect(json.workItem.claimToken).toBe('claim-token');
+    expect(json.workItem.claimToken).toBeUndefined();
+    expect(json.leaseSession).toEqual(expect.objectContaining({
+      workItemId: 'work-001',
+      claimOwner: 'codex-test',
+      state: 'active',
+    }));
   });
 
   it('starts claimed work by positional ID', async () => {

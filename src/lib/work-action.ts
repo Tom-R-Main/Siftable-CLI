@@ -1,6 +1,13 @@
 import {Args, Flags} from '@oclif/core';
 import type {TransitionWorkItemInput} from '@siftable/mcp-server/dist/exfClient.js';
 import {BaseCommand} from './base-command.js';
+import {
+  deleteWorkLeaseSession,
+  readWorkLeaseSession,
+  writeWorkLeaseSession,
+  type WorkLeaseSession,
+} from './work-lease-session.js';
+import {resolveWorkspaceTenantId} from './workspace-context.js';
 
 export function redactLifecycleResponse(data: unknown): unknown {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
@@ -36,22 +43,50 @@ export abstract class WorkActionCommand extends BaseCommand {
   protected async runWorkAction(command: typeof WorkActionCommand, action: string, extra: Record<string, unknown> = {}): Promise<unknown> {
     const {args, flags} = await this.parse(command);
     const ownerBoundActions = new Set(['start', 'heartbeat', 'block', 'fail']);
-    if (ownerBoundActions.has(action) && (!flags.owner || !flags['claim-token'])) {
+    const optionalSessionActions = new Set(['complete', 'review', 'cancel']);
+    const hasExplicitOwner = typeof flags.owner === 'string' && flags.owner.length > 0;
+    const hasExplicitToken = typeof flags['claim-token'] === 'string' && flags['claim-token'].length > 0;
+    if (hasExplicitOwner !== hasExplicitToken) {
+      if (action === 'release') {
+        this.error('release requires both --owner and --claim-token from the active claim.');
+      }
+      if (action === 'cancel') {
+        this.error('cancel requires --owner and --claim-token together for active work; omit both only for queued/blocked cancellation.');
+      }
+      this.error(`${action} requires --owner and --claim-token together.`);
+    }
+    let session: WorkLeaseSession | null = null;
+    if (!hasExplicitOwner
+      && (ownerBoundActions.has(action) || action === 'release' || optionalSessionActions.has(action))) {
+      session = await readWorkLeaseSession(args.id);
+      if (session && session.apiUrl !== flags['api-url']) {
+        this.error('The saved work lease belongs to a different API URL. Pass explicit lease credentials only after verifying the target service.');
+      }
+      if (session && flags.workspace
+        && resolveWorkspaceTenantId(flags.workspace) !== session.workspaceId) {
+        this.error('The saved work lease belongs to a different workspace. Omit --workspace to resume its recorded scope, or pass explicit lease credentials after verifying the target workspace.');
+      }
+    }
+    const claimOwner = hasExplicitOwner ? flags.owner : session?.claimOwner;
+    const claimToken = hasExplicitToken ? flags['claim-token'] : session?.claimToken;
+    if (ownerBoundActions.has(action) && (!claimOwner || !claimToken)) {
       this.error(`${action} requires both --owner and --claim-token from the active claim.`);
     }
-    if (action === 'release' && (!flags.owner || !flags['claim-token'])) {
+    if (action === 'release' && (!claimOwner || !claimToken)) {
       this.error('release requires both --owner and --claim-token from the active claim.');
     }
-    if (action === 'cancel' && Boolean(flags.owner) !== Boolean(flags['claim-token'])) {
+    if (action === 'cancel' && Boolean(claimOwner) !== Boolean(claimToken)) {
       this.error('cancel requires --owner and --claim-token together for active work; omit both only for queued/blocked cancellation.');
     }
-    if ((action === 'complete' || action === 'review') && flags.owner && flags['claim-token'] && !flags['memory-decision']) {
+    if ((action === 'complete' || action === 'review') && claimOwner && claimToken && !flags['memory-decision']) {
       this.error(`${action} under an active claim requires --memory-decision JSON (store or skip with rationale).`);
     }
-    const client = await this.client(flags);
+    const client = await this.client(session
+      ? {...flags, workspace: session.workspaceId}
+      : flags);
     const response = await client.transitionWorkItem(args.id, action, {
-      claimOwner: flags.owner,
-      claimToken: flags['claim-token'],
+      claimOwner,
+      claimToken,
       leaseSeconds: flags.lease,
       resultSummary: flags.summary,
       artifactRefs: this.parseJsonFlag<unknown[]>(flags.artifacts, 'artifacts'),
@@ -69,6 +104,34 @@ export abstract class WorkActionCommand extends BaseCommand {
     }, {idempotencyKey: action === 'heartbeat' ? undefined : this.idempotencyKey()});
     this.handleApiError(response);
     const workItem = this.unwrapOne(response, 'workItem');
+    if (session) {
+      const terminalStatuses = new Set(['queued', 'needs_review', 'done', 'failed', 'cancelled', 'canceled']);
+      const terminalActions = new Set(['release', 'review', 'complete', 'fail', 'cancel']);
+      if (terminalActions.has(action) || terminalStatuses.has(String(workItem.status ?? ''))) {
+        await deleteWorkLeaseSession(args.id);
+      } else {
+        const updatedSession = {
+          ...session,
+          claimToken: typeof workItem.claimToken === 'string' ? workItem.claimToken : session.claimToken,
+          expiresAt: typeof workItem.claimExpiresAt === 'string'
+            ? workItem.claimExpiresAt
+            : session.expiresAt,
+          updatedAt: new Date().toISOString(),
+        } satisfies WorkLeaseSession;
+        try {
+          await writeWorkLeaseSession(updatedSession);
+        } catch {
+          const release = await client.transitionWorkItem(args.id, 'release', {
+            claimOwner: updatedSession.claimOwner,
+            claimToken: updatedSession.claimToken,
+          }, {idempotencyKey: this.idempotencyKey()}).catch(() => null);
+          if (release && !release.error) await deleteWorkLeaseSession(args.id);
+          this.error(release && !release.error
+            ? 'The lease was released because its renewed private session could not be saved.'
+            : 'The renewed private session could not be saved and automatic release did not succeed; wait for the lease to expire before reclaiming the item.');
+        }
+      }
+    }
     if (!this.jsonEnabled()) {
       this.log(`Work item ${action}: ${workItem.id}`);
     }
