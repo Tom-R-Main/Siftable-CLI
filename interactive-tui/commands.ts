@@ -1824,10 +1824,9 @@ async function readyCommand(ctx: InteractiveCommandContext, args: string[]): Pro
     ctx.push({role: "system", text: `/ready: ${res.reason}`});
     return;
   }
-  let text = res.proofPacket && res.proofDecision?.policy === "warn"
-    ? formatReadyPacket(res.proofPacket)
-    : formatPacket(res.packet);
+  let text = formatPacket(res.packet);
   if (res.proofPacket && res.proofDecision?.policy === "warn") {
+    text += `\n  proof evidence snapshot:\n${formatReadyPacket(res.proofPacket)}`;
     const binding = formatProofSnapshotBinding(res.proofPacket, res.packet);
     if (binding) text += `\n  ${binding}`;
   }

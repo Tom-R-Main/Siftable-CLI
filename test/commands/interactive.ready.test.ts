@@ -154,6 +154,39 @@ describe("/ready", () => {
     expect(lastText(messages)).toContain("proof: proof_warn · advisory: proof_load_failed");
   });
 
+  it("leads with the current blocked verdict when a warn proof snapshot was previously ready", async () => {
+    const proofMerge = packet();
+    const merge = packet({
+      verdict: "merge_blocked",
+      dirty: true,
+      blockers: ["child worktree has uncommitted changes"],
+    });
+    const review = jest.fn(() => ({
+      ok: true as const,
+      statusApplied: true,
+      committed: false,
+      packet: merge,
+      proofPacket: proofPacket(proofMerge),
+      proofDecision: {
+        policy: "warn" as const,
+        allowed: true as const,
+        code: "proof_warn" as const,
+        advisoryCode: "head_drift" as const,
+      },
+    }));
+    const {ctx, messages} = buildCommandContext({
+      sessions: fakeSessions({activeChildId: jest.fn(() => 2), review}),
+    });
+
+    await run(ctx, "ready", []);
+
+    const text = lastText(messages);
+    expect(text).toMatch(/^#2 sift\/feature-abc123 → main: ✗ merge blocked/);
+    expect(text).toContain("child worktree has uncommitted changes");
+    expect(text).toContain("proof evidence snapshot:\n#2 sift/feature-abc123 → main: ✓ ready to merge");
+    expect(text).not.toContain("proof snapshot: stale");
+  });
+
   it("points a dirty-blocked child at the one-step --commit fix", async () => {
     const review = jest.fn(() => ({
       ok: true as const,
