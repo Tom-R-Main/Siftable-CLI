@@ -82,6 +82,19 @@ function provisionInput(baseSha: string, suffix: string): AgentWorkspaceProvisio
   };
 }
 
+async function expectProcessExit(pid: number, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  expect(() => process.kill(pid, 0)).toThrow();
+}
+
 describe('LocalWorktreeAgentWorkspaceRuntimeProvider', () => {
   it('provisions from an immutable SHA, executes bounded argv, and recovers after provider restart', async () => {
     const fixture = await setupRepo();
@@ -227,7 +240,7 @@ describe('LocalWorktreeAgentWorkspaceRuntimeProvider', () => {
       const descendantPid = Number(provider.readArtifact(result.stdoutArtifactRef!)?.toString('utf8'));
       expect(Number.isSafeInteger(descendantPid)).toBe(true);
       if (process.platform !== 'win32') {
-        expect(() => process.kill(descendantPid, 0)).toThrow();
+        await expectProcessExit(descendantPid);
       }
       await provider.terminate({
         runtimeId: runtime.runtimeId,
