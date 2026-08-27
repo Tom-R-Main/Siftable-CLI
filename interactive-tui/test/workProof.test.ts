@@ -119,7 +119,14 @@ function client(overrides: Partial<WorkProofClient> = {}): WorkProofClient {
                   exitCode: 0,
                   environmentLabel: "workspace",
                   ranAt: "2026-08-13T00:00:00.000Z",
-                  output: `Authorization: Bearer do-not-render ${"x".repeat(2_000)}`,
+                  output: [
+                    "Authorization: Bearer do-not-render",
+                    '{"access_token":"do-not-render-json"}',
+                    '{"config":{"api_key":"do-not-render-nested"}}',
+                    "Authorization: Basic do-not-render-basic",
+                    "'client-secret': 'do-not-render-yaml'",
+                    "x".repeat(2_000),
+                  ].join("\n"),
                   artifactRefs: ["https://example.test/proof?token=do-not-render"],
                   provenance: {
                     runner: "codex",
@@ -302,6 +309,73 @@ describe("work proof packets", () => {
     expect(value).not.toContain("pass@");
     expect(value).not.toContain("token=abc");
     expect(value).toContain("[REDACTED]");
+  });
+
+  test("redacts quoted JSON and YAML credential assignments without damaging ordinary fields", () => {
+    const value = redactWorkProofText([
+      '{"access_token":"json-secret","tokenCount":2}',
+      '{"config":{"api_key":"nested-secret"}}',
+      'payload={"token":"wrapped-secret"}',
+      'encoded={\\"api_key\\":\\"escaped-secret\\"}',
+      '{"token": {"value": "object-secret"}}',
+      "credentials:\n  password: yaml-nested-secret",
+      "credentials:\n  user: alice",
+      "'client-secret': 'yaml secret with spaces'",
+      'apiKeyValue = "shell-secret"',
+      "APIKEY=compact-secret",
+      "Authorization: Basic basic-secret",
+      "> Authorization: Basic prefixed-basic-secret",
+      "fetching https://api.test/v1?access_token=query-secret&mode=safe",
+      "curl -H 'X-Api-Key: header-secret'",
+      "(password=wrapped-assignment-secret)",
+      "--password=flag-secret --token='quoted-flag-secret'",
+      "|X-Api-Key: pipe-header-secret",
+      "<Authorization: Bearer angle-header-secret",
+      "SECRET_KEY=generic-key-secret",
+      "Authorization:\nordinary-next-line",
+      'label: "ordinary value"',
+    ].join("\n"), 4_096);
+
+    expect(value).toContain('{"access_token":"[REDACTED]","tokenCount":2}');
+    expect(value).toContain('{"config":{"api_key":"[REDACTED]"}}');
+    expect(value).toContain('payload={"token":"[REDACTED]"}');
+    expect(value).toContain('encoded={\\"api_key\\":\\"[REDACTED]\\"}');
+    expect(value).toContain('{"token": [REDACTED]}');
+    expect(value).toContain("password: [REDACTED]");
+    expect(value).toContain("user: alice");
+    expect(value).toContain("'client-secret': '[REDACTED]'");
+    expect(value).toContain('apiKeyValue = "[REDACTED]"');
+    expect(value).toContain("APIKEY=[REDACTED]");
+    expect(value.split("\n")).toContain("Authorization: [REDACTED]");
+    expect(value).toContain("> Authorization: [REDACTED]");
+    expect(value).toContain("?access_token=[REDACTED]&mode=safe");
+    expect(value).toContain("'X-Api-Key: [REDACTED]'");
+    expect(value).toContain("(password=[REDACTED])");
+    expect(value).toContain("--password=[REDACTED] --token='[REDACTED]'");
+    expect(value).toContain("|X-Api-Key: [REDACTED]");
+    expect(value).toContain("<Authorization: [REDACTED]");
+    expect(value).toContain("SECRET_KEY=[REDACTED]");
+    expect(value).toContain("Authorization:[REDACTED]\nordinary-next-line");
+    expect(value).toContain('label: "ordinary value"');
+    expect(value).not.toContain("json-secret");
+    expect(value).not.toContain("nested-secret");
+    expect(value).not.toContain("wrapped-secret");
+    expect(value).not.toContain("escaped-secret");
+    expect(value).not.toContain("object-secret");
+    expect(value).not.toContain("yaml-nested-secret");
+    expect(value).not.toContain("yaml secret with spaces");
+    expect(value).not.toContain("shell-secret");
+    expect(value).not.toContain("compact-secret");
+    expect(value).not.toContain("basic-secret");
+    expect(value).not.toContain("prefixed-basic-secret");
+    expect(value).not.toContain("query-secret");
+    expect(value).not.toContain("header-secret");
+    expect(value).not.toContain("wrapped-assignment-secret");
+    expect(value).not.toContain("flag-secret");
+    expect(value).not.toContain("quoted-flag-secret");
+    expect(value).not.toContain("pipe-header-secret");
+    expect(value).not.toContain("angle-header-secret");
+    expect(value).not.toContain("generic-key-secret");
   });
 
   test("bounds merge evidence and rendered output without changing the verdict", async () => {

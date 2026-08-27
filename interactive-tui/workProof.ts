@@ -17,6 +17,8 @@ const MAX_RENDERED_PACKET_LENGTH = 16_000;
 const TRUNCATED = "[TRUNCATED]";
 const REDACTED = "[REDACTED]";
 const SENSITIVE_KEY = /(authorization|cookie|password|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)/i;
+const SENSITIVE_ASSIGNMENT_KEY = /^(?:(?:[a-z0-9]+_)*)(?:authorization|cookie|password|passwd|passphrase|password_?hash|secret|token|token_?hash|credential|credentials|key|api_?key|access_?key(?:_?id)?|private_?key|client_?secret|access_?token|refresh_?token|id_?token|session_?token|csrf_?token|auth_?token)(?:_?(?:header|value))?$/u;
+const STRUCTURED_ASSIGNMENT = /(^|[^A-Za-z0-9_])(?:(\\?['"])([A-Za-z][A-Za-z0-9_. -]*)\2|([A-Za-z][A-Za-z0-9_.-]*))([ \t]*[:=][ \t]*)/gimu;
 const VERIFIER_VERDICTS = new Set(["verified", "needs_review", "failed", "insufficient_evidence"]);
 const COVERAGE_STATES = new Set(["unverified", "commands_passed", "verified", "failed"]);
 const ATTEMPT_OUTCOMES = new Set(["passed", "failed", "error"]);
@@ -183,13 +185,108 @@ function bounded(value: string, limit = MAX_TEXT): string {
   return `${value.slice(0, limit - TRUNCATED.length)}${TRUNCATED}`;
 }
 
+function isSensitiveAssignmentKey(key: string): boolean {
+  const normalized = key
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/gu, "$1_$2")
+    .replace(/[^A-Za-z0-9]+/gu, "_")
+    .replace(/^_+|_+$/gu, "")
+    .toLowerCase();
+  return SENSITIVE_ASSIGNMENT_KEY.test(normalized);
+}
+
+function closingQuote(value: string, start: number, quote: string): number {
+  const escapedDelimiter = quote.length === 2;
+  const quoteCharacter = quote.charAt(quote.length - 1);
+  for (let index = start + quote.length; index < value.length; index++) {
+    if (value.charAt(index) !== quoteCharacter) continue;
+    let slashes = 0;
+    for (let cursor = index - 1; cursor >= 0 && value.charAt(cursor) === "\\"; cursor--) slashes++;
+    if ((!escapedDelimiter && slashes % 2 === 0) || (escapedDelimiter && slashes === 1)) {
+      return index + 1;
+    }
+  }
+  return value.length;
+}
+
+function closingContainer(value: string, start: number): number {
+  const closing = value.charAt(start) === "{" ? "}" : "]";
+  const stack = [closing];
+  let quote = "";
+  let escaped = false;
+  for (let index = start + 1; index < value.length; index++) {
+    const character = value.charAt(index);
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = "";
+      continue;
+    }
+    if (character === "\"" || character === "'") quote = character;
+    else if (character === "{") stack.push("}");
+    else if (character === "[") stack.push("]");
+    else if (character === stack.at(-1)) {
+      stack.pop();
+      if (stack.length === 0) return index + 1;
+    }
+  }
+  return value.length;
+}
+
+function beginsSensitiveAssignment(value: string, start: number): boolean {
+  const next = /^[ \t]+(?:--?)?([A-Za-z][A-Za-z0-9_.-]*)[ \t]*[:=]/u.exec(value.slice(start));
+  return next !== null && isSensitiveAssignmentKey(next[1] ?? "");
+}
+
+function assignmentValue(value: string, start: number, prefix: string): {end: number; quote: string} {
+  if (value.startsWith(REDACTED, start)) return {end: start + REDACTED.length, quote: ""};
+  const escapedQuote = value.slice(start, start + 2);
+  if (escapedQuote === "\\\"" || escapedQuote === "\\'") {
+    return {end: closingQuote(value, start, escapedQuote), quote: escapedQuote};
+  }
+  const quote = value.charAt(start);
+  if (quote === "\"" || quote === "'") {
+    return {end: closingQuote(value, start, quote), quote};
+  }
+  if (quote === "{" || quote === "[") {
+    return {end: closingContainer(value, start), quote: ""};
+  }
+  let end = start;
+  while (end < value.length && !/[\r\n,;})&\]'"]/u.test(value.charAt(end))) {
+    const character = value.charAt(end);
+    if ((prefix === "-" && /[ \t]/u.test(character)) || beginsSensitiveAssignment(value, end)) break;
+    end++;
+  }
+  return {end, quote: ""};
+}
+
+function redactStructuredAssignments(value: string): string {
+  let redacted = "";
+  let copiedThrough = 0;
+  STRUCTURED_ASSIGNMENT.lastIndex = 0;
+  for (let match = STRUCTURED_ASSIGNMENT.exec(value); match; match = STRUCTURED_ASSIGNMENT.exec(value)) {
+    const key = match[3] ?? match[4];
+    if (!key || !isSensitiveAssignmentKey(key)) continue;
+    const start = STRUCTURED_ASSIGNMENT.lastIndex;
+    const assigned = assignmentValue(value, start, match[1] ?? "");
+    redacted += value.slice(copiedThrough, start);
+    redacted += assigned.quote ? `${assigned.quote}${REDACTED}${assigned.quote}` : REDACTED;
+    copiedThrough = assigned.end;
+    STRUCTURED_ASSIGNMENT.lastIndex = assigned.end;
+  }
+  return copiedThrough === 0 ? value : `${redacted}${value.slice(copiedThrough)}`;
+}
+
 export function redactWorkProofText(value: unknown, limit = MAX_TEXT): string {
-  let text = String(value ?? "");
+  let text = redactStructuredAssignments(String(value ?? ""));
   text = text
-    .replace(/(bearer\s+)[^\s,;]+/gi, `$1${REDACTED}`)
-    .replace(/([?&](?:token|key|secret|signature|credential|password)=)[^&\s]+/gi, `$1${REDACTED}`)
-    .replace(/((?:password|secret|token|api[_-]?key|access[_-]?key|authorization)\s*[:=]\s*)[^\s,;]+/gi, `$1${REDACTED}`)
-    .replace(/(https?:\/\/[^\s/:@]+:)[^\s/@]+@/gi, `$1${REDACTED}@`);
+    .replace(
+      /(^[ \t]*(?:authorization|proxy[-_ ]authorization|cookie|set[-_ ]cookie)[ \t]*[:=][ \t]*).*$/gimu,
+      `$1${REDACTED}`,
+    )
+    .replace(/(bearer\s+)[^\s,;"']+/gi, `$1${REDACTED}`)
+    .replace(/([?&](?:token|key|secret|signature|credential|password)=)[^&\s"']+/gi, `$1${REDACTED}`);
+  text = text.replace(/(https?:\/\/[^\s/:@]+:)[^\s/@]+@/gi, `$1${REDACTED}@`);
   return bounded(text, limit);
 }
 
