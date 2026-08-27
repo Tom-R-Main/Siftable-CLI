@@ -12,7 +12,7 @@ This page documents the TUI exhaustively. For the non-interactive command surfac
 
 - **[Bun](https://bun.sh) is required.** `sift interactive` re-execs Bun on the TUI entrypoint. If Bun isn't found it prints an install hint: `curl -fsSL https://bun.sh/install | bash`. Detection checks `which bun` then `~/.bun/bin/bun`.
 - **Authentication is required.** It resolves a token from `--token` → `SIFT_TOKEN`/`EXF_TOKEN` → `sift auth login` credentials. Without one it tells you to log in.
-- **Runs the brain in-process.** The copilot launches the bundled OpenFunction agent locally (`SIFT_LOCAL_BRAIN=1`) and talks to the Siftable API directly — there's no separate daemon to start.
+- **Runs the brain in-process.** The copilot launches the bundled Siftable agent harness locally (`SIFT_LOCAL_BRAIN=1`) and talks to the Siftable API directly — there's no separate daemon to start.
 - **Workspace root.** Writes are scoped to the nearest ancestor of your launch directory that contains `.git` (or the launch directory if none). This is the boundary `/status` reports and the native write path enforces. Your launch directory is preserved for tools that need it.
 
 Flags accepted by the command: `--token`, `--api-url`, `--workspace` (the standard CLI base flags).
@@ -110,7 +110,7 @@ The catalog includes:
 **Engine routing:**
 
 - **Codex** (`provider = codex`) drives the OpenAI `codex app-server` sidecar over JSON-RPC on stdio. Siftable does **not** own the OAuth — Codex manages ChatGPT sign-in; `/codex login` runs a device-code flow. Turns run in a `workspace-write` sandbox confined to the repo root with on-request approvals routed through the confirmation gate. Override the binary with `CODEX_BIN`.
-- **All other providers** (OpenRouter, Anthropic, Gemini, OpenAI) route through the bundled OpenFunction agent, which reads `<PROVIDER>_API_KEY` from the environment. `/key <provider> <key>` sets it for the session. Vault plaintext hydration is retired; capability-broker execution replaces that workflow.
+- **All other providers** (OpenRouter, Anthropic, Gemini, OpenAI) route through the bundled Siftable agent harness, which reads `<PROVIDER>_API_KEY` from the environment. `/key <provider> <key>` sets it for the session. Vault plaintext hydration is retired; capability-broker execution replaces that workflow.
 
 First-party provider keys: `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, or `<PROVIDER>_API_KEY` generically.
 
@@ -214,7 +214,6 @@ All under `~/.siftable/` unless noted:
 | `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `OPENAI_API_KEY` / `<PROVIDER>_API_KEY` | First-party provider keys |
 | `MORPH_API_KEY` | Enables the `warpgrep` Explorer mode |
 | `EXECUTERM_MODEL` / `EXECUTERM_MODEL_PROVIDER` / `EXECUTERM_MODEL_EFFORT` | Startup model/provider/effort override |
-| `EXECUTERM_OPENFUNCTION_PATH` | Dev override for the OpenFunction framework entry (published installs use the vendored copy) |
 
 ## Security model
 

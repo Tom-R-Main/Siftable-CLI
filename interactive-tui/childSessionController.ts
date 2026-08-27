@@ -18,6 +18,10 @@ import {homedir} from "node:os";
 import {join} from "node:path";
 import {getSessionCwd} from "./navigation";
 import {
+  enqueueSessionInstruction,
+  SessionMailboxPublicationIndeterminateError,
+} from "./sessionMailbox";
+import {
   createChildWorktree,
   listWorktrees,
   removeChildWorktree,
@@ -30,7 +34,6 @@ import {
   WorktreeError,
   type GitRunner,
 } from "./worktreeService";
-import {appendTurn, rolloutPathForThread, persistEnabled} from "./openfunction/framework/rollout";
 import {assembleParentMergeView, type MergeReadinessRow, type ParentMergeView} from "./mergeView";
 import {
   conversationKeyForSession,
@@ -149,13 +152,22 @@ export interface ChildSessionControllerDeps {
   now?: () => number;
   /**
    * Post a parent instruction into a child's conversation thread (lane F
-   * send-back). Defaults to appending a user-role turn to the child's rollout;
-   * inject a spy in tests. Returns true when the message was persisted.
+   * send-back). Defaults to publishing into the child's durable mailbox; inject
+   * a spy in tests. Distinguishes confirmed durability from publication
+   * whose crash durability could not be confirmed.
    */
-  postToThread?: (conversationKey: string, instruction: string) => boolean;
+  postToThread?: (
+    conversationKey: string,
+    instruction: string,
+  ) => SessionInstructionPostResult;
   /** Optional for compatibility; production supplies it to activate the independent proof policy. */
   readyProof?: {client?: WorkProofClient; env?: NodeJS.ProcessEnv};
 }
+
+export type SessionInstructionPostResult =
+  | {status: "durable"}
+  | {status: "indeterminate"}
+  | {status: "failed"};
 
 /** Options for {@link ChildSessionController.reviewChild}. */
 export interface ReviewChildOptions {
@@ -224,7 +236,12 @@ export type RebaseChildResult =
 
 /** Outcome of sending a child back to work with instructions (lane F). */
 export type SendBackChildResult =
-  | {ok: true; posted: boolean; conversationKey: string}
+  | {
+      ok: true;
+      posted: true;
+      durability: "durable" | "indeterminate";
+      conversationKey: string;
+    }
   | {ok: false; reason: string};
 
 export interface ChildSessionController {
@@ -273,15 +290,16 @@ export function createChildSessionController(
   const now = deps.now ?? (() => 0);
   const postToThread =
     deps.postToThread ??
-    ((conversationKey: string, instruction: string): boolean => {
-      // Append the parent's instruction as a user-role turn so the child agent
-      // picks it up on resume. Skipped if rollout persistence is off / unavailable.
-      if (!persistEnabled()) return false;
+    ((conversationKey: string, instruction: string): SessionInstructionPostResult => {
+      // The event journal is authoritative, so cross-session instructions use
+      // an independent durable mailbox rather than the legacy rollout mirror.
       try {
-        appendTurn(rolloutPathForThread(conversationKey), instruction, null);
-        return true;
-      } catch {
-        return false;
+        enqueueSessionInstruction(conversationKey, instruction);
+        return {status: "durable"};
+      } catch (error) {
+        return error instanceof SessionMailboxPublicationIndeterminateError
+          ? {status: "indeterminate"}
+          : {status: "failed"};
       }
     });
 
@@ -1022,14 +1040,38 @@ export function createChildSessionController(
       // running→running set as an idempotent no-op, so guard it here explicitly.)
       return {ok: false, reason: `child #${sessionId} is already running — nothing to send back`};
     }
-    // Resume the work first; only post once the transition is legal.
+    const text = instruction.trim();
+    if (!text) return {ok: false, reason: `send-back instruction is required for child #${sessionId}`};
+
+    // Resume the work first; only publish once the transition is legal. Restore
+    // the reviewed state only when publication definitely failed. An
+    // indeterminate post-publication sync keeps the child running because it
+    // may already observe and consume the instruction.
     const code = transitionSessionStatus(sessionId, "running", now());
     if (code !== 0) {
       return {ok: false, reason: `cannot resume child #${sessionId} from ${live.status}`};
     }
-    const text = instruction.trim();
-    const posted = text ? postToThread(rec.conversationKey, text) : false;
-    return {ok: true, posted, conversationKey: rec.conversationKey};
+    let postResult: SessionInstructionPostResult = {status: "failed"};
+    try {
+      postResult = postToThread(rec.conversationKey, text);
+    } catch {
+      postResult = {status: "failed"};
+    }
+    if (postResult.status === "failed") {
+      const rollbackCode = transitionSessionStatus(sessionId, live.status, now());
+      return {
+        ok: false,
+        reason: rollbackCode === 0
+          ? `could not durably enqueue send-back instruction for child #${sessionId}; status restored to ${live.status}`
+          : `could not durably enqueue send-back instruction for child #${sessionId}; status rollback from running to ${live.status} also failed`,
+      };
+    }
+    return {
+      ok: true,
+      posted: true,
+      durability: postResult.status,
+      conversationKey: rec.conversationKey,
+    };
   }
 
   function rejectChild(sessionId: number, _reason?: string): {ok: boolean; reason?: string} {

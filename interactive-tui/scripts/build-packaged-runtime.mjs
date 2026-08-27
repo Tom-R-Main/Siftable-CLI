@@ -8,11 +8,12 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import {tmpdir} from 'node:os';
-import {basename, dirname, join, relative, resolve} from 'node:path';
+import {basename, dirname, isAbsolute, join, relative, resolve} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import solidPlugin from '@opentui/solid/bun-plugin';
@@ -20,6 +21,18 @@ import solidPlugin from '@opentui/solid/bun-plugin';
 const TUI_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const REPOSITORY_ROOT = resolve(TUI_ROOT, '..', '..', '..');
 const RUNTIME_ROOT = join(TUI_ROOT, 'runtime');
+const HARNESS_ROOT = join(TUI_ROOT, 'agent-harness');
+const HARNESS_IDENTITY = 'siftable-agent-harness';
+const HARNESS_ENTRYPOINT = 'agent-harness/index.ts';
+const REQUIRED_HARNESS_INPUTS = Object.freeze([
+  HARNESS_ENTRYPOINT,
+  'agent-harness/framework/chat-agent.ts',
+  'agent-harness/framework/session.ts',
+  'agent-harness/framework/tool.ts',
+  'agent-harness/providers/siftable/index.ts',
+  'agent-harness/providers/siftable/client.ts',
+  'agent-harness/providers/siftable/tools.ts',
+]);
 const OPENTUI_VERSION = '0.3.1';
 const PLATFORM_PACKAGES = Object.freeze({
   'darwin-arm64': 'sha512-krvVfiBpeBY+727R8yogdqIcxkK3RUVcI97bqjl8jTeDMcWOkFFfHezssRMPmbR5x++1tX669Fz3fuxoe7XUIg==',
@@ -38,6 +51,19 @@ function fail(message) {
 
 function sha256(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+function sourceTreeSha256(files) {
+  const hash = createHash('sha256');
+  for (const file of files) {
+    const sourcePath = relative(TUI_ROOT, file).replaceAll('\\', '/');
+    const contents = readFileSync(file);
+    hash.update(`${Buffer.byteLength(sourcePath)}:`);
+    hash.update(sourcePath);
+    hash.update(`:${contents.byteLength}:`);
+    hash.update(contents);
+  }
+  return hash.digest('hex');
 }
 
 function run(command, args, cwd = TUI_ROOT) {
@@ -67,6 +93,55 @@ function filesUnder(root) {
   return files.sort();
 }
 
+function resolveBundledInput(input) {
+  const candidates = isAbsolute(input)
+    ? [resolve(input)]
+    : [TUI_ROOT, REPOSITORY_ROOT, process.cwd()].map((base) => resolve(base, input));
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
+}
+
+function harnessSourceIdentity() {
+  if (!existsSync(HARNESS_ROOT)) fail(`missing agent harness source root: ${HARNESS_ROOT}`);
+  const sourceFiles = filesUnder(HARNESS_ROOT).filter((file) => /\.[cm]?[jt]sx?$/u.test(file));
+  if (sourceFiles.length === 0) fail('agent harness source root contains no source files');
+  return {
+    sourceSha256: sourceTreeSha256(sourceFiles),
+    sourceFileCount: sourceFiles.length,
+  };
+}
+
+function harnessMetadata(inputs) {
+  const sourceIdentity = harnessSourceIdentity();
+  const bundledInputs = [...new Set(inputs
+    .map(resolveBundledInput)
+    .map((input) => relative(TUI_ROOT, input).replaceAll('\\', '/'))
+    .filter((input) => input === 'agent-harness' || input.startsWith('agent-harness/')))]
+    .sort();
+  const missingInputs = REQUIRED_HARNESS_INPUTS.filter((input) => !bundledInputs.includes(input));
+  if (missingInputs.length > 0) {
+    fail(`Bun metafile is missing statically bundled agent-harness inputs:\n${missingInputs.join('\n')}`);
+  }
+
+  return {
+    identity: HARNESS_IDENTITY,
+    sourceRoot: 'agent-harness',
+    entrypoint: HARNESS_ENTRYPOINT,
+    ...sourceIdentity,
+    bundledInputs,
+  };
+}
+
+function assertNoLegacyOpenFunctionLoader(source) {
+  const forbidden = [
+    ['EXECUTERM_OPENFUNCTION_PATH', /EXECUTERM_OPENFUNCTION_PATH/u],
+    ['openfunction/framework path', /openfunction[\\/]framework/iu],
+    ['computed openfunction/framework path', /["']openfunction["']\s*,\s*["']framework["']/iu],
+  ];
+  for (const [description, pattern] of forbidden) {
+    if (pattern.test(source)) fail(`packaged bundle retains legacy ${description}`);
+  }
+}
+
 function packageRootForBundledInput(input) {
   const marker = `${join('', 'node_modules')}/`;
   for (const base of [process.cwd(), TUI_ROOT, REPOSITORY_ROOT]) {
@@ -83,8 +158,8 @@ function packageRootForBundledInput(input) {
   return null;
 }
 
-function copyDependencyLicenses(inputs) {
-  const licenseRoot = join(RUNTIME_ROOT, 'licenses');
+function copyDependencyLicenses(inputs, runtimeRoot) {
+  const licenseRoot = join(runtimeRoot, 'licenses');
   mkdirSync(licenseRoot, {recursive: true});
   const packages = [];
   const dependencyInputs = inputs.filter((input) => input.replaceAll('\\', '/').includes('node_modules/'));
@@ -129,8 +204,8 @@ function assertDependencyVersion(name, expected) {
   if (actual !== expected) fail(`${name} resolved ${actual}; expected ${expected}`);
 }
 
-function vendorPlatformPackages(tempRoot) {
-  const platformRoot = join(RUNTIME_ROOT, 'platform');
+function vendorPlatformPackages(tempRoot, runtimeRoot) {
+  const platformRoot = join(runtimeRoot, 'platform');
   mkdirSync(platformRoot, {recursive: true});
   for (const [platform, expectedIntegrity] of Object.entries(PLATFORM_PACKAGES)) {
     const packageName = `@opentui/core-${platform}`;
@@ -160,22 +235,23 @@ function vendorPlatformPackages(tempRoot) {
   }
 }
 
-function copyRuntimeAssets(inputs) {
+function copyRuntimeAssets(inputs, runtimeRoot) {
   for (const directory of ['assets', 'skills']) {
-    cpSync(join(TUI_ROOT, directory), join(RUNTIME_ROOT, directory), {recursive: true});
+    cpSync(join(TUI_ROOT, directory), join(runtimeRoot, directory), {recursive: true});
   }
 
   // Do not copy host-built Zig libraries or cell-render into this universal
   // artifact. The bundled engines deliberately take their TypeScript/PATH
   // fallbacks when no correctly keyed platform binary is present.
-  copyDependencyLicenses(inputs);
+  copyDependencyLicenses(inputs, runtimeRoot);
 }
 
-async function buildBundle() {
+async function buildBundle(runtimeRoot) {
+  const sourceIdentityBeforeBuild = harnessSourceIdentity();
   const coreRoot = join(TUI_ROOT, 'node_modules', '@opentui', 'core');
   const appResult = await Bun.build({
     entrypoints: [join(TUI_ROOT, 'index.tsx')],
-    outdir: RUNTIME_ROOT,
+    outdir: runtimeRoot,
     target: 'bun',
     minify: true,
     packages: 'bundle',
@@ -185,7 +261,7 @@ async function buildBundle() {
   if (!appResult.success) fail(`Bun app bundle failed:\n${appResult.logs.join('\n')}`);
   const workerResult = await Bun.build({
     entrypoints: [join(coreRoot, 'parser.worker.js')],
-    outdir: RUNTIME_ROOT,
+    outdir: runtimeRoot,
     target: 'bun',
     minify: true,
     packages: 'bundle',
@@ -193,14 +269,58 @@ async function buildBundle() {
   });
   if (!workerResult.success) fail(`Bun worker bundle failed:\n${workerResult.logs.join('\n')}`);
 
-  const entry = join(RUNTIME_ROOT, 'index.js');
+  const entry = join(runtimeRoot, 'index.js');
   let source = readFileSync(entry, 'utf8');
   const occurrences = source.split(PLATFORM_IMPORT).length - 1;
   if (occurrences !== 1) fail(`expected one OpenTUI platform import, found ${occurrences}`);
   source = source.replace(PLATFORM_IMPORT, PACKAGED_PLATFORM_IMPORT);
   if (source.includes('@opentui/core-')) fail('bare OpenTUI platform import remains in bundle');
+  assertNoLegacyOpenFunctionLoader(source);
   writeFileSync(entry, source);
-  return [...Object.keys(appResult.metafile.inputs), ...Object.keys(workerResult.metafile.inputs)];
+  const appInputs = Object.keys(appResult.metafile.inputs);
+  const harness = harnessMetadata(appInputs);
+  if (harness.sourceSha256 !== sourceIdentityBeforeBuild.sourceSha256
+    || harness.sourceFileCount !== sourceIdentityBeforeBuild.sourceFileCount) {
+    fail('agent harness source changed while Bun was bundling; retry from a stable checkout');
+  }
+  return {
+    inputs: [...appInputs, ...Object.keys(workerResult.metafile.inputs)],
+    harness,
+  };
+}
+
+export function installStagedRuntime(stagedRoot, runtimeRoot = RUNTIME_ROOT) {
+  const backupParent = mkdtempSync(join(dirname(runtimeRoot), '.runtime-backup-'));
+  const backupRoot = join(backupParent, 'runtime');
+  let previousRuntimeMoved = false;
+  let installed = false;
+  try {
+    if (existsSync(runtimeRoot)) {
+      renameSync(runtimeRoot, backupRoot);
+      previousRuntimeMoved = true;
+    }
+    try {
+      renameSync(stagedRoot, runtimeRoot);
+      installed = true;
+    } catch (error) {
+      if (previousRuntimeMoved && !existsSync(runtimeRoot)) {
+        try {
+          renameSync(backupRoot, runtimeRoot);
+          previousRuntimeMoved = false;
+        } catch (restoreError) {
+          throw new AggregateError(
+            [error, restoreError],
+            `failed to install staged runtime and restore the prior runtime; preserved backup at ${backupRoot}`,
+          );
+        }
+      }
+      throw error;
+    }
+  } finally {
+    if (installed || !previousRuntimeMoved || !existsSync(backupRoot)) {
+      rmSync(backupParent, {recursive: true, force: true});
+    }
+  }
 }
 
 async function main() {
@@ -208,36 +328,38 @@ async function main() {
   assertDependencyVersion('@opentui/solid', OPENTUI_VERSION);
   assertDependencyVersion('@opentui/keymap', OPENTUI_VERSION);
 
-  rmSync(RUNTIME_ROOT, {recursive: true, force: true});
-  mkdirSync(RUNTIME_ROOT, {recursive: true});
+  const stagedRoot = mkdtempSync(join(TUI_ROOT, '.runtime-build-'));
   const tempRoot = mkdtempSync(join(tmpdir(), 'sift-opentui-runtime-'));
   try {
-    const bundledInputs = await buildBundle();
-    vendorPlatformPackages(tempRoot);
-    copyRuntimeAssets(bundledInputs);
-    writeFileSync(join(RUNTIME_ROOT, 'bunfig.toml'), 'telemetry = false\n\n[install]\nauto = "disable"\n');
+    const bundle = await buildBundle(stagedRoot);
+    vendorPlatformPackages(tempRoot, stagedRoot);
+    copyRuntimeAssets(bundle.inputs, stagedRoot);
+    writeFileSync(join(stagedRoot, 'bunfig.toml'), 'telemetry = false\n\n[install]\nauto = "disable"\n');
 
-    const files = filesUnder(RUNTIME_ROOT)
+    const files = filesUnder(stagedRoot)
       .filter((path) => basename(path) !== 'runtime-manifest.json')
       .map((path) => ({
-        path: relative(RUNTIME_ROOT, path).replaceAll('\\', '/'),
+        path: relative(stagedRoot, path).replaceAll('\\', '/'),
         bytes: readFileSync(path).byteLength,
         sha256: sha256(path),
       }));
     const manifest = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       opentuiVersion: OPENTUI_VERSION,
       bunVersion: Bun.version,
       bunLockSha256: sha256(join(TUI_ROOT, 'bun.lock')),
+      harness: bundle.harness,
       autoInstall: false,
       platforms: Object.keys(PLATFORM_PACKAGES),
       files,
     };
-    writeFileSync(join(RUNTIME_ROOT, 'runtime-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+    writeFileSync(join(stagedRoot, 'runtime-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+    installStagedRuntime(stagedRoot);
     console.log(`Packaged offline TUI runtime: ${files.length} files, ${files.reduce((sum, file) => sum + file.bytes, 0)} bytes`);
   } finally {
+    rmSync(stagedRoot, {recursive: true, force: true});
     rmSync(tempRoot, {recursive: true, force: true});
   }
 }
 
-await main();
+if (import.meta.main) await main();

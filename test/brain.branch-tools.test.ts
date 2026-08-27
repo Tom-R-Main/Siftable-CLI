@@ -7,7 +7,7 @@
  *  - spawn_branch enforces "a writer needs scope (or unscoped/readonly)";
  *  - merge_branch is APPROVAL-GATED: declined → the controller is never called.
  *
- * The OpenFunction module is injected via __EXECUTERM_OPENFUNCTION__ (defineTool
+ * The agent harness is injected via __SIFT_AGENT_HARNESS__ (defineTool
  * returns the raw def, ok/err return tagged objects), so getAgent()'s captured
  * config.tools is the tool list and we invoke handlers directly. No real model.
  */
@@ -39,7 +39,7 @@ beforeEach(async () => {
     chat: async function* () {},
     __config: config,
   }));
-  (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+  (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
     createChatAgent,
     defineTool: (def: unknown) => def,
     ok: (data: unknown, message?: string) => ({ok: true, data, message}),
@@ -55,7 +55,7 @@ afterEach(async () => {
   setConfirmListener(null);
   if (savedRoot === undefined) delete process.env.SIFT_WORKSPACE_ROOT;
   else process.env.SIFT_WORKSPACE_ROOT = savedRoot;
-  delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+  delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
   await rm(workdir, {recursive: true, force: true});
 });
 
@@ -449,6 +449,7 @@ describe('lane E A2 — child-session brain tools', () => {
     const sendBackChild = mockControllerMethod<ChildSessionController['sendBackChild']>(() => ({
       ok: true,
       posted: true,
+      durability: 'durable',
       conversationKey: 'k',
     }));
     setSessionController(stubController({sendBackChild}));

@@ -68,7 +68,7 @@ export function buildCommandContext(overrides: Partial<InteractiveCommandContext
     showDiagram: jest.fn(),
     viewLastDiagram: jest.fn(() => false),
     setAwaitingLogin: jest.fn(),
-    compactThread: jest.fn(async () => ({engine: 'openfunction' as const, ran: false, reason: 'test stub'})),
+    compactThread: jest.fn(async () => ({engine: 'agent-harness' as const, ran: false, reason: 'test stub'})),
     sessions: {
       list: jest.fn(() => []),
       activeChildId: jest.fn(() => null),

@@ -1,6 +1,6 @@
 /**
  * Approval gate — the mutating-action approval round-trip shared by the codex
- * engine (command/file-change escalations) and the OpenFunction write tools.
+ * engine (command/file-change escalations) and the agent-harness write tools.
  *
  * The brain and the TUI run in the SAME Bun process (SIFT_LOCAL_BRAIN), so a
  * handler that needs approval simply awaits a Promise the UI resolves on the
@@ -95,7 +95,7 @@ export function resetBypass(): void {
   bypassing = false;
 }
 
-// ── Boolean shims — the OpenFunction write tools only care allow-vs-deny ──────
+// ── Boolean shims — the agent-harness write tools only care allow-vs-deny ────
 
 /** Boolean view of `requestApproval` for callers that don't need the 4-way decision. */
 export function requestConfirm(spec: ConfirmSpec): Promise<boolean> {

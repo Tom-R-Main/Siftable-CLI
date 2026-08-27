@@ -63,15 +63,13 @@ describe('sift interactive — launcher env', () => {
       expect(noCwd.SIFT_WORKSPACE_ROOT).toBeUndefined();
     });
 
-    it('uses the vendored OpenFunction runtime by default and honors an explicit dev override', () => {
-      const def = buildChildEnv({...base, baseEnv: {HOME: '/home/me'}});
-      expect(def.EXECUTERM_OPENFUNCTION_PATH).toBeUndefined();
-      const override = buildChildEnv({
+    it('scrubs the retired external harness path override', () => {
+      const env = buildChildEnv({
         ...base,
-        openfunctionPath: '/custom/of/index.js',
-        baseEnv: {HOME: '/home/me'},
+        baseEnv: {EXECUTERM_OPENFUNCTION_PATH: '/custom/of/index.js', HOME: '/home/me'},
       });
-      expect(override.EXECUTERM_OPENFUNCTION_PATH).toBe('/custom/of/index.js');
+      expect(env.EXECUTERM_OPENFUNCTION_PATH).toBeUndefined();
+      expect('EXECUTERM_OPENFUNCTION_PATH' in env).toBe(false);
     });
 
     it('does not mutate the passed baseEnv', () => {

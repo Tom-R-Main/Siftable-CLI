@@ -5,18 +5,26 @@
  *
  * Run with: bun test   (from packages/exf-cli/interactive-tui)
  */
-import { describe, it, expect, afterEach } from "bun:test";
+import { describe, it, expect, afterAll, afterEach, beforeAll } from "bun:test";
 import { tmpdir } from "node:os";
-import { existsSync, rmSync } from "node:fs";
-import { appendTurn, loadHistory } from "../openfunction/framework/rollout";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { appendTurn, loadHistory } from "../agent-harness/framework/rollout";
 
 const path = `${tmpdir()}/sift-rollout-test-${process.pid}.jsonl`;
+const previousCompactionFlag = process.env.SIFT_CONTEXT_COMPACTION;
 const reset = () => {
   if (existsSync(path)) rmSync(path);
 };
+beforeAll(() => {
+  process.env.SIFT_CONTEXT_COMPACTION = "1";
+});
 afterEach(reset);
+afterAll(() => {
+  if (previousCompactionFlag === undefined) delete process.env.SIFT_CONTEXT_COMPACTION;
+  else process.env.SIFT_CONTEXT_COMPACTION = previousCompactionFlag;
+});
 
-describe("rollout round-trip", () => {
+describe.serial("rollout round-trip", () => {
   it("persists user/assistant turns and reloads them as ChatMessages", () => {
     reset();
     appendTurn(path, "first question", "first answer");
@@ -48,6 +56,23 @@ describe("rollout round-trip", () => {
     const h = loadHistory(path);
     expect(h[0]!.content).toBe(tricky);
     expect(h[1]!.content).toBe("ok");
+  });
+
+  it("skips syntactically valid records with invalid role or text fields", () => {
+    reset();
+    writeFileSync(path, [
+      '{"r":0,"t":"valid question"}',
+      '{"r":1,"t":42}',
+      '{"r":"1","t":"wrong role type"}',
+      '{"r":0}',
+      '{"r":1,"t":"valid answer"}',
+      "",
+    ].join("\n"));
+
+    expect(loadHistory(path)).toEqual([
+      { role: "user", content: "valid question" },
+      { role: "assistant", content: "valid answer" },
+    ]);
   });
 
   it("omits the assistant record when the answer is empty", () => {

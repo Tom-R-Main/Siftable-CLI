@@ -7,9 +7,9 @@
  * Run with: bun test   (from packages/exf-cli/interactive-tui)
  */
 import { describe, it, expect } from "bun:test";
-import { applyCompactionPlan } from "../openfunction/framework/compaction";
+import { applyCompactionPlan } from "../agent-harness/framework/compaction";
 import type { CompactionPlan } from "../threadEngine";
-import type { ChatMessage } from "../openfunction/framework/adapters/types";
+import type { ChatMessage } from "../agent-harness/framework/adapters/types";
 
 function plan(over: Partial<CompactionPlan>): CompactionPlan {
   return {

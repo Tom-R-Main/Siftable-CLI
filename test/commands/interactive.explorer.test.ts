@@ -21,7 +21,7 @@ import {
   prepareExplorerInput,
 } from '../../interactive-tui/explorer';
 import {
-  openfunctionAsk,
+  agentHarnessAsk,
   setBrainModel,
   splitPastedBlobs,
   deterministicExplorerQuery,
@@ -49,7 +49,7 @@ describe('interactive repo explorer preflight', () => {
     );
     await writeFile(
       join(root, 'src', 'brain.ts'),
-      'import { searchLiteral } from "./fsEngine";\nexport function openfunctionAsk() { return `local search ${searchLiteral()}`; }\n',
+      'import { searchLiteral } from "./fsEngine";\nexport function agentHarnessAsk() { return `local search ${searchLiteral()}`; }\n',
       'utf8',
     );
     await writeFile(
@@ -115,7 +115,7 @@ describe('interactive repo explorer preflight', () => {
   it('greps local source files with regex and include caps', async () => {
     const result = await grepLocalFilesForExplorer({
       root,
-      pattern: 'searchLiteral|openfunctionAsk',
+      pattern: 'searchLiteral|agentHarnessAsk',
       include: '**/*.ts',
       maxMatches: 10,
     });
@@ -239,7 +239,7 @@ describe('interactive repo explorer preflight', () => {
   });
 
   it('assigns config/provider prompts to routing config scouts', async () => {
-    const prompt = 'trace provider config flags for OpenFunction and Codex';
+    const prompt = 'trace provider config flags for the agent harness and Codex';
     const report = await buildExplorerReport(prompt, {root});
     const assignment = assignRepoExplorerScoutRoles(prompt, report);
 
@@ -275,7 +275,7 @@ describe('interactive repo explorer preflight', () => {
 
   it('keeps broad reports ranked around expected files and bounded', async () => {
     const report = await buildExplorerReport(
-      'investigate how openfunctionAsk handles searchLiteral in brain.ts and fsEngine.ts',
+      'investigate how agentHarnessAsk handles searchLiteral in brain.ts and fsEngine.ts',
       {root},
     );
     const topPaths = report.likelyFiles.slice(0, 3).map((file) => file.path);
@@ -674,7 +674,7 @@ describe('interactive repo explorer preflight', () => {
 
   it('feeds explorer context into the local brain turn', async () => {
     let capturedInput: unknown;
-    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+    (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
       createChatAgent: async () => ({
         chat: async function* (message: unknown) {
           capturedInput = message;
@@ -692,7 +692,7 @@ describe('interactive repo explorer preflight', () => {
 
     try {
       const events: BrainEvent[] = [];
-      const result = await openfunctionAsk('look into searchLiteral in fsEngine.ts', (event) => events.push(event));
+      const result = await agentHarnessAsk('look into searchLiteral in fsEngine.ts', (event) => events.push(event));
 
       expect(result.text).toBe('ok');
       expect(events.map((event) => event.type)).toContain('tool_call');
@@ -702,13 +702,13 @@ describe('interactive repo explorer preflight', () => {
     } finally {
       if (previousCwd === undefined) delete process.env.SIFT_USER_CWD;
       else process.env.SIFT_USER_CWD = previousCwd;
-      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
     }
   });
 
   it('injects compact artifact context in fast-context mode', async () => {
     let capturedInput: unknown;
-    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+    (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
       createChatAgent: async () => ({
         chat: async function* (message: unknown) {
           capturedInput = message;
@@ -734,7 +734,7 @@ describe('interactive repo explorer preflight', () => {
 
     try {
       const events: BrainEvent[] = [];
-      await openfunctionAsk('look into searchLiteral in fsEngine.ts', (event) => events.push(event));
+      await agentHarnessAsk('look into searchLiteral in fsEngine.ts', (event) => events.push(event));
 
       expect(String(capturedInput)).toContain('<repo_explorer_artifact>');
       expect(String(capturedInput)).not.toContain('<repo_explorer_report>');
@@ -751,7 +751,7 @@ describe('interactive repo explorer preflight', () => {
       else process.env.SIFT_EXPLORER_FANOUT = previousFanout;
       if (previousThoroughness === undefined) delete process.env.SIFT_EXPLORER_THOROUGHNESS;
       else process.env.SIFT_EXPLORER_THOROUGHNESS = previousThoroughness;
-      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
     }
   });
 
@@ -760,7 +760,7 @@ describe('interactive repo explorer preflight', () => {
     const previousCwd = process.env.SIFT_USER_CWD;
     const previousDebug = process.env.SIFT_EXPLORER_DEBUG;
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+    (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
       createChatAgent: async () => ({
         chat: async function* (message: unknown) {
           capturedInput = message;
@@ -777,7 +777,7 @@ describe('interactive repo explorer preflight', () => {
     setBrainModel({provider: 'openrouter', model: 'test-model'});
 
     try {
-      await openfunctionAsk('scour this repo and explain how local search works', () => undefined);
+      await agentHarnessAsk('scour this repo and explain how local search works', () => undefined);
 
       expect(String(capturedInput)).toContain('<repo_explorer_report>');
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('<repo_explorer_report>'));
@@ -787,7 +787,7 @@ describe('interactive repo explorer preflight', () => {
       else process.env.SIFT_USER_CWD = previousCwd;
       if (previousDebug === undefined) delete process.env.SIFT_EXPLORER_DEBUG;
       else process.env.SIFT_EXPLORER_DEBUG = previousDebug;
-      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
       errorSpy.mockRestore();
     }
   });
@@ -803,7 +803,7 @@ describe('interactive repo explorer preflight', () => {
     const previousExplorer = process.env.SIFT_EXPLORER;
     const previousDebug = process.env.SIFT_EXPLORER_DEBUG;
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+    (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
       createChatAgent: async () => ({
         chat: async function* (message: unknown) {
           capturedInput = message;
@@ -821,7 +821,7 @@ describe('interactive repo explorer preflight', () => {
     setBrainModel({provider: 'openrouter', model: 'test-model'});
 
     try {
-      await openfunctionAsk('look into secretMarker in secretMention.ts', () => undefined);
+      await agentHarnessAsk('look into secretMarker in secretMention.ts', () => undefined);
 
       const debugText = errorSpy.mock.calls.map((call) => String(call[0])).join('\n');
       expect(String(capturedInput)).toContain('<repo_explorer_artifact>');
@@ -835,7 +835,7 @@ describe('interactive repo explorer preflight', () => {
       else process.env.SIFT_EXPLORER = previousExplorer;
       if (previousDebug === undefined) delete process.env.SIFT_EXPLORER_DEBUG;
       else process.env.SIFT_EXPLORER_DEBUG = previousDebug;
-      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
       errorSpy.mockRestore();
     }
   });
@@ -845,7 +845,7 @@ describe('interactive repo explorer preflight', () => {
     const previousCwd = process.env.SIFT_USER_CWD;
     const previousDebug = process.env.SIFT_EXPLORER_DEBUG;
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+    (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
       createChatAgent: async () => ({
         chat: async function* (message: unknown) {
           capturedInput = message;
@@ -867,7 +867,7 @@ describe('interactive repo explorer preflight', () => {
 
     try {
       const events: BrainEvent[] = [];
-      await openfunctionAsk('scour this repo and explain how local search works', (event) => events.push(event));
+      await agentHarnessAsk('scour this repo and explain how local search works', (event) => events.push(event));
 
       expect(String(capturedInput)).toContain('<repo_explorer_report>');
       expect(events.some((event) => event.toolCall?.name === 'read_file')).toBe(true);
@@ -882,7 +882,7 @@ describe('interactive repo explorer preflight', () => {
       else process.env.SIFT_USER_CWD = previousCwd;
       if (previousDebug === undefined) delete process.env.SIFT_EXPLORER_DEBUG;
       else process.env.SIFT_EXPLORER_DEBUG = previousDebug;
-      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
       errorSpy.mockRestore();
     }
   });
@@ -894,7 +894,7 @@ describe('interactive repo explorer preflight', () => {
     const previousScout = process.env.SIFT_EXPLORER_SCOUT;
     const previousFanout = process.env.SIFT_EXPLORER_FANOUT;
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+    (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
       createChatAgent: async () => ({
         chat: async function* (message: unknown) {
           capturedInput = message;
@@ -914,7 +914,7 @@ describe('interactive repo explorer preflight', () => {
 
     try {
       const events: BrainEvent[] = [];
-      await openfunctionAsk('scour this repo and explain how local search works', (event) => events.push(event));
+      await agentHarnessAsk('scour this repo and explain how local search works', (event) => events.push(event));
 
       expect(String(capturedInput)).toContain('<repo_explorer_report>');
       expect(String(capturedInput)).toContain('model_scout: none');
@@ -935,7 +935,7 @@ describe('interactive repo explorer preflight', () => {
       else process.env.SIFT_EXPLORER_SCOUT = previousScout;
       if (previousFanout === undefined) delete process.env.SIFT_EXPLORER_FANOUT;
       else process.env.SIFT_EXPLORER_FANOUT = previousFanout;
-      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
       errorSpy.mockRestore();
     }
   });
@@ -947,7 +947,7 @@ describe('interactive repo explorer preflight', () => {
     const previousScout = process.env.SIFT_EXPLORER_SCOUT;
     const previousFanout = process.env.SIFT_EXPLORER_FANOUT;
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+    (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
       createChatAgent: async (config: Record<string, unknown>) => ({
         chat: async function* (message: unknown) {
           if (config.name === 'siftable-repo-explorer-scout') {
@@ -986,7 +986,7 @@ describe('interactive repo explorer preflight', () => {
 
     try {
       const events: BrainEvent[] = [];
-      await openfunctionAsk('scour this repo and explain how local search works', (event) => events.push(event));
+      await agentHarnessAsk('scour this repo and explain how local search works', (event) => events.push(event));
 
       expect(events.some((event) => event.toolCall?.name === 'repo_explorer_scout')).toBe(true);
       expect(events.find((event) => event.toolResult?.name === 'repo_explorer_scout')?.toolResult?.success).toBe(true);
@@ -1011,7 +1011,7 @@ describe('interactive repo explorer preflight', () => {
       else process.env.SIFT_EXPLORER_SCOUT = previousScout;
       if (previousFanout === undefined) delete process.env.SIFT_EXPLORER_FANOUT;
       else process.env.SIFT_EXPLORER_FANOUT = previousFanout;
-      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
       errorSpy.mockRestore();
     }
   });
@@ -1024,7 +1024,7 @@ describe('interactive repo explorer preflight', () => {
     const previousProvider = process.env.SIFT_EXPLORER_PROVIDER;
     const previousModel = process.env.SIFT_EXPLORER_MODEL;
     let scoutConfig: Record<string, unknown> | undefined;
-    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+    (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
       createChatAgent: async (config: Record<string, unknown>) => {
         if (config.name === 'siftable-repo-explorer-scout') scoutConfig = config;
         return {
@@ -1055,7 +1055,7 @@ describe('interactive repo explorer preflight', () => {
     setBrainModel({provider: 'anthropic', model: 'main-model'});
 
     try {
-      await openfunctionAsk('scour this repo and explain how local search works', () => undefined);
+      await agentHarnessAsk('scour this repo and explain how local search works', () => undefined);
 
       expect(scoutConfig).toMatchObject({
         provider: 'openrouter',
@@ -1074,7 +1074,7 @@ describe('interactive repo explorer preflight', () => {
       else process.env.SIFT_EXPLORER_PROVIDER = previousProvider;
       if (previousModel === undefined) delete process.env.SIFT_EXPLORER_MODEL;
       else process.env.SIFT_EXPLORER_MODEL = previousModel;
-      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
     }
   });
 
@@ -1084,7 +1084,7 @@ describe('interactive repo explorer preflight', () => {
     const previousScout = process.env.SIFT_EXPLORER_SCOUT;
     const previousFanout = process.env.SIFT_EXPLORER_FANOUT;
     let secretReadResult: unknown;
-    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+    (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
       createChatAgent: async (config: Record<string, unknown>) => ({
         chat: async function* () {
           if (config.name === 'siftable-repo-explorer-scout') {
@@ -1114,7 +1114,7 @@ describe('interactive repo explorer preflight', () => {
     setBrainModel({provider: 'openrouter', model: 'test-model'});
 
     try {
-      await openfunctionAsk('scour this repo and explain how local search works', () => undefined);
+      await agentHarnessAsk('scour this repo and explain how local search works', () => undefined);
 
       expect(secretReadResult).toMatchObject({
         success: false,
@@ -1129,7 +1129,7 @@ describe('interactive repo explorer preflight', () => {
       else process.env.SIFT_EXPLORER_SCOUT = previousScout;
       if (previousFanout === undefined) delete process.env.SIFT_EXPLORER_FANOUT;
       else process.env.SIFT_EXPLORER_FANOUT = previousFanout;
-      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
     }
   });
 
@@ -1140,7 +1140,7 @@ describe('interactive repo explorer preflight', () => {
     const previousScout = process.env.SIFT_EXPLORER_SCOUT;
     const previousFanout = process.env.SIFT_EXPLORER_FANOUT;
     const previousThoroughness = process.env.SIFT_EXPLORER_THOROUGHNESS;
-    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+    (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
       createChatAgent: async (config: Record<string, unknown>) => ({
         chat: async function* (message: unknown) {
           if (config.name === 'siftable-repo-explorer-scout') {
@@ -1178,7 +1178,7 @@ describe('interactive repo explorer preflight', () => {
 
     try {
       const events: BrainEvent[] = [];
-      await openfunctionAsk('scour this repo and explain how local search works', (event) => events.push(event));
+      await agentHarnessAsk('scour this repo and explain how local search works', (event) => events.push(event));
 
       expect(events.find((event) => event.toolResult?.name === 'repo_explorer_scout')?.toolResult?.success).toBe(true);
       expect(String(capturedMainInput)).toContain('<repo_explorer_artifact>');
@@ -1194,7 +1194,7 @@ describe('interactive repo explorer preflight', () => {
       else process.env.SIFT_EXPLORER_FANOUT = previousFanout;
       if (previousThoroughness === undefined) delete process.env.SIFT_EXPLORER_THOROUGHNESS;
       else process.env.SIFT_EXPLORER_THOROUGHNESS = previousThoroughness;
-      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
     }
   });
 
@@ -1205,7 +1205,7 @@ describe('interactive repo explorer preflight', () => {
     const previousScout = process.env.SIFT_EXPLORER_SCOUT;
     const previousFanout = process.env.SIFT_EXPLORER_FANOUT;
     const previousThoroughness = process.env.SIFT_EXPLORER_THOROUGHNESS;
-    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+    (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
       createChatAgent: async (config: Record<string, unknown>) => ({
         chat: async function* () {
           if (config.name === 'siftable-repo-explorer-scout') {
@@ -1233,7 +1233,7 @@ describe('interactive repo explorer preflight', () => {
 
     try {
       const events: BrainEvent[] = [];
-      await openfunctionAsk('scour this repo and explain how local search works', (event) => events.push(event));
+      await agentHarnessAsk('scour this repo and explain how local search works', (event) => events.push(event));
 
       expect(events.find((event) => event.toolResult?.name === 'repo_explorer_scout')?.toolResult).toMatchObject({
         success: false,
@@ -1251,7 +1251,7 @@ describe('interactive repo explorer preflight', () => {
       else process.env.SIFT_EXPLORER_FANOUT = previousFanout;
       if (previousThoroughness === undefined) delete process.env.SIFT_EXPLORER_THOROUGHNESS;
       else process.env.SIFT_EXPLORER_THOROUGHNESS = previousThoroughness;
-      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
     }
   });
 
@@ -1262,7 +1262,7 @@ describe('interactive repo explorer preflight', () => {
     const previousScout = process.env.SIFT_EXPLORER_SCOUT;
     const previousFanout = process.env.SIFT_EXPLORER_FANOUT;
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+    (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
       createChatAgent: async (config: Record<string, unknown>) => ({
         chat: async function* (message: unknown) {
           if (config.name === 'siftable-repo-explorer-scout') {
@@ -1287,7 +1287,7 @@ describe('interactive repo explorer preflight', () => {
 
     try {
       const events: BrainEvent[] = [];
-      await openfunctionAsk('scour this repo and explain how local search works', (event) => events.push(event));
+      await agentHarnessAsk('scour this repo and explain how local search works', (event) => events.push(event));
 
       expect(events.find((event) => event.toolResult?.name === 'repo_explorer_scout')?.toolResult?.success).toBe(false);
       expect(String(capturedMainInput)).toContain('<repo_explorer_report>');
@@ -1308,7 +1308,7 @@ describe('interactive repo explorer preflight', () => {
       else process.env.SIFT_EXPLORER_SCOUT = previousScout;
       if (previousFanout === undefined) delete process.env.SIFT_EXPLORER_FANOUT;
       else process.env.SIFT_EXPLORER_FANOUT = previousFanout;
-      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
       errorSpy.mockRestore();
     }
   });
@@ -1320,7 +1320,7 @@ describe('interactive repo explorer preflight', () => {
     const previousScout = process.env.SIFT_EXPLORER_SCOUT;
     const previousFanout = process.env.SIFT_EXPLORER_FANOUT;
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+    (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
       createChatAgent: async (config: Record<string, unknown>) => ({
         chat: async function* (message: unknown) {
           const name = String(config.name || '');
@@ -1368,7 +1368,7 @@ describe('interactive repo explorer preflight', () => {
 
     try {
       const events: BrainEvent[] = [];
-      await openfunctionAsk('scour this repo and explain how local search works', (event) => events.push(event));
+      await agentHarnessAsk('scour this repo and explain how local search works', (event) => events.push(event));
 
       expect(events.some((event) => event.toolCall?.name === 'repo_explorer_fanout')).toBe(true);
       expect(events.some((event) => event.toolCall?.name === 'repo_explorer_scout')).toBe(false);
@@ -1429,7 +1429,7 @@ describe('interactive repo explorer preflight', () => {
       else process.env.SIFT_EXPLORER_SCOUT = previousScout;
       if (previousFanout === undefined) delete process.env.SIFT_EXPLORER_FANOUT;
       else process.env.SIFT_EXPLORER_FANOUT = previousFanout;
-      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
       errorSpy.mockRestore();
     }
   });
@@ -1439,7 +1439,7 @@ describe('interactive repo explorer preflight', () => {
     const previousDebug = process.env.SIFT_EXPLORER_DEBUG;
     const previousExplorer = process.env.SIFT_EXPLORER;
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-    (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+    (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
       createChatAgent: async () => ({
         chat: async function* () {
           yield {type: 'tool_call', toolCall: {name: 'read_file', args: {path: 'src/fsEngine.ts'}}};
@@ -1455,9 +1455,9 @@ describe('interactive repo explorer preflight', () => {
     setBrainModel({provider: 'openrouter', model: 'test-model'});
 
     try {
-      await openfunctionAsk('explain why Napoleon lost in Russia', () => undefined);
+      await agentHarnessAsk('explain why Napoleon lost in Russia', () => undefined);
       process.env.SIFT_EXPLORER = 'off';
-      await openfunctionAsk('scour this repo and explain how local search works', () => undefined);
+      await agentHarnessAsk('scour this repo and explain how local search works', () => undefined);
 
       expect(errorSpy.mock.calls.some((call) => String(call[0]).includes('repo_explorer_effectiveness:'))).toBe(false);
     } finally {
@@ -1467,7 +1467,7 @@ describe('interactive repo explorer preflight', () => {
       else process.env.SIFT_EXPLORER_DEBUG = previousDebug;
       if (previousExplorer === undefined) delete process.env.SIFT_EXPLORER;
       else process.env.SIFT_EXPLORER = previousExplorer;
-      delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+      delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
       errorSpy.mockRestore();
     }
   });

@@ -396,7 +396,7 @@ interface RepoExplorerCacheEntry {
 }
 
 const CODE_HINT_RE =
-  /\b(codebase|repo|repository|explorer|repo_explorer|openfunction|localcontrolclient|file|files|function|class|symbol|implementation|implemented|handled|debug|bug|stack|trace|typescript|react|component|hook|route|controller|service|test|spec|zig|native|cli|tui|fsengine|codexengine|brain\.ts)\b/i;
+  /\b(codebase|repo|repository|explorer|repo_explorer|openfunction|agent[_ -]?harness|localcontrolclient|file|files|function|class|symbol|implementation|implemented|handled|debug|bug|stack|trace|typescript|react|component|hook|route|controller|service|test|spec|zig|native|cli|tui|fsengine|codexengine|brain\.ts)\b/i;
 const PATH_HINT_RE = /(?:^|\s)(?:\.?\.?\/)?[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+|[A-Za-z0-9_.-]+\.(?:ts|tsx|js|jsx|zig|rs|go|py|json|md)\b/;
 const BROAD_RE = /\b(scour|audit|map|trace|find|where|why|how|look into|figure out|investigate|review)\b/i;
 const IDENT_RE = /\b[A-Za-z_$][A-Za-z0-9_$:-]{2,}\b/g;
@@ -509,7 +509,7 @@ export const EXPLORER_SCOUT_ROLES: Record<ExplorerScoutRoleId, ExplorerScoutRole
     id: 'routing_config',
     description: 'Find model routing, flags, environment config, and provider seams.',
     focus: 'Find routing, config, environment flags, and integration seams relevant to the user prompt.',
-    triggers: { promptKeywords: ['config', 'env', 'flag', 'provider', 'codex', 'openfunction', 'model'], promptClasses: ['config_routing'] },
+    triggers: { promptKeywords: ['config', 'env', 'flag', 'provider', 'codex', 'agent harness', 'model'], promptClasses: ['config_routing'] },
     tools: ['inspect_workspace', 'glob_local_files', 'grep_local_files', 'search_local_files', 'read_file_region', 'read_many_regions'],
     budget: DEFAULT_ROLE_BUDGET,
     outputCapChars: DEFAULT_ROLE_BUDGET.maxReturnedChars,
@@ -851,7 +851,7 @@ export function classifyExplorerPromptClass(text: string): ExplorerPromptClass {
   const lower = text.toLowerCase();
   if (/\b(tui|ui|keyboard|hotkey|shortcut|transcript|render|row|copy|ctrl|screen|panel)\b/.test(lower)) return 'ui_behavior';
   if (/\b(native|zig|ffi|fallback boundary|native boundary)\b/.test(lower)) return 'native_boundary';
-  if (/\b(config|env|flag|provider|codex|openfunction|model routing|route|api key|kill switch)\b/.test(lower)) return 'config_routing';
+  if (/\b(config|env|flag|provider|codex|openfunction|agent[_ -]?harness|model routing|route|api key|kill switch)\b/.test(lower)) return 'config_routing';
   if (/\b(performance|latency|slow|benchmark|cache|scan|speed|optimi[sz]e)\b/.test(lower)) return 'performance_investigation';
   if (/\b(test|tests|spec|coverage|prove|regression)\b/.test(lower)) return 'test_discovery';
   if (/\b(bug|debug|error|failed|failure|unexpected|skip|cap|capped|timeout|crash|why)\b/.test(lower)) return 'bug_debug';
@@ -886,7 +886,7 @@ export function assignRepoExplorerScoutRoles(input: ExplorerChatInput, report: E
   if (/\b(native|zig|ffi|fallback|benchmark|latency|scan)\b/.test(lower) || /\.zig\b|native\//.test(pathText)) {
     add('native_boundary', 'signal:native_boundary');
   }
-  if (/\b(config|env|flag|provider|codex|openfunction|model|routing)\b/.test(lower) || /codexengine|package\.json|tsconfig|oclif|config/.test(pathText)) {
+  if (/\b(config|env|flag|provider|codex|openfunction|agent[_ -]?harness|model|routing)\b/.test(lower) || /codexengine|package\.json|tsconfig|oclif|config/.test(pathText)) {
     add('routing_config', 'signal:routing_config');
   }
   if (/\b(bug|debug|error|failed|failure|unexpected|skip|cap|capped|timeout|fallback)\b/.test(lower) || report.diagnostics.errors.length > 0) {

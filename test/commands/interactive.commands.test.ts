@@ -15,13 +15,23 @@ import {
 import {collectDailyReviewContext} from '../../src/lib/daily-review-context';
 import {rejectAllConfirms, resetBypass, setConfirmListener} from '../../interactive-tui/confirmGate';
 import {buildCommandContext as buildContext} from '../helpers/interactive-command-context';
-import {mkdtempSync, readFileSync, rmSync} from 'node:fs';
+import {existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
+import {rolloutPathForKey} from '../../interactive-tui/threadEngine';
 
 function restoreEnv(key: string, value: string | undefined): void {
   if (value === undefined) delete process.env[key];
   else process.env[key] = value;
+}
+
+async function withTemporaryHome(run: (temporaryHome: string) => Promise<void>): Promise<void> {
+  const temporaryHome = mkdtempSync(path.join(tmpdir(), 'sift-commands-home-'));
+  try {
+    await run(temporaryHome);
+  } finally {
+    rmSync(temporaryHome, {recursive: true, force: true});
+  }
 }
 
 describe('interactive command registry', () => {
@@ -198,7 +208,7 @@ describe('interactive command registry', () => {
 
   it('runs /compact and renders the savings report', async () => {
     const compactThread = jest.fn(async () => ({
-      engine: 'openfunction' as const,
+      engine: 'agent-harness' as const,
       ran: true,
       beforeTokens: 12000,
       afterTokens: 3000,
@@ -228,6 +238,121 @@ describe('interactive command registry', () => {
     await runInteractiveCommand(ctx, '/compact');
     expect(messages.at(-1)?.text).toContain('Nothing to compact');
     expect(messages.at(-1)?.text).toContain('server-side');
+  });
+
+  it('reports durable journal state even when context compaction is disabled', async () => {
+    const previous = process.env.SIFT_CONTEXT_COMPACTION;
+    const inspectThread = jest.fn(async () => ({
+      sessionId: 'stable-session-id',
+      eventCount: 17,
+      messageCount: 4,
+    }));
+    try {
+      process.env.SIFT_CONTEXT_COMPACTION = '0';
+      const {ctx, messages} = buildContext({inspectThread});
+
+      await runInteractiveCommand(ctx, '/threads');
+
+      expect(inspectThread).toHaveBeenCalledTimes(1);
+      expect(messages.at(-1)?.text).toContain('4 model-history message(s), 17 journal event(s)');
+      expect(messages.at(-1)?.text).toContain('session stable-session-id');
+      expect(messages.at(-1)?.text).not.toContain('Thread persistence is off');
+    } finally {
+      restoreEnv('SIFT_CONTEXT_COMPACTION', previous);
+    }
+  });
+
+  it('makes /clear reset model history before replacing the visible transcript', async () => {
+    const resetThread = jest.fn(async () => true);
+    const {ctx, messages} = buildContext({resetThread});
+
+    await runInteractiveCommand(ctx, '/clear');
+
+    expect(resetThread).toHaveBeenCalledTimes(1);
+    expect(messages).toEqual([{role: 'system', text: 'cleared.'}]);
+  });
+
+  it('leaves the visible transcript intact when /clear cannot reset the journal', async () => {
+    const {ctx, messages} = buildContext({resetThread: async () => false});
+    messages.push({role: 'assistant', text: 'keep this'});
+
+    await runInteractiveCommand(ctx, '/clear');
+
+    expect(messages).toContainEqual({role: 'assistant', text: 'keep this'});
+    expect(messages.at(-1)?.text).toContain('does not expose durable thread reset');
+  });
+
+  it('clears the active journal before deleting the matching legacy rollout', async () => {
+    await withTemporaryHome(async (temporaryHome) => {
+      const previous = process.env.SIFT_CONTEXT_COMPACTION;
+      const key = `commands-thread-clear-${process.pid}-${Date.now()}`;
+      const rolloutPath = rolloutPathForKey(temporaryHome, key);
+      const resetThread = jest.fn(async () => true);
+      try {
+        process.env.SIFT_CONTEXT_COMPACTION = '1';
+        mkdirSync(path.dirname(rolloutPath), {recursive: true});
+        writeFileSync(rolloutPath, '{"r":0,"t":"old question"}\n', {mode: 0o600});
+        const {ctx, messages} = buildContext({
+          conversationKey: () => key,
+          homeDir: () => temporaryHome,
+          resetThread,
+        });
+
+        await runInteractiveCommand(ctx, '/threads clear');
+
+        expect(resetThread).toHaveBeenCalledTimes(1);
+        expect(existsSync(rolloutPath)).toBe(false);
+        expect(messages.at(-1)?.text).toContain(`Cleared persisted thread for ${key}`);
+      } finally {
+        restoreEnv('SIFT_CONTEXT_COMPACTION', previous);
+      }
+    });
+  });
+
+  it('preserves the legacy rollout when the active journal cannot be reset', async () => {
+    await withTemporaryHome(async (temporaryHome) => {
+      const previous = process.env.SIFT_CONTEXT_COMPACTION;
+      const key = `commands-thread-reset-failure-${process.pid}-${Date.now()}`;
+      const rolloutPath = rolloutPathForKey(temporaryHome, key);
+      try {
+        process.env.SIFT_CONTEXT_COMPACTION = '1';
+        mkdirSync(path.dirname(rolloutPath), {recursive: true});
+        writeFileSync(rolloutPath, '{"r":0,"t":"keep me"}\n', {mode: 0o600});
+        const {ctx, messages} = buildContext({
+          conversationKey: () => key,
+          homeDir: () => temporaryHome,
+          resetThread: async () => {
+            throw new Error('journal unavailable');
+          },
+        });
+
+        await runInteractiveCommand(ctx, '/threads clear');
+
+        expect(existsSync(rolloutPath)).toBe(true);
+        expect(messages.at(-1)?.text).toContain('journal unavailable');
+      } finally {
+        restoreEnv('SIFT_CONTEXT_COMPACTION', previous);
+      }
+    });
+  });
+
+  it('fails closed when the active harness declines durable reset', async () => {
+    await withTemporaryHome(async (temporaryHome) => {
+      const key = `commands-thread-reset-unsupported-${process.pid}-${Date.now()}`;
+      const rolloutPath = rolloutPathForKey(temporaryHome, key);
+      mkdirSync(path.dirname(rolloutPath), {recursive: true});
+      writeFileSync(rolloutPath, '{"r":0,"t":"keep me"}\n', {mode: 0o600});
+      const {ctx, messages} = buildContext({
+        conversationKey: () => key,
+        homeDir: () => temporaryHome,
+        resetThread: async () => false,
+      });
+
+      await runInteractiveCommand(ctx, '/threads clear');
+
+      expect(existsSync(rolloutPath)).toBe(true);
+      expect(messages.at(-1)?.text).toContain('does not expose durable thread reset');
+    });
   });
 
   it('routes /copy targets to the right source (copy stays explicit via the command)', async () => {
@@ -437,10 +562,13 @@ describe('interactive command registry', () => {
     expect(apiClient.storeCodeMemory).not.toHaveBeenCalled();
 
     await runInteractiveCommand(ctx, '/remember This repo uses explicit work leases --category architecture');
-    expect(apiClient.storeCodeMemory).toHaveBeenCalledWith({
-      fact: 'This repo uses explicit work leases',
-      category: 'architecture',
-    });
+    expect(apiClient.storeCodeMemory).toHaveBeenCalledWith(
+      {
+        fact: 'This repo uses explicit work leases',
+        category: 'architecture',
+      },
+      expect.stringMatching(/^[0-9a-f-]{36}$/),
+    );
     expect(messages.at(-1)?.text).toContain('Remembered');
   });
 });

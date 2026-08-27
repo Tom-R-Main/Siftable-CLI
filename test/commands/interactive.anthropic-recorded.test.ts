@@ -8,7 +8,7 @@
  *   RECORD=1 ANTHROPIC_API_KEY=… npx jest interactive.anthropic-recorded
  * (a record harness calls cassette.save(); see http-cassette.ts).
  */
-import {createAnthropicAdapter} from '../../interactive-tui/openfunction/framework/adapters/anthropic';
+import {createAnthropicAdapter} from '../../interactive-tui/agent-harness/framework/adapters/anthropic';
 import {createCassetteFetch} from '../helpers/http-cassette';
 
 const emptyRegistry = {toAnthropicFormat: () => []} as any;
@@ -17,7 +17,13 @@ const weatherRegistry = {
     {
       name: 'get_weather',
       description: 'Get the current weather for a city',
-      input_schema: {type: 'object', properties: {city: {type: 'string'}}, required: ['city']},
+      input_schema: {
+        type: 'object',
+        properties: {city: {$ref: '#/$defs/city'}},
+        required: ['city'],
+        additionalProperties: false,
+        $defs: {city: {type: 'string', minLength: 1}},
+      },
     },
   ],
 } as any;
@@ -78,6 +84,7 @@ describe('Anthropic adapter (recorded)', () => {
     expect(body.output_config).toEqual({effort: 'medium'});
     expect(body.max_tokens).toBe(16000);
     expect(body.tool_choice).toEqual({type: 'auto', disable_parallel_tool_use: true});
+    expect(body.tools[0].input_schema).toEqual(weatherRegistry.toAnthropicFormat()[0].input_schema);
   });
 });
 
