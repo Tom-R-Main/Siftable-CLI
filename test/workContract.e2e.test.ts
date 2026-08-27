@@ -552,6 +552,45 @@ describe("Work Contract V1 warn observations", () => {
     }
   });
 
+  it("keeps off rebase exactly on the synchronous legacy path with zero proof calls", async () => {
+    const offRepo = await setupRepo();
+    const legacyRepo = await setupRepo();
+    try {
+      let proofLoads = 0;
+      const offGit = countingRunner();
+      const off = await spawnCommitted(offRepo, identity, {
+        onProofLoad: () => { proofLoads += 1; },
+      }, "off", offGit.runner);
+      await writeFile(join(offRepo.repoRoot, "README.md"), "base moved\n", "utf8");
+      offRepo.run(["commit", "-am", "move base"]);
+      const offBefore = offGit.count();
+      const offResult = off.controller.rebaseChild(off.session.sessionId);
+      expect(offResult).not.toBeInstanceOf(Promise);
+      const offCalls = offGit.count() - offBefore;
+      const offStatus = getMergeMasterSession(off.session.sessionId)?.status;
+
+      resetMergeMasterForTests();
+      const legacyGit = countingRunner();
+      const legacy = await spawnCommitted(legacyRepo, identity, {}, "off", legacyGit.runner, false);
+      await writeFile(join(legacyRepo.repoRoot, "README.md"), "base moved\n", "utf8");
+      legacyRepo.run(["commit", "-am", "move base"]);
+      const legacyBefore = legacyGit.count();
+      const legacyResult = legacy.controller.rebaseChild(legacy.session.sessionId);
+      expect(legacyResult).not.toBeInstanceOf(Promise);
+      const legacyCalls = legacyGit.count() - legacyBefore;
+
+      expect(proofLoads).toBe(0);
+      expect(offCalls).toBe(legacyCalls);
+      expect(offResult).toMatchObject({ok: true, rebased: true, verdict: "ready_to_merge"});
+      expect(legacyResult).toMatchObject({ok: true, rebased: true, verdict: "ready_to_merge"});
+      expect(offStatus).toBe("ready_to_merge");
+      expect(getMergeMasterSession(legacy.session.sessionId)?.status).toBe("ready_to_merge");
+    } finally {
+      await offRepo.cleanup();
+      await legacyRepo.cleanup();
+    }
+  });
+
   it.each(["head-drift", "base-drift"] as const)("preserves the Git outcome and reports %s", async (mode) => {
     const fx = await setupRepo();
     const scenario: ProofScenario = {};

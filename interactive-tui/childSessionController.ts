@@ -1026,6 +1026,8 @@ export function createChildSessionController(
 
   function rebaseChild(sessionId: number): RebaseChildResult | Promise<RebaseChildResult> {
     if (!deps.readyProof) return legacyRebaseChild(sessionId);
+    const configured = resolveReadyProofPolicy(deps.readyProof.env ?? process.env);
+    if (configured.ok && configured.policy === "off") return legacyRebaseChild(sessionId);
     return (async () => {
       const rec = records.get(sessionId);
       if (!rec) return {ok: false, reason: "unknown child session"};
