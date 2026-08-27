@@ -591,6 +591,31 @@ describe("Work Contract V1 warn observations", () => {
     }
   });
 
+  it("reports the actionable Git blocker when warn-mode proof allows landing", async () => {
+    const fx = await setupRepo();
+    try {
+      const work = {...identity, writeScope: {include: ["other.ts"], exclude: []}};
+      const spawned = await spawnCommitted(fx, work, {}, "warn");
+
+      expect(await spawned.controller.reviewChild(spawned.session.sessionId)).toMatchObject({
+        ok: true,
+        packet: {
+          verdict: "merge_blocked",
+          blockers: [expect.stringContaining("wrote outside declared scope")],
+        },
+        proofDecision: {policy: "warn", allowed: true, code: "proof_warn"},
+      });
+      const landed = await spawned.controller.mergeChild(spawned.session.sessionId);
+      expect(landed).toMatchObject({
+        ok: false,
+        reason: expect.stringContaining("wrote outside declared scope"),
+      });
+      if (!landed.ok) expect(landed.reason).not.toContain("proof_warn");
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
   it.each(["head-drift", "base-drift"] as const)("preserves the Git outcome and reports %s", async (mode) => {
     const fx = await setupRepo();
     const scenario: ProofScenario = {};

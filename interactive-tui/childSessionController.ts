@@ -974,10 +974,17 @@ export function createChildSessionController(
         return {ok: false, reason: error instanceof Error ? error.message : String(error)};
       }
       setSessionHeadCommit(sessionId, resolved.packet.headCommit, now());
-      if (!resolved.decision.allowed || resolved.packet.verdict !== "ready_to_merge") {
+      if (!resolved.decision.allowed) {
         return {
           ok: false,
           reason: `merge blocked: ${resolved.decision.code}`,
+          packet: {...resolved.packet, verdict: "merge_blocked"},
+        };
+      }
+      if (resolved.packet.verdict !== "ready_to_merge") {
+        return {
+          ok: false,
+          reason: `merge blocked: ${resolved.packet.blockers.join("; ") || "not ready"}`,
           packet: {...resolved.packet, verdict: "merge_blocked"},
         };
       }
