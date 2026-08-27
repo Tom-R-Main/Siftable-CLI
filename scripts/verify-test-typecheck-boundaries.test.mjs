@@ -67,16 +67,16 @@ function record(overrides = {}) {
   };
 }
 
-test('live walker discovers exactly the current 100 test roots', () => {
+test('live walker discovers exactly the current 103 test roots', () => {
   const roots = walkTestRoots(resolve(CLI_ROOT, 'test'), {root: CLI_ROOT});
-  assert.equal(roots.length, 100);
+  assert.equal(roots.length, 103);
   assert.ok(roots.every((root) => root.endsWith('.test.ts')));
 });
 
-test('live configs derive the 44 Node16 and 56 Bundler split', () => {
+test('live configs derive the 44 Node16 and 59 Bundler split', () => {
   const discovered = walkTestRoots(resolve(CLI_ROOT, 'test'), {root: CLI_ROOT});
   const ownership = deriveOwnership({discovered, configs: LIVE_CONFIGS.map(parseCompilerConfig)});
-  assert.deepEqual(ownership.counts, {node16: 44, 'tui-bundler': 56});
+  assert.deepEqual(ownership.counts, {node16: 44, 'tui-bundler': 59});
 });
 
 test('walker discovers both test.ts and test.tsx roots', () => fixture((root) => {
@@ -132,23 +132,21 @@ test('ownership rejects an unexpected compiler root', () => {
   );
 });
 
-test('future reservation is the exact absent Bundler-only literal', () => {
+test('committed work contract test is the exact Bundler-only reserved include', () => {
   const configs = LIVE_CONFIGS.map(parseCompilerConfig);
   const node16 = configs.find((config) => config.name === 'node16');
   const bundler = configs.find((config) => config.name === 'tui-bundler');
   assert.deepEqual(node16.reservedIncludes, []);
   assert.deepEqual(bundler.reservedIncludes, [FUTURE_RESERVATION]);
-  assert.deepEqual(bundler.absentReservations, [FUTURE_RESERVATION]);
+  assert.deepEqual(bundler.absentReservations, []);
+  assert.deepEqual(bundler.roots.filter((root) => root === FUTURE_RESERVATION), [FUTURE_RESERVATION]);
 });
 
-test('present future reservation derives 44/57 over 101 without fixed totals', () => {
+test('present reserved include remains owned exactly once without fixed totals', () => {
   const discovered = walkTestRoots(resolve(CLI_ROOT, 'test'), {root: CLI_ROOT});
   const configs = LIVE_CONFIGS.map(parseCompilerConfig);
-  const bundler = configs.find((config) => config.name === 'tui-bundler');
-  bundler.roots = [...bundler.roots, FUTURE_RESERVATION].sort();
-  const ownership = deriveOwnership({discovered: [...discovered, FUTURE_RESERVATION].sort(), configs});
-  assert.equal(ownership.tests, 101);
-  assert.deepEqual(ownership.counts, {node16: 44, 'tui-bundler': 57});
+  const ownership = deriveOwnership({discovered, configs});
+  assert.equal(ownership.tests, discovered.length);
   assert.deepEqual(ownership.owners.get(FUTURE_RESERVATION), ['tui-bundler']);
 });
 
