@@ -104,32 +104,32 @@ export abstract class WorkActionCommand extends BaseCommand {
     }, {idempotencyKey: action === 'heartbeat' ? undefined : this.idempotencyKey()});
     this.handleApiError(response);
     const workItem = this.unwrapOne(response, 'workItem');
-    if (session) {
-      const terminalStatuses = new Set(['queued', 'needs_review', 'done', 'failed', 'cancelled', 'canceled']);
-      const terminalActions = new Set(['release', 'review', 'complete', 'fail', 'cancel']);
-      if (terminalActions.has(action) || terminalStatuses.has(String(workItem.status ?? ''))) {
-        await deleteWorkLeaseSession(args.id);
-      } else {
-        const updatedSession = {
-          ...session,
-          claimToken: typeof workItem.claimToken === 'string' ? workItem.claimToken : session.claimToken,
-          expiresAt: typeof workItem.claimExpiresAt === 'string'
-            ? workItem.claimExpiresAt
-            : session.expiresAt,
-          updatedAt: new Date().toISOString(),
-        } satisfies WorkLeaseSession;
-        try {
-          await writeWorkLeaseSession(updatedSession);
-        } catch {
-          const release = await client.transitionWorkItem(args.id, 'release', {
-            claimOwner: updatedSession.claimOwner,
-            claimToken: updatedSession.claimToken,
-          }, {idempotencyKey: this.idempotencyKey()}).catch(() => null);
-          if (release && !release.error) await deleteWorkLeaseSession(args.id);
-          this.error(release && !release.error
-            ? 'The lease was released because its renewed private session could not be saved.'
-            : 'The renewed private session could not be saved and automatic release did not succeed; wait for the lease to expire before reclaiming the item.');
-        }
+    const terminalStatuses = new Set(['queued', 'needs_review', 'done', 'failed', 'cancelled', 'canceled']);
+    const terminalActions = new Set(['release', 'review', 'complete', 'fail', 'cancel']);
+    const terminal = terminalActions.has(action)
+      || terminalStatuses.has(String(workItem.status ?? ''));
+    if (terminal) {
+      await deleteWorkLeaseSession(args.id);
+    } else if (session) {
+      const updatedSession = {
+        ...session,
+        claimToken: typeof workItem.claimToken === 'string' ? workItem.claimToken : session.claimToken,
+        expiresAt: typeof workItem.claimExpiresAt === 'string'
+          ? workItem.claimExpiresAt
+          : session.expiresAt,
+        updatedAt: new Date().toISOString(),
+      } satisfies WorkLeaseSession;
+      try {
+        await writeWorkLeaseSession(updatedSession);
+      } catch {
+        const release = await client.transitionWorkItem(args.id, 'release', {
+          claimOwner: updatedSession.claimOwner,
+          claimToken: updatedSession.claimToken,
+        }, {idempotencyKey: this.idempotencyKey()}).catch(() => null);
+        if (release && !release.error) await deleteWorkLeaseSession(args.id);
+        this.error(release && !release.error
+          ? 'The lease was released because its renewed private session could not be saved.'
+          : 'The renewed private session could not be saved and automatic release did not succeed; wait for the lease to expire before reclaiming the item.');
       }
     }
     if (!this.jsonEnabled()) {

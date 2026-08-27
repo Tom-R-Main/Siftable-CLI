@@ -80,7 +80,13 @@ export async function writeWorkLeaseSession(session: WorkLeaseSession): Promise<
 export async function readWorkLeaseSession(workItemId: string): Promise<WorkLeaseSession | null> {
   try {
     const raw = await readFile(sessionPath(workItemId), 'utf8');
-    const session = parseSession(JSON.parse(raw) as unknown);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch {
+      return null;
+    }
+    const session = parseSession(parsed);
     return session?.workItemId === workItemId ? session : null;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;

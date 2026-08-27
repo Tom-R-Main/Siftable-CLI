@@ -4,6 +4,7 @@ import {mkdir, readdir, stat, writeFile} from 'node:fs/promises';
 import {createServer, type IncomingMessage, type ServerResponse} from 'node:http';
 import type {AddressInfo} from 'node:net';
 import {dirname, join} from 'node:path';
+import {readWorkLeaseSession} from '../../src/lib/work-lease-session';
 import {installIsolatedConfigDirHooks} from '../helpers/config-env';
 import {mockFetch, restoreFetch, runCommand} from '../helpers/mock-api';
 
@@ -155,6 +156,23 @@ describe('managed CLI work lease session contract', () => {
     expect((await stat(sessionPath)).mode & 0o777).toBe(0o600);
   });
 
+  it('treats a malformed session journal as unavailable', async () => {
+    installClaimRoute().install();
+    const result = await runCommand(claimArguments());
+    expect(result.exitCode).toBe(0);
+
+    const sessionFiles = (await readdir(isolatedConfig().configDir, {recursive: true}))
+      .filter((name) => name.endsWith('.json'));
+    expect(sessionFiles).toHaveLength(1);
+    await writeFile(
+      join(isolatedConfig().configDir, sessionFiles[0]),
+      '{"truncated":',
+      'utf8',
+    );
+
+    await expect(readWorkLeaseSession(workItemId)).resolves.toBeNull();
+  });
+
   it('resolves lifecycle credentials after the claiming process exits', async () => {
     const requests: Array<{
       path: string;
@@ -184,6 +202,16 @@ describe('managed CLI work lease session contract', () => {
             claimOwner,
             claimToken,
             claimExpiresAt,
+          },
+        } : {error: 'lease credentials did not match'});
+        return;
+      }
+      if (request.method === 'POST' && path === `/api/v1/work-items/${workItemId}/release`) {
+        const authorized = body.claimOwner === claimOwner && body.claimToken === claimToken;
+        sendJson(response, authorized ? 200 : 403, authorized ? {
+          workItem: {
+            id: workItemId,
+            status: 'queued',
           },
         } : {error: 'lease credentials did not match'});
         return;
@@ -231,6 +259,26 @@ describe('managed CLI work lease session contract', () => {
         .toEqual(expect.objectContaining({claimOwner, claimToken, leaseSeconds: 900}));
       expect(requests.find((request) => request.path.endsWith('/start'))?.workspaceId)
         .toBe('workspace-a');
+
+      const released = await runCommand([
+        'work',
+        'release',
+        workItemId,
+        '--owner',
+        claimOwner,
+        '--claim-token',
+        claimToken,
+        '--token',
+        'sift_pat_test',
+        '--api-url',
+        apiUrl,
+        '--json',
+      ]);
+      expect(released).toEqual(expect.objectContaining({exitCode: 0}));
+      expect(released.stdout).not.toContain(claimToken);
+      const remainingSessions = (await readdir(config.configDir, {recursive: true}))
+        .filter((name) => name.endsWith('.json'));
+      expect(remainingSessions).toHaveLength(0);
     } finally {
       server.close();
       await once(server, 'close');
