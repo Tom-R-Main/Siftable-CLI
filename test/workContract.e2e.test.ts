@@ -321,6 +321,32 @@ describe("Work Contract V1 enforce negatives", () => {
     }
   });
 
+  it("rechecks the live session status after asynchronous proof loading before landing", async () => {
+    const fx = await setupRepo();
+    const scenario: ProofScenario = {};
+    try {
+      const {controller, session} = await spawnCommitted(fx, identity, scenario);
+      expect(await controller.reviewChild(session.sessionId)).toMatchObject({
+        ok: true,
+        proofDecision: {allowed: true, code: "ready_proof_pass"},
+      });
+      expect(getMergeMasterSession(session.sessionId)?.status).toBe("ready_to_merge");
+
+      scenario.onProofLoad = () => {
+        expect(controller.rejectChild(session.sessionId, "review revoked")).toEqual({ok: true});
+      };
+      const before = fx.baseTip();
+      expect(await controller.mergeChild(session.sessionId)).toMatchObject({
+        ok: false,
+        reason: expect.stringContaining("is rejected"),
+      });
+      expect(getMergeMasterSession(session.sessionId)?.status).toBe("rejected");
+      expect(fx.baseTip()).toBe(before);
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
   it.each([
     ["task status cannot rescue invalid work", {work: {status: "running", task: {status: "done"}}}, "work_status_invalid"],
     ["zero evidence", {coverage: {required: 0, covered: 0, passed: 0, steps: []}}, "coverage_invalid"],

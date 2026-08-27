@@ -944,8 +944,9 @@ export function createChildSessionController(
           packet: {...resolved.packet, verdict: "merge_blocked"},
         };
       }
-      if (live?.status !== "ready_to_merge") {
-        return {ok: false, reason: `child #${sessionId} is ${live?.status ?? "unknown"} — run ready before merging`, packet: resolved.packet};
+      const current = getMergeMasterSession(sessionId);
+      if (current?.status !== "ready_to_merge") {
+        return {ok: false, reason: `child #${sessionId} is ${current?.status ?? "unknown"} — run ready before merging`, packet: resolved.packet};
       }
       try {
         const result = squashMergeChild({
