@@ -11,7 +11,7 @@
   },
   "scripts": {
     "prebuild": "npm run build --workspace @siftable/mcp-server && npm run build --workspace @siftable/tabular-import",
-    "build": "node scripts/clean-dist.mjs && tsc && node -e \"const fs=require('node:fs');fs.mkdirSync('dist/lib/vendor',{recursive:true});for(const name of ['datasetQueryContract','leadDiscoveryCommandContract'])fs.copyFileSync('../shared/dist/types/'+name+'.js','dist/lib/vendor/'+name+'.js')\"",
+    "build": "node scripts/clean-dist.mjs && tsc && node -e \"const fs=require('node:fs');fs.mkdirSync('dist/lib/vendor',{recursive:true});for(const name of ['datasetQueryContract','leadDiscovery','leadDiscoveryCommandContract'])fs.copyFileSync('../shared/dist/types/'+name+'.js','dist/lib/vendor/'+name+'.js')\"",
     "typecheck": "tsc --noEmit && npm run typecheck:tui",
     "typecheck:tui": "tsc --noEmit -p interactive-tui/tsconfig.json",
     "manifest": "npm run build && oclif manifest",
@@ -231,7 +231,7 @@
     "@oclif/core": "^4",
     "@oclif/plugin-help": "^6",
     "@siftable/tabular-import": "*",
-    "@siftable/mcp-server": "^1.2.36",
+    "@siftable/mcp-server": "^1.2.40",
     "pg": "^8.20.0",
     "sharp": "^0.34.4",
     "yaml": "^2.8.2"
