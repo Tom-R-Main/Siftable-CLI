@@ -11,7 +11,7 @@
   },
   "scripts": {
     "prebuild": "npm run build --workspace @siftable/mcp-server && npm run build --workspace @siftable/tabular-import",
-    "build": "node scripts/clean-dist.mjs && tsc && node -e \"const fs=require('node:fs');fs.mkdirSync('dist/lib/vendor',{recursive:true});fs.copyFileSync('../shared/dist/types/datasetQueryContract.js','dist/lib/vendor/datasetQueryContract.js')\"",
+    "build": "node scripts/clean-dist.mjs && tsc && node -e \"const fs=require('node:fs');fs.mkdirSync('dist/lib/vendor',{recursive:true});for(const name of ['datasetQueryContract','leadDiscovery','leadDiscoveryCommandContract'])fs.copyFileSync('../shared/dist/types/'+name+'.js','dist/lib/vendor/'+name+'.js')\"",
     "typecheck": "tsc --noEmit && npm run typecheck:tui",
     "typecheck:tui": "tsc --noEmit -p interactive-tui/tsconfig.json",
     "manifest": "npm run build && oclif manifest",
@@ -92,6 +92,24 @@
       },
       "organizations": {
         "description": "Organizations and companies"
+      },
+      "lead-discovery": {
+        "description": "Governed external company discovery and review"
+      },
+      "lead-discovery:companies": {
+        "description": "Prepare and run bounded company discovery"
+      },
+      "lead-discovery:runs": {
+        "description": "Recover durable discovery runs"
+      },
+      "lead-discovery:candidates": {
+        "description": "List and review source-backed discovery candidates"
+      },
+      "lead-discovery:import-plan": {
+        "description": "Create and recover review-gated discovery import plans"
+      },
+      "lead-discovery:origin": {
+        "description": "Inspect persisted discovery origin evidence"
       },
       "crm": {
         "description": "Customer relationship records"
