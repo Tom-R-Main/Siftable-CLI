@@ -147,6 +147,8 @@ export default class Doctor extends BaseCommand {
       ]);
     }
 
+    if (!result.ok) process.exitCode = 1;
+
     return result;
   }
 }

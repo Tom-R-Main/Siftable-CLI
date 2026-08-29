@@ -1,4 +1,7 @@
 import {runCommand} from '../helpers/mock-api';
+import {installIsolatedConfigDirHooks} from '../helpers/config-env';
+
+installIsolatedConfigDirHooks('sift-self-awareness-');
 
 describe('self-awareness commands', () => {
   it('reports doctor status as stable JSON without requiring auth', async () => {
@@ -6,9 +9,11 @@ describe('self-awareness commands', () => {
     const parsed = JSON.parse(result.stdout);
 
     expect(parsed.cli.package).toBe('@siftable/cli');
-    expect(typeof parsed.authenticated).toBe('boolean');
+    expect(parsed.authenticated).toBe(false);
+    expect(parsed.ok).toBe(false);
     expect(parsed.checks.some((check: any) => check.name === 'auth')).toBe(true);
     expect(parsed.next.length).toBeGreaterThan(0);
+    expect(result.exitCode).toBe(1);
   });
 
   it('reports workspace service-token env setup without printing secret values', async () => {

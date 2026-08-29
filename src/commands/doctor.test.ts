@@ -18,6 +18,7 @@ afterEach(() => {
   delete process.env.EXF_WORKSPACE_ID;
   delete process.env.SIFT_TOKEN;
   delete process.env.EXF_TOKEN;
+  process.exitCode = undefined;
   for (const directory of directories.splice(0)) rmSync(directory, {recursive: true, force: true});
 });
 
@@ -56,5 +57,6 @@ describe('doctor Personal semantics', () => {
       ok: false,
       next: expect.stringContaining('--workspace-root'),
     }));
+    expect(process.exitCode).toBe(1);
   });
 });

@@ -5,6 +5,43 @@ afterAll(() => {
 });
 
 describe('code commands', () => {
+  describe('codebase search compatibility', () => {
+    it('returns typed local-search recovery without requiring a legacy query', async () => {
+      const result = await runCommand([
+        'codebase', 'search', '--json', '--no-input',
+      ]);
+
+      expect(result.exitCode).toBe(2);
+      expect(result.error).toBeUndefined();
+      expect(JSON.parse(result.stdout).error).toMatchObject({
+        code: 'removed_capability',
+        api: expect.objectContaining({
+          type: 'removed_capability',
+          capability: 'codebase_search',
+        }),
+        exit: 2,
+      });
+    });
+
+    it('returns typed local-search recovery instead of a missing-command error', async () => {
+      const result = await runCommand([
+        'codebase', 'search', 'migration order V273b', '--json', '--no-input',
+      ]);
+
+      expect(result.exitCode).toBe(2);
+      expect(result.error).toBeUndefined();
+      expect(JSON.parse(result.stdout).error).toMatchObject({
+        code: 'removed_capability',
+        api: expect.objectContaining({
+          type: 'removed_capability',
+          capability: 'codebase_search',
+        }),
+        exit: 2,
+      });
+      expect(result.stdout).toContain('Use local `rg` or `git grep`');
+    });
+  });
+
   describe('code memory store', () => {
     it('stores a code memory', async () => {
       mockFetch()
