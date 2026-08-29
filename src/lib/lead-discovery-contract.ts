@@ -17,6 +17,7 @@ export function leadDiscoveryCommandRuntime(): LeadDiscoveryCommandRuntime {
   if (loadedRuntime) return loadedRuntime;
   const candidates = [
     resolve(__dirname, 'vendor', 'leadDiscoveryCommandContract.js'),
+    resolve(__dirname, '..', '..', 'dist', 'lib', 'vendor', 'leadDiscoveryCommandContract.js'),
   ];
   const runtimePath = candidates.find(candidate => existsSync(candidate));
   if (!runtimePath) {
