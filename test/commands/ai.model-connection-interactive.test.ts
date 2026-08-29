@@ -11,6 +11,12 @@ import {BaseCommand} from '../../src/lib/base-command.js';
 import {SiftClient} from '@siftable/mcp-server/dist/exfClient.js';
 import {mockFetch, restoreFetch, runCommand} from '../helpers/mock-api';
 
+class InteractiveParseProbe extends Interactive {
+  parseFlags() {
+    return this.parse(Interactive);
+  }
+}
+
 async function runCommandEntry(
   CommandClass: new (argv: string[], config: Config) => {run(): Promise<unknown>},
   argv: string[],
@@ -87,6 +93,16 @@ describe('model connection interactive CLI transport', () => {
   afterEach(() => {
     jest.restoreAllMocks();
     restoreFetch();
+  });
+
+  it('parses a bare TUI launch without requiring model prompt flags', async () => {
+    const config = await Config.load({
+      root: path.join(__dirname, '..', '..'),
+    });
+
+    const {flags} = await new InteractiveParseProbe([], config).parseFlags();
+
+    expect(flags.stream).toBeUndefined();
   });
 
   it('lists, selects, and invokes through the same typed client without a credential field', async () => {

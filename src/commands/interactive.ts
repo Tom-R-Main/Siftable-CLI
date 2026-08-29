@@ -258,7 +258,6 @@ export default class Interactive extends BaseCommand {
     }),
     stream: Flags.boolean({
       description: 'Consume selected connected-model output incrementally',
-      default: false,
       dependsOn: ['prompt'],
     }),
   };
