@@ -17,11 +17,10 @@ export function leadDiscoveryCommandRuntime(): LeadDiscoveryCommandRuntime {
   if (loadedRuntime) return loadedRuntime;
   const candidates = [
     resolve(__dirname, 'vendor', 'leadDiscoveryCommandContract.js'),
-    resolve(__dirname, '..', '..', '..', 'shared', 'dist', 'types', 'leadDiscoveryCommandContract.js'),
   ];
   const runtimePath = candidates.find(candidate => existsSync(candidate));
   if (!runtimePath) {
-    throw new Error('Canonical lead-discovery command runtime is unavailable. Build @execufunction/shared first.');
+    throw new Error('Packaged lead-discovery command runtime is unavailable. Reinstall @siftable/cli.');
   }
   const runtime = require(runtimePath) as Partial<LeadDiscoveryCommandRuntime>;
   if (
