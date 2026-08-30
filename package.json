@@ -1,6 +1,6 @@
 {
   "name": "@siftable/cli",
-  "version": "0.5.45",
+  "version": "0.6.0",
   "description": "Siftable CLI — human planning tasks, executable agent work queues, knowledge, and automation tools",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -231,7 +231,7 @@
     "@oclif/core": "^4",
     "@oclif/plugin-help": "^6",
     "@siftable/tabular-import": "*",
-    "@siftable/mcp-server": "^1.2.42",
+    "@siftable/mcp-server": "^1.3.0",
     "pg": "^8.20.0",
     "sharp": "^0.34.4",
     "yaml": "^2.8.2"
