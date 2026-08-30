@@ -183,9 +183,15 @@ describe('work commands', () => {
 
     const result = await runCommand(['work', 'list', '--token', 'sift_pat_test', '--json']);
     const json = JSON.parse(result.stdout);
-    expect(json).toHaveLength(1);
-    expect(json[0].title).toBe('Run verification');
-    expect(json[0].claimToken).toBeUndefined();
+    expect(json).toEqual(expect.objectContaining({
+      ok: true,
+      page: expect.objectContaining({returned: 1, complete: true}),
+      omissions: ['totalCount'],
+      warnings: [],
+    }));
+    expect(json.workItems).toHaveLength(1);
+    expect(json.workItems[0].title).toBe('Run verification');
+    expect(json.workItems[0].claimToken).toBeUndefined();
     expect(result.stdout).not.toContain('should-not-render');
   });
 

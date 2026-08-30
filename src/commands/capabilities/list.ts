@@ -1,4 +1,5 @@
 import {BaseCommand} from '../../lib/base-command.js';
+import {collectionNavigation} from '../../lib/collection-navigation.js';
 
 export default class CapabilitiesList extends BaseCommand {
   static description = 'List safe metadata for Vault capability handles';
@@ -13,6 +14,14 @@ export default class CapabilitiesList extends BaseCommand {
       flags,
       '/api/v1/vault/capabilities?surface=cli',
     );
+    const result = {
+      ok: true,
+      capabilities: response.capabilities,
+      ...collectionNavigation(response.capabilities.length, Math.max(response.capabilities.length, 1), {
+        cursorSupported: false,
+        total: response.capabilities.length,
+      }),
+    };
     if (!this.jsonEnabled()) {
       if (response.capabilities.length === 0) {
         this.log('No Vault capabilities found.');
@@ -25,6 +34,6 @@ export default class CapabilitiesList extends BaseCommand {
         );
       }
     }
-    return response.capabilities;
+    return result;
   }
 }

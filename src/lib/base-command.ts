@@ -23,9 +23,12 @@ type CliCommandError = Error & {
   oclif?: {exit?: number};
 };
 
-function portableExitCode(err: CliCommandError): number {
+// API transport failures use statusCode 0 for diagnosis, but a failed CLI
+// command must never report shell success. Preserve that diagnostic status in
+// JSON while constraining process exits to the portable non-zero range.
+export function portableExitCode(err: CliCommandError): number {
   const requested = err.oclif?.exit ?? err.exitCode ?? 1;
-  return Number.isInteger(requested) && requested >= 0 && requested <= 255 ? requested : 1;
+  return Number.isInteger(requested) && requested >= 1 && requested <= 255 ? requested : 1;
 }
 
 export abstract class BaseCommand extends Command {
@@ -210,7 +213,7 @@ export abstract class BaseCommand extends Command {
   private throwApiStatusError(statusCode: number, message: string): never {
     const error = new Error(message) as Error & {statusCode?: number};
     error.statusCode = statusCode;
-    this.error(error, {exit: statusCode});
+    this.error(error, {exit: statusCode > 0 ? statusCode : 1});
   }
 
   protected override toErrorJson(err: Error & {
@@ -266,7 +269,7 @@ export abstract class BaseCommand extends Command {
         error.statusCode = response.statusCode;
         error.api = parsed.payload;
         error.suggestions = this.apiErrorSuggestions(parsed.payload);
-        this.error(error, {exit: response.statusCode});
+        this.error(error, {exit: response.statusCode > 0 ? response.statusCode : 1});
       }
 
       if (response.statusCode === 403) {
@@ -277,7 +280,7 @@ export abstract class BaseCommand extends Command {
         statusCode?: number;
       };
       error.statusCode = response.statusCode;
-      this.error(error, {exit: response.statusCode});
+      this.error(error, {exit: response.statusCode > 0 ? response.statusCode : 1});
     }
   }
 
