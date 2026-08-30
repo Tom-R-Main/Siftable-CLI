@@ -45,6 +45,14 @@ export interface ToolDefinition<
   /** The function that runs when the tool is called */
   handler: (params: TParams) => Promise<ToolResult<TResult>>;
 
+  /**
+   * Whether a call with these args may run concurrently with other
+   * parallel-safe calls ("parallel-safe") or must run alone as a barrier
+   * ("exclusive"). Absent, malformed, or throwing classifiers resolve to
+   * exclusive — declare it only for tools with no side effects.
+   */
+  executionMode?: (args: Record<string, unknown>) => "exclusive" | "parallel-safe";
+
   /** Optional tags for grouping/filtering (e.g. "productivity", "education") */
   tags?: string[];
 

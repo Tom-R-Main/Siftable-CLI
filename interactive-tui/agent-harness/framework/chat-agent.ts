@@ -81,6 +81,14 @@ import {
 } from "./chat-agent-types.js";
 import { digestJson, SessionKernel } from "./session.js";
 import type { SessionEventContext } from "./session.js";
+import { classifyToolCall, runToolBatch } from "./tool-scheduler.js";
+import {
+  boundToolOutput,
+  bytePrefix,
+  MIN_TOOL_OUTPUT_MAX_BYTES,
+  MIN_TOOL_OUTPUT_MAX_LINES,
+} from "./tool-output.js";
+import type { ToolOutputConfig } from "./tool-output.js";
 import { normalizeToolResult } from "./tool.js";
 import type { ToolResult } from "./types.js";
 import { redactSensitiveText, sanitizeSensitiveValue } from "./redaction.js";
@@ -194,6 +202,12 @@ export async function createChatAgent(
         });
     const adapter = config.adapter ?? resolveAdapter(config, systemPrompt);
 
+    // Bounds fail loudly at construction: a NaN/Infinity/fractional cap
+    // would otherwise silently disarm the pool guard or the output caps.
+    requirePositiveInteger("maxParallelTools", config.maxParallelTools, 1);
+    requirePositiveInteger("toolOutput.maxBytes", config.toolOutput?.maxBytes, MIN_TOOL_OUTPUT_MAX_BYTES);
+    requirePositiveInteger("toolOutput.maxLines", config.toolOutput?.maxLines, MIN_TOOL_OUTPUT_MAX_LINES);
+
     return new ChatAgentImpl({
       name: config.name ?? "agent",
       adapter,
@@ -206,6 +220,8 @@ export async function createChatAgent(
       threadId,
       threadIdExplicit,
       maxToolRounds: config.maxToolRounds ?? 10,
+      maxParallelTools: config.maxParallelTools ?? 4,
+      toolOutput: config.toolOutput,
       persistKey: config.persistKey,
       session: config.session,
     });
@@ -219,6 +235,17 @@ export async function createChatAgent(
 
 // ─── Implementation ────────────────────────────────────────────────────────
 
+function requirePositiveInteger(
+  label: string,
+  value: number | undefined,
+  min: number,
+): void {
+  if (value === undefined) return;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min) {
+    throw new TypeError(`${label} must be an integer >= ${min}; received ${String(value)}`);
+  }
+}
+
 interface ChatAgentInternals {
   name: string;
   adapter: AIAdapter;
@@ -231,6 +258,8 @@ interface ChatAgentInternals {
   threadId: string;
   threadIdExplicit: boolean;
   maxToolRounds: number;
+  maxParallelTools: number;
+  toolOutput?: ToolOutputConfig;
   persistKey?: string;
   session?: ChatSessionConfig;
 }
@@ -250,6 +279,8 @@ class ChatAgentImpl implements ChatAgent {
   private threadId: string;
   private pinnedThreadId?: string;
   private maxToolRounds: number;
+  private maxParallelTools: number;
+  private toolOutput?: ToolOutputConfig;
   private session: SessionKernel;
   private turnTail: Promise<void> = Promise.resolve();
   private pendingTurnOperations = 0;
@@ -271,6 +302,8 @@ class ChatAgentImpl implements ChatAgent {
       ? internals.threadId
       : undefined;
     this.maxToolRounds = internals.maxToolRounds;
+    this.maxParallelTools = internals.maxParallelTools;
+    this.toolOutput = internals.toolOutput;
     this.provider = internals.adapter.name;
     this.model = internals.adapter.model;
     if (
@@ -659,7 +692,11 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
 
     const execution = normalizeToolResult(call.name, result);
     const normalizedResult = sanitizeToolResult(execution.result);
-    const modelContent = JSON.stringify(normalizedResult);
+    // Every result crosses ONE output boundary: identical under the caps,
+    // head+tail preview (with a spill ref when configured) over them. The
+    // bounded string is what the model, history, and journal all see.
+    const bounded = boundToolOutput(JSON.stringify(normalizedResult), this.toolOutput, call.id);
+    const modelContent = bounded.content;
     const executionOutcome = execution.outcome;
     const normalizedRecord = normalizedResult as unknown as Record<string, unknown>;
     rememberEffect(call, {
@@ -677,13 +714,45 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
         toolCallId: call.id,
         toolName: call.name,
         outcome: executionOutcome,
-        result: normalizedResult,
+        // The durable journal is bounded: an under-cap result is persisted
+        // whole; an over-cap result is persisted only as its bounded
+        // preview (modelContent) plus output metadata — the complete bytes
+        // live in the spill file, never in the journal.
+        ...(bounded.truncated ? {} : { result: normalizedResult }),
         modelContent,
-        ...(normalizedResult.error === undefined ? {} : { error: normalizedResult.error }),
+        ...(bounded.truncated
+          ? {
+              output: {
+                truncated: true as const,
+                byteCount: bounded.byteCount,
+                lineCount: bounded.lineCount,
+                ...(bounded.fullOutputRef ? { fullOutputRef: bounded.fullOutputRef } : {}),
+              },
+            }
+          : {}),
+        ...(normalizedResult.error === undefined
+          ? {}
+          : {
+              error: bounded.truncated
+                ? bytePrefix(normalizedResult.error, 2048)
+                : normalizedResult.error,
+            }),
       },
       ...context,
     });
     return { result: normalizedResult, modelContent };
+  }
+
+  /**
+   * Declare a call that cancellation prevented from ever starting. Only the
+   * tool/call event is journaled — no execution-started, no fabricated
+   * result. The kernel's interruption repair is the single authority for
+   * closing a declared-but-never-started call: it records a definitive
+   * failed (not unknown) receipt and the paired model-facing tool message
+   * when the aborted turn closes.
+   */
+  private declareCancelledToolCall(call: ToolCall, context: SessionEventContext): void {
+    this.session.append({ type: "tool/call", data: { call }, ...context });
   }
 
   /**
@@ -712,7 +781,11 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
       error: message,
       executionOutcome: "unknown" as const,
     };
-    const modelContent = JSON.stringify(result);
+    // Same single output boundary as the success path — including the
+    // journal: a truncated representation is persisted without the full
+    // result or an unbounded error string.
+    const bounded = boundToolOutput(JSON.stringify(result), this.toolOutput, call.id);
+    const modelContent = bounded.content;
     rememberEffect(call, result, context);
     this.session.append({
       type: "tool/result",
@@ -720,9 +793,19 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
         toolCallId: call.id,
         toolName: call.name,
         outcome: "unknown",
-        result,
-        error: message,
+        ...(bounded.truncated ? {} : { result }),
+        error: bounded.truncated ? bytePrefix(message, 2048) : message,
         modelContent,
+        ...(bounded.truncated
+          ? {
+              output: {
+                truncated: true as const,
+                byteCount: bounded.byteCount,
+                lineCount: bounded.lineCount,
+                ...(bounded.fullOutputRef ? { fullOutputRef: bounded.fullOutputRef } : {}),
+              },
+            }
+          : {}),
       },
       ...context,
     });
@@ -958,19 +1041,39 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
 
             toolExecutionStarted = true;
             journalRecoveryRequired = true;
-            const settledExecutions = await Promise.allSettled(
-              calls.map((call) => this.executeTool(call, stepContext, rememberEffect)),
-            );
-            const executions = [];
-            for (const outcome of settledExecutions) {
+            // Bounded admission: parallel-safe calls share a capped pool,
+            // exclusive calls (the fail-closed default) run alone as
+            // barriers. Abort stops admissions — started calls drain, and a
+            // never-started call is only DECLARED (tool/call event): the
+            // kernel's interruption repair closes it with a definitive
+            // failed/not-started receipt when the aborted turn ends.
+            const batchOutcomes = await runToolBatch(calls, {
+              mode: (call) => classifyToolCall(this.registry.get(call.name), call.args),
+              execute: (call) => this.executeTool(call, stepContext, rememberEffect),
+              maxParallel: this.maxParallelTools,
+              isCancelled: () => options?.signal?.aborted === true,
+            });
+            const executions: Array<
+              { result: Awaited<ReturnType<ToolRegistry["execute"]>>; modelContent: string } | null
+            > = [];
+            for (let index = 0; index < calls.length; index += 1) {
+              const outcome = batchOutcomes[index];
               if (outcome.status === "rejected") throw outcome.reason;
-              executions.push(outcome.value);
+              if (outcome.status === "cancelled") {
+                this.declareCancelledToolCall(calls[index], stepContext);
+                executions.push(null);
+              } else {
+                executions.push(outcome.value);
+              }
             }
             const resultChunks: ChatStreamChunk[] = [];
             let uncertainExecution = false;
             for (let index = 0; index < calls.length; index += 1) {
               const call = calls[index];
               const execution = executions[index];
+              // Cancelled-before-start: declared above, closed by the
+              // kernel's interruption repair — no message or chunk here.
+              if (execution === null) continue;
               this.session.appendMessage({
                 role: "tool",
                 content: execution.modelContent,
@@ -996,6 +1099,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
                   error: execution.result.error,
                   executionOutcome: execution.result.executionOutcome,
                   callId: call.id,
+                  outputPreview: execution.modelContent,
                 },
               });
               uncertainExecution ||= execution.result.executionOutcome === "unknown";
@@ -1003,10 +1107,14 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
             // A tool batch is safe to retain in model history only after every
             // call has a matching durable result receipt. Until this point,
             // rollback must discard the entire batch even though an external
-            // side effect may already have started.
+            // side effect may already have started. A cancelled-before-start
+            // call was only DECLARED (no receipt yet), so recovery must still
+            // run at turn close to give it its not-started receipt.
             effectHistoryCheckpoint = this.currentHistory();
             effectStateCheckpoint = this.snapshotAdapterSessionState();
-            journalRecoveryRequired = false;
+            journalRecoveryRequired = batchOutcomes.some(
+              (outcome) => outcome.status === "cancelled",
+            );
             // Journal every result before yielding any result chunk. A stream
             // consumer may close at a yield boundary, but completed effects
             // must still have model-facing receipts in call order.

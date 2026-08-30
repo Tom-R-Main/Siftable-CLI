@@ -123,7 +123,7 @@ interface AgentHarnessChunk {
   type: 'text' | 'tool_call' | 'tool_result' | 'done';
   text?: string;
   toolCall?: { name: string; args?: Record<string, unknown>; callId?: string };
-  toolResult?: { name: string; success?: boolean; callId?: string };
+  toolResult?: { name: string; success?: boolean; callId?: string; outputPreview?: string };
   result?: { content?: string; text?: string };
 }
 
@@ -157,6 +157,8 @@ interface AgentHarnessModule {
     description: string;
     inputSchema: Record<string, unknown>;
     handler: (params: Record<string, unknown>) => Promise<unknown>;
+    /** Concurrency class for the harness tool scheduler; omitted = exclusive. */
+    executionMode?: (args: Record<string, unknown>) => 'exclusive' | 'parallel-safe';
   }) => unknown;
   ok: (data: unknown, message?: string) => unknown;
   err: (error: string) => unknown;
@@ -252,13 +254,18 @@ function registerJournalLeaseExitCleanup(): void {
  * process-lifetime lease prevents concurrent SessionKernel projections from
  * advancing that shared event stream.
  */
-function sessionJournalConfig(of: AgentHarnessModule, key: string): Record<string, unknown> | undefined {
-  if (typeof of.JsonlSessionEventStore !== 'function') return undefined;
-
-  const rootDir = resolve(
+/** Root under which durable session state (journals, tool-output spill) lives. */
+function sessionEventRoot(): string {
+  return resolve(
     process.env.SIFT_SESSION_EVENT_ROOT?.trim() ||
     join(homedir(), '.siftable', 'session-events', 'v1'),
   );
+}
+
+function sessionJournalConfig(of: AgentHarnessModule, key: string): Record<string, unknown> | undefined {
+  if (typeof of.JsonlSessionEventStore !== 'function') return undefined;
+
+  const rootDir = sessionEventRoot();
   const conversationDigest = sessionJournalIdForConversation(key);
   const store = new of.JsonlSessionEventStore({rootDir});
   const leaseKey = `${rootDir}\0${conversationDigest}`;
@@ -599,6 +606,7 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
 
   const readFile = of.defineTool({
     name: 'read_file',
+    executionMode: () => 'parallel-safe',
     description:
       "Read a UTF-8 text file from the user's local machine. Returns up to 64KB of content. Skips binary files.",
     inputSchema: {
@@ -623,6 +631,7 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
 
   const listDir = of.defineTool({
     name: 'list_dir',
+    executionMode: () => 'parallel-safe',
     description: "List entries in a directory on the user's local machine.",
     inputSchema: {
       type: 'object',
@@ -650,6 +659,7 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
 
   const searchLocalFiles = of.defineTool({
     name: 'search_local_files',
+    executionMode: () => 'parallel-safe',
     description:
       "Search local workspace file CONTENTS for a literal string. This is grep-like content search, not file-name search. Bounded, read-only, skips hidden/noisy dirs and binary/large files by default.",
     inputSchema: {
@@ -695,6 +705,7 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
 
   const inspectWorkspace = of.defineTool({
     name: 'inspect_local_workspace',
+    executionMode: () => 'parallel-safe',
     description:
       'Summarize the local workspace: detected languages, key files, compact top-level tree, and likely symbols. Use this first for broad codebase orientation.',
     inputSchema: {
@@ -719,6 +730,7 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
 
   const findLocalFilesTool = of.defineTool({
     name: 'find_local_files',
+    executionMode: () => 'parallel-safe',
     description:
       'Fuzzy path/name search for local files, similar to Codex @-mention file search. This matches file paths, not file contents.',
     inputSchema: {
@@ -755,6 +767,7 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
 
   const codeSearchTool = of.defineTool({
     name: 'code_search',
+    executionMode: () => 'parallel-safe',
     description:
       'Broad read-only code search for codebase questions. Compiles likely content queries, ranks files/spans, and suggests batch_read_files follow-ups. Use for "where is X handled" or "scour this codebase" style questions.',
     inputSchema: {
@@ -801,6 +814,7 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
 
   const batchReadFilesTool = of.defineTool({
     name: 'batch_read_files',
+    executionMode: () => 'parallel-safe',
     description:
       'Read several local files or line ranges in one read-only call. Use after inspect_local_workspace, find_local_files, or code_search has ranked paths.',
     inputSchema: {
@@ -1354,6 +1368,11 @@ export async function getAgent(): Promise<AgentHarnessAgent> {
         // is the always-on durable authority for resume and recovery.
         persistKey: key,
         ...(session ? {session} : {}),
+        // Truncated tool results keep their full bytes here, beside the
+        // journal, keyed by conversation then call id.
+        ...(session
+          ? {toolOutput: {spillDir: join(sessionEventRoot(), 'tool-output', String(session.id))}}
+          : {}),
       });
     })();
     agents.set(key, pending);
@@ -2445,6 +2464,10 @@ export async function agentHarnessAsk(
             name: chunk.toolResult?.name ?? 'tool',
             success: chunk.toolResult?.success ?? true,
             ...(chunk.toolResult?.callId ? { callId: chunk.toolResult.callId } : {}),
+            // Bounded preview from the harness output boundary — the TUI
+            // renders it (clipped further for display) instead of hiding
+            // local results entirely.
+            ...(chunk.toolResult?.outputPreview ? { output: chunk.toolResult.outputPreview } : {}),
           },
         });
       } else if (chunk.type === 'done') {

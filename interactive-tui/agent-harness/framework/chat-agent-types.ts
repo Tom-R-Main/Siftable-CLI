@@ -215,6 +215,19 @@ export interface ChatAgentConfig {
   /** Max tool-calling rounds per turn (default: 10) */
   maxToolRounds?: number;
 
+  /** Concurrent parallel-safe tool executions per batch (default: 4, min 1). */
+  maxParallelTools?: number;
+
+  /**
+   * Model-facing tool output bounding: byte/line caps and an optional spill
+   * directory that retains the complete output of truncated results.
+   */
+  toolOutput?: {
+    maxBytes?: number;
+    maxLines?: number;
+    spillDir?: string;
+  };
+
   /** Event-sourced session journal configuration. */
   session?: ChatSessionConfig;
 
@@ -288,6 +301,8 @@ export interface ChatStreamChunk {
     error?: string;
     executionOutcome?: "succeeded" | "failed" | "unknown";
     callId?: string;
+    /** Bounded, display-safe serialization of the result (what the model saw). */
+    outputPreview?: string;
   };
 
   /** Final result (for type: "done") */

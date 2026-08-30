@@ -5,6 +5,9 @@
 // form), it's authored against vitest and excluded from jest (see jest.config.js
 // testPathIgnorePatterns). vi.mock is hoisted above the imports below.
 import {describe, it, expect, vi} from 'vitest';
+import {mkdtemp, readFile, rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import type {AdapterResponse, AIAdapter, ChatMessage} from '../../interactive-tui/agent-harness/framework/adapters/types';
 import type {ChatAgentConfig, ChatStreamChunk} from '../../interactive-tui/agent-harness/framework/chat-agent-types';
 import {RunExecutionError} from '../../interactive-tui/agent-harness/framework/chat-agent-types';
@@ -86,6 +89,77 @@ describe('Siftable agent-harness chat loop', () => {
       turnId: 'turn-b',
       stepId: 'step-a',
     })).toThrow('cannot complete step step-a: it is not open in turn turn-b');
+  });
+
+  it('fails closed on malformed truncation metadata in durable tool results', () => {
+    const session = new SessionKernel({sessionId: 'output-metadata-validation-test'});
+    const context = {turnId: 'turn-a', stepId: 'step-a'};
+    const call = {id: 'call-malformed', name: 'big_output', args: {}};
+    session.append({type: 'turn/started', data: {}, turnId: 'turn-a'});
+    session.appendMessage({role: 'user', content: 'fetch'}, {turnId: 'turn-a'});
+    session.append({type: 'step/started', data: {index: 0}, ...context});
+    session.append({
+      type: 'model/request-prepared',
+      data: {
+        history: {
+          throughSeq: session.getEventCount(),
+          messageCount: 1,
+          sha256: digestJson([{role: 'user', content: 'fetch'}]),
+        },
+        systemPromptSha256: digestJson('test'),
+        tools: {names: ['big_output'], sha256: digestJson(['big_output'])},
+      },
+      ...context,
+    });
+    session.append({type: 'model/response-received', data: {toolCall: call}, ...context});
+    session.appendMessage({
+      role: 'assistant',
+      content: JSON.stringify(call.args),
+      toolCallId: call.id,
+      toolName: call.name,
+    }, context);
+    session.append({type: 'tool/call', data: {call}, ...context});
+    session.append({type: 'tool/execution-started', data: {call}, ...context});
+
+    const appendResult = (output: unknown, extra: Record<string, unknown> = {}) => () => session.append({
+      type: 'tool/result',
+      data: {
+        toolCallId: call.id,
+        toolName: call.name,
+        outcome: 'succeeded',
+        modelContent: 'preview',
+        output,
+        ...extra,
+      } as never,
+      ...context,
+    });
+    // Codex review repro: this exact shape must be rejected, not accepted.
+    expect(appendResult({truncated: 'not-boolean', byteCount: -1, lineCount: 0, fullOutputRef: 123}))
+      .toThrow('output metadata requires truncated=true');
+    expect(appendResult({truncated: true, byteCount: -1, lineCount: 1}))
+      .toThrow('byteCount must be a positive integer');
+    // NaN is caught one layer earlier by the envelope's JSON sanitizer.
+    expect(appendResult({truncated: true, byteCount: Number.NaN, lineCount: 1}))
+      .toThrow('contains a non-finite number');
+    expect(appendResult({truncated: true, byteCount: 2048, lineCount: 0}))
+      .toThrow('lineCount must be a positive integer');
+    expect(appendResult({truncated: true, byteCount: 2048, lineCount: 1, fullOutputRef: 123}))
+      .toThrow('fullOutputRef');
+    expect(appendResult('not-an-object')).toThrow('output metadata must be an object');
+    expect(appendResult(
+      {truncated: true, byteCount: 2048, lineCount: 1},
+      {result: {success: true, data: {huge: 'blob'}}},
+    )).toThrow('must not persist the full result');
+    // Without modelContent the bounded receipt would vanish: recovery falls
+    // back to bare outcome/error when result is (correctly) absent too.
+    expect(appendResult(
+      {truncated: true, byteCount: 2048, lineCount: 1},
+      {modelContent: undefined},
+    )).toThrow('must carry its bounded modelContent');
+
+    // A well-formed truncated receipt is accepted.
+    expect(appendResult({truncated: true, byteCount: 2048, lineCount: 1, fullOutputRef: '/tmp/x.json'})())
+      .toMatchObject({type: 'tool/result'});
   });
 
   it('validates appends without rescanning the prior event array', () => {
@@ -832,6 +906,9 @@ describe('Siftable agent-harness chat loop', () => {
     const echo = defineTool({
       name: 'echo',
       description: 'Echoes its tag; the first call finishes after the second',
+      // The two calls block on each other, so they must actually run
+      // concurrently — the fail-closed exclusive default would deadlock.
+      executionMode: () => 'parallel-safe',
       inputSchema: {type: 'object', properties: {tag: {type: 'string'}}},
       handler: async ({tag}: {tag: string}) => {
         if (tag === 'first') {
@@ -883,6 +960,204 @@ describe('Siftable agent-harness chat loop', () => {
       ['call-first', 'first'],
       ['call-second', 'second'],
     ]);
+  });
+
+  it('caps parallel-safe tools at maxParallelTools and serializes undeclared tools', async () => {
+    let active = 0;
+    let maxActiveParallel = 0;
+    let maxActiveExclusive = 0;
+    const probe = defineTool({
+      name: 'probe_parallel',
+      description: 'Records concurrent execution depth',
+      executionMode: () => 'parallel-safe',
+      inputSchema: {type: 'object', properties: {n: {type: 'number'}}},
+      handler: async () => {
+        active += 1;
+        maxActiveParallel = Math.max(maxActiveParallel, active);
+        await nextEventLoopTurn();
+        await nextEventLoopTurn();
+        active -= 1;
+        return ok({});
+      },
+    });
+    const undeclared = defineTool({
+      name: 'probe_undeclared',
+      description: 'No executionMode: must fail closed to exclusive',
+      inputSchema: {type: 'object', properties: {n: {type: 'number'}}},
+      handler: async () => {
+        active += 1;
+        maxActiveExclusive = Math.max(maxActiveExclusive, active);
+        await nextEventLoopTurn();
+        active -= 1;
+        return ok({});
+      },
+    });
+    let round = 0;
+    const adapter: AIAdapter = {
+      name: 'pool-cap-mock',
+      model: 'pool-cap-model',
+      async chat() {
+        round += 1;
+        if (round === 1) {
+          return {
+            toolCalls: [1, 2, 3, 4].map((n) => ({id: `p-${n}`, name: 'probe_parallel', args: {n}})),
+          };
+        }
+        if (round === 2) {
+          return {
+            toolCalls: [1, 2, 3].map((n) => ({id: `x-${n}`, name: 'probe_undeclared', args: {n}})),
+          };
+        }
+        return {text: 'done'};
+      },
+    };
+    const agent = await createChatAgent({
+      adapter,
+      memory: false,
+      tools: [probe, undeclared],
+      maxParallelTools: 2,
+    });
+    await agent.chat('exercise the pool');
+    expect(maxActiveParallel).toBe(2); // capped, but actually concurrent
+    expect(maxActiveExclusive).toBe(1); // fail-closed default is a barrier
+  });
+
+  it('abort stops admissions: started calls drain, never-started calls settle as cancelled', async () => {
+    const firstStarted = deferred<void>();
+    const releaseFirst = deferred<void>();
+    const startedTags: string[] = [];
+    const slowPair = defineTool({
+      name: 'slow_pair',
+      description: 'First call blocks until released so the abort window is deterministic',
+      executionMode: () => 'parallel-safe',
+      inputSchema: {type: 'object', properties: {tag: {type: 'string'}}},
+      handler: async ({tag}: {tag: string}) => {
+        startedTags.push(tag);
+        if (tag === 'first') {
+          firstStarted.resolve();
+          await releaseFirst.promise;
+        }
+        return ok({tag});
+      },
+    });
+    const adapter: AIAdapter = {
+      name: 'cancel-admission-mock',
+      model: 'cancel-admission-model',
+      async chat() {
+        return {
+          toolCalls: [
+            {id: 'call-ran', name: 'slow_pair', args: {tag: 'first'}},
+            {id: 'call-never', name: 'slow_pair', args: {tag: 'second'}},
+          ],
+        };
+      },
+    };
+    const agent = await createChatAgent({
+      adapter,
+      memory: false,
+      tools: [slowPair],
+      maxParallelTools: 1, // the second call must wait for the only slot
+    });
+    const controller = new AbortController();
+    const turn = agent.chat('run and cancel', {signal: controller.signal});
+    await firstStarted.promise;
+    controller.abort(new Error('cancel mid-batch'));
+    releaseFirst.resolve();
+    await expect(turn).rejects.toThrow('cancel mid-batch');
+
+    expect(startedTags).toEqual(['first']); // the second call never executed
+    const events = agent.getSessionEvents();
+    const results = events.filter((event) => event.type === 'tool/result');
+    const ran = results.find((event) => event.data.toolCallId === 'call-ran');
+    const never = results.find((event) => event.data.toolCallId === 'call-never');
+    expect(ran?.data.outcome).toBe('succeeded');
+    // The kernel's interruption repair closes the declared-but-never-started
+    // call with a definitive failed receipt — NOT unknown, so it is safely
+    // retryable — marked as recovered.
+    expect(never?.data.outcome).toBe('failed');
+    expect(never?.data.recovered).toBe(true);
+    expect(String(never?.data.error)).toMatch(/did not start before recovery/i);
+    // Both calls still have paired tool receipts in retained history.
+    const retained = agent.getHistory();
+    expect(retained.map((message) => message.role)).toEqual(['user', 'assistant', 'tool', 'tool']);
+    expect(retained[2]?.toolCallId).toBe('call-ran');
+    expect(retained[3]?.toolCallId).toBe('call-never');
+    expect(String(retained[3]?.content)).toMatch(/did not start before recovery/i);
+  });
+
+  it('bounds oversized tool output for the model and spills the full bytes', async () => {
+    const spillRoot = await mkdtemp(join(tmpdir(), 'sift-chat-spill-'));
+    try {
+      const big = defineTool({
+        name: 'big_output',
+        description: 'Returns more data than the model-facing cap allows',
+        inputSchema: {type: 'object', properties: {}},
+        handler: async () => ok({blob: 'x'.repeat(100_000)}),
+      });
+      let round = 0;
+      const adapter: AIAdapter = {
+        name: 'big-output-mock',
+        model: 'big-output-model',
+        async chat() {
+          round += 1;
+          if (round === 1) return {toolCall: {id: 'call-big', name: 'big_output', args: {}}};
+          return {text: 'done'};
+        },
+      };
+      const agent = await createChatAgent({
+        adapter,
+        memory: false,
+        tools: [big],
+        toolOutput: {maxBytes: 2048, spillDir: spillRoot},
+      });
+
+      const chunks: ChatStreamChunk[] = [];
+      for await (const chunk of agent.chat('fetch it all', {stream: true})) chunks.push(chunk);
+
+      const toolMessage = agent.getHistory().find((message) => message.role === 'tool');
+      const content = String(toolMessage?.content);
+      expect(content).toContain('[tool output truncated:');
+      expect(Buffer.byteLength(content)).toBeLessThanOrEqual(2048); // configured cap honored
+
+      const resultEvent = agent.getSessionEvents().find((event) => event.type === 'tool/result');
+      const output = (resultEvent?.data as {output?: {truncated?: boolean; fullOutputRef?: string; byteCount?: number}}).output;
+      expect(output?.truncated).toBe(true);
+      expect(output?.byteCount).toBeGreaterThan(100_000);
+      expect(output?.fullOutputRef).toBeDefined();
+      const spilled = await readFile(output!.fullOutputRef!, 'utf8');
+      expect(spilled).toContain('x'.repeat(1000)); // complete bytes retained
+      expect(Buffer.byteLength(spilled)).toBe(output!.byteCount!);
+
+      // The DURABLE journal is bounded too: the full result lives only in
+      // the spill file, never inside the persisted event.
+      expect(resultEvent?.data.result).toBeUndefined();
+      expect(Buffer.byteLength(JSON.stringify(resultEvent?.data))).toBeLessThanOrEqual(8192);
+
+      // The stream preview matches what the model saw; full data still flows to API consumers.
+      const resultChunk = chunks.find((chunk) => chunk.type === 'tool_result');
+      expect(resultChunk?.toolResult?.outputPreview).toBe(content);
+      expect((resultChunk?.toolResult?.data as {blob?: string})?.blob?.length).toBe(100_000);
+    } finally {
+      await rm(spillRoot, {recursive: true, force: true});
+    }
+  });
+
+  it('rejects non-integer or out-of-range parallelism and output caps at construction', async () => {
+    const adapter: AIAdapter = {
+      name: 'bounds-mock',
+      model: 'bounds-model',
+      async chat() {
+        return {text: 'unused'};
+      },
+    };
+    for (const maxParallelTools of [Number.NaN, Number.POSITIVE_INFINITY, 2.5, 0]) {
+      await expect(createChatAgent({adapter, memory: false, maxParallelTools}))
+        .rejects.toThrow(/maxParallelTools must be an integer/);
+    }
+    await expect(createChatAgent({adapter, memory: false, toolOutput: {maxBytes: 64}}))
+      .rejects.toThrow(/toolOutput\.maxBytes must be an integer >= 1024/);
+    await expect(createChatAgent({adapter, memory: false, toolOutput: {maxLines: Number.NaN}}))
+      .rejects.toThrow(/toolOutput\.maxLines must be an integer/);
   });
 
   it('serializes reset, deleteThread, and destroy behind active turns', async () => {

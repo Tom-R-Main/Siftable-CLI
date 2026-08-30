@@ -159,6 +159,13 @@ export function defineTool<
     );
   }
 
+  if (definition.executionMode !== undefined && typeof definition.executionMode !== "function") {
+    throw new Error(
+      `Tool "${definition.name}" executionMode must be a function returning ` +
+        `"exclusive" or "parallel-safe" (or be omitted for exclusive).`,
+    );
+  }
+
   return definition;
 }
 

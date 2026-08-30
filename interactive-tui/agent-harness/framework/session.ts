@@ -122,10 +122,23 @@ export interface SessionEventDataMap {
     toolCallId: string;
     toolName: string;
     outcome: ToolResultOutcome;
+    /** Full result — omitted when it exceeded the output caps (see output). */
     result?: unknown;
     error?: string;
     /** Exact content appended to model history for this result. */
     modelContent?: string;
+    /**
+     * Present when the serialized result exceeded the output caps: the
+     * journal then persists only the bounded modelContent, and the complete
+     * bytes live at fullOutputRef (when spilling was configured and
+     * succeeded), never in the journal.
+     */
+    output?: {
+      truncated: true;
+      byteCount: number;
+      lineCount: number;
+      fullOutputRef?: string;
+    };
     /** True when crash recovery synthesized this result without retrying. */
     recovered?: boolean;
   };
@@ -2478,6 +2491,34 @@ function validateEventData(event: SessionEvent): void {
       assertOptionalString(event.data.modelContent, "tool result modelContent");
       if (event.data.recovered !== undefined && typeof event.data.recovered !== "boolean") {
         throw new SessionInvariantError("tool result recovered must be boolean");
+      }
+      if (event.data.output !== undefined) {
+        const output = event.data.output;
+        if (typeof output !== "object" || output === null) {
+          throw new SessionInvariantError("tool result output metadata must be an object");
+        }
+        if (output.truncated !== true) {
+          throw new SessionInvariantError("tool result output metadata requires truncated=true");
+        }
+        if (!Number.isInteger(output.byteCount) || output.byteCount < 1) {
+          throw new SessionInvariantError("tool result output byteCount must be a positive integer");
+        }
+        if (!Number.isInteger(output.lineCount) || output.lineCount < 1) {
+          throw new SessionInvariantError("tool result output lineCount must be a positive integer");
+        }
+        if (output.fullOutputRef !== undefined) {
+          assertNonEmptyString(output.fullOutputRef, "tool result output fullOutputRef");
+        }
+        // The journal stays bounded: a truncated result persists only its
+        // bounded modelContent, never the full result alongside it — and
+        // that modelContent must exist, or recovery would fall back to a
+        // bare outcome/error and lose the bounded receipt entirely.
+        if (event.data.result !== undefined) {
+          throw new SessionInvariantError("a truncated tool result must not persist the full result");
+        }
+        if (typeof event.data.modelContent !== "string" || event.data.modelContent === "") {
+          throw new SessionInvariantError("a truncated tool result must carry its bounded modelContent");
+        }
       }
       break;
     case "step/completed":
