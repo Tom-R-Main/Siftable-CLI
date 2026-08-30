@@ -215,7 +215,20 @@ export class CodexClient {
         this.failAll(new Error('codex app-server exited'));
         this.proc = null;
         this.ready = null;
+        // Nothing from the dead generation may leak into the next one: a
+        // half-written frame left in the buffer would concatenate with the
+        // fresh server's first response and silently drop it, and the dead
+        // stream's listener could still append late flushes.
+        proc.stdout.removeAllListeners('data');
+        this.buffer = '';
+        // Cached thread ids live in the dead server's memory. A respawned
+        // app-server does not know them, so a stale id would make the next
+        // turn fail (or resume the wrong state) — drop them with the process.
+        threads.clear();
       });
+      // Fresh generation, fresh framing state (a data event queued between
+      // the old proc's exit and this connect could have re-dirtied it).
+      this.buffer = '';
       proc.stdout.setEncoding('utf8');
       proc.stdout.on('data', (chunk: string) => this.onData(chunk));
 
@@ -560,6 +573,12 @@ function itemOutput(item: Record<string, JsonValue>): string | undefined {
   return undefined;
 }
 
+/** The item id shared by item/started and item/completed — the TUI uses it to
+ * settle the matching tool row when parallel calls share a name. */
+function itemCallId(item: Record<string, JsonValue>): string | undefined {
+  return typeof item.id === 'string' && item.id ? item.id : undefined;
+}
+
 function itemSucceeded(item: Record<string, JsonValue>): boolean {
   const status = typeof item.status === 'string' ? item.status : '';
   if (status && /fail|error|denied|declined|cancel|abort/i.test(status)) return false;
@@ -586,7 +605,15 @@ export function mapCodexNotification(
       const name = toolNameFor(item);
       if (!name) return null;
       const detail = itemDetail(item);
-      return { type: 'tool_call', toolCall: detail ? { name, detail } : { name } };
+      const callId = itemCallId(item);
+      return {
+        type: 'tool_call',
+        toolCall: {
+          name,
+          ...(detail ? { detail } : {}),
+          ...(callId ? { callId } : {}),
+        },
+      };
     }
     case 'item/completed': {
       const item = params.item as Record<string, JsonValue> | undefined;
@@ -595,9 +622,15 @@ export function mapCodexNotification(
       if (!name) return null;
       const success = itemSucceeded(item);
       const output = itemOutput(item);
+      const callId = itemCallId(item);
       return {
         type: 'tool_result',
-        toolResult: output ? { name, success, output } : { name, success },
+        toolResult: {
+          name,
+          success,
+          ...(output ? { output } : {}),
+          ...(callId ? { callId } : {}),
+        },
       };
     }
     case 'error': {

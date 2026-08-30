@@ -15,6 +15,7 @@ import {
   ensureThread,
   shutdownCodex,
   __resetCodexThreadsForTests,
+  type CodexSpawnFn,
 } from '../../interactive-tui/codexEngine';
 import {getSessionCwd, setSessionCwd} from '../../interactive-tui/navigation';
 import {
@@ -299,5 +300,66 @@ describe('ensureThread — per-session keyed threads', () => {
     const tid2 = await startMiss(client, proc, 't-2');
     expect(startCount(proc)).toBe(2); // had to restart — cache was cleared
     expect(tid2).not.toBe(tid1);
+  });
+
+  it('an app-server exit drops cached thread ids — a respawn cannot reuse a dead server thread', async () => {
+    const procs: FakeCodexProc[] = [];
+    const spawnFresh: CodexSpawnFn = () => {
+      const p = new FakeCodexProc();
+      procs.push(p);
+      return p as unknown as ReturnType<CodexSpawnFn>;
+    };
+    const client = new CodexClient(spawnFresh);
+    let ready = client.ensureReady();
+    await completeHandshake(procs[0]);
+    await ready;
+
+    setSessionCwd(dirs.parent);
+    const tid1 = await startMiss(client, procs[0], 't-gen1');
+    expect(startCount(procs[0])).toBe(1);
+
+    // The sidecar dies; its threads exist only in that process's memory.
+    procs[0].exit(1);
+
+    ready = client.ensureReady();
+    await completeHandshake(procs[1]);
+    await ready;
+
+    // Same context key, new process generation: ensureThread must start a
+    // NEW thread rather than replaying the dead server's id.
+    const tid2 = await startMiss(client, procs[1], 't-gen2');
+    expect(startCount(procs[1])).toBe(1);
+    expect(tid2).not.toBe(tid1);
+  });
+
+  it('a mid-frame exit does not poison the next generation\'s handshake', async () => {
+    const procs: FakeCodexProc[] = [];
+    const spawnFresh: CodexSpawnFn = () => {
+      const p = new FakeCodexProc();
+      procs.push(p);
+      return p as unknown as ReturnType<CodexSpawnFn>;
+    };
+    const client = new CodexClient(spawnFresh);
+    let ready = client.ensureReady();
+    await completeHandshake(procs[0]);
+    await ready;
+
+    // The server dies half-way through writing a frame. Let the partial
+    // actually reach the client's framing buffer before the exit fires.
+    procs[0].writeRaw('{"jsonrpc":');
+    await new Promise((r) => setTimeout(r, 0));
+    procs[0].exit(1);
+
+    // Without clearing the buffer, the stale partial would concatenate with
+    // the fresh server's initialize response, JSON parsing would drop it,
+    // and this handshake would hang.
+    ready = client.ensureReady();
+    await completeHandshake(procs[1]);
+    await ready;
+
+    // The new generation frames follow-up traffic correctly too.
+    setSessionCwd(dirs.parent);
+    const tid = await startMiss(client, procs[1], 't-clean');
+    expect(tid).toBe('t-clean');
   });
 });

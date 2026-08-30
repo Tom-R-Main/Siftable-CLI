@@ -276,8 +276,9 @@ export interface ChatStreamChunk {
   /** Incremental text (for type: "text") */
   text?: string;
 
-  /** Tool call info (for type: "tool_call") */
-  toolCall?: { name: string; args: Record<string, unknown> };
+  /** Tool call info (for type: "tool_call"). `callId` is the provider call id;
+   * results carry the same id so parallel same-name calls stay correlated. */
+  toolCall?: { name: string; args: Record<string, unknown>; callId?: string };
 
   /** Tool result (for type: "tool_result") */
   toolResult?: {
@@ -286,6 +287,7 @@ export interface ChatStreamChunk {
     data?: unknown;
     error?: string;
     executionOutcome?: "succeeded" | "failed" | "unknown";
+    callId?: string;
   };
 
   /** Final result (for type: "done") */

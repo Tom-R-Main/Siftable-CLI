@@ -26,8 +26,8 @@ export interface SseEvent {
   type: string;
   content?: string;
   text?: string;
-  toolCall?: { name: string; args?: Record<string, unknown>; detail?: string };
-  toolResult?: { name: string; success?: boolean; output?: string; explorerActivity?: unknown };
+  toolCall?: { name: string; args?: Record<string, unknown>; detail?: string; callId?: string };
+  toolResult?: { name: string; success?: boolean; output?: string; explorerActivity?: unknown; callId?: string };
   message?: { content?: string };
   result?: { content?: string; text?: string } | unknown;
   error?: string;

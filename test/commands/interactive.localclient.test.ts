@@ -29,8 +29,8 @@ describe('LocalControlClient (in-process transport)', () => {
       const stream: BrainEvent[] = [
         {type: 'token', content: 'Hello '},
         {type: 'token', content: 'world'},
-        {type: 'tool_call', toolCall: {name: 'list_dir'}},
-        {type: 'tool_result', toolResult: {name: 'list_dir', success: true}},
+        {type: 'tool_call', toolCall: {name: 'list_dir', callId: 'c1'}},
+        {type: 'tool_result', toolResult: {name: 'list_dir', success: true, callId: 'c1'}},
         {type: 'done', message: {content: 'Hello world'}},
       ];
       const client = new LocalControlClient({ask: fakeAsk(stream)});
@@ -47,7 +47,9 @@ describe('LocalControlClient (in-process transport)', () => {
       ]);
       expect(received[0].content).toBe('Hello ');
       expect(received[2].toolCall?.name).toBe('list_dir');
+      expect(received[2].toolCall?.callId).toBe('c1');
       expect(received[3].toolResult?.success).toBe(true);
+      expect(received[3].toolResult?.callId).toBe('c1');
     });
 
     it('emits a trailing error event when the brain returns {error} (degraded path)', async () => {

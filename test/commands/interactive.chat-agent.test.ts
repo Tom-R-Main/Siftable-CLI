@@ -6,7 +6,7 @@
 // testPathIgnorePatterns). vi.mock is hoisted above the imports below.
 import {describe, it, expect, vi} from 'vitest';
 import type {AdapterResponse, AIAdapter, ChatMessage} from '../../interactive-tui/agent-harness/framework/adapters/types';
-import type {ChatAgentConfig} from '../../interactive-tui/agent-harness/framework/chat-agent-types';
+import type {ChatAgentConfig, ChatStreamChunk} from '../../interactive-tui/agent-harness/framework/chat-agent-types';
 import {RunExecutionError} from '../../interactive-tui/agent-harness/framework/chat-agent-types';
 import {mimeFromPath} from '../../interactive-tui/agent-harness/framework/adapters/content';
 import {
@@ -825,6 +825,64 @@ describe('Siftable agent-harness chat loop', () => {
 
     const replayed = new SessionKernel({sessionId: 'siftable-parallel-failure-test', store});
     expect(replayed.recoverInterrupted()).toHaveLength(0);
+  });
+
+  it('streams callId on tool chunks so parallel same-name calls stay correlated', async () => {
+    const releaseFirst = deferred<void>();
+    const echo = defineTool({
+      name: 'echo',
+      description: 'Echoes its tag; the first call finishes after the second',
+      inputSchema: {type: 'object', properties: {tag: {type: 'string'}}},
+      handler: async ({tag}: {tag: string}) => {
+        if (tag === 'first') {
+          await releaseFirst.promise; // completes only after 'second' has finished
+        } else {
+          releaseFirst.resolve();
+        }
+        return ok({tag});
+      },
+    });
+    let round = 0;
+    const adapter: AIAdapter = {
+      name: 'parallel-callid-mock',
+      model: 'parallel-callid-model',
+      async chat() {
+        round += 1;
+        if (round === 1) {
+          return {
+            toolCalls: [
+              {id: 'call-first', name: 'echo', args: {tag: 'first'}},
+              {id: 'call-second', name: 'echo', args: {tag: 'second'}},
+            ],
+          };
+        }
+        return {text: 'done'};
+      },
+    };
+    const agent = await createChatAgent({
+      adapter,
+      memory: false,
+      tools: [echo],
+      session: {id: 'siftable-parallel-callid-test', store: new InMemorySessionEventStore()},
+    });
+
+    const chunks: ChatStreamChunk[] = [];
+    for await (const chunk of agent.chat('run both', {stream: true})) chunks.push(chunk);
+
+    const calls = chunks.filter((chunk) => chunk.type === 'tool_call');
+    expect(calls.map((chunk) => chunk.toolCall)).toEqual([
+      {name: 'echo', args: {tag: 'first'}, callId: 'call-first'},
+      {name: 'echo', args: {tag: 'second'}, callId: 'call-second'},
+    ]);
+    // Executions completed in reverse order; each result chunk still carries
+    // the id AND payload of its own call.
+    const results = chunks.filter((chunk) => chunk.type === 'tool_result');
+    expect(
+      results.map((chunk) => [chunk.toolResult?.callId, (chunk.toolResult?.data as {tag?: string})?.tag]),
+    ).toEqual([
+      ['call-first', 'first'],
+      ['call-second', 'second'],
+    ]);
   });
 
   it('serializes reset, deleteThread, and destroy behind active turns', async () => {

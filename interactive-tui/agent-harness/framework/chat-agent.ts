@@ -931,7 +931,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
 
           if (calls.length > 0) {
             for (const call of calls) {
-              yield { type: "tool_call", toolCall: { name: call.name, args: call.args } };
+              yield { type: "tool_call", toolCall: { name: call.name, args: call.args, callId: call.id } };
             }
             throwIfAborted(options?.signal);
             const assistantCallMessage: ChatMessage = calls.length === 1
@@ -995,6 +995,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
                   data: execution.result.data,
                   error: execution.result.error,
                   executionOutcome: execution.result.executionOutcome,
+                  callId: call.id,
                 },
               });
               uncertainExecution ||= execution.result.executionOutcome === "unknown";

@@ -37,29 +37,29 @@ describe('mapCodexNotification (Codex app-server → BrainEvent)', () => {
     expect(mapCodexNotification('item/agentMessage/delta', {delta: 'hi'})).toEqual({type: 'token', content: 'hi'});
   });
 
-  it('maps tool-bearing item lifecycle to tool_call / tool_result', () => {
+  it('maps tool-bearing item lifecycle to tool_call / tool_result with the item id as callId', () => {
     const started = mapCodexNotification('item/started', {item: {type: 'commandExecution', id: '1'}});
-    expect(started).toEqual({type: 'tool_call', toolCall: {name: 'shell'}});
+    expect(started).toEqual({type: 'tool_call', toolCall: {name: 'shell', callId: '1'}});
 
     const okResult = mapCodexNotification('item/completed', {item: {type: 'webSearch', id: '2'}});
-    expect(okResult).toEqual({type: 'tool_result', toolResult: {name: 'web_search', success: true}});
+    expect(okResult).toEqual({type: 'tool_result', toolResult: {name: 'web_search', success: true, callId: '2'}});
 
     const failResult = mapCodexNotification('item/completed', {item: {type: 'commandExecution', id: '3', exitCode: 1}});
-    expect(failResult).toEqual({type: 'tool_result', toolResult: {name: 'shell', success: false}});
+    expect(failResult).toEqual({type: 'tool_result', toolResult: {name: 'shell', success: false, callId: '3'}});
   });
 
   it('surfaces the command on the call and its output on completion', () => {
     const started = mapCodexNotification('item/started', {
       item: {type: 'commandExecution', id: '1', command: 'npx tsc --noEmit'},
     });
-    expect(started).toEqual({type: 'tool_call', toolCall: {name: 'shell', detail: 'npx tsc --noEmit'}});
+    expect(started).toEqual({type: 'tool_call', toolCall: {name: 'shell', detail: 'npx tsc --noEmit', callId: '1'}});
 
     const completed = mapCodexNotification('item/completed', {
       item: {type: 'commandExecution', id: '1', command: 'npx tsc --noEmit', exitCode: 0, aggregatedOutput: 'no errors\n'},
     });
     expect(completed).toEqual({
       type: 'tool_result',
-      toolResult: {name: 'shell', success: true, output: 'no errors\n'},
+      toolResult: {name: 'shell', success: true, output: 'no errors\n', callId: '1'},
     });
   });
 
@@ -67,17 +67,21 @@ describe('mapCodexNotification (Codex app-server → BrainEvent)', () => {
     const started = mapCodexNotification('item/started', {
       item: {type: 'webSearch', id: '2', query: 'zig atomic file write'},
     });
-    expect(started).toEqual({type: 'tool_call', toolCall: {name: 'web_search', detail: 'zig atomic file write'}});
+    expect(started).toEqual({type: 'tool_call', toolCall: {name: 'web_search', detail: 'zig atomic file write', callId: '2'}});
   });
 
-  it('omits detail/output when the item has none (no empty keys)', () => {
+  it('omits detail/output/callId when the item has none (no empty keys)', () => {
     expect(mapCodexNotification('item/started', {item: {type: 'commandExecution', id: '3'}})).toEqual({
       type: 'tool_call',
-      toolCall: {name: 'shell'},
+      toolCall: {name: 'shell', callId: '3'},
     });
     expect(
       mapCodexNotification('item/completed', {item: {type: 'commandExecution', id: '3', exitCode: 0, aggregatedOutput: '   '}}),
-    ).toEqual({type: 'tool_result', toolResult: {name: 'shell', success: true}});
+    ).toEqual({type: 'tool_result', toolResult: {name: 'shell', success: true, callId: '3'}});
+    expect(mapCodexNotification('item/started', {item: {type: 'commandExecution'}})).toEqual({
+      type: 'tool_call',
+      toolCall: {name: 'shell'},
+    });
   });
 
   it('does not surface conversational items (agentMessage / reasoning) as tools', () => {

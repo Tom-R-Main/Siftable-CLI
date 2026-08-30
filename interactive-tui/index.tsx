@@ -83,6 +83,7 @@ import {
   clipOutput,
   gutterIndent,
 } from "./toolView";
+import { ToolRowTracker } from "./toolRowTracker";
 import { serializeConversation } from "./transcript";
 import { getSessionCwd, getWorkspaceRoot, setSessionCwd } from "./navigation";
 import { createChildSessionController } from "./childSessionController";
@@ -714,8 +715,7 @@ function App() {
     // event order. A tool call closes the current text bubble so the next text
     // starts a fresh one below the step.
     let assistantIdx: number | null = null;
-    let lastToolIdx: number | null = null;
-    const toolIndexes = new Map<string, number[]>();
+    const toolRows = new ToolRowTracker();
     let pendingAssistantIdx: number | null = null;
     const pendingTextDeltas: string[] = [];
     let textFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -773,10 +773,7 @@ function App() {
             const text = isExplorerToolName(e.toolCall.name)
               ? explorerToolCallText(e.toolCall.name, e.toolCall.detail)
               : `⚙ ${e.toolCall.name}${label ? `  ${label}` : ""}`;
-            lastToolIdx = messages.length;
-            const indexes = toolIndexes.get(e.toolCall.name) ?? [];
-            indexes.push(lastToolIdx);
-            toolIndexes.set(e.toolCall.name, indexes);
+            toolRows.register(e.toolCall.name, e.toolCall.callId, messages.length);
             push({ role: "tool", text });
             // The "sift" sound, once per turn, when work starts churning.
             if (firstTool) {
@@ -787,8 +784,7 @@ function App() {
             setStatus(`⚙ ${e.toolCall.name}… (Esc to stop)`);
           } else if (e.type === "tool_result") {
             const name = e.toolResult?.name ?? "";
-            const matchingIndexes = toolIndexes.get(name);
-            const toolIdx = matchingIndexes?.length ? matchingIndexes[matchingIndexes.length - 1] : lastToolIdx;
+            const toolIdx = toolRows.settle(name, e.toolResult?.callId);
             if (toolIdx !== null && toolIdx !== undefined) {
               const ok = e.toolResult?.success !== false;
               const activity = asExplorerActivityView(e.toolResult?.explorerActivity);
@@ -1624,19 +1620,22 @@ function App() {
         } else if (action.kind === "runWork") {
           const item = wp.data.items[action.rowIdx];
           if (item) {
-            setWorkPicker({...wp, status: `starting contracted run for "${item.title}"…`, evidence: undefined});
+            // "Prepare", not "run": this claims the item, creates/adopts the
+            // worktree, and starts lease heartbeats — it does not dispatch the
+            // work prompt. Saying "started" here would overclaim.
+            setWorkPicker({...wp, status: `claiming and preparing "${item.title}"…`, evidence: undefined});
             void workRunController.startContractedWork(item.id)
               .then((result) => {
                 if (result.ok === true) {
-                  void refreshWorkBoard(`started #${result.run.session.sessionId} on ${result.run.session.branch}`);
+                  void refreshWorkBoard(`prepared #${result.run.session.sessionId} on ${result.run.session.branch} — enter the session to run it`);
                 } else {
                   const cur = workPicker();
-                  if (cur) setWorkPicker({...cur, status: `run blocked at ${result.stage}: ${result.reason}`});
+                  if (cur) setWorkPicker({...cur, status: `prepare blocked at ${result.stage}: ${result.reason}`});
                 }
               })
               .catch((err) => {
                 const cur = workPicker();
-                if (cur) setWorkPicker({...cur, status: `run: ${err instanceof Error ? err.message : String(err)}`});
+                if (cur) setWorkPicker({...cur, status: `prepare: ${err instanceof Error ? err.message : String(err)}`});
               });
           }
         } else if (action.kind === "handoff") {
@@ -2536,7 +2535,7 @@ function App() {
                     </box>
                   )}
                 </Show>
-                <text fg={theme.muted} selectable={false}>↑/↓ select · ↵ detail · x run · v proof · h handoff · p plan · f focus · r recap · s ship · esc close</text>
+                <text fg={theme.muted} selectable={false}>↑/↓ select · ↵ detail · x prepare · v proof · h handoff · p plan · f focus · r recap · s ship · esc close</text>
               </Show>
 
               <Show when={draft()}>

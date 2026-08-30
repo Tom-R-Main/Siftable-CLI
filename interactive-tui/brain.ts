@@ -89,8 +89,8 @@ export interface BrainEvent {
   type: 'token' | 'tool_call' | 'tool_result' | 'done' | 'error';
   content?: string;
   error?: string;
-  toolCall?: { name: string; args?: Record<string, unknown>; detail?: string };
-  toolResult?: { name: string; success?: boolean; output?: string; explorerActivity?: unknown };
+  toolCall?: { name: string; args?: Record<string, unknown>; detail?: string; callId?: string };
+  toolResult?: { name: string; success?: boolean; output?: string; explorerActivity?: unknown; callId?: string };
   message?: { content?: string };
   [key: string]: unknown;
 }
@@ -122,8 +122,8 @@ const LEAN_PROMPT =
 interface AgentHarnessChunk {
   type: 'text' | 'tool_call' | 'tool_result' | 'done';
   text?: string;
-  toolCall?: { name: string; args?: Record<string, unknown> };
-  toolResult?: { name: string; success?: boolean };
+  toolCall?: { name: string; args?: Record<string, unknown>; callId?: string };
+  toolResult?: { name: string; success?: boolean; callId?: string };
   result?: { content?: string; text?: string };
 }
 
@@ -2429,14 +2429,23 @@ export async function agentHarnessAsk(
       } else if (chunk.type === 'tool_call') {
         // Surface the call and a salient arg (path/query/command) so the user
         // sees what each tool is doing — the TUI derives a one-line label.
+        // callId lets the TUI settle the right row when parallel calls share a name.
         emitPostExplorer({
           type: 'tool_call',
-          toolCall: { name: chunk.toolCall?.name ?? 'tool', args: chunk.toolCall?.args },
+          toolCall: {
+            name: chunk.toolCall?.name ?? 'tool',
+            args: chunk.toolCall?.args,
+            ...(chunk.toolCall?.callId ? { callId: chunk.toolCall.callId } : {}),
+          },
         });
       } else if (chunk.type === 'tool_result') {
         emitPostExplorer({
           type: 'tool_result',
-          toolResult: { name: chunk.toolResult?.name ?? 'tool', success: chunk.toolResult?.success ?? true },
+          toolResult: {
+            name: chunk.toolResult?.name ?? 'tool',
+            success: chunk.toolResult?.success ?? true,
+            ...(chunk.toolResult?.callId ? { callId: chunk.toolResult.callId } : {}),
+          },
         });
       } else if (chunk.type === 'done') {
         const finalContent = chunk.result?.content || chunk.result?.text;

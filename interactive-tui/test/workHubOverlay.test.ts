@@ -62,7 +62,7 @@ describe("work contract hub", () => {
     expect(workDetailLines(item).join("\n")).toContain("Re-author this item");
   });
 
-  it("routes x on a selected row to the contracted run action", () => {
+  it("routes x on a selected row to the claim-and-prepare action", () => {
     expect(reduceWorkKey(initialWorkState(), {sequence: "x"}, [boundedItem()])).toEqual({
       kind: "runWork",
       rowIdx: 0,
