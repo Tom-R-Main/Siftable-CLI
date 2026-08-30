@@ -69,6 +69,14 @@ export type CodexInstallState = 'unknown' | 'ok' | 'missing';
 
 type JsonValue = unknown;
 type NotificationListener = (method: string, params: Record<string, JsonValue>) => void;
+type DisconnectListener = (err: Error) => void;
+
+interface CodexGeneration {
+  proc: CodexProc;
+  disconnectListeners: Set<DisconnectListener>;
+  onError: (err: Error) => void;
+  onExit: () => void;
+}
 
 /** A pending JSON-RPC request awaiting its response. */
 interface Pending {
@@ -173,6 +181,7 @@ type Approver = (req: CodexApprovalRequest) => Promise<ApprovalDecision>;
  */
 export class CodexClient {
   private proc: CodexProc | null = null;
+  private generation: CodexGeneration | null = null;
   private buffer = '';
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
@@ -206,16 +215,25 @@ export class CodexClient {
         return;
       }
       this.proc = proc;
-      proc.on('error', (err) => {
+      const onError = (err: Error) => {
         // A child-process error is not guaranteed to be followed by exit.
-        // Tear down this generation here so the next request can respawn.
+        // Tear down and terminate this generation here so the next request can
+        // respawn without leaving the failed child orphaned.
         const error = err instanceof Error ? err : new Error(String(err));
-        this.teardownGeneration(proc, error);
+        this.teardownGeneration(proc, error, true);
         reject(error);
-      });
-      proc.on('exit', () => {
+      };
+      const onExit = () => {
         this.teardownGeneration(proc, new Error('codex app-server exited'));
-      });
+      };
+      this.generation = {
+        proc,
+        disconnectListeners: new Set(),
+        onError,
+        onExit,
+      };
+      proc.on('error', onError);
+      proc.on('exit', onExit);
       // Fresh generation, fresh framing state (a data event queued between
       // the old proc's exit and this connect could have re-dirtied it).
       this.buffer = '';
@@ -235,23 +253,44 @@ export class CodexClient {
     });
   }
 
-  private teardownGeneration(proc: CodexProc, err: Error): void {
+  private teardownGeneration(proc: CodexProc, err: Error, terminate = false): void {
     // A late error/exit from an older child must not tear down the replacement
     // generation or reject its requests.
     if (this.proc !== proc) return;
+    const generation = this.generation;
     this.failAll(err);
     this.proc = null;
+    this.generation = null;
     this.ready = null;
     // Nothing from the dead generation may leak into the next one: a
     // half-written frame left in the buffer would concatenate with the fresh
     // server's first response and silently drop it, and the dead stream's
     // listener could still append late flushes.
     proc.stdout.removeAllListeners('data');
+    if (generation?.proc === proc) {
+      proc.removeListener('error', generation.onError);
+      proc.removeListener('exit', generation.onExit);
+    }
     this.buffer = '';
     // Cached thread ids live in the dead server's memory. A respawned
     // app-server does not know them, so a stale id would make the next turn
     // fail (or resume the wrong state) — drop them with the process.
     threads.clear();
+    // Remove this generation's event handlers before termination. Although a
+    // real ChildProcess emits exit asynchronously, this ordering also keeps
+    // teardown idempotent for implementations that emit it from kill().
+    if (terminate) {
+      try {
+        proc.kill('SIGTERM');
+      } catch {
+        /* already gone */
+      }
+    }
+    if (generation?.proc === proc) {
+      const listeners = [...generation.disconnectListeners];
+      generation.disconnectListeners.clear();
+      for (const listener of listeners) listener(err);
+    }
   }
 
   private failAll(err: Error): void {
@@ -355,17 +394,24 @@ export class CodexClient {
     return () => this.listeners.delete(fn);
   }
 
+  /** Subscribe to the current app-server generation ending. */
+  onDisconnect(fn: DisconnectListener): () => void {
+    const generation = this.generation;
+    if (!generation || generation.proc !== this.proc) {
+      queueMicrotask(() => fn(new Error('codex app-server disconnected')));
+      return () => {};
+    }
+    generation.disconnectListeners.add(fn);
+    return () => generation.disconnectListeners.delete(fn);
+  }
+
   shutdown(): void {
     if (this.proc) {
-      try {
-        this.proc.kill('SIGTERM');
-      } catch {
-        /* already gone */
-      }
-      this.proc = null;
+      this.teardownGeneration(this.proc, new Error('codex client shut down'), true);
+    } else {
+      this.failAll(new Error('codex client shut down'));
+      this.ready = null;
     }
-    this.ready = null;
-    this.failAll(new Error('codex client shut down'));
   }
 }
 
@@ -432,6 +478,16 @@ export function shutdownCodex(): void {
 /** Test seam: drop all cached per-context threads without touching the client. */
 export function __resetCodexThreadsForTests(): void {
   threads.clear();
+}
+
+/** Test seam: install a ready injected client and authenticated account. */
+export function __setCodexClientForTests(
+  nextClient: CodexClient | null,
+  account: CodexAccount | null = null,
+): void {
+  client = nextClient;
+  threads.clear();
+  accountCache = nextClient ? { account, ts: Date.now() } : null;
 }
 
 // Best-effort cleanup so we never orphan an app-server process.
@@ -736,10 +792,12 @@ export async function codexAsk(
 
   return new Promise<BrainAskResult>((resolve) => {
     let settled = false;
+    let offDisconnect = () => {};
     const finish = (result: BrainAskResult) => {
       if (settled) return;
       settled = true;
       off();
+      offDisconnect();
       if (opts.signal) opts.signal.removeEventListener('abort', onAbort);
       resolve(result);
     };
@@ -766,6 +824,10 @@ export async function codexAsk(
       if (!event) return;
       if (event.type === 'token' && typeof event.content === 'string') assembled += event.content;
       onEvent(event);
+    });
+
+    offDisconnect = c.onDisconnect((err) => {
+      finish({ text: assembled, error: err.message });
     });
 
     const onAbort = () => {

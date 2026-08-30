@@ -5,7 +5,7 @@
 // form), it's authored against vitest and excluded from jest (see jest.config.js
 // testPathIgnorePatterns). vi.mock is hoisted above the imports below.
 import {describe, it, expect, vi} from 'vitest';
-import {mkdtemp, readFile, rm} from 'node:fs/promises';
+import {mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import type {AdapterResponse, AIAdapter, ChatMessage} from '../../interactive-tui/agent-harness/framework/adapters/types';
@@ -270,6 +270,25 @@ describe('Siftable agent-harness chat loop', () => {
     expect(result.text).toBe('journal answer');
     expect(result.run.status).toBe('completed');
     expect(result.run.manifest.model).toEqual({provider: 'journal-mock', model: 'journal-model'});
+    expect(result.run.manifest.execution).toEqual({
+      scheduling: {
+        policyVersion: 'siftable.tool-scheduling/1',
+        maxParallelTools: 4,
+        failClosedMode: 'exclusive',
+      },
+      output: {
+        policyVersion: 'siftable.tool-output/1',
+        maxBytes: 50 * 1024,
+        maxLines: 2000,
+        spill: {
+          enabled: false,
+          maxBytes: 100 * 1024 * 1024,
+          maxFiles: 256,
+          maxAgeMs: 7 * 24 * 60 * 60 * 1000,
+          orphanGraceMs: 5 * 60 * 1000,
+        },
+      },
+    });
     expect(result.outcome).toMatchObject({runId: result.run.manifest.runId, output: 'journal answer'});
     expect(events.map((event) => event.type)).toEqual([
       'session/started',
@@ -1017,9 +1036,23 @@ describe('Siftable agent-harness chat loop', () => {
       tools: [probe, undeclared],
       maxParallelTools: 2,
     });
-    await agent.chat('exercise the pool');
+    const result = await agent.chat('exercise the pool');
     expect(maxActiveParallel).toBe(2); // capped, but actually concurrent
     expect(maxActiveExclusive).toBe(1); // fail-closed default is a barrier
+    expect(result.run.manifest.execution?.scheduling).toEqual({
+      policyVersion: 'siftable.tool-scheduling/1',
+      maxParallelTools: 2,
+      failClosedMode: 'exclusive',
+    });
+    expect(result.toolCalls.map(({callId, executionMode}) => ({callId, executionMode}))).toEqual([
+      {callId: 'p-1', executionMode: 'parallel-safe'},
+      {callId: 'p-2', executionMode: 'parallel-safe'},
+      {callId: 'p-3', executionMode: 'parallel-safe'},
+      {callId: 'p-4', executionMode: 'parallel-safe'},
+      {callId: 'x-1', executionMode: 'exclusive'},
+      {callId: 'x-2', executionMode: 'exclusive'},
+      {callId: 'x-3', executionMode: 'exclusive'},
+    ]);
   });
 
   it('abort stops admissions: started calls drain, never-started calls settle as cancelled', async () => {
@@ -1063,7 +1096,14 @@ describe('Siftable agent-harness chat loop', () => {
     await firstStarted.promise;
     controller.abort(new Error('cancel mid-batch'));
     releaseFirst.resolve();
-    await expect(turn).rejects.toThrow('cancel mid-batch');
+    const failure = await turn.catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(RunExecutionError);
+    expect((failure as RunExecutionError).message).toContain('cancel mid-batch');
+    expect((failure as RunExecutionError).run.toolEffects?.receipts).toMatchObject([{
+      callId: 'call-ran',
+      name: 'slow_pair',
+      executionMode: 'parallel-safe',
+    }]);
 
     expect(startedTags).toEqual(['first']); // the second call never executed
     const events = agent.getSessionEvents();
@@ -1085,9 +1125,97 @@ describe('Siftable agent-harness chat loop', () => {
     expect(String(retained[3]?.content)).toMatch(/did not start before recovery/i);
   });
 
+  it('repairs a mixed completed/cancelled batch when a stream consumer closes at a result yield', async () => {
+    const firstStarted = deferred<void>();
+    const releaseFirst = deferred<void>();
+    const tool = defineTool({
+      name: 'stream_return_tool',
+      description: 'Creates a deterministic cancellation admission boundary',
+      executionMode: () => 'parallel-safe',
+      inputSchema: {type: 'object', properties: {tag: {type: 'string'}}},
+      handler: async ({tag}: {tag: string}) => {
+        if (tag === 'first') {
+          firstStarted.resolve();
+          await releaseFirst.promise;
+        }
+        return ok({tag});
+      },
+    });
+    let adapterCalls = 0;
+    const adapter: AIAdapter = {
+      name: 'stream-return-mock',
+      model: 'stream-return-model',
+      async chat() {
+        adapterCalls += 1;
+        if (adapterCalls === 1) {
+          return {
+            toolCalls: [
+              {id: 'stream-ran', name: 'stream_return_tool', args: {tag: 'first'}},
+              {id: 'stream-never', name: 'stream_return_tool', args: {tag: 'second'}},
+            ],
+          };
+        }
+        return {text: 'next turn works'};
+      },
+    };
+    const store = new InMemorySessionEventStore();
+    const agent = await createChatAgent({
+      adapter,
+      memory: false,
+      tools: [tool],
+      maxParallelTools: 1,
+      session: {id: 'stream-return-recovery', store},
+    });
+    const controller = new AbortController();
+    const iterator = agent.chat('start streamed batch', {
+      stream: true,
+      signal: controller.signal,
+    })[Symbol.asyncIterator]();
+
+    expect((await iterator.next()).value?.toolCall?.callId).toBe('stream-ran');
+    expect((await iterator.next()).value?.toolCall?.callId).toBe('stream-never');
+    const resultChunk = iterator.next();
+    await firstStarted.promise;
+    controller.abort(new Error('cancel before second admission'));
+    releaseFirst.resolve();
+    expect((await resultChunk).value?.toolResult?.callId).toBe('stream-ran');
+
+    await iterator.return?.();
+
+    const events = agent.getSessionEvents();
+    const recoveredNever = events.find((event) => (
+      event.type === 'tool/result' && event.data.toolCallId === 'stream-never'
+    ));
+    expect(recoveredNever?.type).toBe('tool/result');
+    if (recoveredNever?.type === 'tool/result') {
+      expect(recoveredNever.data).toMatchObject({
+        outcome: 'failed',
+        recovered: true,
+      });
+    }
+    expect(events.at(-1)).toMatchObject({
+      type: 'turn/interrupted',
+      data: {recovered: true},
+    });
+    expect(agent.getHistory().map((entry) => [entry.role, entry.toolCallId])).toEqual([
+      ['user', undefined],
+      ['assistant', undefined],
+      ['tool', 'stream-ran'],
+      ['tool', 'stream-never'],
+    ]);
+    expect(new SessionKernel({
+      sessionId: 'stream-return-recovery',
+      store,
+    }).recoverInterrupted()).toHaveLength(0);
+
+    const next = await agent.chat('continue after stream return');
+    expect(next.text).toBe('next turn works');
+  });
+
   it('bounds oversized tool output for the model and spills the full bytes', async () => {
     const spillRoot = await mkdtemp(join(tmpdir(), 'sift-chat-spill-'));
     try {
+      const store = new InMemorySessionEventStore();
       const big = defineTool({
         name: 'big_output',
         description: 'Returns more data than the model-facing cap allows',
@@ -1108,7 +1236,17 @@ describe('Siftable agent-harness chat loop', () => {
         adapter,
         memory: false,
         tools: [big],
-        toolOutput: {maxBytes: 2048, spillDir: spillRoot},
+        session: {id: 'bounded-output-manifest', store},
+        toolOutput: {
+          maxBytes: 2048,
+          spillDir: spillRoot,
+          spillPolicy: {
+            maxBytes: 200_000,
+            maxFiles: 4,
+            maxAgeMs: 60_000,
+            orphanGraceMs: 0,
+          },
+        },
       });
 
       const chunks: ChatStreamChunk[] = [];
@@ -1124,6 +1262,18 @@ describe('Siftable agent-harness chat loop', () => {
       expect(output?.truncated).toBe(true);
       expect(output?.byteCount).toBeGreaterThan(100_000);
       expect(output?.fullOutputRef).toBeDefined();
+      expect(chunks.at(-1)?.result?.run.manifest.execution?.output).toEqual({
+        policyVersion: 'siftable.tool-output/1',
+        maxBytes: 2048,
+        maxLines: 2000,
+        spill: {
+          enabled: true,
+          maxBytes: 200_000,
+          maxFiles: 4,
+          maxAgeMs: 60_000,
+          orphanGraceMs: 0,
+        },
+      });
       const spilled = await readFile(output!.fullOutputRef!, 'utf8');
       expect(spilled).toContain('x'.repeat(1000)); // complete bytes retained
       expect(Buffer.byteLength(spilled)).toBe(output!.byteCount!);
@@ -1137,9 +1287,105 @@ describe('Siftable agent-harness chat loop', () => {
       const resultChunk = chunks.find((chunk) => chunk.type === 'tool_result');
       expect(resultChunk?.toolResult?.outputPreview).toBe(content);
       expect((resultChunk?.toolResult?.data as {blob?: string})?.blob?.length).toBe(100_000);
+
+      // A reopened agent derives the journal's live refs before startup GC:
+      // it removes a same-directory orphan without deleting referenced bytes.
+      const orphan = join(spillRoot, 'orphan.json');
+      await writeFile(orphan, 'orphan', {mode: 0o600});
+      await createChatAgent({
+        adapter: {...adapter, async chat() { return {text: 'unused'}; }},
+        memory: false,
+        tools: [big],
+        session: {id: 'bounded-output-manifest', store},
+        toolOutput: {
+          maxBytes: 2048,
+          spillDir: spillRoot,
+          spillPolicy: {
+            maxBytes: 200_000,
+            maxFiles: 4,
+            maxAgeMs: 60_000,
+            orphanGraceMs: 0,
+          },
+        },
+      });
+      expect(await readFile(output!.fullOutputRef!, 'utf8')).toBe(spilled);
+      expect(await readdir(spillRoot)).not.toContain('orphan.json');
     } finally {
       await rm(spillRoot, {recursive: true, force: true});
     }
+  });
+
+  it('unlinks a new spill when its durable tool result append fails', async () => {
+    const spillRoot = await mkdtemp(join(tmpdir(), 'sift-chat-spill-append-failure-'));
+    try {
+      const inner = new InMemorySessionEventStore();
+      let failResultOnce = true;
+      const store: SessionEventStore = {
+        read: (sessionId) => inner.read(sessionId),
+        append(event) {
+          if (failResultOnce && event.type === 'tool/result') {
+            failResultOnce = false;
+            throw new Error('tool result append failed once');
+          }
+          inner.append(event);
+        },
+      };
+      const big = defineTool({
+        name: 'spill_append_failure',
+        description: 'Creates a spill before the injected journal failure',
+        inputSchema: {type: 'object', properties: {}},
+        handler: async () => ok({blob: 'x'.repeat(100_000)}),
+      });
+      const agent = await createChatAgent({
+        adapter: {
+          name: 'spill-append-failure',
+          model: 'spill-append-failure-model',
+          async chat() {
+            return {toolCall: {id: 'spill-failed-call', name: big.name, args: {}}};
+          },
+        },
+        memory: false,
+        tools: [big],
+        session: {id: 'spill-append-failure', store},
+        toolOutput: {maxBytes: 2048, spillDir: spillRoot},
+      });
+
+      await expect(agent.chat('run it')).rejects.toThrow('tool result append failed once');
+      expect(await readdir(spillRoot)).toEqual([]);
+    } finally {
+      await rm(spillRoot, {recursive: true, force: true});
+    }
+  });
+
+  it('removes the session spill directory when the agent is destroyed', async () => {
+    const spillRoot = await mkdtemp(join(tmpdir(), 'sift-chat-spill-destroy-'));
+    const big = defineTool({
+      name: 'spill_destroy_cleanup',
+      description: 'Creates a spill owned by the destroyed session',
+      inputSchema: {type: 'object', properties: {}},
+      handler: async () => ok({blob: 'x'.repeat(100_000)}),
+    });
+    let round = 0;
+    const agent = await createChatAgent({
+      adapter: {
+        name: 'spill-destroy-cleanup',
+        model: 'spill-destroy-cleanup-model',
+        async chat() {
+          round += 1;
+          return round === 1
+            ? {toolCall: {id: 'spill-destroy-call', name: big.name, args: {}}}
+            : {text: 'done'};
+        },
+      },
+      memory: false,
+      tools: [big],
+      toolOutput: {maxBytes: 2048, spillDir: spillRoot},
+    });
+
+    await agent.chat('create retained output');
+    expect(await readdir(spillRoot)).toHaveLength(1);
+    await agent.destroy();
+    await expect(readdir(spillRoot)).rejects.toMatchObject({code: 'ENOENT'});
   });
 
   it('rejects non-integer or out-of-range parallelism and output caps at construction', async () => {
@@ -1636,7 +1882,9 @@ describe('Siftable agent-harness chat loop', () => {
         state: 'partial',
         certainty: 'known',
         receipts: [{
+          callId: 'http-effect',
           name: effect.name,
+          executionMode: 'exclusive',
           result: {
             success: true,
             executionOutcome: 'succeeded',
@@ -1714,7 +1962,9 @@ describe('Siftable agent-harness chat loop', () => {
         state: 'partial',
         certainty: 'known',
         receipts: [{
+          callId: 'sse-effect',
           name: effect.name,
+          executionMode: 'exclusive',
           result: {success: true, executionOutcome: 'succeeded'},
         }],
       });

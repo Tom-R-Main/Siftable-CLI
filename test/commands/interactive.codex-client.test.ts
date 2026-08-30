@@ -12,9 +12,11 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {
   CodexClient,
+  codexAsk,
   ensureThread,
   shutdownCodex,
   __resetCodexThreadsForTests,
+  __setCodexClientForTests,
   type CodexSpawnFn,
 } from '../../interactive-tui/codexEngine';
 import {getSessionCwd, setSessionCwd} from '../../interactive-tui/navigation';
@@ -143,6 +145,112 @@ describe('CodexClient unexpected exit', () => {
     proc.exit(1);
     await expect(a).rejects.toThrow('codex app-server exited');
     await expect(b).rejects.toThrow('codex app-server exited');
+  });
+});
+
+describe('codexAsk generation disconnects', () => {
+  const startCount = (proc: FakeCodexProc) =>
+    proc.sent.filter((m) => m.method === 'thread/start').length;
+
+  async function readyInjectedClient(): Promise<{
+    client: CodexClient;
+    procs: FakeCodexProc[];
+  }> {
+    const procs: FakeCodexProc[] = [];
+    const spawnFresh: CodexSpawnFn = () => {
+      const proc = new FakeCodexProc();
+      procs.push(proc);
+      return proc as unknown as ReturnType<CodexSpawnFn>;
+    };
+    const client = new CodexClient(spawnFresh);
+    const ready = client.ensureReady();
+    await completeHandshake(procs[0]);
+    await ready;
+    __setCodexClientForTests(client, { type: 'chatgpt', email: 'test@example.com' });
+    return { client, procs };
+  }
+
+  async function startAcknowledgedTurn(proc: FakeCodexProc): Promise<{
+    result: ReturnType<typeof codexAsk>;
+    events: Array<{ type: string }>;
+  }> {
+    const events: Array<{ type: string }> = [];
+    const result = codexAsk('continue', (event) => events.push(event));
+    const threadStartId = await waitForSent(proc, 'thread/start');
+    proc.reply(threadStartId, { thread: { id: 'thread-generation-1' } });
+    const turnStartId = await waitForSent(proc, 'turn/start');
+    proc.reply(turnStartId, { turn: { id: 'turn-generation-1' } });
+    proc.notify('item/agentMessage/delta', {
+      threadId: 'thread-generation-1',
+      turnId: 'turn-generation-1',
+      delta: 'partial reply',
+    });
+    return { result, events };
+  }
+
+  afterEach(() => {
+    shutdownCodex();
+    __setCodexClientForTests(null);
+  });
+
+  it('returns assembled text plus an error when the server exits after turn/start ACK', async () => {
+    const { client, procs } = await readyInjectedClient();
+    const { result, events } = await startAcknowledgedTurn(procs[0]);
+
+    procs[0].exit(1);
+
+    await expect(result).resolves.toEqual({
+      text: 'partial reply',
+      error: 'codex app-server exited',
+    });
+    expect(events).toContainEqual({ type: 'token', content: 'partial reply' });
+    expect(procs[0].stdout.listenerCount('data')).toBe(0);
+    expect(procs[0].listenerCount('error')).toBe(0);
+    expect(procs[0].listenerCount('exit')).toBe(0);
+
+    const ready = client.ensureReady();
+    await completeHandshake(procs[1]);
+    await ready;
+    procs[1].notify('item/agentMessage/delta', {
+      threadId: 'thread-generation-1',
+      turnId: 'turn-generation-1',
+      delta: 'late notification',
+    });
+    expect(events).toEqual([{ type: 'token', content: 'partial reply' }]);
+    const freshThread = ensureThread(client);
+    const freshThreadStartId = await waitForSent(procs[1], 'thread/start');
+    procs[1].reply(freshThreadStartId, { thread: { id: 'thread-generation-2' } });
+    await expect(freshThread).resolves.toBe('thread-generation-2');
+    expect(startCount(procs[1])).toBe(1);
+  });
+
+  it('terminates a runtime-error generation and ignores its late exit after respawn', async () => {
+    const { client, procs } = await readyInjectedClient();
+    const { result } = await startAcknowledgedTurn(procs[0]);
+
+    procs[0].fail(new Error('runtime transport failure'));
+
+    await expect(result).resolves.toEqual({
+      text: 'partial reply',
+      error: 'runtime transport failure',
+    });
+    expect(procs[0].killed).toBe(true);
+    expect(procs[0].killSignal).toBe('SIGTERM');
+    expect(procs[0].stdout.listenerCount('data')).toBe(0);
+    expect(procs[0].listenerCount('error')).toBe(0);
+    expect(procs[0].listenerCount('exit')).toBe(0);
+
+    const ready = client.ensureReady();
+    await completeHandshake(procs[1]);
+    await ready;
+    const freshThread = ensureThread(client);
+    const freshThreadStartId = await waitForSent(procs[1], 'thread/start');
+    procs[1].reply(freshThreadStartId, { thread: { id: 'thread-generation-2' } });
+    await expect(freshThread).resolves.toBe('thread-generation-2');
+
+    procs[0].exit(1);
+    await expect(ensureThread(client)).resolves.toBe('thread-generation-2');
+    expect(startCount(procs[1])).toBe(1);
   });
 });
 
@@ -350,6 +458,8 @@ describe('ensureThread — per-session keyed threads', () => {
     // ChildProcess can emit error without a later exit. The failed generation
     // must still be discarded so ensureReady can spawn a replacement.
     procs[0].fail(new Error('runtime transport failure'));
+    expect(procs[0].killed).toBe(true);
+    expect(procs[0].killSignal).toBe('SIGTERM');
 
     ready = client.ensureReady();
     await completeHandshake(procs[1]);

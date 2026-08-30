@@ -72,11 +72,14 @@ import type {
   RunContext,
   RunRecord,
   RunToolEffectReceipt,
+  RunToolExecutionMode,
   ServeOptions,
   MemoryConfig,
 } from "./chat-agent-types.js";
 import {
   RUN_SCHEMA_VERSION,
+  RUN_TOOL_OUTPUT_POLICY_VERSION,
+  RUN_TOOL_SCHEDULING_POLICY_VERSION,
   RunExecutionError,
 } from "./chat-agent-types.js";
 import { digestJson, SessionKernel } from "./session.js";
@@ -85,8 +88,14 @@ import { classifyToolCall, runToolBatch } from "./tool-scheduler.js";
 import {
   boundToolOutput,
   bytePrefix,
+  cleanupToolOutputSpillSession,
+  DEFAULT_TOOL_OUTPUT_MAX_BYTES,
+  DEFAULT_TOOL_OUTPUT_MAX_LINES,
+  discardToolOutputSpill,
+  garbageCollectToolOutputSpills,
   MIN_TOOL_OUTPUT_MAX_BYTES,
   MIN_TOOL_OUTPUT_MAX_LINES,
+  resolveToolOutputSpillPolicy,
 } from "./tool-output.js";
 import type { ToolOutputConfig } from "./tool-output.js";
 import { normalizeToolResult } from "./tool.js";
@@ -281,6 +290,7 @@ class ChatAgentImpl implements ChatAgent {
   private maxToolRounds: number;
   private maxParallelTools: number;
   private toolOutput?: ToolOutputConfig;
+  private protectedSpillRefs = new Set<string>();
   private session: SessionKernel;
   private turnTail: Promise<void> = Promise.resolve();
   private pendingTurnOperations = 0;
@@ -340,6 +350,26 @@ class ChatAgentImpl implements ChatAgent {
     if (journalThreadId !== undefined) this.threadId = journalThreadId;
     if (internals.session?.recoverInterrupted !== false) {
       this.session.recoverInterrupted();
+    }
+    if (this.toolOutput?.spillDir !== undefined) {
+      for (const event of this.session.getEvents()) {
+        if (event.type !== "tool/result") continue;
+        const ref = event.data.output?.fullOutputRef;
+        if (ref !== undefined) this.protectedSpillRefs.add(ref);
+      }
+      for (const ref of this.toolOutput.protectedSpillRefs ?? []) {
+        this.protectedSpillRefs.add(ref);
+      }
+      garbageCollectToolOutputSpills({
+        spillDir: this.toolOutput.spillDir,
+        policy: this.toolOutput.spillPolicy,
+        protectedPaths: this.protectedSpillRefs,
+        referencesComplete: true,
+      });
+      this.toolOutput = {
+        ...this.toolOutput,
+        protectedSpillRefs: this.protectedSpillRefs,
+      };
     }
     if (this.conversationMemory) {
       if (this.session.getEventCount() === 1) {
@@ -665,9 +695,11 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
 
   private async executeTool(
     call: ToolCall,
+    executionMode: RunToolExecutionMode,
     context: SessionEventContext,
     rememberEffect: (
       call: ToolCall,
+      executionMode: RunToolExecutionMode,
       result: RunToolEffectReceipt["result"],
       context: SessionEventContext,
     ) => void,
@@ -677,7 +709,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
   }> {
     this.session.append({ type: "tool/call", data: { call }, ...context });
     this.session.append({ type: "tool/execution-started", data: { call }, ...context });
-    rememberEffect(call, {
+    rememberEffect(call, executionMode, {
       success: false,
       error: "Tool execution started without a durable result receipt",
       executionOutcome: "unknown",
@@ -687,7 +719,13 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     try {
       result = await this.registry.execute(call.name, call.args);
     } catch (error) {
-      return this.recordUncertainToolResult(call, error, context, rememberEffect);
+      return this.recordUncertainToolResult(
+        call,
+        executionMode,
+        error,
+        context,
+        rememberEffect,
+      );
     }
 
     const execution = normalizeToolResult(call.name, result);
@@ -699,7 +737,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     const modelContent = bounded.content;
     const executionOutcome = execution.outcome;
     const normalizedRecord = normalizedResult as unknown as Record<string, unknown>;
-    rememberEffect(call, {
+    rememberEffect(call, executionMode, {
       success: normalizedResult.success,
       ...(Object.prototype.hasOwnProperty.call(normalizedRecord, "data")
         ? { data: normalizedRecord.data }
@@ -708,38 +746,46 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
       executionOutcome,
     }, context);
 
-    this.session.append({
-      type: "tool/result",
-      data: {
-        toolCallId: call.id,
-        toolName: call.name,
-        outcome: executionOutcome,
-        // The durable journal is bounded: an under-cap result is persisted
-        // whole; an over-cap result is persisted only as its bounded
-        // preview (modelContent) plus output metadata — the complete bytes
-        // live in the spill file, never in the journal.
-        ...(bounded.truncated ? {} : { result: normalizedResult }),
-        modelContent,
-        ...(bounded.truncated
-          ? {
-              output: {
-                truncated: true as const,
-                byteCount: bounded.byteCount,
-                lineCount: bounded.lineCount,
-                ...(bounded.fullOutputRef ? { fullOutputRef: bounded.fullOutputRef } : {}),
-              },
-            }
-          : {}),
-        ...(normalizedResult.error === undefined
-          ? {}
-          : {
-              error: bounded.truncated
-                ? bytePrefix(normalizedResult.error, 2048)
-                : normalizedResult.error,
-            }),
-      },
-      ...context,
-    });
+    try {
+      this.session.append({
+        type: "tool/result",
+        data: {
+          toolCallId: call.id,
+          toolName: call.name,
+          outcome: executionOutcome,
+          // The durable journal is bounded: an under-cap result is persisted
+          // whole; an over-cap result is persisted only as its bounded
+          // preview (modelContent) plus output metadata — the complete bytes
+          // live in the spill file, never in the journal.
+          ...(bounded.truncated ? {} : { result: normalizedResult }),
+          modelContent,
+          ...(bounded.truncated
+            ? {
+                output: {
+                  truncated: true as const,
+                  byteCount: bounded.byteCount,
+                  lineCount: bounded.lineCount,
+                  ...(bounded.fullOutputRef ? { fullOutputRef: bounded.fullOutputRef } : {}),
+                },
+              }
+            : {}),
+          ...(normalizedResult.error === undefined
+            ? {}
+            : {
+                error: bounded.truncated
+                  ? bytePrefix(normalizedResult.error, 2048)
+                  : normalizedResult.error,
+              }),
+        },
+        ...context,
+      });
+    } catch (error) {
+      if (bounded.fullOutputRef !== undefined && this.toolOutput?.spillDir !== undefined) {
+        discardToolOutputSpill(bounded.fullOutputRef, this.toolOutput.spillDir);
+      }
+      throw error;
+    }
+    if (bounded.fullOutputRef !== undefined) this.protectedSpillRefs.add(bounded.fullOutputRef);
     return { result: normalizedResult, modelContent };
   }
 
@@ -762,10 +808,12 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
    */
   private recordUncertainToolResult(
     call: ToolCall,
+    executionMode: RunToolExecutionMode,
     error: unknown,
     context: SessionEventContext,
     rememberEffect: (
       call: ToolCall,
+      executionMode: RunToolExecutionMode,
       result: RunToolEffectReceipt["result"],
       context: SessionEventContext,
     ) => void,
@@ -786,29 +834,37 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     // result or an unbounded error string.
     const bounded = boundToolOutput(JSON.stringify(result), this.toolOutput, call.id);
     const modelContent = bounded.content;
-    rememberEffect(call, result, context);
-    this.session.append({
-      type: "tool/result",
-      data: {
-        toolCallId: call.id,
-        toolName: call.name,
-        outcome: "unknown",
-        ...(bounded.truncated ? {} : { result }),
-        error: bounded.truncated ? bytePrefix(message, 2048) : message,
-        modelContent,
-        ...(bounded.truncated
-          ? {
-              output: {
-                truncated: true as const,
-                byteCount: bounded.byteCount,
-                lineCount: bounded.lineCount,
-                ...(bounded.fullOutputRef ? { fullOutputRef: bounded.fullOutputRef } : {}),
-              },
-            }
-          : {}),
-      },
-      ...context,
-    });
+    rememberEffect(call, executionMode, result, context);
+    try {
+      this.session.append({
+        type: "tool/result",
+        data: {
+          toolCallId: call.id,
+          toolName: call.name,
+          outcome: "unknown",
+          ...(bounded.truncated ? {} : { result }),
+          error: bounded.truncated ? bytePrefix(message, 2048) : message,
+          modelContent,
+          ...(bounded.truncated
+            ? {
+                output: {
+                  truncated: true as const,
+                  byteCount: bounded.byteCount,
+                  lineCount: bounded.lineCount,
+                  ...(bounded.fullOutputRef ? { fullOutputRef: bounded.fullOutputRef } : {}),
+                },
+              }
+            : {}),
+        },
+        ...context,
+      });
+    } catch (appendError) {
+      if (bounded.fullOutputRef !== undefined && this.toolOutput?.spillDir !== undefined) {
+        discardToolOutputSpill(bounded.fullOutputRef, this.toolOutput.spillDir);
+      }
+      throw appendError;
+    }
+    if (bounded.fullOutputRef !== undefined) this.protectedSpillRefs.add(bounded.fullOutputRef);
     return { result, modelContent };
   }
 
@@ -867,6 +923,8 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
         instructions: prompt,
         tools: this.registry.getAll(),
         maxRounds: this.maxToolRounds,
+        maxParallelTools: this.maxParallelTools,
+        toolOutput: this.toolOutput,
       });
       const baseContext = this.eventContext(run);
       const historyBefore = this.currentHistory();
@@ -880,11 +938,14 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
       ): string => `${stepId ?? ""}\0${callId}`;
       const rememberEffect = (
         call: ToolCall,
+        executionMode: RunToolExecutionMode,
         result: RunToolEffectReceipt["result"],
         context: SessionEventContext,
       ): void => {
         effectReceipts.set(effectReceiptKey(context.stepId, call.id), {
+          callId: call.id,
           name: call.name,
+          executionMode,
           args: { ...call.args },
           result: { ...result },
         });
@@ -967,6 +1028,23 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
         if (effectHistoryCheckpoint !== undefined) projectConversationHistory();
       };
 
+      const recoverInterruptedBatch = (failure: unknown): void => {
+        if (!journalRecoveryRequired) return;
+        markUndurableEffectsUnknown(failure);
+        try {
+          this.session.recoverInterrupted(
+            "chat turn recovered after an interrupted tool batch; tools were not retried",
+          );
+          journalRecoveryRequired = false;
+          activeStepId = undefined;
+          terminalRecorded = true;
+          if (effectReceipts.size > 0) projectConversationHistory();
+        } catch {
+          // Keep the incomplete journal intact for startup recovery. A
+          // second lifecycle-write failure must not mask effect receipts.
+        }
+      };
+
       try {
         this.session.append({
           type: "turn/started",
@@ -1041,6 +1119,9 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
 
             toolExecutionStarted = true;
             journalRecoveryRequired = true;
+            const callModes = calls.map((call) => (
+              classifyToolCall(this.registry.get(call.name), call.args)
+            ));
             // Bounded admission: parallel-safe calls share a capped pool,
             // exclusive calls (the fail-closed default) run alone as
             // barriers. Abort stops admissions — started calls drain, and a
@@ -1048,8 +1129,13 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
             // kernel's interruption repair closes it with a definitive
             // failed/not-started receipt when the aborted turn ends.
             const batchOutcomes = await runToolBatch(calls, {
-              mode: (call) => classifyToolCall(this.registry.get(call.name), call.args),
-              execute: (call) => this.executeTool(call, stepContext, rememberEffect),
+              mode: (_call, index) => callModes[index] ?? "exclusive",
+              execute: (call, index) => this.executeTool(
+                call,
+                callModes[index] ?? "exclusive",
+                stepContext,
+                rememberEffect,
+              ),
               maxParallel: this.maxParallelTools,
               isCancelled: () => options?.signal?.aborted === true,
             });
@@ -1081,7 +1167,9 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
                 toolName: call.name,
               }, stepContext);
               toolCalls.push({
+                callId: call.id,
                 name: call.name,
+                executionMode: callModes[index] ?? "exclusive",
                 args: call.args,
                 result: {
                   success: execution.result.success,
@@ -1309,21 +1397,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
           },
         };
       } catch (error) {
-        if (journalRecoveryRequired) {
-          markUndurableEffectsUnknown(error);
-          try {
-            this.session.recoverInterrupted(
-              "chat turn recovered after an interrupted tool batch; tools were not retried",
-            );
-            journalRecoveryRequired = false;
-            activeStepId = undefined;
-            terminalRecorded = true;
-            if (effectReceipts.size > 0) projectConversationHistory();
-          } catch {
-            // Keep the incomplete journal intact for startup recovery. A
-            // second lifecycle-write failure must not mask effect receipts.
-          }
-        }
+        recoverInterruptedBatch(error);
         let failure: RunExecutionError;
         if (isAbortInterruption(error, options?.signal)) {
           interruptionReason = options?.signal?.aborted
@@ -1376,6 +1450,10 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
       } finally {
         // Async-generator return() does not enter the catch block. Balance a
         // turn whose stream consumer stops at a yield boundary.
+        recoverInterruptedBatch(
+          pendingFailure
+          ?? new Error(interruptionReason ?? "stream consumer closed before turn completed"),
+        );
         if (turnStarted && !terminalRecorded && !journalRecoveryRequired) {
           const terminal = pendingTerminal ?? {
             outcome: "interrupted" as const,
@@ -1674,6 +1752,10 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
           data: { reason: "chat_agent_destroyed" },
         });
       }
+      if (this.toolOutput?.spillDir !== undefined) {
+        cleanupToolOutputSpillSession(this.toolOutput.spillDir);
+        this.protectedSpillRefs.clear();
+      }
     } finally {
       release();
     }
@@ -1688,9 +1770,12 @@ interface CreateRunManifestInput extends RunContext {
   instructions: string;
   tools: ReturnType<ToolRegistry["getAll"]>;
   maxRounds: number;
+  maxParallelTools: number;
+  toolOutput?: ToolOutputConfig;
 }
 
 function createRunManifest(input: CreateRunManifestInput): RunRecord {
+  const spillPolicy = resolveToolOutputSpillPolicy(input.toolOutput?.spillPolicy);
   const tools = input.tools
     .map((tool) => ({
       name: tool.name,
@@ -1723,6 +1808,22 @@ function createRunManifest(input: CreateRunManifestInput): RunRecord {
         authorizationContextId: input.authorizationContextId,
       }),
       limits: { maxRounds: input.maxRounds },
+      execution: {
+        scheduling: {
+          policyVersion: RUN_TOOL_SCHEDULING_POLICY_VERSION,
+          maxParallelTools: input.maxParallelTools,
+          failClosedMode: "exclusive",
+        },
+        output: {
+          policyVersion: RUN_TOOL_OUTPUT_POLICY_VERSION,
+          maxBytes: input.toolOutput?.maxBytes ?? DEFAULT_TOOL_OUTPUT_MAX_BYTES,
+          maxLines: input.toolOutput?.maxLines ?? DEFAULT_TOOL_OUTPUT_MAX_LINES,
+          spill: {
+            enabled: input.toolOutput?.spillDir !== undefined,
+            ...spillPolicy,
+          },
+        },
+      },
     },
     status: "running",
     startedAt: new Date().toISOString(),
@@ -1804,12 +1905,16 @@ function attachToolEffects(
 ): RunRecord {
   const receipts = trackedReceipts.length > 0
     ? trackedReceipts.map((receipt) => ({
+        callId: receipt.callId,
         name: receipt.name,
+        executionMode: receipt.executionMode,
         args: { ...receipt.args },
         result: { ...receipt.result },
       }))
     : toolCalls.map((call) => ({
+        callId: call.callId,
         name: call.name,
+        executionMode: call.executionMode,
         args: { ...call.args },
         result: { ...call.result },
       }));

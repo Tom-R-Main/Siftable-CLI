@@ -200,7 +200,11 @@ function clientSafeToolEffects(toolEffects: RunToolEffects | undefined) {
     state: toolEffects.state,
     certainty: toolEffects.certainty,
     receipts: toolEffects.receipts.map((receipt) => ({
+      ...(receipt.callId === undefined ? {} : { callId: receipt.callId }),
       name: receipt.name,
+      ...(receipt.executionMode === undefined
+        ? {}
+        : { executionMode: receipt.executionMode }),
       result: {
         success: receipt.result.success,
         ...(receipt.result.executionOutcome === undefined

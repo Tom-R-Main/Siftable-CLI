@@ -13,10 +13,15 @@ import type { PromptOptions } from "./prompts.js";
 import type { AIAdapter, ChatContent, ChatMessage, ReasoningEffort } from "./adapters/types.js";
 import type { Store } from "./store.js";
 import type { SessionEvent, SessionEventStore } from "./session.js";
+import type { ToolOutputSpillPolicy } from "./tool-output.js";
 
 // ─── Legible Run Records ──────────────────────────────────────────────────
 
 export const RUN_SCHEMA_VERSION = "siftable.agent-harness.run/1" as const;
+export const RUN_TOOL_SCHEDULING_POLICY_VERSION = "siftable.tool-scheduling/1" as const;
+export const RUN_TOOL_OUTPUT_POLICY_VERSION = "siftable.tool-output/1" as const;
+
+export type RunToolExecutionMode = "exclusive" | "parallel-safe";
 
 export type RunStatus =
   | "running"
@@ -26,7 +31,11 @@ export type RunStatus =
   | "cancelled";
 
 export interface RunToolEffectReceipt {
+  /** Present on receipts produced by current harnesses; absent on legacy records. */
+  callId?: string;
   name: string;
+  /** Resolved per call after fail-closed classification. */
+  executionMode?: RunToolExecutionMode;
   args: Record<string, unknown>;
   result: {
     success: boolean;
@@ -61,6 +70,26 @@ export interface RunManifest {
   authorityGrantRefs: string[];
   authorizationContextId?: string;
   limits: { maxRounds: number };
+  /** Effective execution contract. Absent only on legacy schema-v1 records. */
+  execution?: {
+    scheduling: {
+      policyVersion: typeof RUN_TOOL_SCHEDULING_POLICY_VERSION;
+      maxParallelTools: number;
+      failClosedMode: "exclusive";
+    };
+    output: {
+      policyVersion: typeof RUN_TOOL_OUTPUT_POLICY_VERSION;
+      maxBytes: number;
+      maxLines: number;
+      spill: {
+        enabled: boolean;
+        maxBytes: number;
+        maxFiles: number;
+        maxAgeMs: number;
+        orphanGraceMs: number;
+      };
+    };
+  };
 }
 
 export interface RunRecord {
@@ -226,6 +255,7 @@ export interface ChatAgentConfig {
     maxBytes?: number;
     maxLines?: number;
     spillDir?: string;
+    spillPolicy?: ToolOutputSpillPolicy;
   };
 
   /** Event-sourced session journal configuration. */
@@ -255,7 +285,11 @@ export interface ChatResult {
 
   /** Tool calls made during this turn */
   toolCalls: Array<{
+    /** Provider call id; absent only on legacy results. */
+    callId?: string;
     name: string;
+    /** Resolved per-call scheduling mode; absent only on legacy results. */
+    executionMode?: RunToolExecutionMode;
     args: Record<string, unknown>;
     result: {
       success: boolean;
