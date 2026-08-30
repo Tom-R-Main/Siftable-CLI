@@ -207,24 +207,14 @@ export class CodexClient {
       }
       this.proc = proc;
       proc.on('error', (err) => {
-        // ENOENT etc. — surface to all current waiters and reset.
-        this.failAll(err instanceof Error ? err : new Error(String(err)));
-        reject(err instanceof Error ? err : new Error(String(err)));
+        // A child-process error is not guaranteed to be followed by exit.
+        // Tear down this generation here so the next request can respawn.
+        const error = err instanceof Error ? err : new Error(String(err));
+        this.teardownGeneration(proc, error);
+        reject(error);
       });
       proc.on('exit', () => {
-        this.failAll(new Error('codex app-server exited'));
-        this.proc = null;
-        this.ready = null;
-        // Nothing from the dead generation may leak into the next one: a
-        // half-written frame left in the buffer would concatenate with the
-        // fresh server's first response and silently drop it, and the dead
-        // stream's listener could still append late flushes.
-        proc.stdout.removeAllListeners('data');
-        this.buffer = '';
-        // Cached thread ids live in the dead server's memory. A respawned
-        // app-server does not know them, so a stale id would make the next
-        // turn fail (or resume the wrong state) — drop them with the process.
-        threads.clear();
+        this.teardownGeneration(proc, new Error('codex app-server exited'));
       });
       // Fresh generation, fresh framing state (a data event queued between
       // the old proc's exit and this connect could have re-dirtied it).
@@ -243,6 +233,25 @@ export class CodexClient {
         })
         .catch(reject);
     });
+  }
+
+  private teardownGeneration(proc: CodexProc, err: Error): void {
+    // A late error/exit from an older child must not tear down the replacement
+    // generation or reject its requests.
+    if (this.proc !== proc) return;
+    this.failAll(err);
+    this.proc = null;
+    this.ready = null;
+    // Nothing from the dead generation may leak into the next one: a
+    // half-written frame left in the buffer would concatenate with the fresh
+    // server's first response and silently drop it, and the dead stream's
+    // listener could still append late flushes.
+    proc.stdout.removeAllListeners('data');
+    this.buffer = '';
+    // Cached thread ids live in the dead server's memory. A respawned
+    // app-server does not know them, so a stale id would make the next turn
+    // fail (or resume the wrong state) — drop them with the process.
+    threads.clear();
   }
 
   private failAll(err: Error): void {

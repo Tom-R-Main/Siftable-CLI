@@ -15,14 +15,14 @@
  *     tool row (legacy behavior).
  */
 export class ToolRowTracker {
-  private byCallId = new Map<string, number>();
+  private byCallId = new Map<string, { name: string; rowIdx: number }>();
   private byName = new Map<string, number[]>();
   private lastIdx: number | null = null;
 
   /** Record the transcript row index a tool_call just occupied. */
   register(name: string, callId: string | undefined, rowIdx: number): void {
     this.lastIdx = rowIdx;
-    if (callId) this.byCallId.set(callId, rowIdx);
+    if (callId) this.byCallId.set(callId, { name, rowIdx });
     const rows = this.byName.get(name) ?? [];
     rows.push(rowIdx);
     this.byName.set(name, rows);
@@ -31,17 +31,20 @@ export class ToolRowTracker {
   /** Row index the matching tool_result should settle, or null when unknown. */
   settle(name: string, callId: string | undefined): number | null {
     if (callId) {
-      const idx = this.byCallId.get(callId);
-      if (idx === undefined) return null; // fail closed — see module doc
+      const registered = this.byCallId.get(callId);
+      if (registered === undefined) return null; // fail closed — see module doc
       this.byCallId.delete(callId);
-      this.consumeNamed(name, idx);
-      return idx;
+      // The call id is authoritative. Remove the row from the name queue it
+      // was registered under, even if a malformed result supplies another
+      // tool name, so the row can never settle twice.
+      this.consumeNamed(registered.name, registered.rowIdx);
+      return registered.rowIdx;
     }
     const rows = this.byName.get(name);
     if (rows?.length) {
       const idx = rows.shift()!;
       for (const [id, mapped] of this.byCallId) {
-        if (mapped === idx) this.byCallId.delete(id);
+        if (mapped.rowIdx === idx) this.byCallId.delete(id);
       }
       return idx;
     }

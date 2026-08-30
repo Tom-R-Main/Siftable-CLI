@@ -332,6 +332,37 @@ describe('ensureThread — per-session keyed threads', () => {
     expect(tid2).not.toBe(tid1);
   });
 
+  it('a runtime error without exit tears down only the failed generation', async () => {
+    const procs: FakeCodexProc[] = [];
+    const spawnFresh: CodexSpawnFn = () => {
+      const p = new FakeCodexProc();
+      procs.push(p);
+      return p as unknown as ReturnType<CodexSpawnFn>;
+    };
+    const client = new CodexClient(spawnFresh);
+    let ready = client.ensureReady();
+    await completeHandshake(procs[0]);
+    await ready;
+
+    setSessionCwd(dirs.parent);
+    const tid1 = await startMiss(client, procs[0], 't-gen1');
+
+    // ChildProcess can emit error without a later exit. The failed generation
+    // must still be discarded so ensureReady can spawn a replacement.
+    procs[0].fail(new Error('runtime transport failure'));
+
+    ready = client.ensureReady();
+    await completeHandshake(procs[1]);
+    await ready;
+    const tid2 = await startMiss(client, procs[1], 't-gen2');
+    expect(tid2).not.toBe(tid1);
+
+    // A late exit from generation 1 must not clear generation 2's cache.
+    procs[0].exit(1);
+    await expect(ensureThread(client)).resolves.toBe(tid2);
+    expect(startCount(procs[1])).toBe(1);
+  });
+
   it('a mid-frame exit does not poison the next generation\'s handshake', async () => {
     const procs: FakeCodexProc[] = [];
     const spawnFresh: CodexSpawnFn = () => {

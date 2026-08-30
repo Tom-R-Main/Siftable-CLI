@@ -76,6 +76,15 @@ describe("ToolRowTracker", () => {
     expect(t.settle("read_file", "call-b")).toBe(2);
   });
 
+  it("consumes the registered-name row when an exact-id result has a malformed name", () => {
+    const t = new ToolRowTracker();
+    t.register("read_file", "call-a", 1);
+    t.register("read_file", undefined, 2);
+
+    expect(t.settle("shell", "call-a")).toBe(1);
+    expect(t.settle("read_file", undefined)).toBe(2);
+  });
+
   it("does not hand an id-registered row settled by the name fallback to a late id result", () => {
     const t = new ToolRowTracker();
     t.register("read_file", "call-a", 1);
