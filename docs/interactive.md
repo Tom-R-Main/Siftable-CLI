@@ -24,6 +24,7 @@ The composer is a full readline-capable text area.
 - **Enter** submits. **Shift+Enter**, **Ctrl+J**, or a literal line feed insert a newline.
 - Submitting **while the agent is busy** queues your message; it's sent when the turn finishes.
 - **`!command`** runs a shell command and drops its output into the transcript. A bare `!cd <path>` changes the session working directory; anything else runs via `bash -lc` (output clipped to ~4000 chars).
+- Local tool results appear beneath their matching call, including parallel calls with the same tool name. The transcript shows at most 8 lines / 2 KB; before model or journal storage, the harness separately caps serialized results at 2,000 lines / 50 KB and retains complete oversized results in the private session-event store described below.
 - **Paste handling** is automatic: large or structured pastes become a collapsed "chip" instead of flooding the composer; images (from the clipboard or a pasted file path) are validated and normalized, then attached as image chips.
 - **`?`** on an empty composer shows the hotkeys.
 
@@ -162,7 +163,7 @@ Standard readline editing (`←/→`, `Ctrl+A/E`, `Home/End`, `Ctrl+U/K/W`, word
 **Diagram viewer:** arrows or `h/j/k/l` pan · `PgUp/PgDn` page · `Home/0` `End/$` jump · `Esc`/`q` close.
 **Approval gate:** `y`/`Enter` allow once · `a` always · `b` bypass-all · `n`/`Esc` deny.
 **Branches overlay:** `↑/↓` rows · `Enter` enter · `r` ready · `m` merge · `u` rebase · `x` reject · `a` then `y` abandon · `s` spawn form · `Esc` close.
-**Work hub:** `↑/↓` rows · `Enter` detail · `p` plan · `f` focus · `r` recap · `s` ship · `v` evidence · `h` handoff · `Esc` close.
+**Work hub:** `↑/↓` rows · `Enter` detail · `x` prepare (claim, create/adopt the worktree, and start heartbeats; it does not dispatch the prompt) · `p` plan · `f` focus · `r` recap · `s` ship · `v` evidence · `h` handoff · `Esc` close.
 
 ## Appearance & sound
 
@@ -195,6 +196,7 @@ All under `~/.siftable/` unless noted:
 | `~/.siftable/appearance.json` | Selected theme scheme |
 | `~/.siftable/sounds.json` | Sound on/off |
 | `~/.siftable/threads/<hash>.jsonl` | Per-workspace conversation rollout (when compaction is on) |
+| `~/.siftable/session-events/v1/` | Durable harness journals plus private full-output spill files for oversized tool results |
 | `<repo-root>/.siftable/plans/overlay.json` | Plan precedence edges from `/plan work --apply`/`--after` |
 
 ## Environment variables
@@ -205,6 +207,7 @@ All under `~/.siftable/` unless noted:
 | `SIFT_API_URL` / `EXF_API_URL` | API base URL (default `https://siftable.io`) |
 | `SIFT_WORKSPACE_ID` / `EXF_WORKSPACE_ID` | Workspace scope |
 | `SIFT_CONTEXT_COMPACTION` | `!=0` enables the context meter + thread persistence/resume |
+| `SIFT_SESSION_EVENT_ROOT` | Override the durable session journal and tool-output spill root |
 | `SIFT_NO_NATIVE` | `=1` disables Zig FFI, forces TypeScript fallbacks |
 | `SIFT_MERMAID_AUTORENDER` | `=0` disables auto-rendering of ```mermaid blocks |
 | `SIFT_SOUNDS` | `1/on` or `0/off` overrides the sound preference |
@@ -221,4 +224,5 @@ All under `~/.siftable/` unless noted:
 - The approval gate is a single four-way control: **allow once** / **always allow** / **bypass-all** / **deny**. With no UI listening, requests **deny**.
 - `EXECUTERM_AUTO_APPROVE` is always scrubbed at launch — there is no way to pre-authorize everything via env.
 - `/status` reports the real read/write boundary, never a fictional one.
+- Oversized tool outputs may contain anything the tool read. Complete bytes are written under the session-event root in a `0700` directory as unique, immutable `0600` files; the journal keeps only the bounded preview and spill reference. Spill files remain until the corresponding session-event data is removed.
 - Raw Vault key reads are retired. Use the first-party web Vault until brokered capabilities and approved materialization ship.
