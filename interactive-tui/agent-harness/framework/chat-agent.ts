@@ -1948,14 +1948,19 @@ function attachToolEffects(
   toolCalls: ChatResult["toolCalls"],
   trackedReceipts: RunToolEffectReceipt[] = [],
 ): RunRecord {
-  const completed = run.status === "completed";
+  // Both normal completion and exhausting the configured round budget are
+  // durable terminal outcomes. Their run evidence is safe to retain, but it
+  // must not copy arbitrary tool args/data into the long-lived run record.
+  // Failed/cancelled turns remain partial because recovery still needs their
+  // minimum effect payload to decide whether a retry is safe.
+  const terminalEvidence = run.status === "completed" || run.status === "limit_reached";
   const receipts = trackedReceipts.length > 0
     ? trackedReceipts.map((receipt) => ({
         callId: receipt.callId,
         name: receipt.name,
         executionMode: receipt.executionMode,
-        ...(completed || receipt.args === undefined ? {} : { args: { ...receipt.args } }),
-        result: completed
+        ...(terminalEvidence || receipt.args === undefined ? {} : { args: { ...receipt.args } }),
+        result: terminalEvidence
           ? {
               success: receipt.result.success,
               ...(receipt.result.executionOutcome === undefined
@@ -1971,8 +1976,8 @@ function attachToolEffects(
         callId: call.callId,
         name: call.name,
         executionMode: call.executionMode,
-        ...(completed ? {} : { args: { ...call.args } }),
-        result: completed
+        ...(terminalEvidence ? {} : { args: { ...call.args } }),
+        result: terminalEvidence
           ? {
               success: call.result.success,
               ...(call.result.executionOutcome === undefined
@@ -1991,7 +1996,7 @@ function attachToolEffects(
   return {
     ...run,
     toolEffects: {
-      state: completed ? "complete" : "partial",
+      state: terminalEvidence ? "complete" : "partial",
       certainty,
       receipts,
       ...(certainty === "unknown"

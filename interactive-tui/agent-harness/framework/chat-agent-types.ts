@@ -36,7 +36,7 @@ export interface RunToolEffectReceipt {
   name: string;
   /** Resolved per call after fail-closed classification. */
   executionMode?: RunToolExecutionMode;
-  /** Omitted from completed-run evidence; retained for partial-effect recovery. */
+  /** Omitted from completed/limit-reached evidence; retained for partial-effect recovery. */
   args?: Record<string, unknown>;
   result: {
     success: boolean;
@@ -47,7 +47,7 @@ export interface RunToolEffectReceipt {
 }
 
 export interface RunToolEffects {
-  /** Complete on a successful terminal run; partial on interrupted/failed runs. */
+  /** Complete on completed/limit-reached runs; partial on interrupted/failed runs. */
   state: "complete" | "partial";
   certainty: "known" | "unknown";
   receipts: RunToolEffectReceipt[];

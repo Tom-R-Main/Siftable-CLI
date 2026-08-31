@@ -1787,6 +1787,9 @@ describe('Siftable agent-harness chat loop', () => {
 
   it('retains tool receipts and the aligned continuation when the finalizer is empty', async () => {
     let effectCount = 0;
+    const inputSecret = 'limit-input-secret-6f6031';
+    const resultSecret = 'limit-result-secret-e2a6f4';
+    const oversizedError = `bounded-limit-error:${'x'.repeat(4096)}`;
     const calls: Array<{
       messages: ChatMessage[];
       tools: string[];
@@ -1809,7 +1812,11 @@ describe('Siftable agent-harness chat loop', () => {
         });
         if (calls.length === 1) {
           return {
-            toolCall: {id: 'effect-1', name: 'perform_effect', args: {}},
+            toolCall: {
+              id: 'effect-1',
+              name: 'perform_effect',
+              args: {payload: inputSecret},
+            },
             sessionState: toolState,
             providerReplay: {
               key: toolState.key,
@@ -1831,10 +1838,19 @@ describe('Siftable agent-harness chat loop', () => {
     const performEffect = defineTool({
       name: 'perform_effect',
       description: 'Perform one observable test effect',
-      inputSchema: {type: 'object', properties: {}},
+      inputSchema: {
+        type: 'object',
+        properties: {payload: {type: 'string'}},
+        required: ['payload'],
+      },
       handler: async () => {
         effectCount += 1;
-        return ok({effectCount});
+        return {
+          success: false,
+          data: {effectCount, confirmation: resultSecret},
+          error: oversizedError,
+          executionOutcome: 'failed' as const,
+        };
       },
     });
     const agent = await createChatAgent({
@@ -1849,13 +1865,20 @@ describe('Siftable agent-harness chat loop', () => {
     expect(limited.run.status).toBe('limit_reached');
     expect(limited.outcome).toBeUndefined();
     expect(limited.run.toolEffects).toMatchObject({
-      state: 'partial',
+      state: 'complete',
       certainty: 'known',
       receipts: [{
         name: 'perform_effect',
-        result: {success: true, executionOutcome: 'succeeded'},
+        result: {success: false, executionOutcome: 'failed'},
       }],
     });
+    const terminalReceipt = limited.run.toolEffects?.receipts[0];
+    expect(terminalReceipt?.args).toBeUndefined();
+    expect(terminalReceipt?.result.data).toBeUndefined();
+    expect(terminalReceipt?.result.error).toMatch(/^bounded-limit-error:/);
+    expect(Buffer.byteLength(terminalReceipt?.result.error ?? '', 'utf8')).toBe(2048);
+    expect(JSON.stringify(limited.run.toolEffects)).not.toContain(inputSecret);
+    expect(JSON.stringify(limited.run.toolEffects)).not.toContain(resultSecret);
     expect(effectCount).toBe(1);
     expect(agent.getHistory().map((message) => message.role)).toEqual([
       'user',

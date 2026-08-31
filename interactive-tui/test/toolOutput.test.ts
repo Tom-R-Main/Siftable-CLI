@@ -4,6 +4,7 @@ import {
   existsSync,
   fsyncSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -12,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import {tmpdir} from "node:os";
-import {dirname, join} from "node:path";
+import {dirname, join, resolve} from "node:path";
 import {
   boundToolOutput,
   cleanupToolOutputSpillSession,
@@ -238,16 +239,49 @@ describe("boundToolOutput", () => {
     expect(existsSync(spill.fullOutputRef!)).toBe(false);
   });
 
+  it("syncs a fresh nested spill root through its nearest existing ancestor before returning a ref", () => {
+    const baseDir = tempSpillDir();
+    const spillDir = join(baseDir, "fresh", "nested");
+    const fdPaths = new Map<number, string>();
+    const syncedPaths: string[] = [];
+    const ref = writeDurableToolOutputSpill(spillDir, "nested", "sensitive", {
+      open: ((path: Parameters<typeof openSync>[0], flags: Parameters<typeof openSync>[1], mode?: Parameters<typeof openSync>[2]) => {
+        const fd = openSync(path, flags, mode);
+        fdPaths.set(fd, resolve(String(path)));
+        return fd;
+      }) as typeof openSync,
+      sync: (fd) => {
+        const path = fdPaths.get(fd);
+        if (path) syncedPaths.push(path);
+        fsyncSync(fd);
+      },
+    });
+
+    expect(ref).toBeDefined();
+    for (const expected of [
+      resolve(join(spillDir, ".sift-tool-output-v1")),
+      resolve(spillDir),
+      resolve(join(baseDir, "fresh")),
+      resolve(baseDir),
+    ]) {
+      expect(syncedPaths).toContain(expected);
+    }
+  });
+
   it("removes an unpublished spill when directory sync fails", () => {
     const spillDir = tempSpillDir();
     const ownedDir = initializedOwnedDir(spillDir);
-    let syncCalls = 0;
+    const fdPaths = new Map<number, string>();
     const ref = writeDurableToolOutputSpill(spillDir, "sync-failure", "sensitive", {
+      open: ((path: Parameters<typeof openSync>[0], flags: Parameters<typeof openSync>[1], mode?: Parameters<typeof openSync>[2]) => {
+        const fd = openSync(path, flags, mode);
+        fdPaths.set(fd, resolve(String(path)));
+        return fd;
+      }) as typeof openSync,
       sync: (fd) => {
-        syncCalls += 1;
-        // ensurePrivateSpillDir performs three directory syncs, then the
-        // spill file is synced. Fail publication of the directory entry.
-        if (syncCalls === 5) {
+        const hasUnpublishedSpill = readdirSync(ownedDir)
+          .some((name) => name.startsWith("spill-sync-failure-") && name.endsWith(".json"));
+        if (fdPaths.get(fd) === resolve(ownedDir) && hasUnpublishedSpill) {
           const error = new Error("injected directory sync failure") as NodeJS.ErrnoException;
           error.code = "EIO";
           throw error;
@@ -277,6 +311,92 @@ describe("boundToolOutput", () => {
     expect(result.removed).toBe(0);
     expect(result.withinQuota).toBe(true);
     expect(existsSync(fresh)).toBe(true);
+  });
+
+  it("does not claim a GC removal when the containing directory sync fails", () => {
+    const spillDir = tempSpillDir();
+    const ownedDir = initializedOwnedDir(spillDir);
+    const expired = join(ownedDir, "spill-sync-failure.json");
+    writeFileSync(expired, "sensitive", {mode: 0o600, flag: "wx"});
+    const nowMs = Date.now();
+    utimesSync(expired, new Date(nowMs - 20_000), new Date(nowMs - 20_000));
+    const fdPaths = new Map<number, string>();
+
+    const result = garbageCollectToolOutputSpills({
+      spillDir,
+      policy: {maxAgeMs: 10_000, orphanGraceMs: 0},
+      protectedPaths: [expired],
+      referencesComplete: true,
+      nowMs,
+      operationOverrides: {
+        open: ((path: Parameters<typeof openSync>[0], flags: Parameters<typeof openSync>[1], mode?: Parameters<typeof openSync>[2]) => {
+          const fd = openSync(path, flags, mode);
+          fdPaths.set(fd, resolve(String(path)));
+          return fd;
+        }) as typeof openSync,
+        sync: (fd) => {
+          if (fdPaths.get(fd) === resolve(ownedDir) && !existsSync(expired)) {
+            const error = new Error("injected GC directory sync failure") as NodeJS.ErrnoException;
+            error.code = "EIO";
+            throw error;
+          }
+          fsyncSync(fd);
+        },
+      },
+    });
+
+    expect(result.removed).toBe(0);
+    expect(result.removedBytes).toBe(0);
+    expect(result.durabilityFailures).toBe(1);
+    expect(result.retained).toBe(1);
+    expect(result.retainedBytes).toBe(Buffer.byteLength("sensitive"));
+    expect(existsSync(expired)).toBe(false);
+  });
+
+  it("retains collector custody until a failed GC directory sync is retried successfully", () => {
+    const spillDir = tempSpillDir();
+    const ownedDir = initializedOwnedDir(spillDir);
+    const expired = join(ownedDir, "spill-collector-sync-failure.json");
+    writeFileSync(expired, "sensitive", {mode: 0o600, flag: "wx"});
+    const nowMs = Date.now();
+    utimesSync(expired, new Date(nowMs - 20_000), new Date(nowMs - 20_000));
+    const fdPaths = new Map<number, string>();
+    let failNextDeletionSync = true;
+    const collector = createToolOutputSpillCollector({
+      spillDir,
+      policy: {maxAgeMs: 10_000, orphanGraceMs: 0},
+      protectedPaths: [expired],
+      referencesComplete: true,
+      operationOverrides: {
+        open: ((path: Parameters<typeof openSync>[0], flags: Parameters<typeof openSync>[1], mode?: Parameters<typeof openSync>[2]) => {
+          const fd = openSync(path, flags, mode);
+          fdPaths.set(fd, resolve(String(path)));
+          return fd;
+        }) as typeof openSync,
+        sync: (fd) => {
+          if (
+            failNextDeletionSync
+            && fdPaths.get(fd) === resolve(ownedDir)
+            && !existsSync(expired)
+          ) {
+            failNextDeletionSync = false;
+            const error = new Error("injected one-shot collector sync failure") as NodeJS.ErrnoException;
+            error.code = "EIO";
+            throw error;
+          }
+          fsyncSync(fd);
+        },
+      },
+    });
+
+    const failed = collector.collect(nowMs);
+    expect(failed.removed).toBe(0);
+    expect(failed.durabilityFailures).toBe(1);
+    expect(collector.nextDelayMs(nowMs)).toBe(1000);
+
+    const retried = collector.collect(nowMs + 1000);
+    expect(retried.durabilityFailures).toBe(0);
+    expect(collector.nextDelayMs(nowMs + 1000)).toBeUndefined();
   });
 
   it("refuses quota reserve rather than deleting a fresh unjournaled spill", () => {

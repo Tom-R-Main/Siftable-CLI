@@ -54,6 +54,7 @@ const OWNED_SPILL_DIR_NAME = ".sift-tool-output-v1";
 const OWNED_SPILL_FILE_PREFIX = "spill-";
 const OWNERSHIP_MARKER_NAME = ".owner";
 const OWNERSHIP_MARKER_CONTENT = "sift-tool-output-v1\n";
+const DIRECTORY_SYNC_RETRY_MS = 1000;
 
 export interface ToolOutputSpillPolicy {
   /** Maximum retained bytes per session spill directory (default 100 MiB). */
@@ -96,6 +97,8 @@ export interface BoundedToolOutput {
 export interface ToolOutputSpillCollectionResult {
   removed: number;
   removedBytes: number;
+  /** Unlinks whose containing-directory sync failed and cannot be claimed durable. */
+  durabilityFailures: number;
   retained: number;
   retainedBytes: number;
   /** Whether the retained set plus the requested reserve fits both quotas. */
@@ -176,6 +179,23 @@ function syncDirectory(
       try { operations.close(fd); } catch { /* best effort */ }
     }
     return false;
+  }
+}
+
+function fsyncCreatedDirectoryChain(
+  firstCreated: string,
+  leaf: string,
+  operations: ToolOutputDurabilityOperations,
+): boolean {
+  const first = resolve(firstCreated);
+  let current = resolve(leaf);
+  if (!syncDirectory(current, operations)) return false;
+  while (true) {
+    const parent = dirname(current);
+    if (parent === current) return false;
+    if (!syncDirectory(parent, operations)) return false;
+    if (current === first) return true;
+    current = parent;
   }
 }
 
@@ -272,17 +292,16 @@ function ensurePrivateSpillDir(
   if (!spillDir) return undefined;
   const operations = durabilityOperations(operationOverrides);
   try {
-    mkdirSync(spillDir, { recursive: true, mode: 0o700 });
+    const firstCreated = mkdirSync(spillDir, { recursive: true, mode: 0o700 });
     const stat = lstatSync(spillDir);
     if (!stat.isDirectory() || stat.isSymbolicLink()) return undefined;
     chmodSync(spillDir, 0o700);
-    // Persist the owned child entry and its directory metadata before any
-    // marker or spill path can be returned to a journal append.
-    if (
-      !syncDirectory(dirname(resolve(spillRoot)), operations)
-      || !syncDirectory(dirname(spillDir), operations)
-      || !syncDirectory(spillDir, operations)
-    ) {
+    // recursive mkdir may have created several path components. Persist each
+    // new directory inode and the nearest pre-existing ancestor that publishes
+    // the first new child before any marker or spill ref can be returned.
+    if (firstCreated !== undefined) {
+      if (!fsyncCreatedDirectoryChain(firstCreated, spillDir, operations)) return undefined;
+    } else if (!syncDirectory(spillDir, operations)) {
       return undefined;
     }
     const marker = join(spillDir, OWNERSHIP_MARKER_NAME);
@@ -322,8 +341,11 @@ function directChildPath(spillDir: string, candidate: string): string | undefine
   return dirname(path) === root ? path : undefined;
 }
 
-function listSpills(spillRoot: string): SpillEntry[] {
-  const spillDir = ensurePrivateSpillDir(spillRoot);
+function listSpills(
+  spillRoot: string,
+  operationOverrides?: Partial<ToolOutputDurabilityOperations>,
+): SpillEntry[] {
+  const spillDir = ensurePrivateSpillDir(spillRoot, operationOverrides);
   if (!spillDir) return [];
   const entries: SpillEntry[] = [];
   try {
@@ -359,6 +381,8 @@ export function garbageCollectToolOutputSpills(options: {
   reserveBytes?: number;
   reserveFiles?: number;
   nowMs?: number;
+  /** Test seam and alternate durability backend. */
+  operationOverrides?: Partial<ToolOutputDurabilityOperations>;
 }): ToolOutputSpillCollectionResult {
   const policy = resolveToolOutputSpillPolicy(options.policy);
   const nowMs = options.nowMs ?? Date.now();
@@ -369,6 +393,7 @@ export function garbageCollectToolOutputSpills(options: {
     return {
       removed: 0,
       removedBytes: 0,
+      durabilityFailures: 0,
       retained: 0,
       retainedBytes: 0,
       withinQuota: false,
@@ -380,15 +405,22 @@ export function garbageCollectToolOutputSpills(options: {
     if (path) protectedPaths.add(path);
   }
 
-  let entries = listSpills(options.spillDir);
+  const operations = durabilityOperations(options.operationOverrides);
+  let entries = listSpills(options.spillDir, options.operationOverrides);
   let removed = 0;
   let removedBytes = 0;
+  let durabilityFailures = 0;
   const remove = (entry: SpillEntry): boolean => {
     try {
       unlinkSync(entry.path);
       // Persist disappearance so a crash cannot resurrect a supposedly
       // collected secret-bearing spill.
-      syncDirectory(root);
+      if (!syncDirectory(root, operations)) {
+        // The runtime unlink happened, but its crash durability is unknown.
+        // Retain conservative custody/accounting and do not report success.
+        durabilityFailures += 1;
+        return false;
+      }
       removed += 1;
       removedBytes += entry.bytes;
       return true;
@@ -436,6 +468,7 @@ export function garbageCollectToolOutputSpills(options: {
   return {
     removed,
     removedBytes,
+    durabilityFailures,
     retained,
     retainedBytes,
     withinQuota: !exceedsQuota(),
@@ -453,10 +486,15 @@ export function createToolOutputSpillCollector(options: {
   policy?: ToolOutputSpillPolicy;
   protectedPaths?: Iterable<string>;
   referencesComplete?: boolean;
+  /** Test seam and alternate durability backend. */
+  operationOverrides?: Partial<ToolOutputDurabilityOperations>;
 }): ToolOutputSpillCollector {
   const policy = resolveToolOutputSpillPolicy(options.policy);
+  const operations = durabilityOperations(options.operationOverrides);
+  let directorySyncPending = false;
   return {
     nextDelayMs: (nowMs = Date.now()) => {
+      if (directorySyncPending) return DIRECTORY_SYNC_RETRY_MS;
       const root = ownedSpillDirPath(options.spillDir);
       if (!root) return undefined;
       const protectedPaths = new Set<string>();
@@ -464,7 +502,7 @@ export function createToolOutputSpillCollector(options: {
         const path = directChildPath(root, candidate);
         if (path) protectedPaths.add(path);
       }
-      const entries = listSpills(options.spillDir);
+      const entries = listSpills(options.spillDir, options.operationOverrides);
       if (entries.length === 0) return undefined;
       const nextDueAt = Math.min(...entries.map((entry) => {
         const retentionMs = protectedPaths.has(entry.path)
@@ -476,11 +514,29 @@ export function createToolOutputSpillCollector(options: {
       }));
       return Math.max(1, Math.ceil(nextDueAt - nowMs));
     },
-    collect: (nowMs?: number) => garbageCollectToolOutputSpills({
-      ...options,
-      policy,
-      ...(nowMs === undefined ? {} : { nowMs }),
-    }),
+    collect: (nowMs?: number) => {
+      const root = ownedSpillDirPath(options.spillDir);
+      if (directorySyncPending) {
+        if (!root || !syncDirectory(root, operations)) {
+          return {
+            removed: 0,
+            removedBytes: 0,
+            durabilityFailures: 1,
+            retained: 0,
+            retainedBytes: 0,
+            withinQuota: false,
+          };
+        }
+        directorySyncPending = false;
+      }
+      const result = garbageCollectToolOutputSpills({
+        ...options,
+        policy,
+        ...(nowMs === undefined ? {} : { nowMs }),
+      });
+      if (result.durabilityFailures > 0) directorySyncPending = true;
+      return result;
+    },
   };
 }
 
