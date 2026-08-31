@@ -3,6 +3,7 @@ import {
   chmodSync,
   existsSync,
   fsyncSync,
+  mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
@@ -266,6 +267,64 @@ describe("boundToolOutput", () => {
     ]) {
       expect(syncedPaths).toContain(expected);
     }
+  });
+
+  it("rolls back a fresh nested chain after ancestry sync failure before allowing retry", () => {
+    const baseDir = tempSpillDir();
+    const spillDir = join(baseDir, "fresh", "nested");
+    const ownedDir = join(spillDir, ".sift-tool-output-v1");
+    const firstFdPaths = new Map<number, string>();
+    let failBaseSync = true;
+    const first = writeDurableToolOutputSpill(spillDir, "first", "sensitive", {
+      open: ((path: Parameters<typeof openSync>[0], flags: Parameters<typeof openSync>[1], mode?: Parameters<typeof openSync>[2]) => {
+        const fd = openSync(path, flags, mode);
+        firstFdPaths.set(fd, resolve(String(path)));
+        return fd;
+      }) as typeof openSync,
+      sync: (fd) => {
+        if (failBaseSync && firstFdPaths.get(fd) === resolve(baseDir)) {
+          failBaseSync = false;
+          const error = new Error("injected base ancestry sync failure") as NodeJS.ErrnoException;
+          error.code = "EIO";
+          throw error;
+        }
+        fsyncSync(fd);
+      },
+    });
+
+    expect(first).toBeUndefined();
+    expect(existsSync(join(ownedDir, ".owner"))).toBe(false);
+
+    const secondFdPaths = new Map<number, string>();
+    const secondSyncedPaths: string[] = [];
+    const second = writeDurableToolOutputSpill(spillDir, "second", "sensitive", {
+      open: ((path: Parameters<typeof openSync>[0], flags: Parameters<typeof openSync>[1], mode?: Parameters<typeof openSync>[2]) => {
+        const fd = openSync(path, flags, mode);
+        secondFdPaths.set(fd, resolve(String(path)));
+        return fd;
+      }) as typeof openSync,
+      sync: (fd) => {
+        const path = secondFdPaths.get(fd);
+        if (path) secondSyncedPaths.push(path);
+        fsyncSync(fd);
+      },
+    });
+
+    expect(second).toBeDefined();
+    expect(secondSyncedPaths).toContain(resolve(baseDir));
+    expect(secondSyncedPaths).toContain(resolve(join(baseDir, "fresh")));
+  });
+
+  it("rejects a pre-existing markerless spill directory instead of adopting it", () => {
+    const spillDir = tempSpillDir();
+    const ownedDir = join(spillDir, ".sift-tool-output-v1");
+    mkdirSync(ownedDir, {recursive: true, mode: 0o700});
+
+    const ref = writeDurableToolOutputSpill(spillDir, "markerless", "sensitive");
+
+    expect(ref).toBeUndefined();
+    expect(existsSync(join(ownedDir, ".owner"))).toBe(false);
+    expect(readdirSync(ownedDir)).toHaveLength(0);
   });
 
   it("removes an unpublished spill when directory sync fails", () => {

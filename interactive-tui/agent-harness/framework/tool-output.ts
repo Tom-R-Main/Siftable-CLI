@@ -199,6 +199,35 @@ function fsyncCreatedDirectoryChain(
   }
 }
 
+function rollbackCreatedDirectoryChain(
+  firstCreated: string,
+  leaf: string,
+  operations: ToolOutputDurabilityOperations,
+): boolean {
+  const first = resolve(firstCreated);
+  let current = resolve(leaf);
+  while (true) {
+    try {
+      rmdirSync(current);
+    } catch {
+      // A racing writer or unexpected entry makes the rollback incomplete.
+      // Marker publication has not started, so the surviving tree remains
+      // permanently unowned and later calls must reject it.
+      syncDirectory(current, operations);
+      return false;
+    }
+    const parent = dirname(current);
+    if (parent === current) return false;
+    if (current === first) {
+      // Persist removal of the first recursively created link in the nearest
+      // pre-existing ancestor. This is best effort after the primary failure.
+      syncDirectory(parent, operations);
+      return true;
+    }
+    current = parent;
+  }
+}
+
 function durableExclusiveCreate(
   path: string,
   content: string,
@@ -292,40 +321,59 @@ function ensurePrivateSpillDir(
   if (!spillDir) return undefined;
   const operations = durabilityOperations(operationOverrides);
   try {
+    let existedBeforeCreation = false;
+    try {
+      const existing = lstatSync(spillDir);
+      if (!existing.isDirectory() || existing.isSymbolicLink()) return undefined;
+      existedBeforeCreation = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
+    }
+
+    if (existedBeforeCreation) {
+      // Never adopt a pre-existing markerless directory. It may be residue
+      // from a crash before ancestry publication became durable.
+      const marker = join(spillDir, OWNERSHIP_MARKER_NAME);
+      try {
+        const markerStat = lstatSync(marker);
+        if (!markerStat.isFile() || markerStat.isSymbolicLink()) return undefined;
+        if (readFileSync(marker, "utf8") !== OWNERSHIP_MARKER_CONTENT) return undefined;
+      } catch {
+        return undefined;
+      }
+      chmodSync(spillDir, 0o700);
+      chmodSync(marker, 0o600);
+      if (!syncDirectory(spillDir, operations)) return undefined;
+      return spillDir;
+    }
+
     const firstCreated = mkdirSync(spillDir, { recursive: true, mode: 0o700 });
+    if (firstCreated === undefined) {
+      // Another creator won after our initial ENOENT observation. Only that
+      // creator may finish the ownership transition; fail closed while it is
+      // in flight rather than adopting its markerless directory.
+      return undefined;
+    }
     const stat = lstatSync(spillDir);
     if (!stat.isDirectory() || stat.isSymbolicLink()) return undefined;
     chmodSync(spillDir, 0o700);
     // recursive mkdir may have created several path components. Persist each
     // new directory inode and the nearest pre-existing ancestor that publishes
     // the first new child before any marker or spill ref can be returned.
-    if (firstCreated !== undefined) {
-      if (!fsyncCreatedDirectoryChain(firstCreated, spillDir, operations)) return undefined;
-    } else if (!syncDirectory(spillDir, operations)) {
+    if (!fsyncCreatedDirectoryChain(firstCreated, spillDir, operations)) {
+      rollbackCreatedDirectoryChain(firstCreated, spillDir, operations);
       return undefined;
     }
     const marker = join(spillDir, OWNERSHIP_MARKER_NAME);
-    try {
-      const markerStat = lstatSync(marker);
-      if (!markerStat.isFile() || markerStat.isSymbolicLink()) return undefined;
-      if (readFileSync(marker, "utf8") !== OWNERSHIP_MARKER_CONTENT) return undefined;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
-      if (!durableExclusiveCreate(
-        marker,
-        OWNERSHIP_MARKER_CONTENT,
-        spillDir,
-        operationOverrides,
-      )) {
-        // A racing creator may have durably published the marker first.
-        try {
-          const markerStat = lstatSync(marker);
-          if (!markerStat.isFile() || markerStat.isSymbolicLink()) return undefined;
-          if (readFileSync(marker, "utf8") !== OWNERSHIP_MARKER_CONTENT) return undefined;
-        } catch {
-          return undefined;
-        }
-      }
+    if (!durableExclusiveCreate(
+      marker,
+      OWNERSHIP_MARKER_CONTENT,
+      spillDir,
+      operationOverrides,
+    )) {
+      // An unpublished marker is cleaned up by durableExclusiveCreate. Leave
+      // the directory markerless so later calls reject rather than adopt it.
+      return undefined;
     }
     chmodSync(marker, 0o600);
     if (!syncDirectory(spillDir, operations)) return undefined;
