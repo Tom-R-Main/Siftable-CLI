@@ -605,14 +605,19 @@ export function discardToolOutputSpill(fullOutputRef: string, spillDir: string):
 }
 
 /** Delete only the marked module-owned child used by one session. */
-export function cleanupToolOutputSpillSession(spillDir: string): boolean {
+export function cleanupToolOutputSpillSession(
+  spillDir: string,
+  operationOverrides?: Partial<ToolOutputDurabilityOperations>,
+): boolean {
   const ownedDir = ownedSpillDirPath(spillDir);
   if (!ownedDir) return false;
+  const operations = durabilityOperations(operationOverrides);
   try {
     const initial = lstatSync(ownedDir);
     if (!initial.isDirectory() || initial.isSymbolicLink()) return false;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT";
+    return (error as NodeJS.ErrnoException).code === "ENOENT"
+      && syncDirectory(dirname(ownedDir), operations);
   }
   try {
     // Delete only files this module owns. Refuse a non-empty directory with
@@ -626,7 +631,7 @@ export function cleanupToolOutputSpillSession(spillDir: string): boolean {
       // pre-publication rollback. rmdir remains race-safe: any newly added
       // entry makes it fail rather than deleting non-empty state.
       rmdirSync(ownedDir);
-      return syncDirectory(dirname(ownedDir));
+      return syncDirectory(dirname(ownedDir), operations);
     }
     for (const dirent of entries) {
       if (dirent.name === OWNERSHIP_MARKER_NAME) {
@@ -648,11 +653,11 @@ export function cleanupToolOutputSpillSession(spillDir: string): boolean {
     }
     if (!markerSeen) return false;
     for (const path of ownedPaths) unlinkSync(path);
-    if (!syncDirectory(ownedDir)) return false;
+    if (!syncDirectory(ownedDir, operations)) return false;
     unlinkSync(join(ownedDir, OWNERSHIP_MARKER_NAME));
-    if (!syncDirectory(ownedDir)) return false;
+    if (!syncDirectory(ownedDir, operations)) return false;
     rmdirSync(ownedDir);
-    return syncDirectory(dirname(ownedDir));
+    return syncDirectory(dirname(ownedDir), operations);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
     // ENOENT after cleanup started is success only when the owned directory
@@ -662,7 +667,8 @@ export function cleanupToolOutputSpillSession(spillDir: string): boolean {
       lstatSync(ownedDir);
       return false;
     } catch (recheckError) {
-      return (recheckError as NodeJS.ErrnoException).code === "ENOENT";
+      return (recheckError as NodeJS.ErrnoException).code === "ENOENT"
+        && syncDirectory(dirname(ownedDir), operations);
     }
   }
 }

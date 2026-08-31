@@ -507,6 +507,37 @@ describe("boundToolOutput", () => {
     expect(existsSync(spillDir)).toBe(true);
   });
 
+  it("retries parent sync before claiming an already-absent markerless cleanup", () => {
+    const spillDir = tempSpillDir();
+    const ownedDir = join(spillDir, ".sift-tool-output-v1");
+    mkdirSync(ownedDir, {recursive: true, mode: 0o700});
+    const fdPaths = new Map<number, string>();
+    let failParentSync = true;
+    const operations = {
+      open: ((path: Parameters<typeof openSync>[0], flags: Parameters<typeof openSync>[1], mode?: Parameters<typeof openSync>[2]) => {
+        const fd = openSync(path, flags, mode);
+        fdPaths.set(fd, resolve(String(path)));
+        return fd;
+      }) as typeof openSync,
+      sync: (fd: number) => {
+        if (failParentSync && fdPaths.get(fd) === resolve(spillDir)) {
+          const error = new Error("injected cleanup parent sync failure") as NodeJS.ErrnoException;
+          error.code = "EIO";
+          throw error;
+        }
+        fsyncSync(fd);
+      },
+    };
+
+    expect(cleanupToolOutputSpillSession(spillDir, operations)).toBe(false);
+    expect(existsSync(ownedDir)).toBe(false);
+    // Initial ENOENT must not be mistaken for durable success while the same
+    // parent sync failure persists.
+    expect(cleanupToolOutputSpillSession(spillDir, operations)).toBe(false);
+    failParentSync = false;
+    expect(cleanupToolOutputSpillSession(spillDir, operations)).toBe(true);
+  });
+
   it("preserves and rejects a markerless owned directory with foreign content", () => {
     const spillDir = tempSpillDir();
     const ownedDir = join(spillDir, ".sift-tool-output-v1");
