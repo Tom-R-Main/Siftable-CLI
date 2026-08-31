@@ -764,6 +764,14 @@ function App() {
         }
       }
     };
+    const settleInterruptedToolRows = (aborted: boolean) => {
+      const icon = aborted ? "⏸" : "✗";
+      for (const toolIdx of toolRows.drain()) {
+        setMessages(toolIdx, "text", (text) =>
+          `${text.replace(/^(⚙|◇)/, icon)}  interrupted`,
+        );
+      }
+    };
     try {
       await client.send(
         sendInput,
@@ -820,6 +828,10 @@ function App() {
         },
         abortController.signal
       );
+      // A clean stream normally leaves no open rows. If the transport ends
+      // without a matching result, make the terminal UI state explicit while
+      // the durable session kernel remains the sole owner of receipt repair.
+      settleInterruptedToolRows(false);
       flushStreamingText();
       if (!got) {
         const fallback = done ? doneFallbackText(done) : "";
@@ -831,6 +843,7 @@ function App() {
     } catch (err) {
       flushStreamingText();
       const aborted = err instanceof Error && err.name === "AbortError";
+      settleInterruptedToolRows(aborted);
       playSound(aborted ? "panelClose" : "block");
       setMessages(ensureAssistant(), "text", (t) =>
         aborted

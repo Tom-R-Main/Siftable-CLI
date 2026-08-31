@@ -94,4 +94,16 @@ describe("ToolRowTracker", () => {
     // …so the id arriving later fails closed instead of double-settling it.
     expect(t.settle("read_file", "call-a")).toBeNull();
   });
+
+  it("drains every still-open row exactly once at turn interruption", () => {
+    const t = new ToolRowTracker();
+    t.register("shell", "call-a", 2);
+    t.register("shell", "call-b", 3);
+    t.register("read_file", "call-c", 4);
+    expect(t.settle("shell", "call-a")).toBe(2);
+
+    expect(t.drain()).toEqual([3, 4]);
+    expect(t.drain()).toEqual([]);
+    expect(t.settle("shell", "call-b")).toBeNull();
+  });
 });

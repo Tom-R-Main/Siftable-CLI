@@ -51,6 +51,22 @@ export class ToolRowTracker {
     return this.lastIdx;
   }
 
+  /**
+   * Close every row that never received a live result event. Turn teardown
+   * uses this to stop cancelled or interrupted calls from rendering as active
+   * forever; it does not fabricate tool execution receipts.
+   */
+  drain(): number[] {
+    const rows = new Set<number>();
+    for (const queued of this.byName.values()) {
+      for (const rowIdx of queued) rows.add(rowIdx);
+    }
+    this.byCallId.clear();
+    this.byName.clear();
+    this.lastIdx = null;
+    return [...rows].sort((a, b) => a - b);
+  }
+
   private consumeNamed(name: string, rowIdx: number): void {
     const rows = this.byName.get(name);
     if (!rows) return;

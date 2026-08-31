@@ -249,7 +249,15 @@ export class CodexClient {
           this.notify('initialized', {});
           resolve();
         })
-        .catch(reject);
+        .catch((err: unknown) => {
+          const error = err instanceof Error ? err : new Error(String(err));
+          // An initialize rejection leaves no usable generation. Tear down the
+          // child and its listeners before exposing the failure so the next
+          // ensureReady() can create a fresh app-server. teardownGeneration's
+          // identity guard makes this safe when exit/error already won the race.
+          this.teardownGeneration(proc, error, true);
+          reject(error);
+        });
     });
   }
 
@@ -403,10 +411,28 @@ export class CodexClient {
   }
 
   request(method: string, params: Record<string, JsonValue>): Promise<Record<string, JsonValue>> {
+    const proc = this.proc;
+    const generation = this.generation;
+    if (!proc || !generation || generation.proc !== proc) {
+      return Promise.reject(new Error('codex app-server disconnected'));
+    }
     const id = this.nextId++;
     return new Promise<Record<string, JsonValue>>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      this.send({ jsonrpc: '2.0', id, method, params });
+      // Bind the request to the generation observed above. If teardown ever
+      // occurs before the frame is written, do not leave an unowned pending
+      // promise that no future app-server generation can resolve.
+      if (this.proc !== proc || this.generation !== generation) {
+        this.pending.delete(id);
+        reject(new Error('codex app-server disconnected'));
+        return;
+      }
+      try {
+        proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+      } catch (err) {
+        this.pending.delete(id);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
     });
   }
 

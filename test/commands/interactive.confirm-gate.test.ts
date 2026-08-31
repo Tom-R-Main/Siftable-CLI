@@ -72,6 +72,24 @@ describe('sift interactive — write/edit confirm gate', () => {
     expect(isBypassing()).toBe(false);
   });
 
+  it('fails closed when the UI listener throws and ignores its stale request id', async () => {
+    let captured: ConfirmRequest | null = null;
+    const cancelled: string[] = [];
+    setConfirmCancellationListener((id) => cancelled.push(id));
+    setConfirmListener((req) => {
+      captured = req;
+      throw new Error('renderer failed');
+    });
+
+    await expect(requestApproval({kind: 'command', path: 'echo stale', detail: ''}))
+      .resolves.toBe('deny');
+    expect(pendingConfirmCount()).toBe(0);
+    expect(cancelled).toEqual([captured!.id]);
+
+    resolveApproval(captured!.id, 'bypass');
+    expect(isBypassing()).toBe(false);
+  });
+
   it('rejectAllConfirms denies every pending request', async () => {
     setConfirmListener(() => {});
     const a = requestConfirm({kind: 'write', path: '/repo/a', detail: 'a'});

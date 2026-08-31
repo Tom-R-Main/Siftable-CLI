@@ -85,7 +85,8 @@ export function isBypassing(): boolean {
 export function requestApproval(spec: ConfirmSpec, signal?: AbortSignal): Promise<ApprovalDecision> {
   if (signal?.aborted) return Promise.resolve("deny");
   if (bypassing) return Promise.resolve("allow");
-  if (!listener) return Promise.resolve("deny");
+  const activeListener = listener;
+  if (!activeListener) return Promise.resolve("deny");
   const id = randomUUID();
   return new Promise<ApprovalDecision>((resolve) => {
     const entry: PendingApproval = {resolve, signal};
@@ -99,7 +100,17 @@ export function requestApproval(spec: ConfirmSpec, signal?: AbortSignal): Promis
       signal.addEventListener("abort", entry.onAbort, {once: true});
     }
     pending.set(id, entry);
-    listener!({ allowAlways: true, allowBypass: true, ...spec, id });
+    try {
+      activeListener({ allowAlways: true, allowBypass: true, ...spec, id });
+    } catch {
+      // Rendering is part of the fail-closed boundary. A renderer may throw
+      // after observing the id, so revoke that exact request before denying.
+      if (pending.get(id) !== entry) return;
+      pending.delete(id);
+      if (entry.signal && entry.onAbort) entry.signal.removeEventListener("abort", entry.onAbort);
+      notifyCancellation(id);
+      resolve("deny");
+    }
   });
 }
 

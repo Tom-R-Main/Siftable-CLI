@@ -315,16 +315,58 @@ describe("boundToolOutput", () => {
     expect(secondSyncedPaths).toContain(resolve(join(baseDir, "fresh")));
   });
 
-  it("rejects a pre-existing markerless spill directory instead of adopting it", () => {
+  it("recovers an empty markerless spill directory through a fresh ownership transition", () => {
     const spillDir = tempSpillDir();
     const ownedDir = join(spillDir, ".sift-tool-output-v1");
     mkdirSync(ownedDir, {recursive: true, mode: 0o700});
 
     const ref = writeDurableToolOutputSpill(spillDir, "markerless", "sensitive");
 
+    expect(ref).toBeDefined();
+    expect(readFileSync(join(ownedDir, ".owner"), "utf8")).toBe("sift-tool-output-v1\n");
+    expect(readFileSync(ref!, "utf8")).toBe("sensitive");
+  });
+
+  it("does not recreate empty markerless residue until its parent sync succeeds", () => {
+    const spillDir = tempSpillDir();
+    const ownedDir = join(spillDir, ".sift-tool-output-v1");
+    mkdirSync(ownedDir, {recursive: true, mode: 0o700});
+    const fdPaths = new Map<number, string>();
+    let failRecoverySync = true;
+    const operations = {
+      open: ((path: Parameters<typeof openSync>[0], flags: Parameters<typeof openSync>[1], mode?: Parameters<typeof openSync>[2]) => {
+        const fd = openSync(path, flags, mode);
+        fdPaths.set(fd, resolve(String(path)));
+        return fd;
+      }) as typeof openSync,
+      sync: (fd: number) => {
+        if (failRecoverySync && fdPaths.get(fd) === resolve(spillDir)) {
+          failRecoverySync = false;
+          const error = new Error("injected startup recovery sync failure") as NodeJS.ErrnoException;
+          error.code = "EIO";
+          throw error;
+        }
+        fsyncSync(fd);
+      },
+    };
+
+    expect(writeDurableToolOutputSpill(spillDir, "first", "sensitive", operations)).toBeUndefined();
+    expect(existsSync(ownedDir)).toBe(false);
+    expect(writeDurableToolOutputSpill(spillDir, "retry", "sensitive")).toBeDefined();
+  });
+
+  it("rejects a pre-existing markerless spill directory with foreign content", () => {
+    const spillDir = tempSpillDir();
+    const ownedDir = join(spillDir, ".sift-tool-output-v1");
+    const foreign = join(ownedDir, "keep.txt");
+    mkdirSync(ownedDir, {recursive: true, mode: 0o700});
+    writeFileSync(foreign, "foreign", {mode: 0o600, flag: "wx"});
+
+    const ref = writeDurableToolOutputSpill(spillDir, "markerless-foreign", "sensitive");
+
     expect(ref).toBeUndefined();
     expect(existsSync(join(ownedDir, ".owner"))).toBe(false);
-    expect(readdirSync(ownedDir)).toHaveLength(0);
+    expect(readFileSync(foreign, "utf8")).toBe("foreign");
   });
 
   it("removes an unpublished spill when directory sync fails", () => {

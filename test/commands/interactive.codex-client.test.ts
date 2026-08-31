@@ -74,6 +74,35 @@ describe('CodexClient handshake', () => {
     });
     await expect(client.ensureReady()).rejects.toThrow(/ENOENT/);
   });
+
+  it('tears down a rejected initialize generation and reconnects cleanly', async () => {
+    const procs: FakeCodexProc[] = [];
+    const client = new CodexClient(() => {
+      const proc = new FakeCodexProc();
+      procs.push(proc);
+      return proc as unknown as ReturnType<CodexSpawnFn>;
+    });
+
+    let ready = client.ensureReady();
+    const rejectedInitId = await waitForSent(procs[0], 'initialize');
+    procs[0].replyError(rejectedInitId, 'initialize rejected');
+    await expect(ready).rejects.toThrow('initialize rejected');
+
+    expect(procs[0].killed).toBe(true);
+    expect(procs[0].killSignal).toBe('SIGTERM');
+    expect(procs[0].listenerCount('error')).toBe(0);
+    expect(procs[0].listenerCount('exit')).toBe(0);
+    expect(procs[0].stdout.listenerCount('data')).toBe(0);
+
+    ready = client.ensureReady();
+    await completeHandshake(procs[1]);
+    await ready;
+
+    const request = client.request('thread/start', {});
+    const requestId = await waitForSent(procs[1], 'thread/start');
+    procs[1].reply(requestId, { threadId: 'fresh-after-init-failure' });
+    await expect(request).resolves.toEqual({ threadId: 'fresh-after-init-failure' });
+  });
 });
 
 describe('CodexClient request/response correlation', () => {
@@ -156,6 +185,34 @@ describe('CodexClient unexpected exit', () => {
     proc.exit(1);
     await expect(a).rejects.toThrow('codex app-server exited');
     await expect(b).rejects.toThrow('codex app-server exited');
+  });
+
+  it('rejects a request made after exit before a replacement generation starts', async () => {
+    const procs: FakeCodexProc[] = [];
+    const client = new CodexClient(() => {
+      const proc = new FakeCodexProc();
+      procs.push(proc);
+      return proc as unknown as ReturnType<CodexSpawnFn>;
+    });
+
+    let ready = client.ensureReady();
+    await completeHandshake(procs[0]);
+    await ready;
+
+    procs[0].exit(1);
+    await expect(client.request('thread/start', {})).rejects.toThrow(
+      'codex app-server disconnected',
+    );
+    expect(procs).toHaveLength(1);
+    expect(procs[0].sent.filter((message) => message.method === 'thread/start')).toHaveLength(0);
+
+    ready = client.ensureReady();
+    await completeHandshake(procs[1]);
+    await ready;
+    const request = client.request('thread/start', {});
+    const requestId = await waitForSent(procs[1], 'thread/start');
+    procs[1].reply(requestId, { threadId: 'replacement-thread' });
+    await expect(request).resolves.toEqual({ threadId: 'replacement-thread' });
   });
 });
 

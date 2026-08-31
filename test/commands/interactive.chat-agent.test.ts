@@ -5,7 +5,7 @@
 // form), it's authored against vitest and excluded from jest (see jest.config.js
 // testPathIgnorePatterns). vi.mock is hoisted above the imports below.
 import {describe, it, expect, vi} from 'vitest';
-import {mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import type {AdapterResponse, AIAdapter, ChatMessage} from '../../interactive-tui/agent-harness/framework/adapters/types';
@@ -1354,6 +1354,51 @@ describe('Siftable agent-harness chat loop', () => {
       });
       expect(await readFile(output!.fullOutputRef!, 'utf8')).toBe(spilled);
       expect(await readdir(dirname(output!.fullOutputRef!))).not.toContain('spill-orphan.json');
+    } finally {
+      await rm(spillRoot, {recursive: true, force: true});
+    }
+  });
+
+  it('recovers empty markerless crash residue when reopening a spill session', async () => {
+    const spillRoot = await mkdtemp(join(tmpdir(), 'sift-chat-spill-reopen-residue-'));
+    const sessionId = 'spill-reopen-residue';
+    const store = new InMemorySessionEventStore();
+    new SessionKernel({sessionId, store});
+    const sessionSpillRoot = join(spillRoot, `session-${digestJson(sessionId)}`);
+    const ownedDir = join(sessionSpillRoot, '.sift-tool-output-v1');
+    try {
+      await mkdir(ownedDir, {recursive: true, mode: 0o700});
+      const big = defineTool({
+        name: 'spill_reopen_residue',
+        description: 'Creates retained output after startup recovery',
+        inputSchema: {type: 'object', properties: {}},
+        handler: async () => ok({blob: 'x'.repeat(100_000)}),
+      });
+      let round = 0;
+      const agent = await createChatAgent({
+        adapter: {
+          name: 'spill-reopen-residue',
+          model: 'spill-reopen-residue-model',
+          async chat() {
+            round += 1;
+            return round === 1
+              ? {toolCall: {id: 'spill-reopen-residue-call', name: big.name, args: {}}}
+              : {text: 'done'};
+          },
+        },
+        memory: false,
+        tools: [big],
+        session: {id: sessionId, store},
+        toolOutput: {maxBytes: 2048, spillDir: spillRoot},
+      });
+
+      await agent.chat('create retained output after recovery');
+      const event = agent.getSessionEvents().find((candidate) => candidate.type === 'tool/result');
+      const ref = event?.type === 'tool/result' ? event.data.output?.fullOutputRef : undefined;
+      expect(ref).toBeDefined();
+      expect(dirname(ref!)).toBe(ownedDir);
+      expect(await readFile(ref!, 'utf8')).toContain('x'.repeat(1000));
+      await agent.destroy();
     } finally {
       await rm(spillRoot, {recursive: true, force: true});
     }
