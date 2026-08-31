@@ -36,6 +36,8 @@ describe("ToolRowTracker", () => {
     t.register("shell", "call-a", 5);
 
     expect(t.settle("unregistered_tool", undefined)).toBe(5);
+    expect(t.drain()).toEqual([]);
+    expect(t.settle("shell", "call-a")).toBeNull();
   });
 
   it("keeps distinct names independent under interleaved id settlement", () => {

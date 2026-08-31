@@ -33,22 +33,22 @@ export class ToolRowTracker {
     if (callId) {
       const registered = this.byCallId.get(callId);
       if (registered === undefined) return null; // fail closed — see module doc
-      this.byCallId.delete(callId);
       // The call id is authoritative. Remove the row from the name queue it
       // was registered under, even if a malformed result supplies another
       // tool name, so the row can never settle twice.
-      this.consumeNamed(registered.name, registered.rowIdx);
+      this.consumeRow(registered.rowIdx);
       return registered.rowIdx;
     }
     const rows = this.byName.get(name);
     if (rows?.length) {
-      const idx = rows.shift()!;
-      for (const [id, mapped] of this.byCallId) {
-        if (mapped.rowIdx === idx) this.byCallId.delete(id);
-      }
+      const idx = rows[0];
+      this.consumeRow(idx);
       return idx;
     }
-    return this.lastIdx;
+    if (this.lastIdx === null) return null;
+    const idx = this.lastIdx;
+    this.consumeRow(idx);
+    return idx;
   }
 
   /**
@@ -67,10 +67,22 @@ export class ToolRowTracker {
     return [...rows].sort((a, b) => a - b);
   }
 
-  private consumeNamed(name: string, rowIdx: number): void {
-    const rows = this.byName.get(name);
-    if (!rows) return;
-    const at = rows.indexOf(rowIdx);
-    if (at >= 0) rows.splice(at, 1);
+  private consumeRow(rowIdx: number): void {
+    for (const [name, rows] of this.byName) {
+      const at = rows.indexOf(rowIdx);
+      if (at >= 0) rows.splice(at, 1);
+      if (rows.length === 0) this.byName.delete(name);
+    }
+    for (const [id, mapped] of this.byCallId) {
+      if (mapped.rowIdx === rowIdx) this.byCallId.delete(id);
+    }
+    if (this.lastIdx === rowIdx) {
+      this.lastIdx = null;
+      for (const rows of this.byName.values()) {
+        for (const openRowIdx of rows) {
+          if (this.lastIdx === null || openRowIdx > this.lastIdx) this.lastIdx = openRowIdx;
+        }
+      }
+    }
   }
 }

@@ -100,6 +100,18 @@ describe('sift interactive — write/edit confirm gate', () => {
     await expect(b).resolves.toBe(false);
     expect(pendingConfirmCount()).toBe(0);
   });
+
+  it('revokes every id before cancellation callbacks can answer stale requests', async () => {
+    setConfirmListener(() => {});
+    setConfirmCancellationListener((id) => resolveApproval(id, 'bypass'));
+    const approval = requestApproval({kind: 'command', path: 'echo stale', detail: ''});
+
+    rejectAllConfirms();
+
+    await expect(approval).resolves.toBe('deny');
+    expect(pendingConfirmCount()).toBe(0);
+    expect(isBypassing()).toBe(false);
+  });
 });
 
 describe('sift interactive — 4-way approval gate', () => {

@@ -126,12 +126,17 @@ export function resolveApproval(id: string, decision: ApprovalDecision): void {
 
 /** Deny and clear every pending approval (e.g. on abort or teardown). */
 export function rejectAllConfirms(): void {
-  for (const entry of pending.values()) {
-    if (entry.signal && entry.onAbort) entry.signal.removeEventListener("abort", entry.onAbort);
-    entry.resolve("deny");
-  }
-  for (const id of pending.keys()) notifyCancellation(id);
+  const revoked = [...pending.entries()];
+  // Revoke every id before invoking any resolver or UI callback. A reentrant
+  // cancellation listener must never be able to answer teardown state.
   pending.clear();
+  for (const [, entry] of revoked) {
+    if (entry.signal && entry.onAbort) entry.signal.removeEventListener("abort", entry.onAbort);
+  }
+  for (const [id, entry] of revoked) {
+    entry.resolve("deny");
+    notifyCancellation(id);
+  }
 }
 
 export function pendingConfirmCount(): number {
