@@ -620,7 +620,15 @@ export function cleanupToolOutputSpillSession(spillDir: string): boolean {
     // data loss.
     const ownedPaths: string[] = [];
     let markerSeen = false;
-    for (const dirent of readdirSync(ownedDir, { withFileTypes: true })) {
+    const entries = readdirSync(ownedDir, { withFileTypes: true });
+    if (entries.length === 0) {
+      // Recover an empty markerless directory left by an interrupted
+      // pre-publication rollback. rmdir remains race-safe: any newly added
+      // entry makes it fail rather than deleting non-empty state.
+      rmdirSync(ownedDir);
+      return syncDirectory(dirname(ownedDir));
+    }
+    for (const dirent of entries) {
       if (dirent.name === OWNERSHIP_MARKER_NAME) {
         if (!dirent.isFile()) return false;
         const marker = join(ownedDir, dirent.name);

@@ -497,6 +497,28 @@ describe("boundToolOutput", () => {
     expect(cleanupToolOutputSpillSession(spillDir)).toBe(true);
   });
 
+  it("recovers an empty markerless owned directory", () => {
+    const spillDir = tempSpillDir();
+    const ownedDir = join(spillDir, ".sift-tool-output-v1");
+    mkdirSync(ownedDir, {recursive: true, mode: 0o700});
+
+    expect(cleanupToolOutputSpillSession(spillDir)).toBe(true);
+    expect(existsSync(ownedDir)).toBe(false);
+    expect(existsSync(spillDir)).toBe(true);
+  });
+
+  it("preserves and rejects a markerless owned directory with foreign content", () => {
+    const spillDir = tempSpillDir();
+    const ownedDir = join(spillDir, ".sift-tool-output-v1");
+    mkdirSync(ownedDir, {recursive: true, mode: 0o700});
+    const foreign = join(ownedDir, "keep.txt");
+    writeFileSync(foreign, "foreign", {mode: 0o600, flag: "wx"});
+
+    expect(cleanupToolOutputSpillSession(spillDir)).toBe(false);
+    expect(existsSync(ownedDir)).toBe(true);
+    expect(readFileSync(foreign, "utf8")).toBe("foreign");
+  });
+
   it("refuses session cleanup without deleting owned spills when foreign files exist", () => {
     const spillDir = tempSpillDir();
     const spill = boundToolOutput("x".repeat(10_000), {maxBytes: 1024, spillDir}, "foreign-guard");
