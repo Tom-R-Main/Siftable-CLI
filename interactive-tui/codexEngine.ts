@@ -172,7 +172,7 @@ export function buildApprovalRequest(
   };
 }
 
-type Approver = (req: CodexApprovalRequest) => Promise<ApprovalDecision>;
+type Approver = (req: CodexApprovalRequest, signal: AbortSignal) => Promise<ApprovalDecision>;
 
 /**
  * One persistent `codex app-server` process and the JSON-RPC plumbing over its
@@ -368,11 +368,15 @@ export class CodexClient {
       this.sendToGeneration(proc, { id, error: { code: -32601, message: 'unsupported by sift_tui' } });
       return;
     }
+    const approval = new AbortController();
+    const offDisconnect = this.onDisconnect(() => approval.abort());
     let decision: ApprovalDecision = 'deny';
     try {
-      decision = await this.approver(buildApprovalRequest(method, params));
+      decision = await this.approver(buildApprovalRequest(method, params), approval.signal);
     } catch {
       decision = 'deny';
+    } finally {
+      offDisconnect();
     }
     this.sendToGeneration(proc, { id, result: codexApprovalResponse(method, decision) });
   }
@@ -464,13 +468,13 @@ async function getClient(): Promise<CodexClient | null> {
   if (!client) {
     client = new CodexClient();
     // Route codex's approval requests through the shared 4-way confirm gate.
-    client.setApprover((req) =>
+    client.setApprover((req, signal) =>
       requestApproval({
         kind: req.kind === 'edit' ? 'edit' : 'command',
         path: req.target,
         detail: req.detail,
         allowAlways: true,
-      }),
+      }, signal),
     );
   }
   try {

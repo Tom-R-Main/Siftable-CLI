@@ -21,6 +21,17 @@ import {
 } from '../../interactive-tui/codexEngine';
 import {getSessionCwd, setSessionCwd} from '../../interactive-tui/navigation';
 import {
+  isBypassing,
+  pendingConfirmCount,
+  rejectAllConfirms,
+  requestApproval,
+  resetBypass,
+  resolveApproval,
+  setConfirmCancellationListener,
+  setConfirmListener,
+  type ConfirmRequest,
+} from '../../interactive-tui/confirmGate';
+import {
   FakeCodexProc,
   completeHandshake,
   waitForSent,
@@ -255,6 +266,12 @@ describe('codexAsk generation disconnects', () => {
 });
 
 describe('CodexClient server→client approvals', () => {
+  afterEach(() => {
+    rejectAllConfirms();
+    setConfirmCancellationListener(null);
+    setConfirmListener(null);
+    resetBypass();
+  });
   it('routes an approval request through the approver and writes the mapped decision', async () => {
     const { client, proc } = await readyClient();
     const seen: string[] = [];
@@ -333,6 +350,44 @@ describe('CodexClient server→client approvals', () => {
 
     expect(procs[0].sent.filter((m) => m.id === 'reused-id')).toHaveLength(0);
     expect(procs[1].sent.filter((m) => m.id === 'reused-id')).toEqual([secondResponse]);
+  });
+
+  it('cancels the real confirm gate on disconnect without enabling stale bypass', async () => {
+    const procs: FakeCodexProc[] = [];
+    const client = new CodexClient(() => {
+      const proc = new FakeCodexProc();
+      procs.push(proc);
+      return proc as unknown as ReturnType<CodexSpawnFn>;
+    });
+    let captured: ConfirmRequest | null = null;
+    const cancelled: string[] = [];
+    setConfirmListener((req) => { captured = req; });
+    setConfirmCancellationListener((id) => cancelled.push(id));
+    client.setApprover((req, signal) => requestApproval({
+      kind: req.kind === 'edit' ? 'edit' : 'command',
+      path: req.target,
+      detail: req.detail,
+    }, signal));
+
+    const firstReady = client.ensureReady();
+    await completeHandshake(procs[0]);
+    await firstReady;
+    procs[0].serverRequest('stale-approval', 'item/commandExecution/requestApproval', {
+      command: 'generation-a',
+    });
+    expect(captured).not.toBeNull();
+    expect(pendingConfirmCount()).toBe(1);
+
+    const staleId = captured!.id;
+    procs[0].exit(1);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(pendingConfirmCount()).toBe(0);
+    expect(cancelled).toEqual([staleId]);
+    expect(isBypassing()).toBe(false);
+
+    resolveApproval(staleId, 'bypass');
+    expect(isBypassing()).toBe(false);
+    client.shutdown();
   });
 });
 

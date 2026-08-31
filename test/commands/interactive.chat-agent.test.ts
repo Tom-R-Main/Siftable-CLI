@@ -118,8 +118,22 @@ describe('Siftable agent-harness chat loop', () => {
       toolCallId: call.id,
       toolName: call.name,
     }, context);
-    session.append({type: 'tool/call', data: {call}, ...context});
-    session.append({type: 'tool/execution-started', data: {call}, ...context});
+    expect(() => session.append({
+      type: 'tool/call',
+      data: {call, executionMode: 'concurrent' as never},
+      ...context,
+    })).toThrow('executionMode must be exclusive or parallel-safe');
+    session.append({type: 'tool/call', data: {call, executionMode: 'parallel-safe'}, ...context});
+    expect(() => session.append({
+      type: 'tool/execution-started',
+      data: {call, executionMode: 'exclusive'},
+      ...context,
+    })).toThrow('changed mode from parallel-safe to exclusive');
+    session.append({
+      type: 'tool/execution-started',
+      data: {call, executionMode: 'parallel-safe'},
+      ...context,
+    });
 
     const appendResult = (output: unknown, extra: Record<string, unknown> = {}) => () => session.append({
       type: 'tool/result',
@@ -1053,6 +1067,34 @@ describe('Siftable agent-harness chat loop', () => {
       {callId: 'x-2', executionMode: 'exclusive'},
       {callId: 'x-3', executionMode: 'exclusive'},
     ]);
+    expect(result.run.toolEffects).toMatchObject({
+      state: 'complete',
+      certainty: 'known',
+      receipts: [
+        {callId: 'p-1', executionMode: 'parallel-safe'},
+        {callId: 'p-2', executionMode: 'parallel-safe'},
+        {callId: 'p-3', executionMode: 'parallel-safe'},
+        {callId: 'p-4', executionMode: 'parallel-safe'},
+        {callId: 'x-1', executionMode: 'exclusive'},
+        {callId: 'x-2', executionMode: 'exclusive'},
+        {callId: 'x-3', executionMode: 'exclusive'},
+      ],
+    });
+    expect(result.run.toolEffects?.receipts.every((receipt) =>
+      receipt.args === undefined && receipt.result.data === undefined,
+    )).toBe(true);
+    expect(agent.getSessionEvents()
+      .filter((event) => event.type === 'tool/call')
+      .map((event) => ({callId: event.data.call.id, executionMode: event.data.executionMode})))
+      .toEqual([
+        {callId: 'p-1', executionMode: 'parallel-safe'},
+        {callId: 'p-2', executionMode: 'parallel-safe'},
+        {callId: 'p-3', executionMode: 'parallel-safe'},
+        {callId: 'p-4', executionMode: 'parallel-safe'},
+        {callId: 'x-1', executionMode: 'exclusive'},
+        {callId: 'x-2', executionMode: 'exclusive'},
+        {callId: 'x-3', executionMode: 'exclusive'},
+      ]);
   });
 
   it('abort stops admissions: started calls drain, never-started calls settle as cancelled', async () => {
@@ -1394,6 +1436,91 @@ describe('Siftable agent-harness chat loop', () => {
     expect(await readdir(spillRoot)).toEqual([]);
   });
 
+  it('collects a journal-referenced spill at max age while the agent is idle', async () => {
+    const spillRoot = await mkdtemp(join(tmpdir(), 'sift-chat-spill-idle-age-'));
+    try {
+      const big = defineTool({
+        name: 'spill_idle_age',
+        description: 'Creates a short-lived retained output',
+        inputSchema: {type: 'object', properties: {}},
+        handler: async () => ok({blob: 'x'.repeat(100_000)}),
+      });
+      let round = 0;
+      const agent = await createChatAgent({
+        adapter: {
+          name: 'spill-idle-age',
+          model: 'spill-idle-age-model',
+          async chat() {
+            round += 1;
+            return round === 1
+              ? {toolCall: {id: 'spill-idle-age-call', name: big.name, args: {}}}
+              : {text: 'done'};
+          },
+        },
+        memory: false,
+        tools: [big],
+        toolOutput: {
+          maxBytes: 2048,
+          spillDir: spillRoot,
+          spillPolicy: {maxAgeMs: 20, orphanGraceMs: 5000},
+        },
+      });
+
+      await agent.chat('create retained output');
+      const event = agent.getSessionEvents().find((candidate) => candidate.type === 'tool/result');
+      const ref = event?.type === 'tool/result' ? event.data.output?.fullOutputRef : undefined;
+      expect(ref).toBeDefined();
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      await expect(readFile(ref!, 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+      await agent.destroy();
+    } finally {
+      await rm(spillRoot, {recursive: true, force: true});
+    }
+  });
+
+  it('stops idle spill collection when the agent is closed', async () => {
+    const spillRoot = await mkdtemp(join(tmpdir(), 'sift-chat-spill-close-timer-'));
+    try {
+      const big = defineTool({
+        name: 'spill_close_timer',
+        description: 'Creates retained output before close',
+        inputSchema: {type: 'object', properties: {}},
+        handler: async () => ok({blob: 'x'.repeat(100_000)}),
+      });
+      let round = 0;
+      const agent = await createChatAgent({
+        adapter: {
+          name: 'spill-close-timer',
+          model: 'spill-close-timer-model',
+          async chat() {
+            round += 1;
+            return round === 1
+              ? {toolCall: {id: 'spill-close-timer-call', name: big.name, args: {}}}
+              : {text: 'done'};
+          },
+        },
+        memory: false,
+        tools: [big],
+        toolOutput: {
+          maxBytes: 2048,
+          spillDir: spillRoot,
+          spillPolicy: {maxAgeMs: 20, orphanGraceMs: 5000},
+        },
+      });
+
+      await agent.chat('create retained output');
+      const event = agent.getSessionEvents().find((candidate) => candidate.type === 'tool/result');
+      const ref = event?.type === 'tool/result' ? event.data.output?.fullOutputRef : undefined;
+      expect(ref).toBeDefined();
+      await agent.close();
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(await readFile(ref!, 'utf8')).toContain('x'.repeat(1000));
+      await agent.destroy();
+    } finally {
+      await rm(spillRoot, {recursive: true, force: true});
+    }
+  });
+
   it('surfaces a spill cleanup refusal without deleting foreign data', async () => {
     const spillRoot = await mkdtemp(join(tmpdir(), 'sift-chat-spill-destroy-refusal-'));
     try {
@@ -1449,6 +1576,8 @@ describe('Siftable agent-harness chat loop', () => {
       .rejects.toThrow(/toolOutput\.maxBytes must be an integer >= 1024/);
     await expect(createChatAgent({adapter, memory: false, toolOutput: {maxLines: Number.NaN}}))
       .rejects.toThrow(/toolOutput\.maxLines must be an integer/);
+    await expect(createChatAgent({adapter, memory: false, toolOutput: {spillDir: '   '}}))
+      .rejects.toThrow(/toolOutput\.spillDir must be a non-empty path/);
   });
 
   it('serializes reset, deleteThread, and destroy behind active turns', async () => {

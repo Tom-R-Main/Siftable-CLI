@@ -68,7 +68,13 @@ import { isExplicitCopyChord } from "./keybindings";
 import { play as playSound, initSounds, setSoundsEnabled, soundsEnabled, disposeSounds } from "./audio";
 import { analyzePaste, type PasteAnalysis } from "./composerPolicy";
 import { estimateTokens } from "./threadEngine";
-import { setConfirmListener, resolveApproval, type ConfirmRequest, type ApprovalDecision } from "./confirmGate";
+import {
+  setConfirmCancellationListener,
+  setConfirmListener,
+  resolveApproval,
+  type ConfirmRequest,
+  type ApprovalDecision,
+} from "./confirmGate";
 import { normalizeImageForModel } from "./imageEngine";
 import { extractMermaidBlocks, renderMermaidSource, resolveCellRenderBin } from "./cellRender";
 import { discoverSkills } from "./skillsEngine";
@@ -1856,7 +1862,13 @@ function App() {
       playSound("notify"); // a decision is waiting on you
       setConfirm(req);
     });
-    onCleanup(() => setConfirmListener(null));
+    setConfirmCancellationListener((id) => {
+      setConfirm((current) => current?.id === id ? null : current);
+    });
+    onCleanup(() => {
+      setConfirmListener(null);
+      setConfirmCancellationListener(null);
+    });
     const timer = setInterval(() => void refreshState(), 2000);
     onCleanup(() => clearInterval(timer));
   });

@@ -23,14 +23,19 @@
  */
 import { randomBytes } from "node:crypto";
 import {
+  closeSync,
   chmodSync,
+  constants as fsConstants,
+  fchmodSync,
+  fsyncSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   rmdirSync,
   unlinkSync,
-  writeFileSync,
+  writeSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -97,6 +102,12 @@ export interface ToolOutputSpillCollectionResult {
   withinQuota: boolean;
 }
 
+export interface ToolOutputSpillCollector {
+  /** Delay until the next file becomes eligible; undefined when no spills exist. */
+  nextDelayMs(nowMs?: number): number | undefined;
+  collect(nowMs?: number): ToolOutputSpillCollectionResult;
+}
+
 export interface ResolvedToolOutputSpillPolicy {
   maxBytes: number;
   maxFiles: number;
@@ -108,6 +119,114 @@ interface SpillEntry {
   path: string;
   bytes: number;
   mtimeMs: number;
+}
+
+export interface ToolOutputDurabilityOperations {
+  open: typeof openSync;
+  write: typeof writeSync;
+  chmod: typeof fchmodSync;
+  sync: typeof fsyncSync;
+  close: typeof closeSync;
+}
+
+const NODE_DURABILITY_OPERATIONS: ToolOutputDurabilityOperations = {
+  open: openSync,
+  write: writeSync,
+  chmod: fchmodSync,
+  sync: fsyncSync,
+  close: closeSync,
+};
+
+function durabilityOperations(
+  overrides?: Partial<ToolOutputDurabilityOperations>,
+): ToolOutputDurabilityOperations {
+  return { ...NODE_DURABILITY_OPERATIONS, ...overrides };
+}
+
+function unsupportedFlag(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "EINVAL" || code === "ENOTSUP" || code === "EOPNOTSUPP";
+}
+
+function syncDirectory(
+  directory: string,
+  operations: ToolOutputDurabilityOperations = NODE_DURABILITY_OPERATIONS,
+): boolean {
+  const directoryFlag = typeof fsConstants.O_DIRECTORY === "number" ? fsConstants.O_DIRECTORY : 0;
+  let fd: number | undefined;
+  try {
+    try {
+      fd = operations.open(directory, fsConstants.O_RDONLY | directoryFlag);
+    } catch (error) {
+      if (!directoryFlag || !unsupportedFlag(error)) throw error;
+      fd = operations.open(directory, fsConstants.O_RDONLY);
+    }
+    try {
+      operations.sync(fd);
+    } catch (error) {
+      // Some filesystems/platforms cannot fsync directory descriptors. File
+      // fsync still protects bytes; accept only the explicit unsupported case.
+      if (!unsupportedFlag(error)) throw error;
+    }
+    operations.close(fd);
+    fd = undefined;
+    return true;
+  } catch {
+    if (fd !== undefined) {
+      try { operations.close(fd); } catch { /* best effort */ }
+    }
+    return false;
+  }
+}
+
+function durableExclusiveCreate(
+  path: string,
+  content: string,
+  directory: string,
+  operationOverrides?: Partial<ToolOutputDurabilityOperations>,
+): boolean {
+  const operations = durabilityOperations(operationOverrides);
+  const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+  const baseFlags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL;
+  let fd: number | undefined;
+  let created = false;
+  try {
+    try {
+      fd = operations.open(path, baseFlags | noFollow, 0o600);
+    } catch (error) {
+      if (!noFollow || !unsupportedFlag(error)) throw error;
+      // O_EXCL still prevents following a pre-existing symlink when the host
+      // does not support O_NOFOLLOW.
+      fd = operations.open(path, baseFlags, 0o600);
+    }
+    created = true;
+    const bytes = Buffer.from(content, "utf8");
+    let offset = 0;
+    while (offset < bytes.length) {
+      const written = operations.write(fd, bytes, offset, bytes.length - offset, offset);
+      if (written <= 0) throw new Error("spill write made no progress");
+      offset += written;
+    }
+    operations.chmod(fd, 0o600);
+    operations.sync(fd);
+    operations.close(fd);
+    fd = undefined;
+    if (!syncDirectory(directory, operations)) throw new Error("spill directory sync failed");
+    return true;
+  } catch {
+    if (fd !== undefined) {
+      try { operations.close(fd); } catch { /* best effort */ }
+    }
+    if (created) {
+      try {
+        unlinkSync(path);
+        syncDirectory(directory);
+      } catch {
+        // Startup orphan collection repairs a cleanup that could not finish.
+      }
+    }
+    return false;
+  }
 }
 
 /** Fail-closed cap: non-finite/non-positive -> fallback; tiny -> floor. */
@@ -145,24 +264,52 @@ function isOwnedSpillFilename(name: string): boolean {
   return name.startsWith(OWNED_SPILL_FILE_PREFIX) && name.endsWith(".json");
 }
 
-function ensurePrivateSpillDir(spillRoot: string): string | undefined {
+function ensurePrivateSpillDir(
+  spillRoot: string,
+  operationOverrides?: Partial<ToolOutputDurabilityOperations>,
+): string | undefined {
   const spillDir = ownedSpillDirPath(spillRoot);
   if (!spillDir) return undefined;
+  const operations = durabilityOperations(operationOverrides);
   try {
     mkdirSync(spillDir, { recursive: true, mode: 0o700 });
     const stat = lstatSync(spillDir);
     if (!stat.isDirectory() || stat.isSymbolicLink()) return undefined;
     chmodSync(spillDir, 0o700);
+    // Persist the owned child entry and its directory metadata before any
+    // marker or spill path can be returned to a journal append.
+    if (
+      !syncDirectory(dirname(resolve(spillRoot)), operations)
+      || !syncDirectory(dirname(spillDir), operations)
+      || !syncDirectory(spillDir, operations)
+    ) {
+      return undefined;
+    }
     const marker = join(spillDir, OWNERSHIP_MARKER_NAME);
     try {
-      writeFileSync(marker, OWNERSHIP_MARKER_CONTENT, { mode: 0o600, flag: "wx" });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") return undefined;
       const markerStat = lstatSync(marker);
       if (!markerStat.isFile() || markerStat.isSymbolicLink()) return undefined;
       if (readFileSync(marker, "utf8") !== OWNERSHIP_MARKER_CONTENT) return undefined;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
+      if (!durableExclusiveCreate(
+        marker,
+        OWNERSHIP_MARKER_CONTENT,
+        spillDir,
+        operationOverrides,
+      )) {
+        // A racing creator may have durably published the marker first.
+        try {
+          const markerStat = lstatSync(marker);
+          if (!markerStat.isFile() || markerStat.isSymbolicLink()) return undefined;
+          if (readFileSync(marker, "utf8") !== OWNERSHIP_MARKER_CONTENT) return undefined;
+        } catch {
+          return undefined;
+        }
+      }
     }
     chmodSync(marker, 0o600);
+    if (!syncDirectory(spillDir, operations)) return undefined;
     return spillDir;
   } catch {
     return undefined;
@@ -239,6 +386,9 @@ export function garbageCollectToolOutputSpills(options: {
   const remove = (entry: SpillEntry): boolean => {
     try {
       unlinkSync(entry.path);
+      // Persist disappearance so a crash cannot resurrect a supposedly
+      // collected secret-bearing spill.
+      syncDirectory(root);
       removed += 1;
       removedBytes += entry.bytes;
       return true;
@@ -251,7 +401,8 @@ export function garbageCollectToolOutputSpills(options: {
   // files. orphanGraceMs prevents racing a spill that has not been appended.
   entries = entries.filter((entry) => {
     const ageMs = Math.max(0, nowMs - entry.mtimeMs);
-    const expired = ageMs >= policy.maxAgeMs && ageMs >= policy.orphanGraceMs;
+    const expired = ageMs >= policy.maxAgeMs
+      && (protectedPaths.has(entry.path) || ageMs >= policy.orphanGraceMs);
     const orphaned = options.referencesComplete === true
       && !protectedPaths.has(entry.path)
       && ageMs >= policy.orphanGraceMs;
@@ -291,6 +442,48 @@ export function garbageCollectToolOutputSpills(options: {
   };
 }
 
+/**
+ * Build a reusable collector for an idle long-running agent. Callers schedule
+ * collect() with an unref'ed timer and dispose that timer with the agent. The
+ * iterable of protected paths is read afresh on each run, so a mutable Set
+ * tracks successful journal appends without rebuilding the collector.
+ */
+export function createToolOutputSpillCollector(options: {
+  spillDir: string;
+  policy?: ToolOutputSpillPolicy;
+  protectedPaths?: Iterable<string>;
+  referencesComplete?: boolean;
+}): ToolOutputSpillCollector {
+  const policy = resolveToolOutputSpillPolicy(options.policy);
+  return {
+    nextDelayMs: (nowMs = Date.now()) => {
+      const root = ownedSpillDirPath(options.spillDir);
+      if (!root) return undefined;
+      const protectedPaths = new Set<string>();
+      for (const candidate of options.protectedPaths ?? []) {
+        const path = directChildPath(root, candidate);
+        if (path) protectedPaths.add(path);
+      }
+      const entries = listSpills(options.spillDir);
+      if (entries.length === 0) return undefined;
+      const nextDueAt = Math.min(...entries.map((entry) => {
+        const retentionMs = protectedPaths.has(entry.path)
+          ? policy.maxAgeMs
+          : options.referencesComplete === true
+            ? policy.orphanGraceMs
+            : Math.max(policy.maxAgeMs, policy.orphanGraceMs);
+        return entry.mtimeMs + retentionMs;
+      }));
+      return Math.max(1, Math.ceil(nextDueAt - nowMs));
+    },
+    collect: (nowMs?: number) => garbageCollectToolOutputSpills({
+      ...options,
+      policy,
+      ...(nowMs === undefined ? {} : { nowMs }),
+    }),
+  };
+}
+
 /** Best-effort deletion of one explicitly identified module-owned spill. */
 export function discardToolOutputSpill(fullOutputRef: string, spillDir: string): boolean {
   const ownedDir = ownedSpillDirPath(spillDir);
@@ -301,7 +494,7 @@ export function discardToolOutputSpill(fullOutputRef: string, spillDir: string):
     const stat = lstatSync(path);
     if (!stat.isFile() || stat.isSymbolicLink()) return false;
     unlinkSync(path);
-    return true;
+    return syncDirectory(ownedDir);
   } catch {
     return false;
   }
@@ -312,8 +505,12 @@ export function cleanupToolOutputSpillSession(spillDir: string): boolean {
   const ownedDir = ownedSpillDirPath(spillDir);
   if (!ownedDir) return false;
   try {
-    const stat = lstatSync(ownedDir);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+    const initial = lstatSync(ownedDir);
+    if (!initial.isDirectory() || initial.isSymbolicLink()) return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+  try {
     // Delete only files this module owns. Refuse a non-empty directory with
     // foreign entries rather than turning a bad session path into recursive
     // data loss.
@@ -339,11 +536,22 @@ export function cleanupToolOutputSpillSession(spillDir: string): boolean {
     }
     if (!markerSeen) return false;
     for (const path of ownedPaths) unlinkSync(path);
+    if (!syncDirectory(ownedDir)) return false;
     unlinkSync(join(ownedDir, OWNERSHIP_MARKER_NAME));
+    if (!syncDirectory(ownedDir)) return false;
     rmdirSync(ownedDir);
-    return true;
+    return syncDirectory(dirname(ownedDir));
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT";
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+    // ENOENT after cleanup started is success only when the owned directory
+    // itself is gone. A concurrently removed child must not make destroy()
+    // clear custody while sibling spills remain.
+    try {
+      lstatSync(ownedDir);
+      return false;
+    } catch (recheckError) {
+      return (recheckError as NodeJS.ErrnoException).code === "ENOENT";
+    }
   }
 }
 
@@ -370,6 +578,41 @@ function sanitizeSpillKey(key: string): string {
   return cleaned || "output";
 }
 
+/**
+ * Durably publish one unique immutable spill. The returned path is safe to
+ * place in a journal event: file bytes/mode and the containing directory
+ * entry have been synced first. A failed sync removes the unpublished file.
+ */
+export function writeDurableToolOutputSpill(
+  spillRoot: string,
+  key: string,
+  serialized: string,
+  operationOverrides?: Partial<ToolOutputDurabilityOperations>,
+): string | undefined {
+  const ownedDir = ensurePrivateSpillDir(spillRoot, operationOverrides);
+  if (!ownedDir) return undefined;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const unique = `${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
+    const path = join(
+      ownedDir,
+      `${OWNED_SPILL_FILE_PREFIX}${sanitizeSpillKey(key)}-${unique}.json`,
+    );
+    if (durableExclusiveCreate(path, serialized, ownedDir, operationOverrides)) return path;
+    if (existsWithoutFollowing(path)) continue;
+    return undefined;
+  }
+  return undefined;
+}
+
+function existsWithoutFollowing(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function spillFullOutput(
   spillDir: string,
   key: string,
@@ -389,24 +632,9 @@ function spillFullOutput(
       reserveFiles: 1,
     });
     if (!quota.withinQuota) return undefined;
-    // Unique name + exclusive creation: never overwrite an existing file, so
-    // a recurring call id cannot rewrite bytes an earlier journal event
-    // references, and a pre-existing file's looser mode is never inherited.
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const unique = `${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
-      const path = join(
-        ownedDir,
-        `${OWNED_SPILL_FILE_PREFIX}${sanitizeSpillKey(key)}-${unique}.json`,
-      );
-      try {
-        writeFileSync(path, serialized, { mode: 0o600, flag: "wx" });
-        chmodSync(path, 0o600);
-        return path;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") return undefined;
-      }
-    }
-    return undefined;
+    // Unique exclusive creation + file and directory fsync happen before the
+    // ref is available to the caller's journal append.
+    return writeDurableToolOutputSpill(spillDir, key, serialized);
   } catch {
     return undefined; // retention is best-effort; the tool result stands
   }

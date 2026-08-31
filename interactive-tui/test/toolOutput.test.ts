@@ -2,6 +2,7 @@ import {afterEach, describe, expect, it} from "bun:test";
 import {
   chmodSync,
   existsSync,
+  fsyncSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -15,6 +16,7 @@ import {dirname, join} from "node:path";
 import {
   boundToolOutput,
   cleanupToolOutputSpillSession,
+  createToolOutputSpillCollector,
   DEFAULT_TOOL_OUTPUT_MAX_BYTES,
   DEFAULT_TOOL_OUTPUT_MAX_LINES,
   DEFAULT_TOOL_OUTPUT_SPILL_MAX_AGE_MS,
@@ -26,6 +28,7 @@ import {
   MIN_TOOL_OUTPUT_MAX_BYTES,
   MIN_TOOL_OUTPUT_MAX_LINES,
   resolveToolOutputSpillPolicy,
+  writeDurableToolOutputSpill,
 } from "../agent-harness/framework/tool-output";
 
 const cleanups: string[] = [];
@@ -214,6 +217,47 @@ describe("boundToolOutput", () => {
     expect(existsSync(expired)).toBe(false);
     expect(existsSync(orphan)).toBe(false);
     expect(existsSync(protectedPath)).toBe(true);
+  });
+
+  it("provides a schedulable collector that enforces age while the agent is idle", () => {
+    const spillDir = tempSpillDir();
+    const spill = boundToolOutput("x".repeat(10_000), {maxBytes: 1024, spillDir}, "idle-age");
+    expect(spill.fullOutputRef).toBeDefined();
+    const nowMs = Date.now();
+    utimesSync(spill.fullOutputRef!, new Date(nowMs - 2000), new Date(nowMs - 2000));
+    const protectedPaths = new Set([spill.fullOutputRef!]);
+    const collector = createToolOutputSpillCollector({
+      spillDir,
+      policy: {maxAgeMs: 1000, orphanGraceMs: 0},
+      protectedPaths,
+      referencesComplete: true,
+    });
+
+    expect(collector.nextDelayMs(nowMs)).toBe(1);
+    expect(collector.collect(nowMs).removed).toBe(1);
+    expect(existsSync(spill.fullOutputRef!)).toBe(false);
+  });
+
+  it("removes an unpublished spill when directory sync fails", () => {
+    const spillDir = tempSpillDir();
+    const ownedDir = initializedOwnedDir(spillDir);
+    let syncCalls = 0;
+    const ref = writeDurableToolOutputSpill(spillDir, "sync-failure", "sensitive", {
+      sync: (fd) => {
+        syncCalls += 1;
+        // ensurePrivateSpillDir performs three directory syncs, then the
+        // spill file is synced. Fail publication of the directory entry.
+        if (syncCalls === 5) {
+          const error = new Error("injected directory sync failure") as NodeJS.ErrnoException;
+          error.code = "EIO";
+          throw error;
+        }
+        fsyncSync(fd);
+      },
+    });
+
+    expect(ref).toBeUndefined();
+    expect(readdirSync(ownedDir).filter((name) => name.endsWith(".json"))).toHaveLength(0);
   });
 
   it("does not collect a fresh orphan inside the crash-recovery grace period", () => {

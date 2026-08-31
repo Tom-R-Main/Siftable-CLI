@@ -36,6 +36,7 @@ import type {
 } from "./adapters/types.js";
 
 export const SESSION_EVENT_SCHEMA_VERSION = 1 as const;
+export type SessionToolExecutionMode = "exclusive" | "parallel-safe";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -114,9 +115,13 @@ export interface SessionEventDataMap {
   };
   "tool/call": {
     call: ToolCall;
+    /** Resolved scheduling decision; absent only on legacy schema-v1 events. */
+    executionMode?: SessionToolExecutionMode;
   };
   "tool/execution-started": {
     call: ToolCall;
+    /** Repeated so the durable execution receipt is self-describing. */
+    executionMode?: SessionToolExecutionMode;
   };
   "tool/result": {
     toolCallId: string;
@@ -1465,6 +1470,7 @@ interface ValidationOpenTool {
   argsSha256?: string;
   callRecorded: boolean;
   executionStarted: boolean;
+  executionMode?: SessionToolExecutionMode;
   resultModelContent?: string;
   turnId: string;
   stepId: string;
@@ -1717,6 +1723,15 @@ function validateCorrelationTransition(
       if (tool.executionStarted) {
         throw new SessionInvariantError(
           `tool execution ${event.data.call.id} was already started`,
+        );
+      }
+      if (
+        tool.executionMode !== undefined
+        && event.data.executionMode !== undefined
+        && tool.executionMode !== event.data.executionMode
+      ) {
+        throw new SessionInvariantError(
+          `tool execution ${event.data.call.id} changed mode from ${tool.executionMode} to ${event.data.executionMode}`,
         );
       }
       break;
@@ -2194,11 +2209,13 @@ function advanceSessionValidationState(
     case "tool/call": {
       const tool = state.openTools.get(event.data.call.id)!;
       tool.callRecorded = true;
+      tool.executionMode = event.data.executionMode;
       break;
     }
     case "tool/execution-started": {
       const tool = state.openTools.get(event.data.call.id)!;
       tool.executionStarted = true;
+      tool.executionMode ??= event.data.executionMode;
       break;
     }
     case "tool/result": {
@@ -2480,6 +2497,15 @@ function validateEventData(event: SessionEvent): void {
     case "tool/call":
     case "tool/execution-started":
       assertToolCall(event.data.call, `${event.type} call`);
+      if (
+        event.data.executionMode !== undefined
+        && event.data.executionMode !== "exclusive"
+        && event.data.executionMode !== "parallel-safe"
+      ) {
+        throw new SessionInvariantError(
+          `${event.type} executionMode must be exclusive or parallel-safe`,
+        );
+      }
       break;
     case "tool/result":
       assertNonEmptyString(event.data.toolCallId, "tool result call id");

@@ -89,14 +89,14 @@ import {
   boundToolOutput,
   bytePrefix,
   cleanupToolOutputSpillSession,
+  createToolOutputSpillCollector,
   DEFAULT_TOOL_OUTPUT_MAX_BYTES,
   DEFAULT_TOOL_OUTPUT_MAX_LINES,
-  garbageCollectToolOutputSpills,
   MIN_TOOL_OUTPUT_MAX_BYTES,
   MIN_TOOL_OUTPUT_MAX_LINES,
   resolveToolOutputSpillPolicy,
 } from "./tool-output.js";
-import type { ToolOutputConfig } from "./tool-output.js";
+import type { ToolOutputConfig, ToolOutputSpillCollector } from "./tool-output.js";
 import { normalizeToolResult } from "./tool.js";
 import type { ToolResult } from "./types.js";
 import { redactSensitiveText, sanitizeSensitiveValue } from "./redaction.js";
@@ -215,6 +215,15 @@ export async function createChatAgent(
     requirePositiveInteger("maxParallelTools", config.maxParallelTools, 1);
     requirePositiveInteger("toolOutput.maxBytes", config.toolOutput?.maxBytes, MIN_TOOL_OUTPUT_MAX_BYTES);
     requirePositiveInteger("toolOutput.maxLines", config.toolOutput?.maxLines, MIN_TOOL_OUTPUT_MAX_LINES);
+    if (
+      config.toolOutput?.spillDir !== undefined
+      && (
+        typeof config.toolOutput.spillDir !== "string"
+        || config.toolOutput.spillDir.trim() === ""
+      )
+    ) {
+      throw new Error("toolOutput.spillDir must be a non-empty path when configured");
+    }
 
     return new ChatAgentImpl({
       name: config.name ?? "agent",
@@ -290,6 +299,8 @@ class ChatAgentImpl implements ChatAgent {
   private maxParallelTools: number;
   private toolOutput?: ToolOutputConfig;
   private protectedSpillRefs = new Set<string>();
+  private spillCollector?: ToolOutputSpillCollector;
+  private spillCollectionTimer?: ReturnType<typeof setTimeout>;
   private session: SessionKernel;
   private turnTail: Promise<void> = Promise.resolve();
   private pendingTurnOperations = 0;
@@ -359,16 +370,18 @@ class ChatAgentImpl implements ChatAgent {
       for (const ref of this.toolOutput.protectedSpillRefs ?? []) {
         this.protectedSpillRefs.add(ref);
       }
-      garbageCollectToolOutputSpills({
+      this.spillCollector = createToolOutputSpillCollector({
         spillDir: this.toolOutput.spillDir,
         policy: this.toolOutput.spillPolicy,
         protectedPaths: this.protectedSpillRefs,
         referencesComplete: true,
       });
+      this.spillCollector.collect();
       this.toolOutput = {
         ...this.toolOutput,
         protectedSpillRefs: this.protectedSpillRefs,
       };
+      this.scheduleSpillCollection();
     }
     if (this.conversationMemory) {
       if (this.session.getEventCount() === 1) {
@@ -389,6 +402,29 @@ class ChatAgentImpl implements ChatAgent {
     // read once for migration, but continuing its unlocked two-write mirror
     // would reintroduce orphan turns and cross-process last-writer loss.
     this.writeLegacyRollout = internals.session?.store === undefined;
+  }
+
+  private scheduleSpillCollection(): void {
+    if (this.spillCollectionTimer !== undefined) {
+      clearTimeout(this.spillCollectionTimer);
+      this.spillCollectionTimer = undefined;
+    }
+    const delay = this.spillCollector?.nextDelayMs();
+    if (delay === undefined) return;
+    // Node clamps larger timeouts to 1 ms, so cap and reschedule instead.
+    const boundedDelay = Math.min(delay, 2_147_483_647);
+    this.spillCollectionTimer = setTimeout(() => {
+      this.spillCollectionTimer = undefined;
+      this.spillCollector?.collect();
+      this.scheduleSpillCollection();
+    }, boundedDelay);
+    this.spillCollectionTimer.unref?.();
+  }
+
+  private stopSpillCollection(): void {
+    if (this.spillCollectionTimer === undefined) return;
+    clearTimeout(this.spillCollectionTimer);
+    this.spillCollectionTimer = undefined;
   }
 
   /**
@@ -706,8 +742,12 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     result: Awaited<ReturnType<ToolRegistry["execute"]>>;
     modelContent: string;
   }> {
-    this.session.append({ type: "tool/call", data: { call }, ...context });
-    this.session.append({ type: "tool/execution-started", data: { call }, ...context });
+    this.session.append({ type: "tool/call", data: { call, executionMode }, ...context });
+    this.session.append({
+      type: "tool/execution-started",
+      data: { call, executionMode },
+      ...context,
+    });
     rememberEffect(call, executionMode, {
       success: false,
       error: "Tool execution started without a durable result receipt",
@@ -749,10 +789,13 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     // spill before calling it and never delete on an ambiguous error, or a
     // committed journal reference could be left dangling. A true pre-commit
     // orphan is reclaimed after the grace period or on session deletion.
-    if (bounded.fullOutputRef !== undefined) this.protectedSpillRefs.add(bounded.fullOutputRef);
+    if (bounded.fullOutputRef !== undefined) {
+      this.protectedSpillRefs.add(bounded.fullOutputRef);
+      this.scheduleSpillCollection();
+    }
     this.session.append({
-        type: "tool/result",
-        data: {
+      type: "tool/result",
+      data: {
           toolCallId: call.id,
           toolName: call.name,
           outcome: executionOutcome,
@@ -779,9 +822,9 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
                   ? bytePrefix(normalizedResult.error, 2048)
                   : normalizedResult.error,
               }),
-        },
-        ...context,
-      });
+      },
+      ...context,
+    });
     return { result: normalizedResult, modelContent };
   }
 
@@ -793,8 +836,12 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
    * failed (not unknown) receipt and the paired model-facing tool message
    * when the aborted turn closes.
    */
-  private declareCancelledToolCall(call: ToolCall, context: SessionEventContext): void {
-    this.session.append({ type: "tool/call", data: { call }, ...context });
+  private declareCancelledToolCall(
+    call: ToolCall,
+    executionMode: RunToolExecutionMode,
+    context: SessionEventContext,
+  ): void {
+    this.session.append({ type: "tool/call", data: { call, executionMode }, ...context });
   }
 
   /**
@@ -831,10 +878,13 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     const bounded = boundToolOutput(JSON.stringify(result), this.toolOutput, call.id);
     const modelContent = bounded.content;
     rememberEffect(call, executionMode, result, context);
-    if (bounded.fullOutputRef !== undefined) this.protectedSpillRefs.add(bounded.fullOutputRef);
+    if (bounded.fullOutputRef !== undefined) {
+      this.protectedSpillRefs.add(bounded.fullOutputRef);
+      this.scheduleSpillCollection();
+    }
     this.session.append({
-        type: "tool/result",
-        data: {
+      type: "tool/result",
+      data: {
           toolCallId: call.id,
           toolName: call.name,
           outcome: "unknown",
@@ -851,9 +901,9 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
                 },
               }
             : {}),
-        },
-        ...context,
-      });
+      },
+      ...context,
+    });
     return { result, modelContent };
   }
 
@@ -1135,7 +1185,11 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
               const outcome = batchOutcomes[index];
               if (outcome.status === "rejected") throw outcome.reason;
               if (outcome.status === "cancelled") {
-                this.declareCancelledToolCall(calls[index], stepContext);
+                this.declareCancelledToolCall(
+                  calls[index],
+                  callModes[index] ?? "exclusive",
+                  stepContext,
+                );
                 executions.push(null);
               } else {
                 executions.push(outcome.value);
@@ -1334,13 +1388,11 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
         }
         throwIfAborted(options?.signal);
         let completedRun = completeRun(run, { limitReached: maxRounds < 0 });
-        if (completedRun.status === "limit_reached") {
-          completedRun = attachToolEffects(
-            completedRun,
-            toolCalls,
-            [...effectReceipts.values()],
-          );
-        }
+        completedRun = attachToolEffects(
+          completedRun,
+          toolCalls,
+          [...effectReceipts.values()],
+        );
         const outcome = completedRun.status === "completed" && assistantTurnComplete
           ? createOutcomeClaim(completedRun, finalText)
           : undefined;
@@ -1725,6 +1777,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
   async close(): Promise<void> {
     const release = await this.acquireTurn();
     try {
+      this.stopSpillCollection();
       await this.disconnectProviders();
     } finally {
       release();
@@ -1734,6 +1787,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
   async destroy(): Promise<void> {
     const release = await this.acquireTurn();
     try {
+      this.stopSpillCollection();
       await this.disconnectProviders();
       if (this.session.getEvents().at(-1)?.type !== "session/destroyed") {
         this.session.append({
@@ -1894,20 +1948,41 @@ function attachToolEffects(
   toolCalls: ChatResult["toolCalls"],
   trackedReceipts: RunToolEffectReceipt[] = [],
 ): RunRecord {
+  const completed = run.status === "completed";
   const receipts = trackedReceipts.length > 0
     ? trackedReceipts.map((receipt) => ({
         callId: receipt.callId,
         name: receipt.name,
         executionMode: receipt.executionMode,
-        args: { ...receipt.args },
-        result: { ...receipt.result },
+        ...(completed || receipt.args === undefined ? {} : { args: { ...receipt.args } }),
+        result: completed
+          ? {
+              success: receipt.result.success,
+              ...(receipt.result.executionOutcome === undefined
+                ? {}
+                : { executionOutcome: receipt.result.executionOutcome }),
+              ...(receipt.result.error === undefined
+                ? {}
+                : { error: bytePrefix(receipt.result.error, 2048) }),
+            }
+          : { ...receipt.result },
       }))
     : toolCalls.map((call) => ({
         callId: call.callId,
         name: call.name,
         executionMode: call.executionMode,
-        args: { ...call.args },
-        result: { ...call.result },
+        ...(completed ? {} : { args: { ...call.args } }),
+        result: completed
+          ? {
+              success: call.result.success,
+              ...(call.result.executionOutcome === undefined
+                ? {}
+                : { executionOutcome: call.result.executionOutcome }),
+              ...(call.result.error === undefined
+                ? {}
+                : { error: bytePrefix(call.result.error, 2048) }),
+            }
+          : { ...call.result },
       }));
   if (receipts.length === 0) return run;
   const certainty = receipts.some(
@@ -1916,7 +1991,7 @@ function attachToolEffects(
   return {
     ...run,
     toolEffects: {
-      state: "partial",
+      state: completed ? "complete" : "partial",
       certainty,
       receipts,
       ...(certainty === "unknown"

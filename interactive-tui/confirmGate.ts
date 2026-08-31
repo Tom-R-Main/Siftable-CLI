@@ -41,14 +41,35 @@ export interface ConfirmRequest extends ConfirmSpec {
 }
 
 type Listener = (req: ConfirmRequest) => void;
+type CancellationListener = (id: string) => void;
+
+interface PendingApproval {
+  resolve: (decision: ApprovalDecision) => void;
+  signal?: AbortSignal;
+  onAbort?: () => void;
+}
 
 let listener: Listener | null = null;
+let cancellationListener: CancellationListener | null = null;
 let bypassing = false;
-const pending = new Map<string, (decision: ApprovalDecision) => void>();
+const pending = new Map<string, PendingApproval>();
+
+function notifyCancellation(id: string): void {
+  try {
+    cancellationListener?.(id);
+  } catch {
+    // UI cleanup is best-effort; it must never keep an approval pending.
+  }
+}
 
 /** Register (or clear, with null) the UI renderer for approval requests. */
 export function setConfirmListener(next: Listener | null): void {
   listener = next;
+}
+
+/** Register the UI hook that removes an approval overlay cancelled by its owner. */
+export function setConfirmCancellationListener(next: CancellationListener | null): void {
+  cancellationListener = next;
 }
 
 /** True once the user chose "bypass" — approvals auto-allow for the rest of the session. */
@@ -61,28 +82,44 @@ export function isBypassing(): boolean {
  * decisions. Auto-allows if the session is in bypass mode; denies if no UI is
  * listening. Never rejects — callers treat "deny" as "do not proceed".
  */
-export function requestApproval(spec: ConfirmSpec): Promise<ApprovalDecision> {
+export function requestApproval(spec: ConfirmSpec, signal?: AbortSignal): Promise<ApprovalDecision> {
+  if (signal?.aborted) return Promise.resolve("deny");
   if (bypassing) return Promise.resolve("allow");
   if (!listener) return Promise.resolve("deny");
   const id = randomUUID();
   return new Promise<ApprovalDecision>((resolve) => {
-    pending.set(id, resolve);
+    const entry: PendingApproval = {resolve, signal};
+    if (signal) {
+      entry.onAbort = () => {
+        if (pending.get(id) !== entry) return;
+        pending.delete(id);
+        notifyCancellation(id);
+        resolve("deny");
+      };
+      signal.addEventListener("abort", entry.onAbort, {once: true});
+    }
+    pending.set(id, entry);
     listener!({ allowAlways: true, allowBypass: true, ...spec, id });
   });
 }
 
 /** The UI calls this when the user answers. No-op for unknown/stale ids. */
 export function resolveApproval(id: string, decision: ApprovalDecision): void {
-  const resolve = pending.get(id);
-  if (!resolve) return;
+  const entry = pending.get(id);
+  if (!entry) return;
   pending.delete(id);
+  if (entry.signal && entry.onAbort) entry.signal.removeEventListener("abort", entry.onAbort);
   if (decision === "bypass") bypassing = true;
-  resolve(decision);
+  entry.resolve(decision);
 }
 
 /** Deny and clear every pending approval (e.g. on abort or teardown). */
 export function rejectAllConfirms(): void {
-  for (const resolve of pending.values()) resolve("deny");
+  for (const entry of pending.values()) {
+    if (entry.signal && entry.onAbort) entry.signal.removeEventListener("abort", entry.onAbort);
+    entry.resolve("deny");
+  }
+  for (const id of pending.keys()) notifyCancellation(id);
   pending.clear();
 }
 
