@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import {tmpdir} from "node:os";
-import {join} from "node:path";
+import {dirname, join} from "node:path";
 import {
   boundToolOutput,
   cleanupToolOutputSpillSession,
@@ -37,6 +37,16 @@ function tempSpillDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "sift-tool-output-"));
   cleanups.push(dir);
   return dir;
+}
+
+function initializedOwnedDir(spillDir: string): string {
+  const seed = boundToolOutput("seed:" + "x".repeat(10_000), {maxBytes: 1024, spillDir}, "seed");
+  if (!seed.fullOutputRef) throw new Error("failed to initialize owned spill directory");
+  const ownedDir = dirname(seed.fullOutputRef);
+  if (!discardToolOutputSpill(seed.fullOutputRef, spillDir)) {
+    throw new Error("failed to discard seed spill");
+  }
+  return ownedDir;
 }
 
 describe("boundToolOutput", () => {
@@ -112,23 +122,24 @@ describe("boundToolOutput", () => {
     expect(out.content).toContain("z".repeat(64)); // real content survives, not marker-only
   });
 
-  it("spills the complete bytes to a 0600 file and references it in the marker", () => {
+  it("spills complete bytes privately without exposing the local path to the model", () => {
     const spillDir = tempSpillDir();
     const serialized = `big:${"y".repeat(100_000)}`;
     const out = boundToolOutput(serialized, {maxBytes: 4096, spillDir}, "call_4");
     expect(out.truncated).toBe(true);
     expect(out.fullOutputRef).toBeDefined();
-    expect(out.content).toContain(`full output at ${out.fullOutputRef}`);
+    expect(out.content).toContain("full output retained privately");
+    expect(out.content).not.toContain(out.fullOutputRef!);
     expect(readFileSync(out.fullOutputRef!, "utf8")).toBe(serialized);
     expect(statSync(out.fullOutputRef!).mode & 0o777).toBe(0o600);
-    expect(statSync(spillDir).mode & 0o777).toBe(0o700);
+    expect(statSync(dirname(out.fullOutputRef!)).mode & 0o777).toBe(0o700);
   });
 
   it("sanitizes hostile call ids in the spill filename", () => {
     const spillDir = tempSpillDir();
     const out = boundToolOutput("z".repeat(10_000), {maxBytes: 1024, spillDir}, "../../evil id");
     expect(out.fullOutputRef).toBeDefined();
-    expect(out.fullOutputRef!.startsWith(spillDir)).toBe(true);
+    expect(out.fullOutputRef!.startsWith(join(spillDir, ".sift-tool-output-v1"))).toBe(true);
     expect(out.fullOutputRef).not.toContain("..");
   });
 
@@ -175,14 +186,15 @@ describe("boundToolOutput", () => {
     expect(refused.fullOutputRef).toBeUndefined();
     expect(existsSync(first.fullOutputRef!)).toBe(true);
     expect(existsSync(second.fullOutputRef!)).toBe(true);
-    expect(readdirSync(spillDir)).toHaveLength(2);
+    expect(readdirSync(dirname(first.fullOutputRef!)).filter((name) => name.endsWith(".json"))).toHaveLength(2);
   });
 
   it("garbage-collects expired and abandoned spills after the grace period", () => {
     const spillDir = tempSpillDir();
-    const expired = join(spillDir, "expired.json");
-    const orphan = join(spillDir, "orphan.json");
-    const protectedPath = join(spillDir, "protected.json");
+    const ownedDir = initializedOwnedDir(spillDir);
+    const expired = join(ownedDir, "spill-expired.json");
+    const orphan = join(ownedDir, "spill-orphan.json");
+    const protectedPath = join(ownedDir, "spill-protected.json");
     for (const path of [expired, orphan, protectedPath]) {
       writeFileSync(path, path, {mode: 0o600, flag: "wx"});
     }
@@ -206,7 +218,8 @@ describe("boundToolOutput", () => {
 
   it("does not collect a fresh orphan inside the crash-recovery grace period", () => {
     const spillDir = tempSpillDir();
-    const fresh = join(spillDir, "fresh.json");
+    const ownedDir = initializedOwnedDir(spillDir);
+    const fresh = join(ownedDir, "spill-fresh.json");
     writeFileSync(fresh, "fresh", {mode: 0o600, flag: "wx"});
     const nowMs = Date.now();
     const result = garbageCollectToolOutputSpills({
@@ -224,7 +237,8 @@ describe("boundToolOutput", () => {
 
   it("refuses quota reserve rather than deleting a fresh unjournaled spill", () => {
     const spillDir = tempSpillDir();
-    const fresh = join(spillDir, "in-flight.json");
+    const ownedDir = initializedOwnedDir(spillDir);
+    const fresh = join(ownedDir, "spill-in-flight.json");
     writeFileSync(fresh, "x".repeat(100), {mode: 0o600, flag: "wx"});
     const result = garbageCollectToolOutputSpills({
       spillDir,
@@ -253,8 +267,10 @@ describe("boundToolOutput", () => {
     const spillDir = tempSpillDir();
     const spill = boundToolOutput("x".repeat(10_000), {maxBytes: 1024, spillDir}, "session-delete");
     expect(spill.fullOutputRef).toBeDefined();
+    const ownedDir = dirname(spill.fullOutputRef!);
     expect(cleanupToolOutputSpillSession(spillDir)).toBe(true);
-    expect(existsSync(spillDir)).toBe(false);
+    expect(existsSync(ownedDir)).toBe(false);
+    expect(existsSync(spillDir)).toBe(true);
     expect(cleanupToolOutputSpillSession(spillDir)).toBe(true);
   });
 
@@ -262,7 +278,7 @@ describe("boundToolOutput", () => {
     const spillDir = tempSpillDir();
     const spill = boundToolOutput("x".repeat(10_000), {maxBytes: 1024, spillDir}, "foreign-guard");
     expect(spill.fullOutputRef).toBeDefined();
-    const foreign = join(spillDir, "keep.txt");
+    const foreign = join(dirname(spill.fullOutputRef!), "keep.txt");
     writeFileSync(foreign, "foreign", {mode: 0o600, flag: "wx"});
 
     expect(cleanupToolOutputSpillSession(spillDir)).toBe(false);
@@ -270,11 +286,30 @@ describe("boundToolOutput", () => {
     expect(existsSync(foreign)).toBe(true);
   });
 
+  it("never treats the configured parent as owned session data", () => {
+    const spillDir = tempSpillDir();
+    const unrelated = join(spillDir, "package.json");
+    writeFileSync(unrelated, "{}", {mode: 0o600, flag: "wx"});
+    const spill = boundToolOutput("x".repeat(10_000), {maxBytes: 1024, spillDir}, "owned-child");
+    expect(spill.fullOutputRef).toBeDefined();
+
+    expect(cleanupToolOutputSpillSession(spillDir)).toBe(true);
+    expect(readFileSync(unrelated, "utf8")).toBe("{}");
+    expect(existsSync(spillDir)).toBe(true);
+  });
+
+  it("rejects an empty spill root without touching the current directory", () => {
+    const out = boundToolOutput("x".repeat(10_000), {maxBytes: 1024, spillDir: ""}, "empty-root");
+    expect(out.fullOutputRef).toBeUndefined();
+    expect(cleanupToolOutputSpillSession("")).toBe(false);
+  });
+
   it("repairs directory/file permissions without mutating prior spill bytes", () => {
     const spillDir = tempSpillDir();
-    chmodSync(spillDir, 0o755);
     const first = boundToolOutput(`first:${"a".repeat(10_000)}`, {maxBytes: 1024, spillDir}, "immutable");
     expect(first.fullOutputRef).toBeDefined();
+    const ownedDir = dirname(first.fullOutputRef!);
+    chmodSync(ownedDir, 0o755);
     const original = readFileSync(first.fullOutputRef!);
     chmodSync(first.fullOutputRef!, 0o644);
     const second = boundToolOutput(`second:${"b".repeat(10_000)}`, {
@@ -284,7 +319,7 @@ describe("boundToolOutput", () => {
     }, "immutable");
     expect(second.fullOutputRef).toBeDefined();
     expect(readFileSync(first.fullOutputRef!)).toEqual(original);
-    expect(statSync(spillDir).mode & 0o777).toBe(0o700);
+    expect(statSync(ownedDir).mode & 0o777).toBe(0o700);
     expect(statSync(second.fullOutputRef!).mode & 0o777).toBe(0o600);
   });
 

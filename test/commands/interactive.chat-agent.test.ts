@@ -7,7 +7,7 @@
 import {describe, it, expect, vi} from 'vitest';
 import {mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {dirname, join} from 'node:path';
 import type {AdapterResponse, AIAdapter, ChatMessage} from '../../interactive-tui/agent-harness/framework/adapters/types';
 import type {ChatAgentConfig, ChatStreamChunk} from '../../interactive-tui/agent-harness/framework/chat-agent-types';
 import {RunExecutionError} from '../../interactive-tui/agent-harness/framework/chat-agent-types';
@@ -1255,6 +1255,7 @@ describe('Siftable agent-harness chat loop', () => {
       const toolMessage = agent.getHistory().find((message) => message.role === 'tool');
       const content = String(toolMessage?.content);
       expect(content).toContain('[tool output truncated:');
+      expect(content).toContain('full output retained privately');
       expect(Buffer.byteLength(content)).toBeLessThanOrEqual(2048); // configured cap honored
 
       const resultEvent = agent.getSessionEvents().find((event) => event.type === 'tool/result');
@@ -1262,6 +1263,7 @@ describe('Siftable agent-harness chat loop', () => {
       expect(output?.truncated).toBe(true);
       expect(output?.byteCount).toBeGreaterThan(100_000);
       expect(output?.fullOutputRef).toBeDefined();
+      expect(content).not.toContain(output!.fullOutputRef!);
       expect(chunks.at(-1)?.result?.run.manifest.execution?.output).toEqual({
         policyVersion: 'siftable.tool-output/1',
         maxBytes: 2048,
@@ -1290,7 +1292,7 @@ describe('Siftable agent-harness chat loop', () => {
 
       // A reopened agent derives the journal's live refs before startup GC:
       // it removes a same-directory orphan without deleting referenced bytes.
-      const orphan = join(spillRoot, 'orphan.json');
+      const orphan = join(dirname(output!.fullOutputRef!), 'spill-orphan.json');
       await writeFile(orphan, 'orphan', {mode: 0o600});
       await createChatAgent({
         adapter: {...adapter, async chat() { return {text: 'unused'}; }},
@@ -1309,13 +1311,13 @@ describe('Siftable agent-harness chat loop', () => {
         },
       });
       expect(await readFile(output!.fullOutputRef!, 'utf8')).toBe(spilled);
-      expect(await readdir(spillRoot)).not.toContain('orphan.json');
+      expect(await readdir(dirname(output!.fullOutputRef!))).not.toContain('spill-orphan.json');
     } finally {
       await rm(spillRoot, {recursive: true, force: true});
     }
   });
 
-  it('unlinks a new spill when its durable tool result append fails', async () => {
+  it('retains a spill when append throws after durably committing its reference', async () => {
     const spillRoot = await mkdtemp(join(tmpdir(), 'sift-chat-spill-append-failure-'));
     try {
       const inner = new InMemorySessionEventStore();
@@ -1323,11 +1325,11 @@ describe('Siftable agent-harness chat loop', () => {
       const store: SessionEventStore = {
         read: (sessionId) => inner.read(sessionId),
         append(event) {
+          inner.append(event);
           if (failResultOnce && event.type === 'tool/result') {
             failResultOnce = false;
-            throw new Error('tool result append failed once');
+            throw new Error('tool result append outcome is ambiguous');
           }
-          inner.append(event);
         },
       };
       const big = defineTool({
@@ -1350,8 +1352,12 @@ describe('Siftable agent-harness chat loop', () => {
         toolOutput: {maxBytes: 2048, spillDir: spillRoot},
       });
 
-      await expect(agent.chat('run it')).rejects.toThrow('tool result append failed once');
-      expect(await readdir(spillRoot)).toEqual([]);
+      await expect(agent.chat('run it')).rejects.toThrow('tool result append outcome is ambiguous');
+      const committed = inner.read('spill-append-failure')
+        .find((event) => event.type === 'tool/result');
+      const fullOutputRef = (committed?.data as {output?: {fullOutputRef?: string}}).output?.fullOutputRef;
+      expect(fullOutputRef).toBeDefined();
+      expect(await readFile(fullOutputRef!, 'utf8')).toContain('x'.repeat(1000));
     } finally {
       await rm(spillRoot, {recursive: true, force: true});
     }
@@ -1385,7 +1391,46 @@ describe('Siftable agent-harness chat loop', () => {
     await agent.chat('create retained output');
     expect(await readdir(spillRoot)).toHaveLength(1);
     await agent.destroy();
-    await expect(readdir(spillRoot)).rejects.toMatchObject({code: 'ENOENT'});
+    expect(await readdir(spillRoot)).toEqual([]);
+  });
+
+  it('surfaces a spill cleanup refusal without deleting foreign data', async () => {
+    const spillRoot = await mkdtemp(join(tmpdir(), 'sift-chat-spill-destroy-refusal-'));
+    try {
+      const big = defineTool({
+        name: 'spill_destroy_refusal',
+        description: 'Creates a spill beside a foreign file',
+        inputSchema: {type: 'object', properties: {}},
+        handler: async () => ok({blob: 'x'.repeat(100_000)}),
+      });
+      let round = 0;
+      const agent = await createChatAgent({
+        adapter: {
+          name: 'spill-destroy-refusal',
+          model: 'spill-destroy-refusal-model',
+          async chat() {
+            round += 1;
+            return round === 1
+              ? {toolCall: {id: 'spill-destroy-refusal-call', name: big.name, args: {}}}
+              : {text: 'done'};
+          },
+        },
+        memory: false,
+        tools: [big],
+        toolOutput: {maxBytes: 2048, spillDir: spillRoot},
+      });
+
+      await agent.chat('create retained output');
+      const ownedDir = join(spillRoot, '.sift-tool-output-v1');
+      const foreign = join(ownedDir, 'foreign.txt');
+      await writeFile(foreign, 'keep me', {mode: 0o600});
+
+      await expect(agent.destroy()).rejects.toThrow('Failed to remove');
+      expect(await readFile(foreign, 'utf8')).toBe('keep me');
+      expect((await readdir(ownedDir)).some((name) => name.endsWith('.json'))).toBe(true);
+    } finally {
+      await rm(spillRoot, {recursive: true, force: true});
+    }
   });
 
   it('rejects non-integer or out-of-range parallelism and output caps at construction', async () => {

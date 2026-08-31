@@ -3,7 +3,7 @@
  * model/journal. Content under the caps passes through byte-identical;
  * oversized content is reduced to a head+tail preview with an elision
  * marker, and the complete bytes are spilled — when a spill directory is
- * configured — to a private file the marker references.
+ * configured — to a private file referenced only by local journal metadata.
  *
  * Caps fail closed: a non-finite or non-positive cap falls back to the
  * default, and a cap too small to honor (the marker alone would exceed it)
@@ -26,12 +26,13 @@ import {
   chmodSync,
   lstatSync,
   mkdirSync,
+  readFileSync,
   readdirSync,
   rmdirSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 export const DEFAULT_TOOL_OUTPUT_MAX_BYTES = 50 * 1024;
 export const DEFAULT_TOOL_OUTPUT_MAX_LINES = 2000;
@@ -44,6 +45,10 @@ export const DEFAULT_TOOL_OUTPUT_SPILL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_TOOL_OUTPUT_SPILL_ORPHAN_GRACE_MS = 5 * 60 * 1000;
 /** Head/tail split of the preview budget: most signal is at the start. */
 const HEAD_FRACTION = 0.6;
+const OWNED_SPILL_DIR_NAME = ".sift-tool-output-v1";
+const OWNED_SPILL_FILE_PREFIX = "spill-";
+const OWNERSHIP_MARKER_NAME = ".owner";
+const OWNERSHIP_MARKER_CONTENT = "sift-tool-output-v1\n";
 
 export interface ToolOutputSpillPolicy {
   /** Maximum retained bytes per session spill directory (default 100 MiB). */
@@ -61,7 +66,7 @@ export interface ToolOutputConfig {
   maxBytes?: number;
   /** Max lines of model-facing content (default 2000, min 8). */
   maxLines?: number;
-  /** Directory for full-output spill files; no spill when unset. */
+  /** Parent directory for a module-owned spill directory; no spill when unset. */
   spillDir?: string;
   /** Retention limits for the per-session spill directory. */
   spillPolicy?: ToolOutputSpillPolicy;
@@ -131,15 +136,36 @@ export function resolveToolOutputSpillPolicy(
   };
 }
 
-function ensurePrivateSpillDir(spillDir: string): boolean {
+function ownedSpillDirPath(spillRoot: string): string | undefined {
+  if (!spillRoot.trim()) return undefined;
+  return join(resolve(spillRoot), OWNED_SPILL_DIR_NAME);
+}
+
+function isOwnedSpillFilename(name: string): boolean {
+  return name.startsWith(OWNED_SPILL_FILE_PREFIX) && name.endsWith(".json");
+}
+
+function ensurePrivateSpillDir(spillRoot: string): string | undefined {
+  const spillDir = ownedSpillDirPath(spillRoot);
+  if (!spillDir) return undefined;
   try {
     mkdirSync(spillDir, { recursive: true, mode: 0o700 });
     const stat = lstatSync(spillDir);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return undefined;
     chmodSync(spillDir, 0o700);
-    return true;
+    const marker = join(spillDir, OWNERSHIP_MARKER_NAME);
+    try {
+      writeFileSync(marker, OWNERSHIP_MARKER_CONTENT, { mode: 0o600, flag: "wx" });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") return undefined;
+      const markerStat = lstatSync(marker);
+      if (!markerStat.isFile() || markerStat.isSymbolicLink()) return undefined;
+      if (readFileSync(marker, "utf8") !== OWNERSHIP_MARKER_CONTENT) return undefined;
+    }
+    chmodSync(marker, 0o600);
+    return spillDir;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -149,12 +175,13 @@ function directChildPath(spillDir: string, candidate: string): string | undefine
   return dirname(path) === root ? path : undefined;
 }
 
-function listSpills(spillDir: string): SpillEntry[] {
-  if (!ensurePrivateSpillDir(spillDir)) return [];
+function listSpills(spillRoot: string): SpillEntry[] {
+  const spillDir = ensurePrivateSpillDir(spillRoot);
+  if (!spillDir) return [];
   const entries: SpillEntry[] = [];
   try {
     for (const dirent of readdirSync(spillDir, { withFileTypes: true })) {
-      if (!dirent.isFile() || !dirent.name.endsWith(".json")) continue;
+      if (!dirent.isFile() || !isOwnedSpillFilename(dirent.name)) continue;
       const path = join(spillDir, dirent.name);
       try {
         const stat = lstatSync(path);
@@ -190,14 +217,23 @@ export function garbageCollectToolOutputSpills(options: {
   const nowMs = options.nowMs ?? Date.now();
   const reserveBytes = Math.max(0, Math.floor(options.reserveBytes ?? 0));
   const reserveFiles = Math.max(0, Math.floor(options.reserveFiles ?? 0));
-  const root = resolve(options.spillDir);
+  const root = ownedSpillDirPath(options.spillDir);
+  if (!root) {
+    return {
+      removed: 0,
+      removedBytes: 0,
+      retained: 0,
+      retainedBytes: 0,
+      withinQuota: false,
+    };
+  }
   const protectedPaths = new Set<string>();
   for (const candidate of options.protectedPaths ?? []) {
     const path = directChildPath(root, candidate);
     if (path) protectedPaths.add(path);
   }
 
-  let entries = listSpills(root);
+  let entries = listSpills(options.spillDir);
   let removed = 0;
   let removedBytes = 0;
   const remove = (entry: SpillEntry): boolean => {
@@ -255,10 +291,12 @@ export function garbageCollectToolOutputSpills(options: {
   };
 }
 
-/** Best-effort cleanup for a spill whose durable journal append failed. */
+/** Best-effort deletion of one explicitly identified module-owned spill. */
 export function discardToolOutputSpill(fullOutputRef: string, spillDir: string): boolean {
-  const path = directChildPath(spillDir, fullOutputRef);
-  if (!path || !path.endsWith(".json")) return false;
+  const ownedDir = ownedSpillDirPath(spillDir);
+  if (!ownedDir) return false;
+  const path = directChildPath(ownedDir, fullOutputRef);
+  if (!path || !isOwnedSpillFilename(basename(path))) return false;
   try {
     const stat = lstatSync(path);
     if (!stat.isFile() || stat.isSymbolicLink()) return false;
@@ -269,25 +307,40 @@ export function discardToolOutputSpill(fullOutputRef: string, spillDir: string):
   }
 }
 
-/** Deterministic cleanup hook for deletion of one session's durable state. */
+/** Delete only the marked module-owned child used by one session. */
 export function cleanupToolOutputSpillSession(spillDir: string): boolean {
+  const ownedDir = ownedSpillDirPath(spillDir);
+  if (!ownedDir) return false;
   try {
-    const stat = lstatSync(spillDir);
+    const stat = lstatSync(ownedDir);
     if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
     // Delete only files this module owns. Refuse a non-empty directory with
     // foreign entries rather than turning a bad session path into recursive
     // data loss.
     const ownedPaths: string[] = [];
-    for (const dirent of readdirSync(spillDir, { withFileTypes: true })) {
-      if (!dirent.isFile() || !dirent.name.endsWith(".json")) return false;
-      const path = directChildPath(spillDir, join(spillDir, dirent.name));
+    let markerSeen = false;
+    for (const dirent of readdirSync(ownedDir, { withFileTypes: true })) {
+      if (dirent.name === OWNERSHIP_MARKER_NAME) {
+        if (!dirent.isFile()) return false;
+        const marker = join(ownedDir, dirent.name);
+        const markerStat = lstatSync(marker);
+        if (markerStat.isSymbolicLink() || readFileSync(marker, "utf8") !== OWNERSHIP_MARKER_CONTENT) {
+          return false;
+        }
+        markerSeen = true;
+        continue;
+      }
+      if (!dirent.isFile() || !isOwnedSpillFilename(dirent.name)) return false;
+      const path = directChildPath(ownedDir, join(ownedDir, dirent.name));
       if (!path) return false;
       const child = lstatSync(path);
       if (!child.isFile() || child.isSymbolicLink()) return false;
       ownedPaths.push(path);
     }
+    if (!markerSeen) return false;
     for (const path of ownedPaths) unlinkSync(path);
-    rmdirSync(spillDir);
+    unlinkSync(join(ownedDir, OWNERSHIP_MARKER_NAME));
+    rmdirSync(ownedDir);
     return true;
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOENT";
@@ -324,7 +377,8 @@ function spillFullOutput(
   config: ToolOutputConfig,
 ): string | undefined {
   try {
-    if (!ensurePrivateSpillDir(spillDir)) return undefined;
+    const ownedDir = ensurePrivateSpillDir(spillDir);
+    if (!ownedDir) return undefined;
     const bytes = Buffer.byteLength(serialized, "utf8");
     const quota = garbageCollectToolOutputSpills({
       spillDir,
@@ -340,7 +394,10 @@ function spillFullOutput(
     // references, and a pre-existing file's looser mode is never inherited.
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const unique = `${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
-      const path = join(spillDir, `${sanitizeSpillKey(key)}-${unique}.json`);
+      const path = join(
+        ownedDir,
+        `${OWNED_SPILL_FILE_PREFIX}${sanitizeSpillKey(key)}-${unique}.json`,
+      );
       try {
         writeFileSync(path, serialized, { mode: 0o600, flag: "wx" });
         chmodSync(path, 0o600);
@@ -386,10 +443,10 @@ export function boundToolOutput(
   const fullOutputRef = config?.spillDir
     ? spillFullOutput(config.spillDir, spillKey, serialized, config)
     : undefined;
-  // The ref text is dropped (never the spill itself) when a long spill path
-  // would leave no room for content inside the cap; the journal's output
-  // metadata still carries the ref.
-  let refText = fullOutputRef ? `at ${fullOutputRef}` : "not retained";
+  // The absolute ref remains local journal metadata. Model-facing content
+  // only states whether retention succeeded so local usernames and paths are
+  // never sent to the external model on the next round.
+  const refText = fullOutputRef ? "retained privately" : "not retained";
   const marker = (keptDescription: string) =>
     `[tool output truncated: kept ${keptDescription} of ${lineCount} lines ` +
     `(${byteCount} bytes); full output ${refText}]`;
@@ -400,11 +457,7 @@ export function boundToolOutput(
     const byteDesc = `${maxBytes}-byte head + ${maxBytes}-byte tail`;
     return Buffer.byteLength(byteDesc, "utf8") > Buffer.byteLength(lineDesc, "utf8") ? byteDesc : lineDesc;
   };
-  let markerReserve = Buffer.byteLength(marker(worstDescription()), "utf8") + 2;
-  if (markerReserve >= maxBytes && fullOutputRef) {
-    refText = "spilled";
-    markerReserve = Buffer.byteLength(marker(worstDescription()), "utf8") + 2;
-  }
+  const markerReserve = Buffer.byteLength(marker(worstDescription()), "utf8") + 2;
 
   const budget = Math.max(0, maxBytes - markerReserve);
   const headBudgetBytes = Math.max(1, Math.floor(budget * HEAD_FRACTION));

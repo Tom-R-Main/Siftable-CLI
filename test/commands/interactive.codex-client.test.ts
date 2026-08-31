@@ -285,6 +285,55 @@ describe('CodexClient server→client approvals', () => {
     const resp = await waitForSentWhere(proc, (m) => m.id === 'srv-3');
     expect(resp.error).toMatchObject({ code: -32601 });
   });
+
+  it('never writes a delayed approval response into a replacement generation', async () => {
+    const procs: FakeCodexProc[] = [];
+    const client = new CodexClient(() => {
+      const proc = new FakeCodexProc();
+      procs.push(proc);
+      return proc as unknown as ReturnType<CodexSpawnFn>;
+    });
+
+    let releaseFirst!: (decision: 'always') => void;
+    let firstApprovalStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      firstApprovalStarted = resolve;
+    });
+    const firstDecision = new Promise<'always'>((resolve) => {
+      releaseFirst = resolve;
+    });
+    client.setApprover(async (req) => {
+      if (req.target === 'generation-a') {
+        firstApprovalStarted();
+        return firstDecision;
+      }
+      return 'deny';
+    });
+
+    const firstReady = client.ensureReady();
+    await completeHandshake(procs[0]);
+    await firstReady;
+    procs[0].serverRequest('reused-id', 'item/commandExecution/requestApproval', {
+      command: 'generation-a',
+    });
+    await firstStarted;
+
+    procs[0].exit(1);
+    const secondReady = client.ensureReady();
+    await completeHandshake(procs[1]);
+    await secondReady;
+    procs[1].serverRequest('reused-id', 'item/commandExecution/requestApproval', {
+      command: 'generation-b',
+    });
+    const secondResponse = await waitForSentWhere(procs[1], (m) => m.id === 'reused-id');
+    expect(secondResponse.result).toEqual({ decision: 'decline' });
+
+    releaseFirst('always');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(procs[0].sent.filter((m) => m.id === 'reused-id')).toHaveLength(0);
+    expect(procs[1].sent.filter((m) => m.id === 'reused-id')).toEqual([secondResponse]);
+  });
 });
 
 describe('CodexClient shutdown', () => {

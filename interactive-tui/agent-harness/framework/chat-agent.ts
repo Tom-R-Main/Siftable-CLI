@@ -91,7 +91,6 @@ import {
   cleanupToolOutputSpillSession,
   DEFAULT_TOOL_OUTPUT_MAX_BYTES,
   DEFAULT_TOOL_OUTPUT_MAX_LINES,
-  discardToolOutputSpill,
   garbageCollectToolOutputSpills,
   MIN_TOOL_OUTPUT_MAX_BYTES,
   MIN_TOOL_OUTPUT_MAX_LINES,
@@ -746,8 +745,12 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
       executionOutcome,
     }, context);
 
-    try {
-      this.session.append({
+    // append() can throw after durably committing the event. Protect the
+    // spill before calling it and never delete on an ambiguous error, or a
+    // committed journal reference could be left dangling. A true pre-commit
+    // orphan is reclaimed after the grace period or on session deletion.
+    if (bounded.fullOutputRef !== undefined) this.protectedSpillRefs.add(bounded.fullOutputRef);
+    this.session.append({
         type: "tool/result",
         data: {
           toolCallId: call.id,
@@ -779,13 +782,6 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
         },
         ...context,
       });
-    } catch (error) {
-      if (bounded.fullOutputRef !== undefined && this.toolOutput?.spillDir !== undefined) {
-        discardToolOutputSpill(bounded.fullOutputRef, this.toolOutput.spillDir);
-      }
-      throw error;
-    }
-    if (bounded.fullOutputRef !== undefined) this.protectedSpillRefs.add(bounded.fullOutputRef);
     return { result: normalizedResult, modelContent };
   }
 
@@ -835,8 +831,8 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     const bounded = boundToolOutput(JSON.stringify(result), this.toolOutput, call.id);
     const modelContent = bounded.content;
     rememberEffect(call, executionMode, result, context);
-    try {
-      this.session.append({
+    if (bounded.fullOutputRef !== undefined) this.protectedSpillRefs.add(bounded.fullOutputRef);
+    this.session.append({
         type: "tool/result",
         data: {
           toolCallId: call.id,
@@ -858,13 +854,6 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
         },
         ...context,
       });
-    } catch (appendError) {
-      if (bounded.fullOutputRef !== undefined && this.toolOutput?.spillDir !== undefined) {
-        discardToolOutputSpill(bounded.fullOutputRef, this.toolOutput.spillDir);
-      }
-      throw appendError;
-    }
-    if (bounded.fullOutputRef !== undefined) this.protectedSpillRefs.add(bounded.fullOutputRef);
     return { result, modelContent };
   }
 
@@ -1753,7 +1742,9 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
         });
       }
       if (this.toolOutput?.spillDir !== undefined) {
-        cleanupToolOutputSpillSession(this.toolOutput.spillDir);
+        if (!cleanupToolOutputSpillSession(this.toolOutput.spillDir)) {
+          throw new Error("Failed to remove the session tool-output spill directory safely");
+        }
         this.protectedSpillRefs.clear();
       }
     } finally {

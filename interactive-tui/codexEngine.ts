@@ -238,7 +238,7 @@ export class CodexClient {
       // the old proc's exit and this connect could have re-dirtied it).
       this.buffer = '';
       proc.stdout.setEncoding('utf8');
-      proc.stdout.on('data', (chunk: string) => this.onData(chunk));
+      proc.stdout.on('data', (chunk: string) => this.onData(proc, chunk));
 
       // Handshake: initialize → initialized.
       this.request('initialize', {
@@ -298,7 +298,10 @@ export class CodexClient {
     this.pending.clear();
   }
 
-  private onData(chunk: string): void {
+  private onData(proc: CodexProc, chunk: string): void {
+    // A queued data event from a disconnected child must never be parsed as
+    // part of its replacement generation.
+    if (this.proc !== proc || this.generation?.proc !== proc) return;
     this.buffer += chunk;
     let nl: number;
     while ((nl = this.buffer.indexOf('\n')) >= 0) {
@@ -311,17 +314,18 @@ export class CodexClient {
       } catch {
         continue; // ignore non-JSON lines (defensive; stderr is already dropped)
       }
-      this.dispatch(msg);
+      this.dispatch(proc, msg);
     }
   }
 
-  private dispatch(msg: Record<string, JsonValue>): void {
+  private dispatch(proc: CodexProc, msg: Record<string, JsonValue>): void {
     const hasId = msg.id !== undefined && msg.id !== null;
     const method = typeof msg.method === 'string' ? msg.method : undefined;
 
     if (hasId && method) {
       // Server→client request (approvals, tool calls). Route through the gate.
       void this.handleServerRequest(
+        proc,
         msg.id as number | string,
         method,
         (msg.params as Record<string, JsonValue>) ?? {},
@@ -355,12 +359,13 @@ export class CodexClient {
    * unknown methods are declined as "unsupported" (safe = not granted).
    */
   private async handleServerRequest(
+    proc: CodexProc,
     id: number | string,
     method: string,
     params: Record<string, JsonValue>,
   ): Promise<void> {
     if (!APPROVAL_METHODS.has(method)) {
-      this.send({ id, error: { code: -32601, message: 'unsupported by sift_tui' } });
+      this.sendToGeneration(proc, { id, error: { code: -32601, message: 'unsupported by sift_tui' } });
       return;
     }
     let decision: ApprovalDecision = 'deny';
@@ -369,7 +374,23 @@ export class CodexClient {
     } catch {
       decision = 'deny';
     }
-    this.send({ id, result: codexApprovalResponse(method, decision) });
+    this.sendToGeneration(proc, { id, result: codexApprovalResponse(method, decision) });
+  }
+
+  /**
+   * Reply only to the process generation that originated a server request.
+   * Approval handlers may await the UI for an arbitrary time; if that process
+   * disconnects meanwhile, its response is obsolete and must not be written to
+   * a replacement app-server whose JSON-RPC ids may have restarted.
+   */
+  private sendToGeneration(proc: CodexProc, obj: Record<string, JsonValue>): void {
+    if (this.proc !== proc || this.generation?.proc !== proc) return;
+    try {
+      proc.stdin.write(JSON.stringify(obj) + '\n');
+    } catch {
+      // The generation disconnected between the identity check and write.
+      // Teardown owns reconnection; a stale approval response is safe to drop.
+    }
   }
 
   private send(obj: Record<string, JsonValue>): void {
