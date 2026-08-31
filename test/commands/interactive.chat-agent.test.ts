@@ -1431,9 +1431,72 @@ describe('Siftable agent-harness chat loop', () => {
     });
 
     await agent.chat('create retained output');
+    const resultEvent = agent.getSessionEvents().find((event) => event.type === 'tool/result');
+    const fullOutputRef = resultEvent?.type === 'tool/result'
+      ? resultEvent.data.output?.fullOutputRef
+      : undefined;
+    expect(fullOutputRef).toBeDefined();
+    const sessionContainer = dirname(dirname(fullOutputRef!));
     expect(await readdir(spillRoot)).toHaveLength(1);
     await agent.destroy();
-    expect(await readdir(spillRoot)).toEqual([]);
+    expect(await readdir(sessionContainer)).toEqual([]);
+    expect(await readdir(spillRoot)).toEqual([sessionContainer.slice(spillRoot.length + 1)]);
+  });
+
+  it('isolates spill cleanup for sessions sharing one configured root', async () => {
+    const spillRoot = await mkdtemp(join(tmpdir(), 'sift-chat-spill-session-isolation-'));
+    try {
+      const big = defineTool({
+        name: 'spill_session_isolation',
+        description: 'Creates retained output in a session-isolated spill directory',
+        inputSchema: {type: 'object', properties: {owner: {type: 'string'}}},
+        handler: async ({owner}: {owner: string}) => ok({owner, blob: 'x'.repeat(100_000)}),
+      });
+      const makeAgent = async (sessionId: string, owner: string) => {
+        let round = 0;
+        return createChatAgent({
+          adapter: {
+            name: `spill-session-${owner}`,
+            model: 'spill-session-isolation-model',
+            async chat() {
+              round += 1;
+              return round === 1
+                ? {toolCall: {id: `spill-${owner}`, name: big.name, args: {owner}}}
+                : {text: 'done'};
+            },
+          },
+          memory: false,
+          tools: [big],
+          session: {id: sessionId, store: new InMemorySessionEventStore()},
+          toolOutput: {maxBytes: 2048, spillDir: spillRoot},
+        });
+      };
+      const agentA = await makeAgent('shared-root-session-a', 'a');
+      const agentB = await makeAgent('shared-root-session-b', 'b');
+      await agentA.chat('create a spill');
+      await agentB.chat('create a spill');
+
+      const spillRef = (agent: Awaited<ReturnType<typeof createChatAgent>>) => {
+        const event = agent.getSessionEvents().find((candidate) => candidate.type === 'tool/result');
+        return event?.type === 'tool/result' ? event.data.output?.fullOutputRef : undefined;
+      };
+      const refA = spillRef(agentA);
+      const refB = spillRef(agentB);
+      expect(refA).toBeDefined();
+      expect(refB).toBeDefined();
+      expect(dirname(dirname(refA!))).not.toBe(dirname(dirname(refB!)));
+      expect(dirname(dirname(dirname(refA!)))).toBe(spillRoot);
+      expect(dirname(dirname(dirname(refB!)))).toBe(spillRoot);
+
+      await agentA.destroy();
+      await expect(readFile(refA!, 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+      expect(await readFile(refB!, 'utf8')).toContain('"owner":"b"');
+
+      await agentB.destroy();
+      await expect(readFile(refB!, 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+    } finally {
+      await rm(spillRoot, {recursive: true, force: true});
+    }
   });
 
   it('collects a journal-referenced spill at max age while the agent is idle', async () => {
@@ -1548,7 +1611,12 @@ describe('Siftable agent-harness chat loop', () => {
       });
 
       await agent.chat('create retained output');
-      const ownedDir = join(spillRoot, '.sift-tool-output-v1');
+      const resultEvent = agent.getSessionEvents().find((event) => event.type === 'tool/result');
+      const fullOutputRef = resultEvent?.type === 'tool/result'
+        ? resultEvent.data.output?.fullOutputRef
+        : undefined;
+      expect(fullOutputRef).toBeDefined();
+      const ownedDir = dirname(fullOutputRef!);
       const foreign = join(ownedDir, 'foreign.txt');
       await writeFile(foreign, 'keep me', {mode: 0o600});
 

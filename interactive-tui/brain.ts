@@ -1368,10 +1368,11 @@ export async function getAgent(): Promise<AgentHarnessAgent> {
         // is the always-on durable authority for resume and recovery.
         persistKey: key,
         ...(session ? {session} : {}),
-        // Truncated tool results keep their full bytes here, beside the
-        // journal, keyed by conversation then call id.
+        // Truncated tool results keep their full bytes below this common
+        // root. ChatAgent derives a stable isolated child from the durable
+        // session ID before it writes, collects, or destroys anything.
         ...(session
-          ? {toolOutput: {spillDir: join(sessionEventRoot(), 'tool-output', String(session.id))}}
+          ? {toolOutput: {spillDir: join(sessionEventRoot(), 'tool-output')}}
           : {}),
       });
     })();

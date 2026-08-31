@@ -22,6 +22,7 @@
 
 import * as readline from "node:readline";
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import type {
   AdapterResponse,
   AdapterSessionState,
@@ -362,6 +363,17 @@ class ChatAgentImpl implements ChatAgent {
       this.session.recoverInterrupted();
     }
     if (this.toolOutput?.spillDir !== undefined) {
+      // spillDir is a common custody root, not a session-owned directory.
+      // Derive a stable, path-safe child so reopening the same journal finds
+      // its prior spills while another session sharing the root can never
+      // collect or destroy them.
+      this.toolOutput = {
+        ...this.toolOutput,
+        spillDir: join(
+          this.toolOutput.spillDir,
+          `session-${digestJson(this.session.sessionId)}`,
+        ),
+      };
       for (const event of this.session.getEvents()) {
         if (event.type !== "tool/result") continue;
         const ref = event.data.output?.fullOutputRef;
