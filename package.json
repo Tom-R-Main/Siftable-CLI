@@ -195,6 +195,9 @@
       "work": {
         "description": "Executable agent work queue"
       },
+      "work:collaboration": {
+        "description": "Durable participant mailboxes and event cursors for agent work"
+      },
       "worker": {
         "description": "Local executable work runners"
       },

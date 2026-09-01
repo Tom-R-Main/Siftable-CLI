@@ -30390,6 +30390,689 @@
         "candidates",
         "review.js"
       ]
+    },
+    "work:collaboration:acknowledge": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Work item UUID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Advance a named mailbox cursor through one exact, durably processed sequence",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "as-agent-id": {
+          "description": "Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)",
+          "name": "as-agent-id",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "consumer-key": {
+          "description": "Stable non-secret key naming this durable event consumer",
+          "name": "consumer-key",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "last-sequence": {
+          "description": "Exact highest contiguous sequence durably processed by this consumer",
+          "name": "last-sequence",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:collaboration:acknowledge",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "collaboration",
+        "acknowledge.js"
+      ]
+    },
+    "work:collaboration:events": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Work item UUID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "List ordered mailbox events without advancing any durable cursor",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "as-agent-id": {
+          "description": "Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)",
+          "name": "as-agent-id",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "after-sequence": {
+          "description": "Return events after this exact sequence",
+          "name": "after-sequence",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "limit": {
+          "description": "Maximum events to return",
+          "name": "limit",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:collaboration:events",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "collaboration",
+        "events.js"
+      ]
+    },
+    "work:collaboration:participant:add": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Work item UUID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Add a contributor, reviewer, or observer to a work-item mailbox",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "as-agent-id": {
+          "description": "Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)",
+          "name": "as-agent-id",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "participant-user-id": {
+          "description": "User UUID represented by the participant",
+          "name": "participant-user-id",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "agent-alias-id": {
+          "description": "Agent alias UUID represented by the participant",
+          "name": "agent-alias-id",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "role": {
+          "description": "Participant role",
+          "name": "role",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "contributor",
+            "reviewer",
+            "observer"
+          ],
+          "type": "option"
+        },
+        "idempotency-key": {
+          "description": "Caller-owned stable 8-128 character key for exact retries",
+          "name": "idempotency-key",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:collaboration:participant:add",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "collaboration",
+        "participant",
+        "add.js"
+      ]
+    },
+    "work:collaboration:participant:remove": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Work item UUID",
+          "name": "id",
+          "required": true
+        },
+        "participantId": {
+          "description": "Collaboration participant UUID",
+          "name": "participantId",
+          "required": true
+        }
+      },
+      "description": "Remove an assignable participant from a work-item mailbox",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "as-agent-id": {
+          "description": "Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)",
+          "name": "as-agent-id",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "idempotency-key": {
+          "description": "Caller-owned stable 8-128 character key for exact retries",
+          "name": "idempotency-key",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:collaboration:participant:remove",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "collaboration",
+        "participant",
+        "remove.js"
+      ]
+    },
+    "work:collaboration:participants": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Work item UUID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "List the durable collaboration participants for a work item",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "as-agent-id": {
+          "description": "Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)",
+          "name": "as-agent-id",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:collaboration:participants",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "collaboration",
+        "participants.js"
+      ]
+    },
+    "work:collaboration:send": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Work item UUID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Append a retry-safe message or artifact event to a work-item mailbox",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "as-agent-id": {
+          "description": "Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)",
+          "name": "as-agent-id",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "kind": {
+          "description": "Client event kind",
+          "name": "kind",
+          "default": "message",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "message",
+            "artifact_published"
+          ],
+          "type": "option"
+        },
+        "text": {
+          "description": "Convenience text part; cannot be combined with --parts",
+          "name": "text",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "parts": {
+          "description": "Exact collaboration event parts as a JSON array",
+          "name": "parts",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "reply-to-event-id": {
+          "description": "Existing event UUID this event replies to",
+          "name": "reply-to-event-id",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "supersedes-event-id": {
+          "description": "Caller-authored event UUID this event supersedes",
+          "name": "supersedes-event-id",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "idempotency-key": {
+          "description": "Caller-owned stable 8-128 character key for exact retries",
+          "name": "idempotency-key",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:collaboration:send",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "collaboration",
+        "send.js"
+      ]
+    },
+    "work:collaboration:wait": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Work item UUID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Wait for mailbox events at least once; never acknowledges them automatically",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "as-agent-id": {
+          "description": "Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)",
+          "name": "as-agent-id",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "consumer-key": {
+          "description": "Stable non-secret key naming this durable event consumer",
+          "name": "consumer-key",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "after-sequence": {
+          "description": "Override cursor resume and wait after this sequence",
+          "name": "after-sequence",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "limit": {
+          "description": "Maximum events to return",
+          "name": "limit",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "wait-ms": {
+          "description": "Long-poll duration in milliseconds",
+          "name": "wait-ms",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:collaboration:wait",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "collaboration",
+        "wait.js"
+      ]
     }
   },
   "version": "0.6.0"
