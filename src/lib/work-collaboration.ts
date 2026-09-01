@@ -163,8 +163,13 @@ function eventReferenceSummary(event: CollaborationResponse): string {
 
 export function renderCollaborationEvents(data: CollaborationResponse): string {
   const events = collaborationRecords(data.events);
-  const deliveredSequence = Number.isSafeInteger(data.nextSequence) && Number(data.nextSequence) >= 0
+  const serverPageLastSequence = Number.isSafeInteger(data.nextSequence) && Number(data.nextSequence) >= 0
     ? Number(data.nextSequence)
+    : null;
+  const deliveredSequences = events.map((event) => event.sequence);
+  const deliveredSequence = events.length > 0
+    && deliveredSequences.every((sequence) => Number.isSafeInteger(sequence) && Number(sequence) >= 0)
+    ? Math.max(...deliveredSequences.map(Number))
     : null;
   const lines = events.map((event) => {
     const preview = eventTextPreview(event) || eventReferenceSummary(event) || '—';
@@ -177,7 +182,7 @@ export function renderCollaborationEvents(data: CollaborationResponse): string {
   });
   if (events.length === 0) lines.push(data.timedOut === true ? 'Wait timed out with no events.' : 'No collaboration events found.');
   if (typeof data.consumerKey === 'string') lines.push(`Consumer: ${sanitizeTerminalLine(data.consumerKey)}`);
-  if (deliveredSequence !== null) lines.push(`Next sequence: ${deliveredSequence}`);
+  if (serverPageLastSequence !== null) lines.push(`Server page watermark: ${serverPageLastSequence}`);
   if (typeof data.consumerKey === 'string' && events.length > 0 && deliveredSequence !== null) {
     const workItemId = events[0]?.workItemId ?? '<work-item-id>';
     lines.push('Cursor was not acknowledged. After durable processing, run:');

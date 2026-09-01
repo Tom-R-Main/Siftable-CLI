@@ -185,6 +185,33 @@ describe('sift work collaboration', () => {
     expect((global.fetch as jest.Mock).mock.calls[0][1].method).toBe('GET');
   });
 
+  it('acknowledges only the highest rendered event rather than the server page watermark', async () => {
+    const payload = {
+      version: 1,
+      events: [event(), {...event(), sequence: 9}],
+      nextSequence: 99,
+      consumerKey: 'cli-worker-bounded',
+      timedOut: false,
+    };
+    mockFetch()
+      .on('GET', `/api/v1/work-items/${WORK_ID}/events/wait`)
+      .query({consumerKey: 'cli-worker-bounded', waitMs: '0'})
+      .reply(200, payload)
+      .install();
+
+    const result = await runCommand([
+      'work', 'collaboration', 'wait', WORK_ID,
+      '--consumer-key', 'cli-worker-bounded',
+      '--wait-ms', '0',
+      '--token', 'sift_pat_test',
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('Server page watermark: 99');
+    expect(result.stdout).toContain('--last-sequence 9');
+    expect(result.stdout).not.toContain('--last-sequence 99');
+  });
+
   it('does not offer acknowledgement after a wait times out without events', async () => {
     mockFetch()
       .on('GET', `/api/v1/work-items/${WORK_ID}/events/wait`)

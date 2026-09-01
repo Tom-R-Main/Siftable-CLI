@@ -1,4 +1,5 @@
 import {Args, Flags} from '@oclif/core';
+import type {SiftClient} from '@siftable/mcp-server/dist/exfClient.js';
 import {BaseCommand} from '../../../lib/base-command.js';
 import {
   collaborationActorFlag,
@@ -8,11 +9,9 @@ import {
   renderCollaborationEventMutation,
 } from '../../../lib/work-collaboration.js';
 
-type EventKind = 'message' | 'artifact_published';
-type EventPart =
-  | {kind: 'text'; text: string}
-  | {kind: 'artifact_reference'; artifactId: string; label: string | null}
-  | {kind: 'work_item_reference'; workItemId: string; label: string | null};
+type SendEventInput = Parameters<SiftClient['sendWorkItemCollaborationEvent']>[1];
+type EventKind = SendEventInput['kind'];
+type EventPart = SendEventInput['parts'][number];
 
 export default class WorkCollaborationSend extends BaseCommand {
   static description = 'Append a retry-safe message or artifact event to a work-item mailbox';

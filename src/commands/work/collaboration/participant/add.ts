@@ -1,4 +1,5 @@
 import {Args, Flags} from '@oclif/core';
+import type {SiftClient} from '@siftable/mcp-server/dist/exfClient.js';
 import {BaseCommand} from '../../../../lib/base-command.js';
 import {
   collaborationActorFlag,
@@ -8,7 +9,8 @@ import {
   renderCollaborationParticipantMutation,
 } from '../../../../lib/work-collaboration.js';
 
-type AssignableRole = 'contributor' | 'reviewer' | 'observer';
+type AddParticipantInput = Parameters<SiftClient['addWorkItemCollaborationParticipant']>[1];
+type AssignableRole = AddParticipantInput['role'];
 
 export default class WorkCollaborationParticipantAdd extends BaseCommand {
   static description = 'Add a contributor, reviewer, or observer to a work-item mailbox';
