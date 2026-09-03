@@ -341,7 +341,7 @@ describe('getAgent — per-session keyed agents', () => {
   });
 
   it('warns about uncertain tool effects without exposing receipt details', async () => {
-    setBrainModel({provider: 'openrouter', model: 'google/gemini-3.7-flash'});
+    setBrainModel({provider: 'openrouter', model: 'google/gemini-3.8-flash'});
     setSessionCwd(dirs.parent);
     const agent = (await getAgent()) as unknown as FakeAgent;
     agent.chat = async function* () {

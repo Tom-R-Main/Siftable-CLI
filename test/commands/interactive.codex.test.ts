@@ -164,7 +164,7 @@ describe('LocalControlClient — Codex engine', () => {
 
   it('keeps Siftable-token auth for non-Codex engines', async () => {
     const client = new LocalControlClient({
-      getModel: () => ({provider: 'openrouter', model: 'google/gemini-3.7-flash'}),
+      getModel: () => ({provider: 'openrouter', model: 'google/gemini-3.8-flash'}),
       getToken: () => 'sift_pat_x',
       getCodexAccount: async () => null,
     });
@@ -186,7 +186,7 @@ describe('LocalControlClient — Codex engine', () => {
   it('codexSetActive switches the brain provider on and off', async () => {
     const setModel = jest.fn((input: {provider?: string; model?: string}) => ({
       provider: input.provider ?? 'openrouter',
-      model: input.model ?? 'google/gemini-3.7-flash',
+      model: input.model ?? 'google/gemini-3.8-flash',
     }));
     const client = new LocalControlClient({setModel});
 
@@ -383,20 +383,25 @@ describe('model catalog + reasoning effort', () => {
     expect(findModelChoice('nano')?.model).toBe('openai/gpt-5.4-nano');
   });
 
-  it('catalogues Gemini 3.7 Flash and promotes retired 3.6 selections', () => {
+  it('catalogues Gemini 3.8 Flash and promotes retired 3.7 selections', () => {
     for (const alias of [
       'gemini',
+      'gemini-3.8-flash',
+      'google/gemini-3.8-flash',
+      'openrouter:google/gemini-3.8-flash',
       'gemini-3.7-flash',
       'google/gemini-3.7-flash',
+      'openrouter/google/gemini-3.7-flash',
+      'openrouter:google/gemini-3.7-flash',
       'gemini-3.6-flash',
       'google/gemini-3.6-flash',
       'openrouter/google/gemini-3.6-flash',
       'openrouter:google/gemini-3.6-flash',
     ]) {
       expect(findModelChoice(alias)).toMatchObject({
-        id: 'openrouter/google/gemini-3.7-flash',
+        id: 'openrouter/google/gemini-3.8-flash',
         provider: 'openrouter',
-        model: 'google/gemini-3.7-flash',
+        model: 'google/gemini-3.8-flash',
         reasoningEfforts: ['low', 'medium', 'high'],
         defaultEffort: 'medium',
       });

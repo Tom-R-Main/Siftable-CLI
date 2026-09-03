@@ -123,7 +123,7 @@ export class LocalControlClient implements ControlTransport {
       return this.deps.setModel({ provider: CODEX_PROVIDER, model: CODEX_DEFAULT_MODEL });
     }
     // Restore the default local agent-harness engine.
-    return this.deps.setModel({ provider: "openrouter", model: "google/gemini-3.7-flash" });
+    return this.deps.setModel({ provider: "openrouter", model: "google/gemini-3.8-flash" });
   }
 
   async login(): Promise<{ verificationUri: string; userCode: string }> {

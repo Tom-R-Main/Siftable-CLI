@@ -284,7 +284,7 @@ function sessionJournalConfig(of: AgentHarnessModule, key: string): Record<strin
 /** Provider id that routes the brain to the Codex app-server engine. */
 const CODEX_PROVIDER = 'codex';
 /** Local harness default model — used to decide when to pass a model override to Codex. */
-const DEFAULT_AGENT_HARNESS_MODEL = 'google/gemini-3.7-flash';
+const DEFAULT_AGENT_HARNESS_MODEL = 'google/gemini-3.8-flash';
 
 let currentProvider = process.env.EXECUTERM_MODEL_PROVIDER || 'openrouter';
 let currentModel = process.env.EXECUTERM_MODEL || DEFAULT_AGENT_HARNESS_MODEL;

@@ -371,17 +371,21 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
   },
   // ── Fast / scout models (cheap, low-latency; Explorer defaults live here) ──
   {
-    id: "openrouter/google/gemini-3.7-flash",
+    id: "openrouter/google/gemini-3.8-flash",
     provider: "openrouter",
-    model: "google/gemini-3.7-flash",
-    label: "Gemini 3.7 Flash",
+    model: "google/gemini-3.8-flash",
+    label: "Gemini 3.8 Flash",
     description: "OpenRouter default",
     aliases: [
       "gemini",
+      "gemini-3.8-flash",
+      "google/gemini-3.8-flash",
+      "openrouter:google/gemini-3.8-flash",
+      // Retired Gemini Flash aliases and persisted ids select the current model.
       "gemini-3.7-flash",
       "google/gemini-3.7-flash",
+      "openrouter/google/gemini-3.7-flash",
       "openrouter:google/gemini-3.7-flash",
-      // Retired Gemini Flash aliases and persisted ids select the current model.
       "gemini-3.6-flash",
       "google/gemini-3.6-flash",
       "openrouter/google/gemini-3.6-flash",
