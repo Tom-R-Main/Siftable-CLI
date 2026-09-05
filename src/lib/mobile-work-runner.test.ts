@@ -23,6 +23,16 @@ const controlId = '44444444-4444-4444-8444-444444444444';
 const paths: string[] = [];
 afterEach(async () => { await Promise.all(paths.splice(0).map(path => rm(path, {recursive: true, force: true}))); });
 
+function fakeRequestClock() {
+  vi.useFakeTimers();
+  const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(milliseconds => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new Error('Synthetic request timeout')), milliseconds);
+    return controller.signal;
+  });
+  return () => { timeout.mockRestore(); vi.useRealTimers(); };
+}
+
 async function fixture(control?: 'stop' | 'checkpoint', termination?: number | 'SIGTERM') {
   const directory = await mkdtemp(join(tmpdir(), 'mobile-host-test-'));
   paths.push(directory);
@@ -94,6 +104,156 @@ async function interruptedAttachmentFixture() {
 }
 
 describe('mobile host runner', () => {
+  it.each([false, true])('allows a 45-second attachment transfer while renewing preparation leases (explicit attachment override: %s)', async explicitOverride => {
+    const f = await fixture();
+    attachToFixture(f);
+    const restoreClock = fakeRequestClock();
+    const refreshRunner = vi.fn(async () => ({}));
+    const request = f.options.api.request.bind(f.options.api);
+    let started!: () => void;
+    const transferStarted = new Promise<void>(resolve => { started = resolve; });
+    f.options.api.request = async <T>(path: string, body: unknown, key?: string, signal?: AbortSignal): Promise<T> => {
+      if (path.includes('/attachments/')) {
+        started();
+        await new Promise<void>((resolve, reject) => {
+          setTimeout(resolve, 45_000);
+          signal?.addEventListener('abort', () => reject(signal.reason), {once: true});
+        });
+      }
+      return request<T>(path, body, key, signal);
+    };
+    try {
+      const spawns = vi.mocked(spawn).mock.calls.length;
+      const run = consumeMobileDispatch({...f.options, refreshRunner, heartbeatIntervalMs: 20_000,
+        ...(explicitOverride ? {requestTimeoutMs: 1000, attachmentRequestTimeoutMs: 120_000} : {})});
+      await transferStarted;
+      await vi.advanceTimersByTimeAsync(35_000);
+      expect(vi.mocked(spawn).mock.calls).toHaveLength(spawns);
+      expect(refreshRunner.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(vi.mocked(AbortSignal.timeout).mock.calls).toContainEqual([explicitOverride ? 1000 : 10_000]);
+      expect(vi.mocked(AbortSignal.timeout).mock.calls).toContainEqual([120_000]);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await run).toBe('reviewed');
+      expect(await readFile(f.marker, 'utf8')).toBe('once\n');
+      await expect(lstat(join(f.directory, `${dispatchId}.attachments`))).rejects.toMatchObject({code: 'ENOENT'});
+      const calls = f.calls.length;
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(f.calls).toHaveLength(calls);
+    } finally { restoreClock(); }
+  });
+
+  it.each(['requestTimeoutMs', 'attachmentRequestTimeoutMs'] as const)('preserves an explicit short %s and safely fences a late attachment response', async timeoutOption => {
+    const f = await fixture();
+    attachToFixture(f);
+    const restoreClock = fakeRequestClock();
+    const request = f.options.api.request.bind(f.options.api);
+    let started!: () => void;
+    const transferStarted = new Promise<void>(resolve => { started = resolve; });
+    f.options.api.request = async <T>(path: string, body: unknown, key?: string, signal?: AbortSignal): Promise<T> => {
+      if (path.includes('/attachments/')) {
+        started();
+        // Deliberately ignore cancellation; a late transport continuation may
+        // return bytes but must never write files or start execution.
+        await new Promise(resolve => setTimeout(resolve, 45_000));
+      }
+      return request<T>(path, body, key, signal);
+    };
+    try {
+      const spawns = vi.mocked(spawn).mock.calls.length;
+      const run = consumeMobileDispatch({...f.options, [timeoutOption]: 500, heartbeatIntervalMs: 20_000});
+      await transferStarted;
+      await vi.advanceTimersByTimeAsync(500);
+      expect(await run).toBe('failed');
+      await expect(lstat(join(f.directory, `${dispatchId}.attachments`))).rejects.toMatchObject({code: 'ENOENT'});
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(vi.mocked(spawn).mock.calls).toHaveLength(spawns);
+      expect(f.calls.filter(call => call.path.endsWith('/ack'))).toEqual([
+        expect.objectContaining({key: `${dispatchId}:start-failed`, body: expect.objectContaining({state: 'failed'})}),
+      ]);
+      expect(f.calls.some(call => call.path.endsWith('/review'))).toBe(false);
+    } finally { restoreClock(); }
+  });
+
+  it.each(['lease-loss', 'stop'] as const)('aborts attachment preparation on %s before a child can spawn', async cause => {
+    const f = await fixture();
+    attachToFixture(f);
+    const restoreClock = fakeRequestClock();
+    const request = f.options.api.request.bind(f.options.api);
+    let started!: () => void;
+    const transferStarted = new Promise<void>(resolve => { started = resolve; });
+    let transferring = false;
+    let leaseLost = false;
+    f.options.api.request = async <T>(path: string, body: unknown, key?: string, signal?: AbortSignal): Promise<T> => {
+      if (path.includes('/attachments/')) {
+        transferring = true; started();
+        await new Promise<void>((resolve, reject) => {
+          setTimeout(resolve, 45_000);
+          signal?.addEventListener('abort', () => reject(signal.reason), {once: true});
+        });
+      }
+      if (transferring && cause === 'lease-loss' && path.endsWith('/heartbeat')) {
+        leaseLost = true;
+        throw new Error('Synthetic lease loss');
+      }
+      const response = await request<Record<string, any>>(path, body, key, signal);
+      if (transferring && cause === 'stop' && path.endsWith('/consume')) response.controls = [{id: controlId, action: 'stop'}];
+      return response as T;
+    };
+    try {
+      const spawns = vi.mocked(spawn).mock.calls.length;
+      const run = consumeMobileDispatch({...f.options, refreshRunner: async () => ({}), heartbeatIntervalMs: 20_000});
+      await transferStarted;
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(await run).toBe(cause === 'stop' ? 'stopped' : 'failed');
+      expect(vi.mocked(spawn).mock.calls).toHaveLength(spawns);
+      await expect(lstat(join(f.directory, `${dispatchId}.attachments`))).rejects.toMatchObject({code: 'ENOENT'});
+      const calls = f.calls.length;
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(f.calls).toHaveLength(calls);
+      expect(f.calls.some(call => call.path.endsWith('/review'))).toBe(false);
+      if (cause === 'lease-loss') expect(leaseLost).toBe(true);
+      if (cause === 'stop') expect(f.calls.at(-1)).toMatchObject({key: `${controlId}:ack`, body: {state: 'acknowledged'}});
+    } finally { restoreClock(); }
+  });
+
+  it('keeps the preparation control deadline at ten seconds and fences a late renewal', async () => {
+    const f = await fixture();
+    attachToFixture(f);
+    const restoreClock = fakeRequestClock();
+    const request = f.options.api.request.bind(f.options.api);
+    let started!: () => void;
+    const transferStarted = new Promise<void>(resolve => { started = resolve; });
+    const refreshRunner = vi.fn(async () => {
+      if (refreshRunner.mock.calls.length > 1) await new Promise(resolve => setTimeout(resolve, 80_000));
+    });
+    f.options.api.request = async <T>(path: string, body: unknown, key?: string, signal?: AbortSignal): Promise<T> => {
+      if (path.includes('/attachments/')) {
+        started();
+        await new Promise<void>((resolve, reject) => {
+          setTimeout(resolve, 70_000);
+          signal?.addEventListener('abort', () => reject(signal.reason), {once: true});
+        });
+      }
+      return request<T>(path, body, key, signal);
+    };
+    try {
+      const spawns = vi.mocked(spawn).mock.calls.length;
+      let finished = false;
+      const run = consumeMobileDispatch({...f.options, refreshRunner, heartbeatIntervalMs: 20_000})
+        .then(result => { finished = true; return result; });
+      await transferStarted;
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(finished).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await run).toBe('failed');
+      const calls = f.calls.length;
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(f.calls).toHaveLength(calls);
+      expect(refreshRunner).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(spawn).mock.calls).toHaveLength(spawns);
+      await expect(lstat(join(f.directory, `${dispatchId}.attachments`))).rejects.toMatchObject({code: 'ENOENT'});
+    } finally { restoreClock(); }
+  });
   it('cleans verified orphan attachment bytes before refusing an interrupted launch replay', async () => {
     const f = await interruptedAttachmentFixture();
     const spawns = vi.mocked(spawn).mock.calls.length;

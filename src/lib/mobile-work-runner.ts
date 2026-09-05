@@ -24,6 +24,8 @@ export interface MobileRunnerOptions {
   receiptDirectory: string;
   heartbeatIntervalMs?: number;
   requestTimeoutMs?: number;
+  /** Attachment IO includes the server's 30s storage read and base64 transfer. */
+  attachmentRequestTimeoutMs?: number;
   checkpoint?: (workItem: Record<string, unknown>, signal: AbortSignal) => Promise<void>;
   refreshRunner?: (signal?: AbortSignal) => Promise<unknown>;
 }
@@ -70,6 +72,26 @@ async function syncDirectory(path: string): Promise<void> {
 
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_ATTACHMENTS = 20;
+const ATTACHMENT_REQUEST_TIMEOUT_MS = 120_000;
+
+class PreparationStopped extends Error {
+  constructor(readonly controlId: string) { super('Work stopped during attachment preparation.'); }
+}
+
+/** Fence transports that return after cancellation as well as fetch itself. */
+async function withRequestSignal<T>(signal: AbortSignal, action: () => Promise<T>): Promise<T> {
+  signal.throwIfAborted();
+  let aborted!: () => void;
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    aborted = () => reject(signal.reason);
+    signal.addEventListener('abort', aborted, {once: true});
+  });
+  try {
+    const result = await Promise.race([action(), cancelled]);
+    signal.throwIfAborted();
+    return result;
+  } finally { signal.removeEventListener('abort', aborted); }
+}
 
 function processIsDefinitelyGone(pid: number, group = false): boolean {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
@@ -136,6 +158,7 @@ async function prepareWorkAttachments(
   dispatchId: string,
   workItem: MobileDispatchClaim['workItem'],
   rememberScratch: (directory: string) => Promise<void>,
+  renewPreparation: (signal: AbortSignal) => Promise<void>,
 ): Promise<{workItem: Record<string, unknown>; cleanup: () => Promise<void>}> {
   const safeWorkItem: Record<string, unknown> = {...workItem};
   delete safeWorkItem.claimToken;
@@ -155,17 +178,38 @@ async function prepareWorkAttachments(
   // Exclusive creation prevents an existing path or symlink from becoming a write target.
   await mkdir(directory, {mode: 0o700});
   const cleanup = () => rm(directory, {recursive: true, force: true});
+  const lifetime = new AbortController();
+  let timer: NodeJS.Timeout | undefined;
+  let pending = Promise.resolve();
+  let renewing = false;
+  let closing = false;
+  const renew = () => {
+    const signal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(options.requestTimeoutMs ?? 10_000)]);
+    return withRequestSignal(signal, () => renewPreparation(signal));
+  };
   try {
     // Persist ownership before the first plaintext byte reaches this directory.
     await rememberScratch(directory);
+    await renew();
+    // Runner liveness expires after 90s and the work lease after 300s. Renew
+    // throughout every bounded transfer, including a multi-file preparation.
+    timer = setInterval(() => {
+      if (renewing || lifetime.signal.aborted) return;
+      renewing = true;
+      pending = renew().catch(error => {
+        if (!closing) lifetime.abort(error);
+      }).finally(() => { renewing = false; });
+    }, Math.min(options.heartbeatIntervalMs ?? 20_000, 20_000));
     const materialized: Array<{receiptId: string; name: string; localPath: string}> = [];
     let totalBytes = 0;
     for (const [index, attachment] of validated.entries()) {
-      const content = await options.api.request<{
+      const signal = AbortSignal.any([lifetime.signal,
+        AbortSignal.timeout(options.attachmentRequestTimeoutMs ?? options.requestTimeoutMs ?? ATTACHMENT_REQUEST_TIMEOUT_MS)]);
+      const content = await withRequestSignal(signal, () => options.api.request<{
         receiptId: string; byteLength: number; sha256: string; contentBase64: string;
       }>(`/api/v1/work-items/dispatches/${dispatchId}/attachments/${attachment.receiptId}`, {
         workspaceId: options.workspaceId, claimToken: workItem.claimToken,
-      }, undefined, AbortSignal.timeout(options.requestTimeoutMs ?? 10_000));
+      }, undefined, signal));
       if (!content || content.receiptId !== attachment.receiptId
         || !Number.isSafeInteger(content.byteLength) || content.byteLength < 0 || content.byteLength > MAX_ATTACHMENT_BYTES
         || typeof content.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(content.sha256)
@@ -184,14 +228,31 @@ async function prepareWorkAttachments(
         const handle = await open(localPath, 'wx', 0o400);
         try { await handle.writeFile(bytes); await handle.sync(); }
         finally { await handle.close(); }
+        lifetime.signal.throwIfAborted();
         materialized.push({...attachment, localPath});
       } finally { bytes.fill(0); }
     }
+    clearInterval(timer);
+    await pending;
+    lifetime.signal.throwIfAborted();
+    // Revalidate ownership and Stop immediately before returning inputs to the
+    // spawn path; a delayed preparation continuation cannot start cancelled work.
+    await renew();
     safeWorkItem.inputContext = {...inputContext, attachments: materialized};
     return {workItem: safeWorkItem, cleanup};
-  } catch {
+  } catch (error) {
+    closing = true;
+    if (timer) clearInterval(timer);
+    lifetime.abort(error);
+    await pending;
     await cleanup();
+    if (error instanceof PreparationStopped) throw error;
     throw new Error('Work attachments could not be prepared.');
+  } finally {
+    closing = true;
+    if (timer) clearInterval(timer);
+    lifetime.abort();
+    await pending;
   }
 }
 
@@ -273,8 +334,34 @@ export async function consumeMobileDispatch(options: MobileRunnerOptions): Promi
         receipt.attachmentScratch = {version: 1, consumerId, runnerId, workspaceId, ownerPid: process.pid,
           phase: 'preparing', rootPath, rootDev: root.dev, rootIno: root.ino, directoryDev: scratch.dev, directoryIno: scratch.ino};
         await saveReceipt();
+      }, async signal => {
+        await options.refreshRunner?.(signal);
+        signal.throwIfAborted();
+        await heartbeat(signal);
+        signal.throwIfAborted();
+        const update = await api.request<MobileDispatchClaim>(
+          `/api/v1/work-items/runners/${runnerId}/consume`, {workspaceId, consumerId}, undefined, signal,
+        );
+        signal.throwIfAborted();
+        if (update.dispatch?.id !== dispatch.id || update.workItem?.claimToken !== workItem.claimToken) {
+          throw new Error('Host dispatch ownership changed.');
+        }
+        for (const control of update.controls ?? []) {
+          if (!UUID.test(control.id)) throw new Error('Invalid control identity.');
+          if (control.action === 'stop') throw new PreparationStopped(control.id);
+          if (control.action !== 'checkpoint') throw new Error('Unknown control action.');
+        }
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof PreparationStopped) {
+        receipt.state = 'stopped';
+        receipt.exitCode = 1;
+        receipt.stopControlId = error.controlId;
+        await saveReceipt();
+        await api.request(`/api/v1/work-items/dispatches/${dispatch.id}/controls/ack`,
+          {workspaceId, controlId: error.controlId, claimToken: workItem.claimToken, state: 'acknowledged'}, `${error.controlId}:ack`);
+        return 'stopped';
+      }
       // No executable has been started, and failure details must not reveal attachment content.
       receipt.state = 'start_failed';
       await saveReceipt();
