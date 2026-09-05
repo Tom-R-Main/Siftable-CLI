@@ -14391,6 +14391,143 @@
         "dispatch.js"
       ]
     },
+    "worker:listen": {
+      "aliases": [],
+      "args": {},
+      "description": "Receive reviewed mobile launches on a host-configured local worker",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "runner": {
+          "description": "Stable runner UUID",
+          "name": "runner",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "name": {
+          "description": "Runner name shown on the phone",
+          "name": "name",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "agent-alias-id": {
+          "description": "Agent alias UUID for this runner; defaults to the credential binding",
+          "name": "agent-alias-id",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "executable": {
+          "description": "Host-approved executable; receives work JSON on stdin",
+          "name": "executable",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "arg": {
+          "description": "Fixed executable argument (repeatable)",
+          "name": "arg",
+          "default": [],
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "cwd": {
+          "description": "Host-approved working directory",
+          "name": "cwd",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "receipts": {
+          "description": "Durable local receipt directory",
+          "name": "receipts",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "checkpoint-executable": {
+          "description": "Optional host-approved checkpoint executable",
+          "name": "checkpoint-executable",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "checkpoint-arg": {
+          "description": "Fixed checkpoint argument (repeatable)",
+          "name": "checkpoint-arg",
+          "default": [],
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "once": {
+          "description": "Register and poll once, then exit",
+          "name": "once",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "worker:listen",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "worker",
+        "listen.js"
+      ]
+    },
     "worker:run": {
       "aliases": [],
       "args": {},

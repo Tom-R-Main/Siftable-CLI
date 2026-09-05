@@ -87,6 +87,7 @@ export abstract class BaseCommand extends Command {
       method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
       body?: unknown;
       idempotencyKey?: string;
+      signal?: AbortSignal;
     } = {},
   ): Promise<T> {
     const token = flags.token || envValue('SIFT_TOKEN', 'EXF_TOKEN') || resolveToken();
@@ -94,6 +95,7 @@ export abstract class BaseCommand extends Command {
     const apiUrl = flags['api-url'] || envValue('SIFT_API_URL', 'EXF_API_URL') || DEFAULT_API_URL;
     const workspaceId = this.workspaceId(flags.workspace);
     const response = await fetch(`${apiUrl}${path}`, {
+      signal: options.signal,
       method: options.method ?? 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
