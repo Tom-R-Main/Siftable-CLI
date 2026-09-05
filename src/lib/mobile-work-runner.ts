@@ -31,7 +31,7 @@ interface Receipt {
   version: 1;
   dispatchId: string;
   workItemId: string;
-  state: 'launching' | 'finished' | 'reviewed' | 'failed' | 'stopped';
+  state: 'launching' | 'start_failed' | 'finished' | 'reviewed' | 'failed' | 'stopped';
   exitCode?: number;
   exitSignal?: NodeJS.Signals;
   stopControlId?: string;
@@ -89,7 +89,7 @@ export async function consumeMobileDispatch(options: MobileRunnerOptions): Promi
       throw new Error('Dispatch already launched or interrupted. Reconcile on the host before retrying; automatic re-execution is disabled.');
     }
     if (receipt.state === 'reviewed' || receipt.state === 'failed') return receipt.state;
-    if (!['finished', 'stopped'].includes(receipt.state) || !Number.isInteger(receipt.exitCode)) throw new Error('Invalid dispatch receipt.');
+    if (receipt.state !== 'start_failed' && (!['finished', 'stopped'].includes(receipt.state) || !Number.isInteger(receipt.exitCode))) throw new Error('Invalid dispatch receipt.');
   }
   const saveReceipt = async () => {
     const temporaryPath = `${receiptPath}.${process.pid}.tmp`;
@@ -147,23 +147,35 @@ export async function consumeMobileDispatch(options: MobileRunnerOptions): Promi
       }
       return undefined;
     });
-    receipt.exitCode = result.exitCode;
-    receipt.exitSignal = result.exitSignal;
-    receipt.stopControlId = result.stopControlId;
-    receipt.state = result.stopControlId ? 'stopped' : 'finished';
-    if (!result.stopControlId && result.exitCode === 0 && !result.exitSignal) {
-      try {
-        if ((await stat(resultPath)).size > 65536) throw new Error('Result exceeds 64 KiB');
-        const authored = JSON.parse(await readFile(resultPath, 'utf8'));
-        if (typeof authored.summary !== 'string' || authored.summary.length > 16000 || !Array.isArray(authored.artifactRefs) || authored.artifactRefs.length > 50) {
-          throw new Error('Invalid host result');
+    if (!result.spawned) {
+      receipt.state = 'start_failed';
+    } else {
+      receipt.exitCode = result.exitCode;
+      receipt.exitSignal = result.exitSignal;
+      receipt.stopControlId = result.stopControlId;
+      receipt.state = result.stopControlId ? 'stopped' : 'finished';
+      if (!result.stopControlId && result.exitCode === 0 && !result.exitSignal) {
+        try {
+          if ((await stat(resultPath)).size > 65536) throw new Error('Result exceeds 64 KiB');
+          const authored = JSON.parse(await readFile(resultPath, 'utf8'));
+          if (typeof authored.summary !== 'string' || authored.summary.length > 16000 || !Array.isArray(authored.artifactRefs) || authored.artifactRefs.length > 50) {
+            throw new Error('Invalid host result');
+          }
+          receipt.result = {summary: authored.summary, artifactRefs: authored.artifactRefs};
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Host result file is invalid. Reconcile on the host before submitting it.');
         }
-        receipt.result = {summary: authored.summary, artifactRefs: authored.artifactRefs};
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Host result file is invalid. Reconcile on the host before submitting it.');
       }
     }
     await saveReceipt();
+  }
+  if (receipt.state === 'start_failed') {
+    // The host proved no process spawned before recording this state. Retrying only sends the ACK.
+    await api.request(`/api/v1/work-items/dispatches/${dispatch.id}/ack`,
+      {workspaceId, claimToken: workItem.claimToken, state: 'failed'}, `${dispatch.id}:start-failed`);
+    receipt.state = 'failed';
+    await saveReceipt();
+    return 'failed';
   }
   if (receipt.state === 'stopped' && receipt.stopControlId) {
     // The configured foreground process group has exited before Stop is acknowledged.
@@ -206,7 +218,7 @@ async function runHostExecutable(
   resultPath: string,
   acknowledge: (signal: AbortSignal) => Promise<void>,
   heartbeat: (signal: AbortSignal) => Promise<string | undefined>,
-): Promise<{exitCode: number; exitSignal?: NodeJS.Signals; stopControlId?: string}> {
+): Promise<{spawned: false} | {spawned: true; exitCode: number; exitSignal?: NodeJS.Signals; stopControlId?: string}> {
   return new Promise((resolve, reject) => {
     const lifetime = new AbortController();
     const child = spawn(options.executable, options.args, {
@@ -228,6 +240,8 @@ async function runHostExecutable(
     let heartbeatRunning = false;
     let stopControlId: string | undefined;
     let acknowledged = false;
+    let spawned = false;
+    let startFailed = false;
     const kill = (signal: NodeJS.Signals) => {
       if (!child.pid) return;
       try {
@@ -253,6 +267,7 @@ async function runHostExecutable(
       } finally { if (deadline) clearTimeout(deadline); }
     };
     child.once('spawn', () => {
+      spawned = true;
       pending = bounded(() => acknowledge(lifetime.signal)).then(() => {
         if (failure || lifetime.signal.aborted) return;
         acknowledged = true;
@@ -274,16 +289,23 @@ async function runHostExecutable(
       }).catch(fail);
     });
     child.stdin.on('error', () => { /* A process may finish without reading its input. */ });
-    child.once('error', () => { failure = new Error('Configured host executable could not start.'); });
+    child.once('error', () => {
+      if (!spawned) startFailed = true;
+      else {
+        failure = new Error('Host process failed after spawning. Reconcile before retrying.');
+        kill('SIGKILL');
+      }
+    });
     child.once('close', async (code, signal) => {
       lifetime.abort();
       await pending;
       if (timer) clearInterval(timer);
       if (failure || stopControlId) kill('SIGKILL');
       if (killTimer) clearTimeout(killTimer);
-      if (failure) reject(failure);
+      if (startFailed) resolve({spawned: false});
+      else if (failure) reject(failure);
       else if (!acknowledged) reject(new Error('Host exited before launch acknowledgement. Reconcile before retrying.'));
-      else resolve({exitCode: code ?? 1, exitSignal: signal ?? undefined, stopControlId});
+      else resolve({spawned: true, exitCode: code ?? 1, exitSignal: signal ?? undefined, stopControlId});
     });
   });
 }

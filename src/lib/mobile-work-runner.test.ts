@@ -1,4 +1,5 @@
-import {mkdtemp, open, readFile, rm} from 'node:fs/promises';
+import {spawn} from 'node:child_process';
+import {mkdtemp, open, readFile, rm, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {afterEach, describe, expect, it, vi} from 'vitest';
@@ -7,6 +8,11 @@ import {consumeMobileDispatch, type MobileRunnerApi} from './mobile-work-runner'
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return {...actual, open: vi.fn(actual.open)};
+});
+
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {...actual, spawn: vi.fn(actual.spawn)};
 });
 
 const runnerId = '11111111-1111-4111-8111-111111111111';
@@ -57,12 +63,61 @@ describe('mobile host runner', () => {
     expect(f.calls.find(call => call.path.endsWith('/review'))?.body.resultSummary).toBe('Synthetic deliverable');
   });
 
-  it('reserves execution before spawning and refuses automatic restart after an interrupted launch', async () => {
+  it.each(['ENOENT', 'EACCES'])('fails a confirmed no-spawn %s dispatch without running or stranding it', async failure => {
+    const f = await fixture();
+    f.options.executable = join(f.directory, 'unavailable-executable');
+    if (failure === 'EACCES') await writeFile(f.options.executable, '#!/bin/sh\nexit 0\n', {mode: 0o600});
+    expect(await consumeMobileDispatch(f.options)).toBe('failed');
+    expect(f.calls.find(call => call.path.endsWith('/ack'))?.body).toMatchObject({state: 'failed'});
+    expect(f.calls.some(call => call.path.endsWith('/heartbeat') || call.path.endsWith('/review') || call.path.endsWith('/fail'))).toBe(false);
+    expect(JSON.parse(await readFile(join(f.directory, `${dispatchId}.json`), 'utf8')).state).toBe('failed');
+    f.options.executable = process.execPath;
+    expect(await consumeMobileDispatch(f.options)).toBe('failed');
+    await expect(readFile(f.marker, 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+  });
+
+  it('persists definitive no-spawn evidence before failed ACK and retries a lost response without spawning', async () => {
     const f = await fixture();
     f.options.executable = join(f.directory, 'missing-executable');
-    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('could not start');
+    const originalRequest = f.options.api.request.bind(f.options.api);
+    let lost = true;
+    f.options.api.request = async <T>(path: string, body: unknown, key?: string, signal?: AbortSignal): Promise<T> => {
+      const response = await originalRequest<T>(path, body, key, signal);
+      if (path.endsWith('/ack')) {
+        expect(body).toMatchObject({state: 'failed'});
+        const persisted = await readFile(join(f.directory, `${dispatchId}.json`), 'utf8');
+        expect(JSON.parse(persisted).state).toBe('start_failed');
+        expect(persisted).not.toContain('synthetic-worker-lease');
+        if (lost) throw new Error('Lost failed acknowledgement response');
+      }
+      return response;
+    };
+    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('Lost failed acknowledgement response');
+    lost = false;
     f.options.executable = process.execPath;
+    expect(await consumeMobileDispatch(f.options)).toBe('failed');
+    const acknowledgements = f.calls.filter(call => call.path.endsWith('/ack'));
+    expect(acknowledgements).toHaveLength(2);
+    expect(acknowledgements[0].key).toBe(`${dispatchId}:start-failed`);
+    expect(acknowledgements[1]).toEqual(acknowledgements[0]);
+    await expect(readFile(f.marker, 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+  });
+
+  it('keeps an error after a real spawn uncertain instead of claiming the executable never started', async () => {
+    const f = await fixture();
+    const originalRequest = f.options.api.request.bind(f.options.api);
+    f.options.api.request = async <T>(path: string, body: unknown, key?: string, signal?: AbortSignal): Promise<T> => {
+      if (path.endsWith('/ack')) {
+        const child = vi.mocked(spawn).mock.results.at(-1)?.value;
+        expect(child.pid).toBeGreaterThan(0);
+        child.emit('error', new Error('Synthetic error after spawn'));
+      }
+      return originalRequest<T>(path, body, key, signal);
+    };
+    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('failed after spawning');
+    expect(JSON.parse(await readFile(join(f.directory, `${dispatchId}.json`), 'utf8')).state).toBe('launching');
     await expect(consumeMobileDispatch(f.options)).rejects.toThrow('already launched or interrupted');
+    expect(f.calls.some(call => call.path.endsWith('/ack') && call.body.state === 'failed')).toBe(false);
     expect(f.calls.some(call => call.path.endsWith('/review'))).toBe(false);
   });
 
@@ -95,6 +150,8 @@ describe('mobile host runner', () => {
     expect(checkpoints).toBe(0);
     expect(f.calls.filter(call => call.path.endsWith('/consume'))).toHaveLength(1);
     expect(f.calls.some(call => call.path.endsWith('/controls/ack'))).toBe(false);
+    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('already launched or interrupted');
+    expect(f.calls.some(call => call.path.endsWith('/ack') && call.body.state === 'failed')).toBe(false);
   });
 
   it('does not submit a result when the child exits before launch acknowledgement succeeds', async () => {
