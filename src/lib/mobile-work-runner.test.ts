@@ -1,6 +1,6 @@
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {mkdtemp, open, readFile, rm, writeFile, stat, mkdir, symlink, lstat} from 'node:fs/promises';
+import {mkdtemp, open, readFile, rm, writeFile, stat, mkdir, symlink, lstat, realpath, rename} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {afterEach, describe, expect, it, vi} from 'vitest';
@@ -71,7 +71,197 @@ function attachToFixture(
   };
 }
 
+async function interruptedAttachmentFixture() {
+  const f = await fixture();
+  const child = spawn(process.execPath, ['-e', ''], {stdio: 'ignore'});
+  const deadPid = child.pid!;
+  await new Promise<void>(resolve => child.once('close', () => resolve()));
+  const rootPath = await realpath(f.directory);
+  const root = await lstat(rootPath);
+  const directory = join(rootPath, `${dispatchId}.attachments`);
+  await mkdir(directory, {mode: 0o700});
+  const scratch = await lstat(directory);
+  const localPath = join(directory, `0-${attachmentId}`);
+  await writeFile(localPath, attachmentBytes, {mode: 0o400});
+  await writeFile(join(f.directory, 'consumer.json'), JSON.stringify({id: controlId}), {mode: 0o600});
+  const receipt = {version: 1, dispatchId, workItemId, state: 'launching', attachmentScratch: {
+    version: 1, consumerId: controlId, runnerId, workspaceId: null, ownerPid: deadPid, childPid: deadPid,
+    phase: 'spawned', rootPath, rootDev: root.dev, rootIno: root.ino, directoryDev: scratch.dev, directoryIno: scratch.ino,
+  }};
+  const save = () => writeFile(join(f.directory, `${dispatchId}.json`), JSON.stringify(receipt), {mode: 0o600});
+  await save();
+  return {...f, receipt, save, scratchDirectory: directory, localPath};
+}
+
 describe('mobile host runner', () => {
+  it('cleans verified orphan attachment bytes before refusing an interrupted launch replay', async () => {
+    const f = await interruptedAttachmentFixture();
+    const spawns = vi.mocked(spawn).mock.calls.length;
+    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('automatic re-execution is disabled');
+    await expect(lstat(f.scratchDirectory)).rejects.toMatchObject({code: 'ENOENT'});
+    expect(vi.mocked(spawn).mock.calls).toHaveLength(spawns);
+    expect(f.calls.map(call => call.path)).toEqual([`/api/v1/work-items/runners/${runnerId}/consume`]);
+    expect(JSON.parse(await readFile(join(f.directory, `${dispatchId}.json`), 'utf8')).state).toBe('launching');
+  });
+
+  it.each([
+    {state: 'reviewed', exitCode: 0, outcome: 'reviewed', endpoints: ['consume']},
+    {state: 'failed', exitCode: 1, outcome: 'failed', endpoints: ['consume']},
+    {state: 'finished', exitCode: 0, outcome: 'reviewed', endpoints: ['consume', 'heartbeat', 'review']},
+    {state: 'finished', exitCode: 9, outcome: 'failed', endpoints: ['consume', 'heartbeat', 'fail']},
+    {state: 'stopped', exitCode: 1, outcome: 'stopped', endpoints: ['consume', 'controls/ack']},
+    {state: 'start_failed', exitCode: 1, outcome: 'failed', endpoints: ['consume', 'ack']},
+  ])('cleans orphan scratch during $state/$exitCode replay without changing the durable outcome', async ({state, exitCode, outcome, endpoints}) => {
+    const f = await interruptedAttachmentFixture();
+    Object.assign(f.receipt, {state, exitCode, result: {summary: 'Preserved deliverable', artifactRefs: [{path: 'report.txt'}]},
+      ...(state === 'stopped' ? {stopControlId: controlId} : {})});
+    await f.save();
+    const spawns = vi.mocked(spawn).mock.calls.length;
+    expect(await consumeMobileDispatch(f.options)).toBe(outcome);
+    await expect(lstat(f.scratchDirectory)).rejects.toMatchObject({code: 'ENOENT'});
+    expect(vi.mocked(spawn).mock.calls).toHaveLength(spawns);
+    expect(f.calls).toHaveLength(endpoints.length);
+    for (const [index, endpoint] of endpoints.entries()) expect(f.calls[index].path.endsWith(`/${endpoint}`)).toBe(true);
+    const mutation = f.calls.at(-1)!;
+    if (state === 'finished' && exitCode === 0) {
+      expect(mutation.key).toBe(`${dispatchId}:review`);
+      expect(mutation.body).toMatchObject({resultSummary: 'Preserved deliverable', artifactRefs: [{path: 'report.txt'}, {type: 'worker_run', dispatchId, exitCode}]});
+    }
+    if (state === 'finished' && exitCode !== 0) expect(mutation.key).toBe(`${dispatchId}:fail`);
+    if (state === 'stopped') expect(mutation).toMatchObject({key: `${controlId}:ack`, body: {state: 'acknowledged', controlId}});
+    if (state === 'start_failed') expect(mutation).toMatchObject({key: `${dispatchId}:start-failed`, body: {state: 'failed'}});
+  });
+
+  it('cleans a confirmed no-spawn failure even when no child PID was recorded', async () => {
+    const f = await interruptedAttachmentFixture();
+    f.receipt.state = 'start_failed';
+    f.receipt.attachmentScratch.phase = 'spawn_pending';
+    Reflect.deleteProperty(f.receipt.attachmentScratch, 'childPid');
+    await f.save();
+    expect(await consumeMobileDispatch(f.options)).toBe('failed');
+    await expect(lstat(f.scratchDirectory)).rejects.toMatchObject({code: 'ENOENT'});
+    expect(f.calls.at(-1)).toMatchObject({key: `${dispatchId}:start-failed`, body: {state: 'failed'}});
+  });
+
+  it('cleans a real killed runner and worker scratch on restart without another execution', async () => {
+    const f = await fixture();
+    const workerCode = `process.stdin.resume();process.stdin.on('end',()=>{require('fs').writeFileSync(${JSON.stringify(f.marker)},String(process.pid));setInterval(()=>{},1000);});`;
+    const runnerCode = `const {consumeMobileDispatch}=await import(${JSON.stringify(new URL('../../dist/lib/mobile-work-runner.js', import.meta.url).href)});
+      await consumeMobileDispatch({runnerId:${JSON.stringify(runnerId)},workspaceId:null,receiptDirectory:${JSON.stringify(f.directory)},cwd:${JSON.stringify(f.directory)},
+        executable:process.execPath,args:['-e',${JSON.stringify(workerCode)}],api:{async request(path){
+          if(path.endsWith('/consume')) return {dispatch:{id:${JSON.stringify(dispatchId)},workItemId:${JSON.stringify(workItemId)}},
+            workItem:{id:${JSON.stringify(workItemId)},claimToken:'synthetic-lease',inputContext:{attachments:[{receiptId:${JSON.stringify(attachmentId)},name:'brief'}]}}};
+          if(path.includes('/attachments/')) return ${JSON.stringify(attachmentContent())}; return {};
+        }}});`;
+    const manager = spawn(process.execPath, ['--input-type=module', '-e', runnerCode], {stdio: 'ignore'});
+    const managerClosed = new Promise<void>(resolve => manager.once('close', () => resolve()));
+    let childPid: number | undefined;
+    try {
+      await vi.waitFor(async () => {
+        if (manager.exitCode !== null) throw new Error('Synthetic runner exited before worker readiness');
+        childPid = Number(await readFile(f.marker, 'utf8'));
+        expect(childPid).toBeGreaterThan(0);
+      });
+      const directory = join(f.directory, `${dispatchId}.attachments`);
+      expect(await readFile(join(directory, `0-${attachmentId}`))).toEqual(attachmentBytes);
+      manager.kill('SIGKILL');
+      await managerClosed;
+      // A detached worker can outlive its manager; preserve its inputs while live.
+      await expect(consumeMobileDispatch(f.options)).rejects.toThrow('automatic re-execution is disabled');
+      expect(await readFile(join(directory, `0-${attachmentId}`))).toEqual(attachmentBytes);
+      process.kill(-childPid!, 'SIGKILL');
+      await vi.waitFor(() => {
+        expect(() => process.kill(childPid!, 0)).toThrow();
+        expect(() => process.kill(-childPid!, 0)).toThrow();
+      });
+      await expect(consumeMobileDispatch(f.options)).rejects.toThrow('automatic re-execution is disabled');
+      await expect(lstat(directory)).rejects.toMatchObject({code: 'ENOENT'});
+      expect(await readFile(f.marker, 'utf8')).toBe(String(childPid));
+      expect(f.calls.every(call => call.path.endsWith('/consume'))).toBe(true);
+    } finally {
+      manager.kill('SIGKILL');
+      await managerClosed;
+      if (!childPid) {
+        try { childPid = JSON.parse(await readFile(join(f.directory, `${dispatchId}.json`), 'utf8')).attachmentScratch?.childPid; }
+        catch { /* The runner may have failed before spawning. */ }
+      }
+      if (childPid) { try { process.kill(-childPid, 'SIGKILL'); } catch { /* Already gone. */ } }
+    }
+  });
+
+  it.each(['ownerPid', 'childPid'] as const)('retains attachment bytes when %s is still alive', async field => {
+    const f = await interruptedAttachmentFixture();
+    f.receipt.attachmentScratch[field] = process.pid;
+    await f.save();
+    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('automatic re-execution is disabled');
+    expect(await readFile(f.localPath)).toEqual(attachmentBytes);
+  });
+
+  it.each(['spawn_pending', 'unknown'] as const)('retains attachment bytes when spawn evidence is %s', async phase => {
+    const f = await interruptedAttachmentFixture();
+    f.receipt.attachmentScratch.phase = phase;
+    await f.save();
+    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('automatic re-execution is disabled');
+    expect(await readFile(f.localPath)).toEqual(attachmentBytes);
+  });
+
+  it.each(['consumerId', 'runnerId', 'workspaceId', 'directoryIno', 'rootIno'] as const)('retains scratch when %s ownership does not match', async field => {
+    const f = await interruptedAttachmentFixture();
+    Object.assign(f.receipt.attachmentScratch, {[field]: field.endsWith('Ino') ? 1 : attachmentId});
+    await f.save();
+    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('automatic re-execution is disabled');
+    expect(await readFile(f.localPath)).toEqual(attachmentBytes);
+  });
+
+  it('does not follow a replacement scratch symlink during interrupted cleanup', async () => {
+    const f = await interruptedAttachmentFixture();
+    const outside = join(f.directory, 'outside');
+    await mkdir(outside);
+    await writeFile(join(outside, `0-${attachmentId}`), 'retain');
+    await rm(f.scratchDirectory, {recursive: true});
+    await symlink(outside, f.scratchDirectory);
+    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('automatic re-execution is disabled');
+    expect((await lstat(f.scratchDirectory)).isSymbolicLink()).toBe(true);
+    expect(await readFile(join(outside, `0-${attachmentId}`), 'utf8')).toBe('retain');
+  });
+
+  it('retains legacy interrupted scratch without process ownership evidence', async () => {
+    const f = await interruptedAttachmentFixture();
+    Reflect.deleteProperty(f.receipt, 'attachmentScratch');
+    await f.save();
+    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('automatic re-execution is disabled');
+    expect(await readFile(f.localPath)).toEqual(attachmentBytes);
+  });
+
+  it('cleans an interrupted preparation that durably predates any spawn attempt', async () => {
+    const f = await interruptedAttachmentFixture();
+    f.receipt.attachmentScratch.phase = 'preparing';
+    Reflect.deleteProperty(f.receipt.attachmentScratch, 'childPid');
+    await f.save();
+    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('automatic re-execution is disabled');
+    await expect(lstat(f.scratchDirectory)).rejects.toMatchObject({code: 'ENOENT'});
+  });
+
+  it.each(['unexpected-file', `0-${otherAttachmentId}`])('retains scratch containing an unowned or symbolic-link entry: %s', async name => {
+    const f = await interruptedAttachmentFixture();
+    const outside = join(f.directory, 'outside');
+    await writeFile(outside, 'retain');
+    if (name === 'unexpected-file') await writeFile(join(f.scratchDirectory, name), 'unknown');
+    else await symlink(outside, join(f.scratchDirectory, name));
+    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('automatic re-execution is disabled');
+    expect(await readFile(f.localPath)).toEqual(attachmentBytes);
+    expect(await readFile(outside, 'utf8')).toBe('retain');
+  });
+
+  it('retains scratch if the configured root is replaced by a symlink to a different root', async () => {
+    const f = await interruptedAttachmentFixture();
+    const replacement = `${f.directory}-replacement`;
+    paths.push(replacement);
+    await rename(f.directory, replacement);
+    await symlink(replacement, f.directory);
+    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('automatic re-execution is disabled');
+    expect(await readFile(f.localPath.replace(f.directory, replacement))).toEqual(attachmentBytes);
+  });
   it('runs one real process, excludes lease input and replays a lost result without executing twice', async () => {
     const f = await fixture();
     f.loseReview();

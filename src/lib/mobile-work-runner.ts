@@ -1,6 +1,6 @@
 import {spawn} from 'node:child_process';
-import {mkdir, readFile, rename, stat, open, rm} from 'node:fs/promises';
-import {join, resolve} from 'node:path';
+import {mkdir, readFile, rename, stat, open, rm, lstat, realpath, readdir} from 'node:fs/promises';
+import {dirname, join, resolve} from 'node:path';
 import {createHash, randomUUID} from 'node:crypto';
 import {hasInlineAgentWorkSecrets} from './agent-work-secrets.js';
 
@@ -38,6 +38,22 @@ interface Receipt {
   stopControlId?: string;
   result?: {summary: string; artifactRefs: unknown[]};
   resultRejected?: boolean;
+  attachmentScratch?: AttachmentScratch;
+}
+
+interface AttachmentScratch {
+  version: 1;
+  consumerId: string;
+  runnerId: string;
+  workspaceId: string | null;
+  ownerPid: number;
+  childPid?: number;
+  phase: 'preparing' | 'spawn_pending' | 'spawned';
+  rootPath: string;
+  rootDev: number;
+  rootIno: number;
+  directoryDev: number;
+  directoryIno: number;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -55,11 +71,71 @@ async function syncDirectory(path: string): Promise<void> {
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_ATTACHMENTS = 20;
 
+function processIsDefinitelyGone(pid: number, group = false): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try { process.kill(group ? -pid : pid, 0); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH'; }
+}
+
+/** Only remove scratch whose durable provenance and process death we can prove.
+ * PID reuse, legacy receipts, and death between spawn and PID persistence remain
+ * manual cleanup cases. No receipt state or server execution state changes. */
+async function cleanInterruptedAttachments(
+  options: MobileRunnerOptions, receipt: Receipt, consumerId: string, receiptPath: string,
+): Promise<void> {
+  const scratch = receipt.attachmentScratch;
+  if (!scratch || scratch.version !== 1 || scratch.consumerId !== consumerId
+    || scratch.runnerId !== options.runnerId || scratch.workspaceId !== options.workspaceId
+    || !processIsDefinitelyGone(scratch.ownerPid)) return;
+  const confirmedNoSpawn = receipt.state === 'start_failed' && scratch.phase === 'spawn_pending'
+    && scratch.childPid === undefined;
+  if (!confirmedNoSpawn && scratch.phase !== 'preparing' && (scratch.phase !== 'spawned'
+    || !processIsDefinitelyGone(scratch.childPid!) || !processIsDefinitelyGone(scratch.childPid!, true))) return;
+  try {
+    const rootPath = await realpath(options.receiptDirectory);
+    if (rootPath !== scratch.rootPath) return;
+    // Resolve the configured root once, then reject substituted symlink ancestors
+    // on that canonical path. A private owned root excludes other users' writes.
+    for (let ancestor = rootPath; ; ancestor = dirname(ancestor)) {
+      const info = await lstat(ancestor);
+      if (!info.isDirectory() || info.isSymbolicLink()) return;
+      if (ancestor === dirname(ancestor)) break;
+    }
+    const root = await lstat(rootPath);
+    const receiptInfo = await lstat(receiptPath);
+    const uid = process.getuid?.();
+    if (uid === undefined || root.uid !== uid || (root.mode & 0o022) !== 0
+      || root.dev !== scratch.rootDev || root.ino !== scratch.rootIno
+      || !receiptInfo.isFile() || receiptInfo.isSymbolicLink() || receiptInfo.uid !== uid
+      || receiptInfo.nlink !== 1 || (receiptInfo.mode & 0o077) !== 0) return;
+    const directory = join(rootPath, `${receipt.dispatchId}.attachments`);
+    const info = await lstat(directory);
+    if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== uid || (info.mode & 0o077) !== 0
+      || info.dev !== scratch.directoryDev || info.ino !== scratch.directoryIno) return;
+    const names = await readdir(directory);
+    if (names.length > MAX_ATTACHMENTS) return;
+    for (const name of names) {
+      const match = /^(\d{1,2})-(.+)$/.exec(name);
+      if (!match || Number(match[1]) >= MAX_ATTACHMENTS || !UUID.test(match[2])) return;
+      const file = await lstat(join(directory, name));
+      if (!file.isFile() || file.isSymbolicLink() || file.uid !== uid || file.nlink !== 1 || (file.mode & 0o077) !== 0) return;
+    }
+    const current = await lstat(directory);
+    if (current.dev !== info.dev || current.ino !== info.ino || !current.isDirectory()) return;
+    await rm(directory, {recursive: true, force: true});
+    await syncDirectory(rootPath);
+  } catch {
+    // Missing/replaced paths and uncertain filesystem ownership remain manual
+    // reconciliation cases; never include content or provider errors in output.
+  }
+}
+
 /** Receipt names are display metadata; only generated names become filesystem paths. */
 async function prepareWorkAttachments(
   options: MobileRunnerOptions,
   dispatchId: string,
   workItem: MobileDispatchClaim['workItem'],
+  rememberScratch: (directory: string) => Promise<void>,
 ): Promise<{workItem: Record<string, unknown>; cleanup: () => Promise<void>}> {
   const safeWorkItem: Record<string, unknown> = {...workItem};
   delete safeWorkItem.claimToken;
@@ -80,6 +156,8 @@ async function prepareWorkAttachments(
   await mkdir(directory, {mode: 0o700});
   const cleanup = () => rm(directory, {recursive: true, force: true});
   try {
+    // Persist ownership before the first plaintext byte reaches this directory.
+    await rememberScratch(directory);
     const materialized: Array<{receiptId: string; name: string; localPath: string}> = [];
     let totalBytes = 0;
     for (const [index, attachment] of validated.entries()) {
@@ -159,6 +237,9 @@ export async function consumeMobileDispatch(options: MobileRunnerOptions): Promi
     if (receipt.version !== 1 || receipt.dispatchId !== dispatch.id || receipt.workItemId !== workItem.id) {
       throw new Error('Dispatch receipt identity mismatch.');
     }
+    // A crash can also land after the outcome was saved but before finally
+    // removed plaintext. Check all replays before any terminal-state shortcut.
+    await cleanInterruptedAttachments(options, receipt, consumerId, receiptPath);
     if (receipt.state === 'launching') {
       throw new Error('Dispatch already launched or interrupted. Reconcile on the host before retrying; automatic re-execution is disabled.');
     }
@@ -185,7 +266,14 @@ export async function consumeMobileDispatch(options: MobileRunnerOptions): Promi
   if (newReceipt) {
     let prepared: Awaited<ReturnType<typeof prepareWorkAttachments>>;
     try {
-      prepared = await prepareWorkAttachments(options, dispatch.id, workItem);
+      prepared = await prepareWorkAttachments(options, dispatch.id, workItem, async directory => {
+        const rootPath = await realpath(options.receiptDirectory);
+        const root = await lstat(rootPath);
+        const scratch = await lstat(directory);
+        receipt.attachmentScratch = {version: 1, consumerId, runnerId, workspaceId, ownerPid: process.pid,
+          phase: 'preparing', rootPath, rootDev: root.dev, rootIno: root.ino, directoryDev: scratch.dev, directoryIno: scratch.ino};
+        await saveReceipt();
+      });
     } catch {
       // No executable has been started, and failure details must not reveal attachment content.
       receipt.state = 'start_failed';
@@ -194,8 +282,18 @@ export async function consumeMobileDispatch(options: MobileRunnerOptions): Promi
     }
     const safeWorkItem = prepared.workItem;
     try {
+      if (receipt.attachmentScratch) {
+        receipt.attachmentScratch.phase = 'spawn_pending';
+        await saveReceipt();
+      }
       const resultPath = join(options.receiptDirectory, `${dispatch.id}.result.json`);
-      const result = await runHostExecutable(options, safeWorkItem, resultPath, async signal => {
+      const result = await runHostExecutable(options, safeWorkItem, resultPath, async (signal, childPid) => {
+        if (receipt.attachmentScratch) {
+          receipt.attachmentScratch.phase = 'spawned';
+          receipt.attachmentScratch.childPid = childPid;
+          await saveReceipt();
+        }
+        signal.throwIfAborted();
         await api.request(`/api/v1/work-items/dispatches/${dispatch.id}/ack`,
           {workspaceId, claimToken: workItem.claimToken, state: 'acknowledged'}, `${dispatch.id}:ack`, signal);
       }, async signal => {
@@ -312,7 +410,7 @@ async function runHostExecutable(
   options: MobileRunnerOptions,
   workItem: Record<string, unknown>,
   resultPath: string,
-  acknowledge: (signal: AbortSignal) => Promise<void>,
+  acknowledge: (signal: AbortSignal, childPid: number) => Promise<void>,
   heartbeat: (signal: AbortSignal) => Promise<string | undefined>,
 ): Promise<{spawned: false} | {spawned: true; exitCode: number; exitSignal?: NodeJS.Signals; stopControlId?: string}> {
   return new Promise((resolve, reject) => {
@@ -364,7 +462,7 @@ async function runHostExecutable(
     };
     child.once('spawn', () => {
       spawned = true;
-      pending = bounded(() => acknowledge(lifetime.signal)).then(() => {
+      pending = bounded(() => acknowledge(lifetime.signal, child.pid!)).then(() => {
         if (failure || lifetime.signal.aborted) return;
         acknowledged = true;
         // Structured input is delivered only after the server accepted this worker.
