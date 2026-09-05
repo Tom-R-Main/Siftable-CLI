@@ -698,7 +698,8 @@ describe("Siftable agent-harness durability boundary", () => {
     }
   });
 
-  it("retries a reclaim gate republished from the same inode after descriptor inspection", async () => {
+  it.each(["descriptor-republish", "path-unlink", "path-republish", "path-retire"])(
+    "retries a reclaim gate publication changed during inspection: %s", async (interleaving) => {
     const name = uniqueStoreName();
     const storeModuleUrl = pathToFileURL(join(
       testDirectory, "..", "agent-harness", "framework", "store.ts",
@@ -709,7 +710,7 @@ describe("Siftable agent-harness durability boundary", () => {
       import * as fs from "node:fs";
       import { join } from "node:path";
       import { mock } from "bun:test";
-      const [storeModuleUrl, dataDirectory, name] = process.argv.slice(1);
+      const [storeModuleUrl, dataDirectory, name, interleaving] = process.argv.slice(1);
       fs.mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
       const lockPath = join(dataDirectory, name + ".json.lock");
       const stalePid = spawnSync(process.execPath, ["--eval", "process.exit(0)"]).pid;
@@ -718,12 +719,18 @@ describe("Siftable agent-harness durability boundary", () => {
       fs.writeFileSync(staleClaim, JSON.stringify({ pid: stalePid, token: staleToken }), { mode: 0o600 });
       fs.linkSync(staleClaim, lockPath);
       const gatePath = lockPath + ".reclaim";
-      const gateClaim = lockPath + ".gate-fixture";
-      fs.writeFileSync(gateClaim, JSON.stringify({ pid: process.pid, token: randomUUID() }), { mode: 0o600 });
+      const gateToken = randomUUID();
+      const gateClaim = lockPath + "." + process.pid + "." + gateToken + ".claim";
+      fs.writeFileSync(gateClaim, JSON.stringify({ pid: process.pid, token: gateToken }), { mode: 0o600 });
       fs.linkSync(gateClaim, gatePath);
 
       const realFs = { ...fs };
       let gateFd, interleaved = false, released = false;
+      const releaseGate = () => {
+        realFs.rmSync(gatePath, { force: true });
+        realFs.rmSync(gateClaim, { force: true });
+        released = true;
+      };
       mock.module("node:fs", () => ({
         ...realFs,
         openSync(target, ...args) {
@@ -732,7 +739,7 @@ describe("Siftable agent-harness durability boundary", () => {
           return fd;
         },
         fstatSync(fd, ...args) {
-          if (fd === gateFd && !interleaved) {
+          if (fd === gateFd && !interleaved && interleaving === "descriptor-republish") {
             // The owner releases the gate, then republishes the same immutable
             // claim while this reader holds a descriptor to that exact inode.
             realFs.unlinkSync(gatePath);
@@ -744,13 +751,27 @@ describe("Siftable agent-harness durability boundary", () => {
           }
           return realFs.fstatSync(fd, ...args);
         },
+        lstatSync(target, ...args) {
+          if (target === gatePath && !interleaved && interleaving !== "descriptor-republish") {
+            // lstat can resolve the dentry before unlink but copy the inode's
+            // link count afterwards. Return that exact inode with its new count.
+            realFs.lstatSync(target, ...args);
+            realFs.unlinkSync(gatePath);
+            if (interleaving === "path-retire") releaseGate();
+            const detached = realFs.fstatSync(gateFd);
+            if (interleaving === "path-republish") realFs.linkSync(gateClaim, gatePath);
+            interleaved = true;
+            return detached;
+          }
+          const info = realFs.lstatSync(target, ...args);
+          if (target === gateClaim && interleaved && !released) releaseGate();
+          return info;
+        },
         readFileSync(target, ...args) {
           const value = realFs.readFileSync(target, ...args);
-          if (target === gateFd && interleaved && !released) {
+          if (target === gateFd && interleaved && !released && interleaving === "descriptor-republish") {
             // Finish the live peer's recovery, allowing the next retry to win.
-            realFs.unlinkSync(gatePath);
-            realFs.unlinkSync(gateClaim);
-            released = true;
+            releaseGate();
           }
           return value;
         },
@@ -769,7 +790,7 @@ describe("Siftable agent-harness durability boundary", () => {
         for (const target of [staleClaim, lockPath, gateClaim, gatePath]) realFs.rmSync(target, { force: true });
       }
     `;
-    const child = spawn(process.execPath, ["--eval", childSource, storeModuleUrl, storeDataDirectory, name], {
+    const child = spawn(process.execPath, ["--eval", childSource, storeModuleUrl, storeDataDirectory, name, interleaving], {
       cwd: join(testDirectory, "..", "..", "..", ".."),
       stdio: ["ignore", "ignore", "pipe"],
     });

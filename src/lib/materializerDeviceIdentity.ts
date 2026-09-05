@@ -304,14 +304,16 @@ async function tryAcquireLinuxLock(lockPath: string): Promise<(() => Promise<voi
         env: {PATH: '/usr/bin:/bin'},
       },
     );
-  } finally {
+  } catch (error) {
     await lockHandle.close();
+    throw error;
   }
   const childStdin = child.stdin;
   const childStdout = child.stdout;
   const childStderr = child.stderr;
   if (!childStdin || !childStdout || !childStderr) {
     child.kill('SIGTERM');
+    await lockHandle.close();
     throw new Error('Vault materializer identity lock helper did not expose required pipes');
   }
   let output = '';
@@ -338,6 +340,16 @@ async function tryAcquireLinuxLock(lockPath: string): Promise<(() => Promise<voi
   const closed = new Promise<{code: number | null; signal: NodeJS.Signals | null}>(resolve => {
     child.once('close', (code, signal) => resolve({code, signal}));
   });
+  // A contending helper may exit while the parent's descriptor close yields.
+  // Subscribe first so its exit (and any spawn error) cannot be lost.
+  try {
+    await lockHandle.close();
+  } catch (error) {
+    child.kill('SIGTERM');
+    childStdin.end();
+    await closed;
+    throw error;
+  }
   const outcome = await Promise.race([
     ready,
     delay(LOCK_WAIT_MILLISECONDS).then(() => 'timeout' as const),

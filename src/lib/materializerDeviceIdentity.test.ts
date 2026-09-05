@@ -1,5 +1,6 @@
 import {spawn} from 'node:child_process';
-import {once} from 'node:events';
+import {EventEmitter, once} from 'node:events';
+import {PassThrough} from 'node:stream';
 import {mkdir, open, readFile, readdir, realpath, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
@@ -11,6 +12,16 @@ import {
   loadOrCreateMaterializerDeviceIdentity,
   type MaterializerIdentityStore,
 } from './materializerDeviceIdentity.js';
+
+vi.mock('node:fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {...actual, open: vi.fn(actual.open)};
+});
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {...actual, spawn: vi.fn(actual.spawn)};
+});
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
 
 class MemoryIdentityStore implements MaterializerIdentityStore {
   readonly values = new Map<string, Buffer>();
@@ -41,7 +52,9 @@ async function temporaryDirectory(): Promise<string> {
 }
 
 afterEach(async () => {
+  Object.defineProperty(process, 'platform', platformDescriptor);
   vi.restoreAllMocks();
+  vi.resetAllMocks();
   await Promise.all(temporaryDirectories.splice(0).map(directory => (
     rm(directory, {recursive: true, force: true})
   )));
@@ -252,4 +265,36 @@ describe('materializer device identity', () => {
     }));
   });
 
+});
+
+it('observes a contending helper exit during parent descriptor closure', async () => {
+  Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'linux' });
+  const stateDirectory = await temporaryDirectory();
+  const fakeHelper = () => Object.assign(new EventEmitter(), {
+    stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+  });
+  const contending = fakeHelper();
+  const acquired = fakeHelper();
+  acquired.stdin.on('finish', () => { acquired.emit('close', 0, null); });
+  vi.mocked(spawn).mockImplementationOnce(() => contending as unknown as ReturnType<typeof spawn>);
+  vi.mocked(spawn).mockImplementationOnce(() => {
+    setImmediate(() => acquired.stdout.write('sift-lock-ready\n'));
+    return acquired as unknown as ReturnType<typeof spawn>;
+  });
+  const {open: actualOpen} = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+  vi.mocked(open).mockImplementationOnce(async (...args) => {
+    const handle = await actualOpen(...args);
+    const close = handle.close.bind(handle);
+    handle.close = async () => {
+      // A fast flock failure can close the child while this async fd close yields.
+      contending.emit('close', 75, null);
+      await close();
+    };
+    return handle;
+  });
+  const identity = await loadOrCreateMaterializerDeviceIdentity({
+    apiUrl: 'https://siftable.io', stateDirectory, store: new MemoryIdentityStore(),
+  });
+  expect(identity.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+  expect(spawn).toHaveBeenCalledTimes(2);
 });

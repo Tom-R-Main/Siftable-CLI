@@ -702,7 +702,7 @@ function tryAcquireReclaimGate(
       fsyncDirectory(DATA_DIR);
     } catch (error) {
       if (isNodeError(error) && error.code === "EEXIST") {
-        const owner = readLockOwner(reclaimPath);
+        const owner = readLockOwner(reclaimPath, lockPath);
         if (owner === undefined) continue;
         if (isProcessAlive(owner.pid)) return undefined;
         if (visited.has(owner.token)) {
@@ -734,7 +734,7 @@ function tryAcquireReclaimGate(
   }
 }
 
-function readLockOwner(lockPath: string): StoreLockOwner | undefined {
+function readLockOwner(lockPath: string, claimLockPath = lockPath): StoreLockOwner | undefined {
   let lockFd: number;
   try {
     const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
@@ -763,15 +763,10 @@ function readLockOwner(lockPath: string): StoreLockOwner | undefined {
     // Its descriptor then reports one (or eventually zero) links, but it no
     // longer excludes another contender at the well-known lock path.
     // The same claim inode can also be republished between fstat and lstat.
-    // Validate the link count from the snapshot that establishes path identity,
-    // rather than combining an old detached descriptor count with a new path.
+    // Even lstat can resolve the path before unlink and copy nlink afterwards;
+    // a low count therefore needs the immutable claim check below.
     const current = matchingFileInfo(lockPath, info);
     retired = current === undefined;
-    if (current !== undefined && current.nlink !== 2) {
-      throw new StorePersistenceError(
-        `store lock ${lockPath} has an inconsistent link count (${current.nlink})`,
-      );
-    }
     if (!retired) {
       const candidate = JSON.parse(readFileSync(lockFd, "utf8")) as unknown;
       if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
@@ -785,6 +780,20 @@ function readLockOwner(lockPath: string): StoreLockOwner | undefined {
         throw new StorePersistenceError(`store lock ${lockPath} has an invalid owner token`);
       }
       parsed = { pid: owner.pid!, token: owner.token };
+      if (current !== undefined && current.nlink !== 2) {
+        const claimPath = `${claimLockPath}.${parsed.pid}.${parsed.token}.claim`;
+        // A matching claim proves a low count was sampled during publication
+        // turnover: the claim and current lock cannot coexist with <2 links.
+        // Once the immutable claim is removed it is never republished, so a
+        // final path check also safely recognizes a completely retired inode.
+        retired = (current.nlink < 2 && matchingFileInfo(claimPath, info) !== undefined)
+          || matchingFileInfo(lockPath, info) === undefined;
+        if (!retired) {
+          throw new StorePersistenceError(
+            `store lock ${lockPath} has an inconsistent link count (${current.nlink})`,
+          );
+        }
+      }
     }
   } catch (error) {
     primaryFailure = error instanceof StorePersistenceError
