@@ -1,5 +1,6 @@
 import {spawn} from 'node:child_process';
-import {mkdir, readFile, rename, stat, open, rm, lstat, realpath, readdir} from 'node:fs/promises';
+import {constants} from 'node:fs';
+import {mkdir, readFile, rename, open, rm, lstat, realpath, readdir} from 'node:fs/promises';
 import {dirname, join, resolve} from 'node:path';
 import {createHash, randomUUID} from 'node:crypto';
 import {hasInlineAgentWorkSecrets} from './agent-work-secrets.js';
@@ -40,10 +41,11 @@ interface Receipt {
   stopControlId?: string;
   result?: {summary: string; artifactRefs: unknown[]};
   resultRejected?: boolean;
-  attachmentScratch?: AttachmentScratch;
+  attachmentScratch?: DispatchScratch;
+  resultScratch?: DispatchScratch;
 }
 
-interface AttachmentScratch {
+interface DispatchScratch {
   version: 1;
   consumerId: string;
   runnerId: string;
@@ -102,25 +104,30 @@ function processIsDefinitelyGone(pid: number, group = false): boolean {
 /** Only remove scratch whose durable provenance and process death we can prove.
  * PID reuse, legacy receipts, and death between spawn and PID persistence remain
  * manual cleanup cases. No receipt state or server execution state changes. */
-async function cleanInterruptedAttachments(
+async function cleanInterruptedScratch(
   options: MobileRunnerOptions, receipt: Receipt, consumerId: string, receiptPath: string,
-): Promise<void> {
-  const scratch = receipt.attachmentScratch;
+  kind: 'attachments' | 'result' = 'attachments', knownStopped = false,
+): Promise<boolean> {
+  // An interrupted launch may hold the only authored result. Keep that evidence
+  // private for reconciliation until an outcome is durably recorded.
+  if (kind === 'result' && receipt.state !== 'start_failed'
+    && (!['finished', 'reviewed', 'failed', 'stopped'].includes(receipt.state) || !Number.isInteger(receipt.exitCode))) return false;
+  const scratch = kind === 'attachments' ? receipt.attachmentScratch : receipt.resultScratch;
   if (!scratch || scratch.version !== 1 || scratch.consumerId !== consumerId
     || scratch.runnerId !== options.runnerId || scratch.workspaceId !== options.workspaceId
-    || !processIsDefinitelyGone(scratch.ownerPid)) return;
+    || (!knownStopped && !processIsDefinitelyGone(scratch.ownerPid))) return false;
   const confirmedNoSpawn = receipt.state === 'start_failed' && scratch.phase === 'spawn_pending'
     && scratch.childPid === undefined;
-  if (!confirmedNoSpawn && scratch.phase !== 'preparing' && (scratch.phase !== 'spawned'
-    || !processIsDefinitelyGone(scratch.childPid!) || !processIsDefinitelyGone(scratch.childPid!, true))) return;
+  if (!knownStopped && !confirmedNoSpawn && scratch.phase !== 'preparing' && (scratch.phase !== 'spawned'
+    || !processIsDefinitelyGone(scratch.childPid!) || !processIsDefinitelyGone(scratch.childPid!, true))) return false;
   try {
     const rootPath = await realpath(options.receiptDirectory);
-    if (rootPath !== scratch.rootPath) return;
+    if (rootPath !== scratch.rootPath) return false;
     // Resolve the configured root once, then reject substituted symlink ancestors
     // on that canonical path. A private owned root excludes other users' writes.
     for (let ancestor = rootPath; ; ancestor = dirname(ancestor)) {
       const info = await lstat(ancestor);
-      if (!info.isDirectory() || info.isSymbolicLink()) return;
+      if (!info.isDirectory() || info.isSymbolicLink()) return false;
       if (ancestor === dirname(ancestor)) break;
     }
     const root = await lstat(rootPath);
@@ -129,27 +136,77 @@ async function cleanInterruptedAttachments(
     if (uid === undefined || root.uid !== uid || (root.mode & 0o022) !== 0
       || root.dev !== scratch.rootDev || root.ino !== scratch.rootIno
       || !receiptInfo.isFile() || receiptInfo.isSymbolicLink() || receiptInfo.uid !== uid
-      || receiptInfo.nlink !== 1 || (receiptInfo.mode & 0o077) !== 0) return;
-    const directory = join(rootPath, `${receipt.dispatchId}.attachments`);
+      || receiptInfo.nlink !== 1 || (receiptInfo.mode & 0o077) !== 0) return false;
+    const directory = join(rootPath, `${receipt.dispatchId}.${kind}`);
     const info = await lstat(directory);
     if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== uid || (info.mode & 0o077) !== 0
-      || info.dev !== scratch.directoryDev || info.ino !== scratch.directoryIno) return;
+      || info.dev !== scratch.directoryDev || info.ino !== scratch.directoryIno) return false;
     const names = await readdir(directory);
-    if (names.length > MAX_ATTACHMENTS) return;
+    if (names.length > (kind === 'result' ? 1 : MAX_ATTACHMENTS)) return false;
     for (const name of names) {
       const match = /^(\d{1,2})-(.+)$/.exec(name);
-      if (!match || Number(match[1]) >= MAX_ATTACHMENTS || !UUID.test(match[2])) return;
+      if (kind === 'result' ? name !== 'result.json' : (!match || Number(match[1]) >= MAX_ATTACHMENTS || !UUID.test(match[2]))) return false;
       const file = await lstat(join(directory, name));
-      if (!file.isFile() || file.isSymbolicLink() || file.uid !== uid || file.nlink !== 1 || (file.mode & 0o077) !== 0) return;
+      if (!file.isFile() || file.isSymbolicLink() || file.uid !== uid || file.nlink !== 1 || (file.mode & 0o077) !== 0) return false;
     }
     const current = await lstat(directory);
-    if (current.dev !== info.dev || current.ino !== info.ino || !current.isDirectory()) return;
+    if (current.dev !== info.dev || current.ino !== info.ino || !current.isDirectory()) return false;
     await rm(directory, {recursive: true, force: true});
     await syncDirectory(rootPath);
-  } catch {
+    return true;
+  } catch (error) {
     // Missing/replaced paths and uncertain filesystem ownership remain manual
     // reconciliation cases; never include content or provider errors in output.
+    return (error as NodeJS.ErrnoException).code === 'ENOENT';
   }
+}
+
+async function removeOwnedLegacyResult(options: MobileRunnerOptions, dispatchId: string): Promise<void> {
+  const root = await lstat(options.receiptDirectory);
+  const uid = process.getuid?.();
+  if (uid === undefined || !root.isDirectory() || root.uid !== uid || (root.mode & 0o022) !== 0) return;
+  const path = join(options.receiptDirectory, `${dispatchId}.result.json`);
+  try {
+    const file = await lstat(path);
+    if (!file.isFile() || file.isSymbolicLink() || file.uid !== uid || file.nlink !== 1) return;
+    await rm(path);
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Host result cleanup requires reconciliation.'); }
+}
+
+async function readPrivateResult(options: MobileRunnerOptions, receipt: Receipt): Promise<unknown | undefined> {
+  const scratch = receipt.resultScratch!;
+  const rootPath = await realpath(options.receiptDirectory);
+  const root = await lstat(rootPath);
+  const directory = join(rootPath, `${receipt.dispatchId}.result`);
+  const folder = await lstat(directory);
+  const uid = process.getuid?.();
+  if (uid === undefined || rootPath !== scratch.rootPath || root.uid !== uid || (root.mode & 0o022) !== 0
+    || root.dev !== scratch.rootDev || root.ino !== scratch.rootIno
+    || !folder.isDirectory() || folder.isSymbolicLink() || folder.uid !== uid || (folder.mode & 0o077) !== 0
+    || folder.dev !== scratch.directoryDev || folder.ino !== scratch.directoryIno) throw new Error('Unsafe result directory');
+  const path = join(directory, 'result.json');
+  const before = await lstat(path);
+  if (!before.isFile() || before.isSymbolicLink() || before.uid !== uid || before.nlink !== 1
+    || (before.mode & 0o077) !== 0 || before.size > 65536) throw new Error('Unsafe result file');
+  // NONBLOCK prevents a raced FIFO replacement from hanging before fstat can
+  // reject it; NOFOLLOW prevents a raced final-component symlink read.
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  const bytes = Buffer.alloc(65537);
+  try {
+    const file = await handle.stat();
+    if (!file.isFile() || file.dev !== before.dev || file.ino !== before.ino || file.uid !== uid
+      || file.nlink !== 1 || (file.mode & 0o077) !== 0 || file.size > 65536) throw new Error('Unsafe result file');
+    let length = 0;
+    while (length < bytes.length) {
+      const read = await handle.read(bytes, length, bytes.length - length, length);
+      if (!read.bytesRead) break;
+      length += read.bytesRead;
+    }
+    const current = await lstat(path);
+    if (current.dev !== file.dev || current.ino !== file.ino || current.isSymbolicLink() || current.nlink !== 1
+      || (current.mode & 0o077) !== 0 || length > 65536) throw new Error('Result changed while reading');
+    return length === 0 ? undefined : JSON.parse(bytes.subarray(0, length).toString('utf8'));
+  } finally { bytes.fill(0); await handle.close(); }
 }
 
 /** Receipt names are display metadata; only generated names become filesystem paths. */
@@ -300,17 +357,17 @@ export async function consumeMobileDispatch(options: MobileRunnerOptions): Promi
     }
     // A crash can also land after the outcome was saved but before finally
     // removed plaintext. Check all replays before any terminal-state shortcut.
-    await cleanInterruptedAttachments(options, receipt, consumerId, receiptPath);
+    await cleanInterruptedScratch(options, receipt, consumerId, receiptPath);
+    await cleanInterruptedScratch(options, receipt, consumerId, receiptPath, 'result');
     if (receipt.state === 'launching') {
       throw new Error('Dispatch already launched or interrupted. Reconcile on the host before retrying; automatic re-execution is disabled.');
     }
+    await removeOwnedLegacyResult(options, dispatch.id);
     if (hasInlineAgentWorkSecrets(receipt)) {
       // Old receipts must pass the same policy before any replay or terminal-state shortcut.
       receipt = {version: 1, dispatchId: dispatch.id, workItemId: workItem.id, state: 'finished',
         exitCode: Number.isInteger(receipt.exitCode) ? receipt.exitCode : 0, resultRejected: true};
       await saveReceipt();
-      try { await rm(join(options.receiptDirectory, `${dispatch.id}.result.json`), {force: true}); }
-      catch { throw new Error('Rejected host result cleanup failed.'); }
     }
     if (receipt.state === 'reviewed' || receipt.state === 'failed') return receipt.state;
     if (receipt.state !== 'start_failed' && (!['finished', 'stopped'].includes(receipt.state) || !Number.isInteger(receipt.exitCode))) throw new Error('Invalid dispatch receipt.');
@@ -369,17 +426,36 @@ export async function consumeMobileDispatch(options: MobileRunnerOptions): Promi
     }
     const safeWorkItem = prepared.workItem;
     try {
-      if (receipt.attachmentScratch) {
-        receipt.attachmentScratch.phase = 'spawn_pending';
+      const resultDirectory = join(resolve(options.receiptDirectory), `${dispatch.id}.result`);
+      const resultPath = join(resultDirectory, 'result.json');
+      try {
+        const rootPath = await realpath(options.receiptDirectory);
+        const root = await lstat(rootPath);
+        if (process.getuid?.() !== root.uid || (root.mode & 0o022) !== 0) throw new Error('Unsafe result root');
+        await mkdir(resultDirectory, {mode: 0o700});
+        const folder = await lstat(resultDirectory);
+        receipt.resultScratch = {version: 1, consumerId, runnerId, workspaceId, ownerPid: process.pid,
+          phase: 'preparing', rootPath, rootDev: root.dev, rootIno: root.ino, directoryDev: folder.dev, directoryIno: folder.ino};
+        // Persist provenance before exposing any result bytes, even if setup dies.
         await saveReceipt();
+        const resultFile = await open(resultPath, 'wx', 0o600);
+        try { await resultFile.sync(); } finally { await resultFile.close(); }
+        await syncDirectory(resultDirectory);
+      } catch {
+        receipt.state = 'start_failed';
+        await saveReceipt();
+        if (receipt.resultScratch) await cleanInterruptedScratch(options, receipt, consumerId, receiptPath, 'result', true);
+        return acknowledgeStartFailure();
       }
-      const resultPath = join(options.receiptDirectory, `${dispatch.id}.result.json`);
+      for (const scratch of [receipt.attachmentScratch, receipt.resultScratch]) {
+        if (scratch) scratch.phase = 'spawn_pending';
+      }
+      await saveReceipt();
       const result = await runHostExecutable(options, safeWorkItem, resultPath, async (signal, childPid) => {
-        if (receipt.attachmentScratch) {
-          receipt.attachmentScratch.phase = 'spawned';
-          receipt.attachmentScratch.childPid = childPid;
-          await saveReceipt();
+        for (const scratch of [receipt.attachmentScratch, receipt.resultScratch]) {
+          if (scratch) { scratch.phase = 'spawned'; scratch.childPid = childPid; }
         }
+        await saveReceipt();
         signal.throwIfAborted();
         await api.request(`/api/v1/work-items/dispatches/${dispatch.id}/ack`,
           {workspaceId, claimToken: workItem.claimToken, state: 'acknowledged'}, `${dispatch.id}:ack`, signal);
@@ -433,16 +509,13 @@ export async function consumeMobileDispatch(options: MobileRunnerOptions): Promi
         receipt.state = result.stopControlId ? 'stopped' : 'finished';
         if (!result.stopControlId && result.exitCode === 0 && !result.exitSignal) {
           try {
-            if ((await stat(resultPath)).size > 65536) throw new Error('Result exceeds 64 KiB');
-            const authored = JSON.parse(await readFile(resultPath, 'utf8'));
-            if (typeof authored.summary !== 'string' || authored.summary.length > 16000 || !Array.isArray(authored.artifactRefs) || authored.artifactRefs.length > 50) {
-              throw new Error('Invalid host result');
-            }
-            if (hasInlineAgentWorkSecrets(authored)) {
-              receipt.resultRejected = true;
-              await rm(resultPath, {force: true});
-            } else {
-              receipt.result = {summary: authored.summary, artifactRefs: authored.artifactRefs};
+            const authored = await readPrivateResult(options, receipt) as {summary?: unknown; artifactRefs?: unknown} | undefined;
+            if (authored !== undefined) {
+              if (!authored || typeof authored.summary !== 'string' || authored.summary.length > 16000 || !Array.isArray(authored.artifactRefs) || authored.artifactRefs.length > 50) {
+                throw new Error('Invalid host result');
+              }
+              if (hasInlineAgentWorkSecrets(authored)) receipt.resultRejected = true;
+              else receipt.result = {summary: authored.summary, artifactRefs: authored.artifactRefs};
             }
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Host result file is invalid. Reconcile on the host before submitting it.');
@@ -450,6 +523,9 @@ export async function consumeMobileDispatch(options: MobileRunnerOptions): Promi
         }
       }
       await saveReceipt();
+      if (!await cleanInterruptedScratch(options, receipt, consumerId, receiptPath, 'result', true)) {
+        throw new Error('Host result cleanup requires reconciliation.');
+      }
     } finally { await prepared.cleanup(); }
   }
   if (receipt.state === 'start_failed') {

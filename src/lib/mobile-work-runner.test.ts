@@ -1,6 +1,6 @@
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {mkdtemp, open, readFile, rm, writeFile, stat, mkdir, symlink, lstat, realpath, rename} from 'node:fs/promises';
+import {mkdtemp, open, readFile, rm, writeFile, stat, mkdir, symlink, lstat, realpath, rename, chmod} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {afterEach, describe, expect, it, vi} from 'vitest';
@@ -103,7 +103,150 @@ async function interruptedAttachmentFixture() {
   return {...f, receipt, save, scratchDirectory: directory, localPath};
 }
 
+async function interruptedResultFixture() {
+  const f = await interruptedAttachmentFixture();
+  const directory = join(f.directory, `${dispatchId}.result`);
+  await rename(f.scratchDirectory, directory);
+  const path = join(directory, 'result.json');
+  await rename(join(directory, `0-${attachmentId}`), path);
+  await chmod(path, 0o600);
+  await writeFile(path, JSON.stringify({summary: 'Transient result sentinel', artifactRefs: []}));
+  Object.assign(f.receipt, {resultScratch: f.receipt.attachmentScratch});
+  Reflect.deleteProperty(f.receipt, 'attachmentScratch');
+  await f.save();
+  return {...f, resultDirectory: directory, resultPath: path};
+}
+
 describe('mobile host runner', () => {
+  it('precreates a private result inside a private dispatch directory under an unchanged 0755 operator root', async () => {
+    const f = await fixture();
+    await chmod(f.directory, 0o755);
+    const previousMask = process.umask(0o022);
+    f.options.args = ['-e', `process.stdin.resume();process.stdin.on('end',()=>{const fs=require('fs'),p=process.env.SIFT_WORK_RESULT_PATH;
+      const fileMode=fs.existsSync(p)?fs.statSync(p).mode&511:null, directoryMode=fs.statSync(require('path').dirname(p)).mode&511;
+      fs.writeFileSync(p,JSON.stringify({summary:'Private result',artifactRefs:[{fileMode,directoryMode}]}));});`];
+    try {
+      expect(await consumeMobileDispatch(f.options)).toBe('reviewed');
+      expect(f.calls.find(call => call.path.endsWith('/review'))?.body.artifactRefs[0]).toEqual({fileMode: 0o600, directoryMode: 0o700});
+      expect((await stat(f.directory)).mode & 0o777).toBe(0o755);
+      expect((await stat(join(f.directory, `${dispatchId}.json`))).mode & 0o777).toBe(0o600);
+      await expect(lstat(join(f.directory, `${dispatchId}.result`))).rejects.toMatchObject({code: 'ENOENT'});
+      await expect(lstat(join(f.directory, `${dispatchId}.result.json`))).rejects.toMatchObject({code: 'ENOENT'});
+    } finally { process.umask(previousMask); }
+  });
+
+  it.each([0, 9, 'SIGTERM'] as const)('removes transient results after a durable outcome for exit %s, including lost response replay', async exit => {
+    const f = await fixture(undefined, exit);
+    f.loseReview();
+    if (exit === 0) await expect(consumeMobileDispatch(f.options)).rejects.toThrow('Simulated lost response');
+    else expect(await consumeMobileDispatch(f.options)).toBe('failed');
+    const receipt = JSON.parse(await readFile(join(f.directory, `${dispatchId}.json`), 'utf8'));
+    expect(receipt.state).toBe(exit === 0 ? 'finished' : 'failed');
+    await expect(lstat(join(f.directory, `${dispatchId}.result`))).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(lstat(join(f.directory, `${dispatchId}.result.json`))).rejects.toMatchObject({code: 'ENOENT'});
+    const starts = vi.mocked(spawn).mock.calls.length;
+    f.restore();
+    expect(await consumeMobileDispatch(f.options)).toBe(exit === 0 ? 'reviewed' : 'failed');
+    expect(vi.mocked(spawn).mock.calls).toHaveLength(starts);
+  });
+
+  it.each(['symlink', 'hardlink', 'fifo', 'relaxed-mode'] as const)('rejects unsafe result replacement by %s without persisting or exposing its contents', async replacement => {
+    const f = await fixture();
+    const outside = join(f.directory, 'outside.json');
+    await writeFile(outside, JSON.stringify({summary: 'Untrusted replacement sentinel', artifactRefs: []}), {mode: 0o600});
+    f.options.args = ['-e', `process.stdin.resume();process.stdin.on('end',()=>{const fs=require('fs'),p=process.env.SIFT_WORK_RESULT_PATH;
+      fs.unlinkSync(p);${replacement === 'symlink' ? `fs.symlinkSync(${JSON.stringify(outside)},p);`
+        : replacement === 'hardlink' ? `fs.linkSync(${JSON.stringify(outside)},p);`
+        : replacement === 'fifo' ? `require('child_process').execFileSync('mkfifo',[p]);`
+        : `fs.writeFileSync(p+'.tmp',fs.readFileSync(${JSON.stringify(outside)}),{mode:0o644});fs.chmodSync(p+'.tmp',0o644);fs.renameSync(p+'.tmp',p);`}});`];
+    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('Host result file is invalid');
+    expect(f.calls.some(call => call.path.endsWith('/review'))).toBe(false);
+    expect(await readFile(join(f.directory, `${dispatchId}.json`), 'utf8')).not.toContain('Untrusted replacement sentinel');
+    expect(await readFile(outside, 'utf8')).toContain('Untrusted replacement sentinel');
+    expect((await lstat(join(f.directory, `${dispatchId}.result`))).mode & 0o777).toBe(0o700);
+  });
+
+  it('does not replace or delete an existing result-directory symlink', async () => {
+    const f = await fixture();
+    const outside = join(f.directory, 'outside');
+    await mkdir(outside);
+    await writeFile(join(outside, 'retain'), 'retain');
+    await symlink(outside, join(f.directory, `${dispatchId}.result`));
+    const starts = vi.mocked(spawn).mock.calls.length;
+    expect(await consumeMobileDispatch(f.options)).toBe('failed');
+    expect(vi.mocked(spawn).mock.calls).toHaveLength(starts);
+    expect(await readFile(join(outside, 'retain'), 'utf8')).toBe('retain');
+    expect((await lstat(join(f.directory, `${dispatchId}.result`))).isSymbolicLink()).toBe(true);
+  });
+
+  it.each(['launching', 'finished', 'reviewed', 'failed', 'stopped', 'start_failed'])('reconciles private result retention on %s replay without reading transient bytes or respawning', async state => {
+    const f = await interruptedResultFixture();
+    Object.assign(f.receipt, {state, exitCode: 0, ...(state === 'launching' ? {} : {result: {summary: 'Durable result', artifactRefs: []}}),
+      ...(state === 'stopped' ? {stopControlId: controlId} : {})});
+    await f.save();
+    const starts = vi.mocked(spawn).mock.calls.length;
+    if (state === 'launching') await expect(consumeMobileDispatch(f.options)).rejects.toThrow('automatic re-execution is disabled');
+    else expect(await consumeMobileDispatch(f.options)).toBe(['failed', 'start_failed'].includes(state) ? 'failed' : state === 'stopped' ? 'stopped' : 'reviewed');
+    if (state === 'launching') {
+      expect(await readFile(f.resultPath, 'utf8')).toContain('Transient result sentinel');
+      expect((await stat(f.resultDirectory)).mode & 0o777).toBe(0o700);
+    } else await expect(lstat(f.resultDirectory)).rejects.toMatchObject({code: 'ENOENT'});
+    expect(vi.mocked(spawn).mock.calls).toHaveLength(starts);
+    expect(JSON.stringify(f.calls)).not.toContain('Transient result sentinel');
+    if (state === 'finished') expect(f.calls.find(call => call.path.endsWith('/review'))?.body.resultSummary).toBe('Durable result');
+  });
+
+  it('preserves private transient results while the interrupted worker may still be alive', async () => {
+    const f = await interruptedResultFixture();
+    const record = f.receipt as unknown as {resultScratch: {childPid: number}};
+    record.resultScratch.childPid = process.pid;
+    await f.save();
+    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('automatic re-execution is disabled');
+    expect(await readFile(f.resultPath, 'utf8')).toContain('Transient result sentinel');
+    expect((await stat(f.resultDirectory)).mode & 0o777).toBe(0o700);
+  });
+
+  it('preserves the only authored result when the child exits but its durable outcome cannot be saved', async () => {
+    const f = await fixture();
+    const originalOpen = vi.mocked(open).getMockImplementation()!;
+    vi.mocked(open).mockImplementation(async (path, flags, mode) => {
+      const handle = await originalOpen(path, flags, mode);
+      if (String(path).endsWith(`${dispatchId}.json.${process.pid}.tmp`)) {
+        const write = handle.writeFile.bind(handle);
+        handle.writeFile = async (data, options) => {
+          if (typeof data === 'string' && JSON.parse(data).state === 'finished') throw new Error('Synthetic durable outcome failure');
+          return write(data, options);
+        };
+      }
+      return handle;
+    });
+    try {
+      await expect(consumeMobileDispatch(f.options)).rejects.toThrow('Synthetic durable outcome failure');
+    } finally { vi.mocked(open).mockImplementation(originalOpen); }
+    const resultPath = join(f.directory, `${dispatchId}.result`, 'result.json');
+    expect(JSON.parse(await readFile(resultPath, 'utf8')).summary).toBe('Synthetic deliverable');
+    expect((await stat(resultPath)).mode & 0o777).toBe(0o600);
+    const receipt = JSON.parse(await readFile(join(f.directory, `${dispatchId}.json`), 'utf8'));
+    expect(receipt.state).toBe('launching');
+    expect(receipt.result).toBeUndefined();
+    const starts = vi.mocked(spawn).mock.calls.length;
+    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('automatic re-execution is disabled');
+    expect(vi.mocked(spawn).mock.calls).toHaveLength(starts);
+    expect(JSON.parse(await readFile(resultPath, 'utf8')).summary).toBe('Synthetic deliverable');
+    expect(f.calls.some(call => call.path.endsWith('/review'))).toBe(false);
+  });
+
+  it('preserves an unowned legacy result symlink when replaying a durable receipt', async () => {
+    const f = await fixture();
+    const outside = join(f.directory, 'outside.json');
+    await writeFile(outside, 'preserve external bytes');
+    const legacyPath = join(f.directory, `${dispatchId}.result.json`);
+    await symlink(outside, legacyPath);
+    await writeFile(join(f.directory, `${dispatchId}.json`), JSON.stringify({version: 1, dispatchId, workItemId, state: 'reviewed', exitCode: 0}));
+    expect(await consumeMobileDispatch(f.options)).toBe('reviewed');
+    expect((await lstat(legacyPath)).isSymbolicLink()).toBe(true);
+    expect(await readFile(outside, 'utf8')).toBe('preserve external bytes');
+  });
   it.each([false, true])('allows a 45-second attachment transfer while renewing preparation leases (explicit attachment override: %s)', async explicitOverride => {
     const f = await fixture();
     attachToFixture(f);
@@ -715,6 +858,9 @@ describe('mobile host runner', () => {
     {summary: 'Finished', artifactRefs: [{metadata: {apiKey: 'synthetic-output-sentinel'}}]},
     {summary: 'Finished', artifactRefs: [{url: 'https://example.test?token=synthetic-output-sentinel'}]},
     {summary: 'Finished', artifactRefs: [{'Bearer synthetic-output-sentinel': 'metadata'}]},
+    {summary: 'Finished', artifactRefs: [{token: 'synthetic-output-sentinel'}]},
+    {summary: 'Finished', artifactRefs: [{credential: 'synthetic-output-sentinel'}]},
+    {summary: 'Finished', artifactRefs: [{credentials: 'synthetic-output-sentinel'}]},
   ])('rejects secret-bearing worker output before durable receipts and review', async authored => {
     const f = await fixture();
     f.options.args = ['-e', `process.stdin.resume();process.stdin.on('end',()=>require('fs').writeFileSync(process.env.SIFT_WORK_RESULT_PATH,${JSON.stringify(JSON.stringify(authored))}));`];
@@ -727,6 +873,7 @@ describe('mobile host runner', () => {
     expect(JSON.parse(persisted)).toMatchObject({state: 'failed', resultRejected: true});
     expect(JSON.parse(persisted).result).toBeUndefined();
     await expect(stat(join(f.directory, `${dispatchId}.result.json`))).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(stat(join(f.directory, `${dispatchId}.result`))).rejects.toMatchObject({code: 'ENOENT'});
   });
 
   it.each(['finished', 'reviewed'])('guards and scrubs secret-bearing legacy %s receipts before any replay', async state => {
