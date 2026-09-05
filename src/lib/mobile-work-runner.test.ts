@@ -884,6 +884,12 @@ describe('mobile host runner', () => {
 
   it.each([
     ...['ghp_', 'github_pat_', 'gho_', 'ghu_', 'ghs_', 'ghr_'].map(prefix => ({label: prefix, value: `${prefix}syntheticCredentialFixture1234567890`})),
+    ...['xoxb-', 'xoxa-', 'xoxp-', 'xoxr-', 'xoxs-'].map(prefix => ({label: prefix, value: prefix + 'a'.repeat(4)})),
+    {label: 'Google', value: 'AIza' + 'a'.repeat(4)},
+    {label: 'AWS temporary access ID', value: 'ASIA' + 'A'.repeat(8)},
+    {label: 'Anthropic', value: 'sk-ant-' + 'a'.repeat(8)},
+    {label: 'Sift PAT', value: 'sift_pat_' + 'a'.repeat(8)},
+    {label: 'EXF PAT', value: 'exf_pat_' + 'a'.repeat(8)},
     {label: 'sk', value: 'sk-' + 'a'.repeat(16)},
     {label: 'sk-proj', value: 'sk-proj-' + 'a'.repeat(16)},
     {label: 'AWS access ID', value: 'AKIA' + 'A'.repeat(16)},
