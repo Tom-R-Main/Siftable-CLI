@@ -169,6 +169,7 @@ describe('environment lease supervisor', () => {
       import {materializeEnvironmentLeaseArtifact} from ${JSON.stringify(environmentLeaseUrl)};
       import {environmentBundleMemberSetDigest} from ${JSON.stringify(environmentBundleUrl)};
       import {startEnvironmentLeaseSupervisor} from ${JSON.stringify(supervisorUrl)};
+      const pair = generateKeyPairSync('rsa', {modulusLength: 3072});
       process.once('message', async config => {
         const members = [{name: 'SYNTHETIC_TOKEN', entryId: randomUUID(), field: 'value'}];
         const contract = {
@@ -177,7 +178,6 @@ describe('environment lease supervisor', () => {
           destinationPath: path.join(config.checkoutRoot, '.env'), relativeDestination: '.env',
           mode: '0400', members, memberSetDigest: environmentBundleMemberSetDigest(members),
         };
-        const pair = generateKeyPairSync('rsa', {modulusLength: 3072});
         let supervisor;
         const result = await materializeEnvironmentLeaseArtifact({
           contract, values: [Buffer.from('manager-kill-synthetic-value')],
@@ -200,6 +200,7 @@ describe('environment lease supervisor', () => {
         process.send({type: 'ready', artifactPath: result.artifactPath});
         setInterval(() => undefined, 1000);
       });
+      process.send({type: 'initialized'});
     `, {mode: 0o600});
     const requests: string[] = [];
     const server = createServer((request, response) => {
@@ -218,8 +219,17 @@ describe('environment lease supervisor', () => {
     if (!address || typeof address === 'string') throw new Error('test server did not bind');
     const manager = fork(managerPath, [], {stdio: ['ignore', 'ignore', 'ignore', 'ipc']});
     const leaseId = randomUUID();
-    const expiresAt = new Date(Date.now() + 1_200).toISOString();
     try {
+      // Imports and key generation must finish before this test starts its short lease.
+      await new Promise<void>((resolve, reject) => {
+        manager.once('message', message => {
+          if ((message as {type?: string}).type === 'initialized') resolve();
+          else reject(new Error('manager sent an unexpected initialization message'));
+        });
+        manager.once('error', reject);
+        manager.once('exit', (code, signal) => reject(new Error(`manager exited before initialization: ${code ?? signal}`)));
+      });
+      const expiresAt = new Date(Date.now() + 1_200).toISOString();
       const ready = new Promise<{artifactPath: string}>((resolve, reject) => {
         manager.once('message', message => resolve(message as {artifactPath: string}));
         manager.once('error', reject);
