@@ -31,8 +31,9 @@ interface Receipt {
   version: 1;
   dispatchId: string;
   workItemId: string;
-  state: 'launching' | 'finished' | 'reviewed' | 'stopped';
+  state: 'launching' | 'finished' | 'reviewed' | 'failed' | 'stopped';
   exitCode?: number;
+  exitSignal?: NodeJS.Signals;
   stopControlId?: string;
   result?: {summary: string; artifactRefs: unknown[]};
 }
@@ -50,7 +51,7 @@ async function syncDirectory(path: string): Promise<void> {
 }
 
 /** Host configuration supplies the executable and directory. Phone input never becomes shell code. */
-export async function consumeMobileDispatch(options: MobileRunnerOptions): Promise<'idle' | 'reviewed' | 'stopped'> {
+export async function consumeMobileDispatch(options: MobileRunnerOptions): Promise<'idle' | 'reviewed' | 'failed' | 'stopped'> {
   const {api, runnerId, workspaceId} = options;
   if (process.platform === 'win32') throw new Error('Mobile host execution requires POSIX process-group termination. Windows is not supported.');
   if (!UUID.test(runnerId)) throw new Error('Runner ID must be a UUID.');
@@ -87,7 +88,7 @@ export async function consumeMobileDispatch(options: MobileRunnerOptions): Promi
     if (receipt.state === 'launching') {
       throw new Error('Dispatch already launched or interrupted. Reconcile on the host before retrying; automatic re-execution is disabled.');
     }
-    if (receipt.state === 'reviewed') return 'reviewed';
+    if (receipt.state === 'reviewed' || receipt.state === 'failed') return receipt.state;
     if (!['finished', 'stopped'].includes(receipt.state) || !Number.isInteger(receipt.exitCode)) throw new Error('Invalid dispatch receipt.');
   }
   const saveReceipt = async () => {
@@ -147,9 +148,10 @@ export async function consumeMobileDispatch(options: MobileRunnerOptions): Promi
       return undefined;
     });
     receipt.exitCode = result.exitCode;
+    receipt.exitSignal = result.exitSignal;
     receipt.stopControlId = result.stopControlId;
     receipt.state = result.stopControlId ? 'stopped' : 'finished';
-    if (!result.stopControlId) {
+    if (!result.stopControlId && result.exitCode === 0 && !result.exitSignal) {
       try {
         if ((await stat(resultPath)).size > 65536) throw new Error('Result exceeds 64 KiB');
         const authored = JSON.parse(await readFile(resultPath, 'utf8'));
@@ -172,6 +174,21 @@ export async function consumeMobileDispatch(options: MobileRunnerOptions): Promi
   }
   // Revalidate the worker lease immediately before submitting the result.
   await heartbeat();
+  if (receipt.exitCode !== 0 || receipt.exitSignal) {
+    const failureReason = receipt.exitSignal
+      ? `Host worker terminated by ${receipt.exitSignal}.`
+      : `Host worker exited with code ${receipt.exitCode}.`;
+    await api.request(`/api/v1/work-items/${workItem.id}/fail`, {
+      ...claimBody,
+      failureReason,
+      resultSummary: failureReason,
+      artifactRefs: [{type: 'worker_run', dispatchId: dispatch.id, exitCode: receipt.exitCode,
+        ...(receipt.exitSignal ? {signal: receipt.exitSignal} : {})}],
+    }, `${dispatch.id}:fail`);
+    receipt.state = 'failed';
+    await saveReceipt();
+    return 'failed';
+  }
   await api.request(`/api/v1/work-items/${workItem.id}/review`, {
     ...claimBody,
     resultSummary: receipt.result?.summary ?? `Host worker finished with exit code ${receipt.exitCode}. No deliverable was supplied.`,
@@ -189,7 +206,7 @@ async function runHostExecutable(
   resultPath: string,
   acknowledge: (signal: AbortSignal) => Promise<void>,
   heartbeat: (signal: AbortSignal) => Promise<string | undefined>,
-): Promise<{exitCode: number; stopControlId?: string}> {
+): Promise<{exitCode: number; exitSignal?: NodeJS.Signals; stopControlId?: string}> {
   return new Promise((resolve, reject) => {
     const lifetime = new AbortController();
     const child = spawn(options.executable, options.args, {
@@ -258,7 +275,7 @@ async function runHostExecutable(
     });
     child.stdin.on('error', () => { /* A process may finish without reading its input. */ });
     child.once('error', () => { failure = new Error('Configured host executable could not start.'); });
-    child.once('close', async (code) => {
+    child.once('close', async (code, signal) => {
       lifetime.abort();
       await pending;
       if (timer) clearInterval(timer);
@@ -266,7 +283,7 @@ async function runHostExecutable(
       if (killTimer) clearTimeout(killTimer);
       if (failure) reject(failure);
       else if (!acknowledged) reject(new Error('Host exited before launch acknowledgement. Reconcile before retrying.'));
-      else resolve({exitCode: code ?? 1, stopControlId});
+      else resolve({exitCode: code ?? 1, exitSignal: signal ?? undefined, stopControlId});
     });
   });
 }
