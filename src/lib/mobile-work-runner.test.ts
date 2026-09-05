@@ -1,5 +1,6 @@
 import {spawn} from 'node:child_process';
-import {mkdtemp, open, readFile, rm, writeFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {mkdtemp, open, readFile, rm, writeFile, stat, mkdir, symlink, lstat} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {afterEach, describe, expect, it, vi} from 'vitest';
@@ -46,6 +47,27 @@ async function fixture(control?: 'stop' | 'checkpoint', termination?: number | '
       args: ['-e', `let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{const work=JSON.parse(input).workItem;if(work.claimToken)process.exit(9);require('fs').appendFileSync(process.argv[1],'once\\n');require('fs').writeFileSync(process.env.SIFT_WORK_RESULT_PATH,JSON.stringify({summary:'Synthetic deliverable',artifactRefs:[]}));${typeof termination === 'number' ? `process.exit(${termination})` : termination ? `process.kill(process.pid,'${termination}')` : control ? 'setTimeout(()=>process.exit(0),500)' : ''}});`, marker],
       cwd: directory, receiptDirectory: directory, heartbeatIntervalMs: 30,
     },
+  };
+}
+
+const attachmentId = '55555555-5555-4555-8555-555555555555';
+const otherAttachmentId = '66666666-6666-4666-8666-666666666666';
+const attachmentBytes = Buffer.from('Attached brief: count three tasks.\n\u0000binary-tail', 'utf8');
+function attachmentContent(receiptId = attachmentId) {
+  return {receiptId, byteLength: attachmentBytes.length,
+    sha256: createHash('sha256').update(attachmentBytes).digest('hex'), contentBase64: attachmentBytes.toString('base64')};
+}
+function attachToFixture(
+  f: Awaited<ReturnType<typeof fixture>>,
+  attachments: unknown = [{receiptId: attachmentId, name: '../outside/brief.txt'}],
+  content: (path: string) => unknown = () => attachmentContent(),
+) {
+  const request = f.options.api.request.bind(f.options.api);
+  f.options.api.request = async <T>(path: string, body: unknown, key?: string, signal?: AbortSignal): Promise<T> => {
+    const response = await request<Record<string, any>>(path, body, key, signal);
+    if (path.endsWith('/consume')) response.workItem.inputContext = {attachments};
+    if (path.includes('/attachments/')) return content(path) as T;
+    return response as T;
   };
 }
 
@@ -227,6 +249,115 @@ describe('mobile host runner', () => {
     expect(failures.map(call => call.key)).toEqual([`${dispatchId}:fail`, `${dispatchId}:fail`]);
     expect(failures[0].body).toEqual(failures[1].body);
     expect(f.calls.some(call => call.path.endsWith('/review'))).toBe(false);
+  });
+
+  it('delivers byte-exact private files to an actual worker and cleans them before result retry', async () => {
+    const f = await fixture();
+    attachToFixture(f);
+    f.options.args = ['-e', `let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{
+      const fs=require('fs'),path=require('path'),work=JSON.parse(input).workItem,a=work.inputContext.attachments[0];
+      if(work.claimToken||a.name!=='../outside/brief.txt')process.exit(9);
+      if((fs.statSync(a.localPath).mode&511)!==256||(fs.statSync(path.dirname(a.localPath)).mode&511)!==448)process.exit(8);
+      const bytes=fs.readFileSync(a.localPath);
+      fs.appendFileSync(process.argv[1],a.localPath+'\\n');
+      fs.writeFileSync(process.env.SIFT_WORK_RESULT_PATH,JSON.stringify({summary:'Brief bytes: '+bytes.toString('hex'),artifactRefs:[]}));
+    });`, f.marker];
+    f.loseReview();
+    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('lost response');
+    const localPath = (await readFile(f.marker, 'utf8')).trim();
+    expect(localPath).toBe(join(f.directory, `${dispatchId}.attachments`, `0-${attachmentId}`));
+    await expect(stat(localPath)).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(stat(join(f.directory, `${dispatchId}.attachments`))).rejects.toMatchObject({code: 'ENOENT'});
+    expect(f.calls.find(call => call.path.endsWith('/review'))?.body.resultSummary).toBe(`Brief bytes: ${attachmentBytes.toString('hex')}`);
+    f.restore();
+    expect(await consumeMobileDispatch(f.options)).toBe('reviewed');
+    expect(f.calls.filter(call => call.path.includes('/attachments/'))).toHaveLength(1);
+    expect((await readFile(f.marker, 'utf8')).trim().split('\n')).toHaveLength(1);
+  });
+
+  it.each(['unavailable', 'wrong receipt', 'hash mismatch', 'length mismatch', 'noncanonical base64', 'oversized', 'oversized encoded body'])('fails closed before spawn for %s attachment content', async failure => {
+    const f = await fixture();
+    attachToFixture(f, undefined, () => {
+      const content = attachmentContent();
+      if (failure === 'unavailable') throw new Error('private provider error must not reach work records');
+      if (failure === 'wrong receipt') content.receiptId = otherAttachmentId;
+      if (failure === 'hash mismatch') content.sha256 = '0'.repeat(64);
+      if (failure === 'length mismatch') content.byteLength += 1;
+      if (failure === 'noncanonical base64') content.contentBase64 += '\n';
+      if (failure === 'oversized') content.byteLength = 20 * 1024 * 1024 + 1;
+      if (failure === 'oversized encoded body') content.contentBase64 = 'a'.repeat(Math.ceil(20 * 1024 * 1024 / 3) * 4 + 1);
+      return content;
+    });
+    const starts = vi.mocked(spawn).mock.calls.length;
+    expect(await consumeMobileDispatch(f.options)).toBe('failed');
+    expect(vi.mocked(spawn).mock.calls).toHaveLength(starts);
+    expect(f.calls.find(call => call.path.endsWith('/ack'))?.body.state).toBe('failed');
+    expect(f.calls.some(call => call.path.endsWith('/review'))).toBe(false);
+    expect(JSON.stringify(f.calls)).not.toContain('private provider error');
+    await expect(stat(join(f.directory, `${dispatchId}.attachments`))).rejects.toMatchObject({code: 'ENOENT'});
+    expect(JSON.parse(await readFile(join(f.directory, `${dispatchId}.json`), 'utf8')).state).toBe('failed');
+  });
+
+  it('cleans earlier attachment files if a later receipt is unavailable', async () => {
+    const f = await fixture();
+    attachToFixture(f, [{receiptId: attachmentId, name: 'one'}, {receiptId: otherAttachmentId, name: 'two'}], path => {
+      if (path.endsWith(otherAttachmentId)) throw new Error('unavailable');
+      return attachmentContent();
+    });
+    expect(await consumeMobileDispatch(f.options)).toBe('failed');
+    expect(f.calls.filter(call => call.path.includes('/attachments/'))).toHaveLength(2);
+    await expect(stat(join(f.directory, `${dispatchId}.attachments`))).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(readFile(f.marker, 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+  });
+
+  it.each(['spawn failure', 'nonzero exit', 'stop'])('cleans materialized files after %s', async termination => {
+    const f = await fixture(termination === 'stop' ? 'stop' : undefined, termination === 'nonzero exit' ? 17 : undefined);
+    attachToFixture(f);
+    if (termination === 'spawn failure') f.options.executable = join(f.directory, 'unavailable');
+    expect(await consumeMobileDispatch(f.options)).toBe(termination === 'stop' ? 'stopped' : 'failed');
+    await expect(stat(join(f.directory, `${dispatchId}.attachments`))).rejects.toMatchObject({code: 'ENOENT'});
+  });
+
+  it('does not download or spawn again when retrying a failed preparation acknowledgement', async () => {
+    const f = await fixture();
+    attachToFixture(f, undefined, () => {throw new Error('unavailable');});
+    const request = f.options.api.request.bind(f.options.api);
+    let lost = true;
+    f.options.api.request = async <T>(path: string, body: unknown, key?: string, signal?: AbortSignal): Promise<T> => {
+      const response = await request<T>(path, body, key, signal);
+      if (path.endsWith('/ack') && lost) throw new Error('Lost acknowledgement');
+      return response;
+    };
+    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('Lost acknowledgement');
+    expect(JSON.parse(await readFile(join(f.directory, `${dispatchId}.json`), 'utf8')).state).toBe('start_failed');
+    lost = false;
+    expect(await consumeMobileDispatch(f.options)).toBe('failed');
+    expect(f.calls.filter(call => call.path.includes('/attachments/'))).toHaveLength(1);
+    expect(f.calls.filter(call => call.path.endsWith('/ack')).map(call => call.key)).toEqual([`${dispatchId}:start-failed`, `${dispatchId}:start-failed`]);
+    await expect(readFile(f.marker, 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+  });
+
+  it('rejects more than 20 attachment receipts before retrieval or spawn', async () => {
+    const f = await fixture();
+    attachToFixture(f, Array.from({length: 21}, () => ({receiptId: attachmentId, name: 'brief'})));
+    expect(await consumeMobileDispatch(f.options)).toBe('failed');
+    expect(f.calls.some(call => call.path.includes('/attachments/'))).toBe(false);
+    await expect(readFile(f.marker, 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+  });
+
+  it('does not follow an existing attachment-directory symlink or alter its target', async () => {
+    const f = await fixture();
+    attachToFixture(f);
+    const outside = join(f.directory, 'outside');
+    await mkdir(outside);
+    await writeFile(join(outside, 'retain'), 'keep');
+    const directory = join(f.directory, `${dispatchId}.attachments`);
+    await symlink(outside, directory);
+    expect(await consumeMobileDispatch(f.options)).toBe('failed');
+    expect((await lstat(directory)).isSymbolicLink()).toBe(true);
+    expect(await readFile(join(outside, 'retain'), 'utf8')).toBe('keep');
+    expect(f.calls.some(call => call.path.includes('/attachments/'))).toBe(false);
+    await expect(readFile(f.marker, 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
   });
 
 });
