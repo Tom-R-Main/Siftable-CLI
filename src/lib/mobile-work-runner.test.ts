@@ -1,8 +1,13 @@
-import {mkdtemp, readFile, rm} from 'node:fs/promises';
+import {mkdtemp, open, readFile, rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {afterEach, describe, expect, it} from 'vitest';
+import {afterEach, describe, expect, it, vi} from 'vitest';
 import {consumeMobileDispatch, type MobileRunnerApi} from './mobile-work-runner';
+
+vi.mock('node:fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {...actual, open: vi.fn(actual.open)};
+});
 
 const runnerId = '11111111-1111-4111-8111-111111111111';
 const dispatchId = '22222222-2222-4222-8222-222222222222';
@@ -112,6 +117,20 @@ describe('mobile host runner', () => {
       requestTimeoutMs: 1000,
     })).rejects.toThrow();
     expect(f.calls.some(call => call.path.endsWith('/review'))).toBe(false);
+  });
+
+  it('reports failed consistently when a checkpoint marker cannot be persisted', async () => {
+    const f = await fixture('checkpoint');
+    let checkpoints = 0;
+    expect(await consumeMobileDispatch({...f.options, checkpoint: async () => {
+      checkpoints += 1;
+      vi.mocked(open).mockRejectedValueOnce(Object.assign(new Error('storage unavailable'), {code: 'EACCES'}));
+    }})).toBe('reviewed');
+    expect(checkpoints).toBe(1);
+    const acknowledgements = f.calls.filter(call => call.path.endsWith('/controls/ack'));
+    expect(acknowledgements.length).toBeGreaterThan(1);
+    expect(acknowledgements.every(call => call.body.state === 'failed')).toBe(true);
+    expect(JSON.parse(await readFile(join(f.directory, `${controlId}.control.json`), 'utf8')).state).toBe('failed');
   });
 
 });

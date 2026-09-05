@@ -1,9 +1,9 @@
 import {Flags} from '@oclif/core';
 import {spawn} from 'node:child_process';
 import {resolve} from 'node:path';
-import {setTimeout as delay} from 'node:timers/promises';
 import {BaseCommand} from '../../lib/base-command.js';
 import {consumeMobileDispatch} from '../../lib/mobile-work-runner.js';
+import {listenForMobileWork} from '../../lib/mobile-work-listener.js';
 import {resolveWorkspaceTenantId} from '../../lib/workspace-context.js';
 
 export default class WorkerListen extends BaseCommand {
@@ -30,31 +30,34 @@ export default class WorkerListen extends BaseCommand {
     const refreshRunner = (signal?: AbortSignal) => api.request('/api/v1/work-items/runners/heartbeat', {
         workspaceId, runnerId: flags.runner, displayName: flags.name, assignedAliasId: flags['agent-alias-id'],
       }, undefined, signal);
-    do {
-      await refreshRunner();
-      const state = await consumeMobileDispatch({
-        api, runnerId: flags.runner, workspaceId,
-        executable: flags.executable, args: flags.arg, cwd: resolve(flags.cwd),
-        receiptDirectory: resolve(flags.receipts),
-        refreshRunner,
-        checkpoint: flags['checkpoint-executable'] ? (workItem, signal) => new Promise<void>((resolveCheckpoint, rejectCheckpoint) => {
-          signal.throwIfAborted();
-          const child = spawn(flags['checkpoint-executable']!, flags['checkpoint-arg'], {
-            cwd: resolve(flags.cwd), shell: false, stdio: 'ignore', detached: true,
-            env: {PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, SIFT_WORK_ITEM_ID: String(workItem.id)},
-          });
-          const stop = () => { if (child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} } };
-          const timeout = setTimeout(stop, 8000);
-          signal.addEventListener('abort', stop, {once: true});
-          child.once('error', () => rejectCheckpoint(new Error('Host checkpoint failed.')));
-          child.once('close', code => {
-            clearTimeout(timeout); signal.removeEventListener('abort', stop); stop();
-            return code === 0 && !signal.aborted ? resolveCheckpoint() : rejectCheckpoint(new Error('Host checkpoint failed.'));
-          });
-        }) : undefined,
-      });
-      if (flags.once) return {state};
-      await delay(5_000);
-    } while (true);
+    return listenForMobileWork({
+      once: flags.once,
+      onRetry: delayMs => this.warn(`Runner connection interrupted; retrying in ${delayMs / 1000}s.`),
+      poll: async () => {
+        await refreshRunner();
+        const state = await consumeMobileDispatch({
+          api, runnerId: flags.runner, workspaceId,
+          executable: flags.executable, args: flags.arg, cwd: resolve(flags.cwd),
+          receiptDirectory: resolve(flags.receipts),
+          refreshRunner,
+          checkpoint: flags['checkpoint-executable'] ? (workItem, signal) => new Promise<void>((resolveCheckpoint, rejectCheckpoint) => {
+            signal.throwIfAborted();
+            const child = spawn(flags['checkpoint-executable']!, flags['checkpoint-arg'], {
+              cwd: resolve(flags.cwd), shell: false, stdio: 'ignore', detached: true,
+              env: {PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, SIFT_WORK_ITEM_ID: String(workItem.id)},
+            });
+            const stop = () => { if (child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} } };
+            const timeout = setTimeout(stop, 8000);
+            signal.addEventListener('abort', stop, {once: true});
+            child.once('error', () => rejectCheckpoint(new Error('Host checkpoint failed.')));
+            child.once('close', code => {
+              clearTimeout(timeout); signal.removeEventListener('abort', stop); stop();
+              return code === 0 && !signal.aborted ? resolveCheckpoint() : rejectCheckpoint(new Error('Host checkpoint failed.'));
+            });
+          }) : undefined,
+        });
+        return {state};
+      },
+    });
   }
 }

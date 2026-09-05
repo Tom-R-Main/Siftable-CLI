@@ -131,8 +131,8 @@ export async function consumeMobileDispatch(options: MobileRunnerOptions): Promi
           if (options.checkpoint) {
             await options.checkpoint(safeWorkItem, signal);
             signal.throwIfAborted();
+            await durableWrite(controlPath, {state: 'acknowledged'});
             state = 'acknowledged';
-            await durableWrite(controlPath, {state});
           }
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
