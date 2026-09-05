@@ -861,6 +861,12 @@ describe('mobile host runner', () => {
     {summary: 'Finished', artifactRefs: [{token: 'synthetic-output-sentinel'}]},
     {summary: 'Finished', artifactRefs: [{credential: 'synthetic-output-sentinel'}]},
     {summary: 'Finished', artifactRefs: [{credentials: 'synthetic-output-sentinel'}]},
+    {summary: 'Finished', artifactRefs: [{privateKey: 'synthetic-output-sentinel'}]},
+    {summary: 'Finished', artifactRefs: [{private_key: 'synthetic-output-sentinel'}]},
+    {summary: '-----BEGIN PRIVATE KEY-----\nsynthetic-output-sentinel\n-----END PRIVATE KEY-----', artifactRefs: []},
+    {summary: '-----BEGIN ENCRYPTED PRIVATE KEY-----\nsynthetic-output-sentinel\n-----END ENCRYPTED PRIVATE KEY-----', artifactRefs: []},
+    {summary: 'Finished', artifactRefs: [{description: '-----BEGIN RSA PRIVATE KEY-----\nsynthetic-output-sentinel\n-----END RSA PRIVATE KEY-----'}]},
+    {summary: 'Finished', artifactRefs: [{'-----BEGIN OPENSSH PRIVATE KEY-----\nsynthetic-output-sentinel\n-----END OPENSSH PRIVATE KEY-----': 'metadata'}]},
   ])('rejects secret-bearing worker output before durable receipts and review', async authored => {
     const f = await fixture();
     f.options.args = ['-e', `process.stdin.resume();process.stdin.on('end',()=>require('fs').writeFileSync(process.env.SIFT_WORK_RESULT_PATH,${JSON.stringify(JSON.stringify(authored))}));`];
@@ -876,9 +882,12 @@ describe('mobile host runner', () => {
     await expect(stat(join(f.directory, `${dispatchId}.result`))).rejects.toMatchObject({code: 'ENOENT'});
   });
 
-  it.each(['finished', 'reviewed'])('guards and scrubs secret-bearing legacy %s receipts before any replay', async state => {
+  it.each(['finished', 'reviewed'].flatMap(state => [
+    {state, unsafeResult: {summary: 'sift_pat_synthetic_receipt_sentinel', artifactRefs: []}},
+    {state, unsafeResult: {summary: 'Finished', artifactRefs: [{private_key: 'synthetic_receipt_sentinel'}]}},
+    {state, unsafeResult: {summary: '-----BEGIN PRIVATE KEY-----\nsynthetic_receipt_sentinel\n-----END PRIVATE KEY-----', artifactRefs: []}},
+  ]))('guards and scrubs secret-bearing legacy $state receipts before any replay', async ({state, unsafeResult}) => {
     const f = await fixture();
-    const unsafeResult = {summary: 'sift_pat_synthetic_receipt_sentinel', artifactRefs: []};
     await writeFile(join(f.directory, `${dispatchId}.json`), JSON.stringify({version: 1, dispatchId, workItemId, state, exitCode: 0, result: unsafeResult}));
     await writeFile(join(f.directory, `${dispatchId}.result.json`), JSON.stringify(unsafeResult));
     const starts = vi.mocked(spawn).mock.calls.length;
@@ -917,6 +926,21 @@ describe('mobile host runner', () => {
     f.options.args = ['-e', `process.stdin.resume();process.stdin.on('end',()=>require('fs').writeFileSync(process.env.SIFT_WORK_RESULT_PATH,${JSON.stringify(JSON.stringify({summary,artifactRefs:[]}))}));`];
     expect(await consumeMobileDispatch(f.options)).toBe('reviewed');
     expect(f.calls.find(call => call.path.endsWith('/review'))?.body.resultSummary).toBe(summary);
+  });
+
+  it('preserves public PEM and ordinary token metadata in authored results', async () => {
+    const f = await fixture();
+    const result = {summary: 'Published certificate metadata', artifactRefs: [{
+      publicKey: '-----BEGIN PUBLIC KEY-----\nsynthetic-public-fixture\n-----END PUBLIC KEY-----',
+      certificate: '-----BEGIN CERTIFICATE-----\nsynthetic-certificate-fixture\n-----END CERTIFICATE-----',
+      tokenCount: 123,
+    }]};
+    f.options.args = ['-e', `process.stdin.resume();process.stdin.on('end',()=>require('fs').writeFileSync(process.env.SIFT_WORK_RESULT_PATH,${JSON.stringify(JSON.stringify(result))}));`];
+    expect(await consumeMobileDispatch(f.options)).toBe('reviewed');
+    expect(f.calls.find(call => call.path.endsWith('/review'))?.body.artifactRefs).toEqual([
+      ...result.artifactRefs, {dispatchId, exitCode: 0, type: 'worker_run'},
+    ]);
+    expect(JSON.parse(await readFile(join(f.directory, `${dispatchId}.json`), 'utf8')).result).toEqual(result);
   });
 
   it('scrubs legacy rejected content even when the server lease no longer permits failure', async () => {
