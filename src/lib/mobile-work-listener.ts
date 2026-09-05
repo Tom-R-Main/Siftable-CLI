@@ -10,8 +10,9 @@ interface MobileListenerOptions<T> {
 function retryable(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const status = (error as Error & {statusCode?: number}).statusCode;
+  // Conflicts can mean expired leases or another host owns execution; polling cannot reconcile them.
   // Authentication, permission, local configuration and uncertain execution errors need an operator.
-  if (status !== undefined) return status === 0 || [408, 409, 429].includes(status) || status >= 500;
+  if (status !== undefined) return status === 0 || [408, 429].includes(status) || status >= 500;
   return error.name === 'AbortError' || (error instanceof TypeError && error.message.includes('fetch'));
 }
 

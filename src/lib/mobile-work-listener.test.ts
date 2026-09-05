@@ -7,7 +7,7 @@ describe('mobile work listener recovery', () => {
     const poll = vi.fn()
       .mockRejectedValueOnce(new TypeError('fetch failed'))
       .mockRejectedValueOnce(Object.assign(new Error('unavailable'), {statusCode: 503}))
-      .mockRejectedValueOnce(Object.assign(new Error('expired lease'), {statusCode: 409}))
+      .mockRejectedValueOnce(Object.assign(new Error('request timeout'), {statusCode: 408}))
       .mockRejectedValueOnce(Object.assign(new Error('rate limit'), {statusCode: 429}))
       .mockRejectedValueOnce(Object.assign(new Error('unavailable'), {statusCode: 503}))
       .mockRejectedValueOnce(Object.assign(new Error('unavailable'), {statusCode: 503}))
@@ -26,6 +26,22 @@ describe('mobile work listener recovery', () => {
     const wait = vi.fn();
     await expect(listenForMobileWork({poll: async () => {throw error;}, once: false, wait, onRetry: vi.fn()})).rejects.toBe(error);
     expect(wait).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'The work item lease has expired',
+    'Dispatch belongs to another host installation; reconcile it before retrying',
+    'Runner lease changed; reconcile the existing runtime',
+    'Agent alias is disabled',
+  ])('surfaces a permanent conflict to the operator: %s', async message => {
+    const conflict = Object.assign(new Error(message), {statusCode: 409});
+    const poll = vi.fn().mockRejectedValueOnce(conflict).mockRejectedValueOnce(new Error('unexpected retry'));
+    const wait = vi.fn(async (_delayMs: number) => {});
+    const onRetry = vi.fn();
+    await expect(listenForMobileWork({poll, once: false, wait, onRetry})).rejects.toBe(conflict);
+    expect(poll).toHaveBeenCalledTimes(1);
+    expect(wait).not.toHaveBeenCalled();
+    expect(onRetry).not.toHaveBeenCalled();
   });
 
   it('preserves --once failure and success behavior', async () => {
