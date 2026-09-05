@@ -95,6 +95,27 @@ async function withRequestSignal<T>(signal: AbortSignal, action: () => Promise<T
   } finally { signal.removeEventListener('abort', aborted); }
 }
 
+/** Bound otherwise unbounded registration, consume and receipt requests before
+ * the 90s runner announcement or 300s claim lease can expire. Explicit signals
+ * retain the separate attachment and active-execution budgets and cancellation. */
+export function withMobileRunnerRequestTimeout(api: MobileRunnerApi, timeoutMs = 10_000): MobileRunnerApi {
+  return {async request<T>(path: string, body: unknown, key?: string, signal?: AbortSignal): Promise<T> {
+    if (signal) return api.request<T>(path, body, key, signal);
+    const deadline = AbortSignal.timeout(Math.min(timeoutMs, 10_000));
+    try {
+      // Covers reading the response body, even if a transport ignores abort.
+      return await withRequestSignal(deadline, () => api.request<T>(path, body, key, deadline));
+    } catch (error) {
+      if (deadline.aborted) {
+        // The listener retries transient 408s with the same durable consumer and
+        // request identities. Do not expose provider errors or response content.
+        throw Object.assign(new Error('Host request timed out. Retry with the same host identity.'), {statusCode: 408});
+      }
+      throw error;
+    }
+  }};
+}
+
 function processIsDefinitelyGone(pid: number, group = false): boolean {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   try { process.kill(group ? -pid : pid, 0); return false; }
@@ -315,7 +336,8 @@ async function prepareWorkAttachments(
 
 /** Host configuration supplies the executable and directory. Phone input never becomes shell code. */
 export async function consumeMobileDispatch(options: MobileRunnerOptions): Promise<'idle' | 'reviewed' | 'failed' | 'stopped'> {
-  const {api, runnerId, workspaceId} = options;
+  const {runnerId, workspaceId} = options;
+  const api = withMobileRunnerRequestTimeout(options.api, options.requestTimeoutMs);
   if (process.platform === 'win32') throw new Error('Mobile host execution requires POSIX process-group termination. Windows is not supported.');
   if (!UUID.test(runnerId)) throw new Error('Runner ID must be a UUID.');
   await mkdir(options.receiptDirectory, {recursive: true, mode: 0o700});

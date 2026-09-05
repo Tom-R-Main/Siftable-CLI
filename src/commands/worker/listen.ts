@@ -2,7 +2,7 @@ import {Flags} from '@oclif/core';
 import {spawn} from 'node:child_process';
 import {resolve} from 'node:path';
 import {BaseCommand} from '../../lib/base-command.js';
-import {consumeMobileDispatch} from '../../lib/mobile-work-runner.js';
+import {consumeMobileDispatch, withMobileRunnerRequestTimeout} from '../../lib/mobile-work-runner.js';
 import {listenForMobileWork} from '../../lib/mobile-work-listener.js';
 import {resolveWorkspaceTenantId} from '../../lib/workspace-context.js';
 
@@ -25,8 +25,8 @@ export default class WorkerListen extends BaseCommand {
   async run(): Promise<unknown> {
     const {flags} = await this.parse(WorkerListen);
     const workspaceId = resolveWorkspaceTenantId(flags.workspace) ?? null;
-    const api = {request: <T>(path: string, body: unknown, key?: string, signal?: AbortSignal) =>
-      this.apiRequest<T>(flags, path, {method: 'POST', body, idempotencyKey: key, signal})};
+    const api = withMobileRunnerRequestTimeout({request: <T>(path: string, body: unknown, key?: string, signal?: AbortSignal) =>
+      this.apiRequest<T>(flags, path, {method: 'POST', body, idempotencyKey: key, signal})});
     const refreshRunner = (signal?: AbortSignal) => api.request('/api/v1/work-items/runners/heartbeat', {
         workspaceId, runnerId: flags.runner, displayName: flags.name, assignedAliasId: flags['agent-alias-id'],
       }, undefined, signal);

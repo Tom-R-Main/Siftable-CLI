@@ -863,9 +863,9 @@ describe('mobile host runner', () => {
     {summary: 'Finished', artifactRefs: [{credentials: 'synthetic-output-sentinel'}]},
     {summary: 'Finished', artifactRefs: [{privateKey: 'synthetic-output-sentinel'}]},
     {summary: 'Finished', artifactRefs: [{private_key: 'synthetic-output-sentinel'}]},
-    {summary: '-----BEGIN PRIVATE KEY-----\nsynthetic-output-sentinel\n-----END PRIVATE KEY-----', artifactRefs: []},
+    {summary: '-----BEGIN PRIVATE KEY-----\nsynthetic-output-sentinel\n-----END PRIVATE KEY-----', artifactRefs: []}, // gitleaks:allow -- synthetic non-key regression fixture
     {summary: '-----BEGIN ENCRYPTED PRIVATE KEY-----\nsynthetic-output-sentinel\n-----END ENCRYPTED PRIVATE KEY-----', artifactRefs: []},
-    {summary: 'Finished', artifactRefs: [{description: '-----BEGIN RSA PRIVATE KEY-----\nsynthetic-output-sentinel\n-----END RSA PRIVATE KEY-----'}]},
+    {summary: 'Finished', artifactRefs: [{description: '-----BEGIN RSA PRIVATE KEY-----\nsynthetic-output-sentinel\n-----END RSA PRIVATE KEY-----'}]}, // gitleaks:allow -- synthetic non-key regression fixture
     {summary: 'Finished', artifactRefs: [{'-----BEGIN OPENSSH PRIVATE KEY-----\nsynthetic-output-sentinel\n-----END OPENSSH PRIVATE KEY-----': 'metadata'}]},
   ])('rejects secret-bearing worker output before durable receipts and review', async authored => {
     const f = await fixture();
@@ -882,8 +882,31 @@ describe('mobile host runner', () => {
     await expect(stat(join(f.directory, `${dispatchId}.result`))).rejects.toMatchObject({code: 'ENOENT'});
   });
 
+  it.each([
+    ...['ghp_', 'github_pat_', 'gho_', 'ghu_', 'ghs_', 'ghr_'].map(prefix => ({label: prefix, value: `${prefix}syntheticCredentialFixture1234567890`})),
+    {label: 'sk', value: 'sk-' + 'a'.repeat(16)},
+    {label: 'sk-proj', value: 'sk-proj-' + 'a'.repeat(16)},
+    {label: 'AWS access ID', value: 'AKIA' + 'A'.repeat(16)},
+    {label: 'JWT', value: ['eyJ' + 'a'.repeat(8), 'b'.repeat(8), 'c'.repeat(8)].join('.')},
+    {label: 'URL credentials', value: ['https://', 'synthetic-user', ':', 'synthetic-password', '@example.test'].join('')},
+  ])('rejects $label worker credentials before receipts and review', async ({value}) => {
+    const f = await fixture();
+    const authored = {summary: 'Finished', artifactRefs: [{value}]};
+    f.options.args = ['-e', `process.stdin.resume();process.stdin.on('end',()=>require('fs').writeFileSync(process.env.SIFT_WORK_RESULT_PATH,${JSON.stringify(JSON.stringify(authored))}));`];
+    expect(await consumeMobileDispatch(f.options)).toBe('failed');
+    expect(f.calls.some(call => call.path.endsWith('/review'))).toBe(false);
+    expect(f.calls.find(call => call.path.endsWith('/fail'))?.body.failureReason).toBe('Host result rejected because it contains inline secret material.');
+    expect(JSON.stringify(f.calls)).not.toContain(value);
+    const persisted = await readFile(join(f.directory, `${dispatchId}.json`), 'utf8');
+    expect(persisted).not.toContain(value);
+    expect(JSON.parse(persisted)).toMatchObject({state: 'failed', resultRejected: true});
+    expect(JSON.parse(persisted).result).toBeUndefined();
+    await expect(stat(join(f.directory, `${dispatchId}.result`))).rejects.toMatchObject({code: 'ENOENT'});
+  });
+
   it.each(['finished', 'reviewed'].flatMap(state => [
     {state, unsafeResult: {summary: 'sift_pat_synthetic_receipt_sentinel', artifactRefs: []}},
+    {state, unsafeResult: {summary: 'Finished', artifactRefs: [{value: 'github_pat_' + 'synthetic_receipt_sentinel'}]}},
     {state, unsafeResult: {summary: 'Finished', artifactRefs: [{private_key: 'synthetic_receipt_sentinel'}]}},
     {state, unsafeResult: {summary: '-----BEGIN PRIVATE KEY-----\nsynthetic_receipt_sentinel\n-----END PRIVATE KEY-----', artifactRefs: []}},
   ]))('guards and scrubs secret-bearing legacy $state receipts before any replay', async ({state, unsafeResult}) => {
