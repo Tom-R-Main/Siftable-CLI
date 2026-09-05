@@ -889,8 +889,9 @@ describe("Siftable agent-harness durability boundary", () => {
     }
   });
 
-  it("retries a concurrently released stale-recovery gate without reporting a cycle", async () => {
-    const rounds = 3;
+  // Each independent round keeps the default test deadline; process startup
+  // for all 48 contenders must not consume one shared five-second budget.
+  it.each([1, 2, 3])("retries a concurrently released stale-recovery gate without reporting a cycle (round %i)", async () => {
     const contenders = 16;
     const storeModuleUrl = pathToFileURL(join(
       testDirectory,
@@ -909,60 +910,58 @@ describe("Siftable agent-harness durability boundary", () => {
       createStore(name).set(id, id);
     `;
 
-    for (let round = 0; round < rounds; round += 1) {
-      const name = uniqueStoreName();
-      const barrierRoot = mkdtempSync(join(tmpdir(), "siftable-store-recovery-race-"));
-      const start = join(barrierRoot, "start");
-      const lockPath = join(storeDataDirectory, `${name}.json.lock`);
-      const staleOwner = spawnSync(process.execPath, ["--eval", "process.exit(0)"]);
-      const staleToken = randomUUID();
-      const staleClaim = `${lockPath}.${staleOwner.pid}.${staleToken}.claim`;
-      const children: ChildProcess[] = [];
+    const name = uniqueStoreName();
+    const barrierRoot = mkdtempSync(join(tmpdir(), "siftable-store-recovery-race-"));
+    const start = join(barrierRoot, "start");
+    const lockPath = join(storeDataDirectory, `${name}.json.lock`);
+    const staleOwner = spawnSync(process.execPath, ["--eval", "process.exit(0)"]);
+    const staleToken = randomUUID();
+    const staleClaim = `${lockPath}.${staleOwner.pid}.${staleToken}.claim`;
+    const children: ChildProcess[] = [];
 
-      try {
-        createStore(name);
-        expect(staleOwner.pid).toBeTruthy();
-        writeFileSync(staleClaim, `${JSON.stringify({
-          pid: staleOwner.pid,
-          token: staleToken,
-        })}\n`, {mode: 0o600});
-        linkSync(staleClaim, lockPath);
+    try {
+      createStore(name);
+      expect(staleOwner.pid).toBeTruthy();
+      writeFileSync(staleClaim, `${JSON.stringify({
+        pid: staleOwner.pid,
+        token: staleToken,
+      })}\n`, {mode: 0o600});
+      linkSync(staleClaim, lockPath);
 
-        const readyPaths = Array.from({length: contenders}, (_, index) => (
-          join(barrierRoot, `ready-${index}`)
-        ));
-        for (let index = 0; index < contenders; index += 1) {
-          children.push(spawn(process.execPath, [
-            "--eval",
-            childSource,
-            name,
-            `contender-${index}`,
-            readyPaths[index]!,
-            start,
-          ], {
-            cwd: join(testDirectory, "..", "..", "..", ".."),
-            stdio: ["ignore", "ignore", "pipe"],
-          }));
-        }
-        const childExits = children.map(waitForChild);
-        await waitForPaths(readyPaths);
-        writeFileSync(start, "", {mode: 0o600});
-
-        const results = await Promise.all(childExits);
-        const stderr = results.map((result) => result.stderr).filter(Boolean).join("\n");
-        expect(results.map((result) => result.code), stderr).toEqual(
-          Array.from({length: contenders}, () => 0),
-        );
-        expect(createStore<string>(name).entries().map(([id]) => id).sort()).toEqual(
-          Array.from({length: contenders}, (_, index) => `contender-${index}`).sort(),
-        );
-      } finally {
-        for (const child of children) {
-          if (child.exitCode === null && child.signalCode === null) child.kill();
-        }
-        removeStoreArtifacts(name);
-        rmSync(barrierRoot, {recursive: true, force: true});
+      const readyPaths = Array.from({length: contenders}, (_, index) => (
+        join(barrierRoot, `ready-${index}`)
+      ));
+      for (let index = 0; index < contenders; index += 1) {
+        children.push(spawn(process.execPath, [
+          "--eval",
+          childSource,
+          name,
+          `contender-${index}`,
+          readyPaths[index]!,
+          start,
+        ], {
+          cwd: join(testDirectory, "..", "..", "..", ".."),
+          stdio: ["ignore", "ignore", "pipe"],
+        }));
       }
+      const childExits = children.map(waitForChild);
+      await waitForPaths(readyPaths);
+      writeFileSync(start, "", {mode: 0o600});
+
+      const results = await Promise.all(childExits);
+      const stderr = results.map((result) => result.stderr).filter(Boolean).join("\n");
+      expect(results.map((result) => result.code), stderr).toEqual(
+        Array.from({length: contenders}, () => 0),
+      );
+      expect(createStore<string>(name).entries().map(([id]) => id).sort()).toEqual(
+        Array.from({length: contenders}, (_, index) => `contender-${index}`).sort(),
+      );
+    } finally {
+      for (const child of children) {
+        if (child.exitCode === null && child.signalCode === null) child.kill();
+      }
+      removeStoreArtifacts(name);
+      rmSync(barrierRoot, {recursive: true, force: true});
     }
   });
 
