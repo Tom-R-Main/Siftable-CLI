@@ -679,7 +679,7 @@ describe("Siftable agent-harness durability boundary", () => {
     }
   });
 
-  it("rejects a lock path whose immutable claim link is missing", () => {
+  it.each([1, 3])("rejects a lock path with an invalid link count of %s", (linkCount) => {
     const name = uniqueStoreName();
     const store = createStore<number>(name);
     const lockPath = join(storeDataDirectory, `${name}.json.lock`);
@@ -688,8 +688,99 @@ describe("Siftable agent-harness durability boundary", () => {
       writeFileSync(lockPath, `${JSON.stringify({pid: process.pid, token: randomUUID()})}\n`, {
         mode: 0o600,
       });
-      expect(() => store.set("unsafe", 1)).toThrow(/inconsistent link count \(1\)/);
+      if (linkCount === 3) {
+        linkSync(lockPath, `${lockPath}.fixture-claim`);
+        linkSync(lockPath, `${lockPath}.unexpected-alias`);
+      }
+      expect(() => store.set("unsafe", 1)).toThrow(`inconsistent link count (${linkCount})`);
     } finally {
+      removeStoreArtifacts(name);
+    }
+  });
+
+  it("retries a reclaim gate republished from the same inode after descriptor inspection", async () => {
+    const name = uniqueStoreName();
+    const storeModuleUrl = pathToFileURL(join(
+      testDirectory, "..", "agent-harness", "framework", "store.ts",
+    )).href;
+    const childSource = `
+      import { randomUUID } from "node:crypto";
+      import { spawnSync } from "node:child_process";
+      import * as fs from "node:fs";
+      import { join } from "node:path";
+      import { mock } from "bun:test";
+      const [storeModuleUrl, dataDirectory, name] = process.argv.slice(1);
+      fs.mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
+      const lockPath = join(dataDirectory, name + ".json.lock");
+      const stalePid = spawnSync(process.execPath, ["--eval", "process.exit(0)"]).pid;
+      const staleToken = randomUUID();
+      const staleClaim = lockPath + "." + stalePid + "." + staleToken + ".claim";
+      fs.writeFileSync(staleClaim, JSON.stringify({ pid: stalePid, token: staleToken }), { mode: 0o600 });
+      fs.linkSync(staleClaim, lockPath);
+      const gatePath = lockPath + ".reclaim";
+      const gateClaim = lockPath + ".gate-fixture";
+      fs.writeFileSync(gateClaim, JSON.stringify({ pid: process.pid, token: randomUUID() }), { mode: 0o600 });
+      fs.linkSync(gateClaim, gatePath);
+
+      const realFs = { ...fs };
+      let gateFd, interleaved = false, released = false;
+      mock.module("node:fs", () => ({
+        ...realFs,
+        openSync(target, ...args) {
+          const fd = realFs.openSync(target, ...args);
+          if (target === gatePath && !interleaved) gateFd = fd;
+          return fd;
+        },
+        fstatSync(fd, ...args) {
+          if (fd === gateFd && !interleaved) {
+            // The owner releases the gate, then republishes the same immutable
+            // claim while this reader holds a descriptor to that exact inode.
+            realFs.unlinkSync(gatePath);
+            const detached = realFs.fstatSync(fd, ...args);
+            if (detached.nlink !== 1) throw new Error("Fixture did not detach the gate");
+            realFs.linkSync(gateClaim, gatePath);
+            interleaved = true;
+            return detached;
+          }
+          return realFs.fstatSync(fd, ...args);
+        },
+        readFileSync(target, ...args) {
+          const value = realFs.readFileSync(target, ...args);
+          if (target === gateFd && interleaved && !released) {
+            // Finish the live peer's recovery, allowing the next retry to win.
+            realFs.unlinkSync(gatePath);
+            realFs.unlinkSync(gateClaim);
+            released = true;
+          }
+          return value;
+        },
+      }));
+      try {
+        const { createStore } = await import(storeModuleUrl + "?gate-republish=" + Date.now());
+        const store = createStore(name);
+        store.set("recovered", 1);
+        if (!interleaved || !released || store.get("recovered") !== 1) {
+          throw new Error("Republished gate was not recovered");
+        }
+      } catch (error) {
+        realFs.writeFileSync(lockPath + ".fixture-error", error instanceof Error ? error.message : String(error), { mode: 0o600 });
+        process.exitCode = 1;
+      } finally {
+        for (const target of [staleClaim, lockPath, gateClaim, gatePath]) realFs.rmSync(target, { force: true });
+      }
+    `;
+    const child = spawn(process.execPath, ["--eval", childSource, storeModuleUrl, storeDataDirectory, name], {
+      cwd: join(testDirectory, "..", "..", "..", ".."),
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    try {
+      const result = await waitForChild(child);
+      const diagnosticPath = join(storeDataDirectory, `${name}.json.lock.fixture-error`);
+      const diagnostic = existsSync(diagnosticPath) ? await Bun.file(diagnosticPath).text() : "";
+      expect({...result, diagnostic}).toEqual({code: 0, stderr: "", diagnostic: ""});
+      expect(createStore<number>(name).get("recovered")).toBe(1);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
       removeStoreArtifacts(name);
     }
   });

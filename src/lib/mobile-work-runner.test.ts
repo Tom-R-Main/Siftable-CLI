@@ -895,6 +895,10 @@ describe('mobile host runner', () => {
     {label: 'AWS access ID', value: 'AKIA' + 'A'.repeat(16)},
     {label: 'JWT', value: ['eyJ' + 'a'.repeat(8), 'b'.repeat(8), 'c'.repeat(8)].join('.')},
     {label: 'URL credentials', value: ['https://', 'synthetic-user', ':', 'synthetic-password', '@example.test'].join('')},
+    ...['postgresql', 'amqp', 'mongodb+srv', 'custom+v1.test-scheme'].map(scheme => ({label: scheme, value: [scheme, '://user:', 'synthetic-password', '@example.test/db'].join('')})),
+    {label: 'Redis empty username', value: ['redis://:', 'synthetic-password', '@example.test'].join('')},
+    {label: 'URI apostrophe', value: ['postgresql://user:', "synthetic'password", '@example.test/db'].join('')},
+    {label: 'URI list', value: ['https://safe.test,postgresql://user:', 'synthetic-password', '@example.test/db'].join('')},
   ])('rejects $label worker credentials before receipts and review', async ({value}) => {
     const f = await fixture();
     const authored = {summary: 'Finished', artifactRefs: [{value}]};

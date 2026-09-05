@@ -33,6 +33,7 @@ import {
   statSync,
   unlinkSync,
   writeSync,
+  type Stats,
 } from "node:fs";
 import { basename, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -761,10 +762,14 @@ function readLockOwner(lockPath: string): StoreLockOwner | undefined {
     // A lock can be unlinked after open while its claim link still exists.
     // Its descriptor then reports one (or eventually zero) links, but it no
     // longer excludes another contender at the well-known lock path.
-    retired = !pathMatchesFile(lockPath, info);
-    if (!retired && info.nlink !== 2) {
+    // The same claim inode can also be republished between fstat and lstat.
+    // Validate the link count from the snapshot that establishes path identity,
+    // rather than combining an old detached descriptor count with a new path.
+    const current = matchingFileInfo(lockPath, info);
+    retired = current === undefined;
+    if (current !== undefined && current.nlink !== 2) {
       throw new StorePersistenceError(
-        `store lock ${lockPath} has an inconsistent link count (${info.nlink})`,
+        `store lock ${lockPath} has an inconsistent link count (${current.nlink})`,
       );
     }
     if (!retired) {
@@ -864,12 +869,14 @@ function sameFile(left: string, right: string): boolean {
   }
 }
 
-function pathMatchesFile(path: string, expected: { dev: number; ino: number }): boolean {
+function matchingFileInfo(path: string, expected: { dev: number; ino: number }): Stats | undefined {
   try {
     const current = lstatSync(path);
-    return !current.isSymbolicLink() && current.dev === expected.dev && current.ino === expected.ino;
+    return !current.isSymbolicLink() && current.dev === expected.dev && current.ino === expected.ino
+      ? current
+      : undefined;
   } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return false;
+    if (isNodeError(error) && error.code === "ENOENT") return undefined;
     throw error;
   }
 }
