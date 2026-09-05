@@ -360,4 +360,92 @@ describe('mobile host runner', () => {
     await expect(readFile(f.marker, 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
   });
 
+  it.each([
+    {summary: 'Authorization: Bearer synthetic-output-sentinel', artifactRefs: []},
+    {summary: 'Finished', artifactRefs: [{metadata: {apiKey: 'synthetic-output-sentinel'}}]},
+    {summary: 'Finished', artifactRefs: [{url: 'https://example.test?token=synthetic-output-sentinel'}]},
+    {summary: 'Finished', artifactRefs: [{'Bearer synthetic-output-sentinel': 'metadata'}]},
+  ])('rejects secret-bearing worker output before durable receipts and review', async authored => {
+    const f = await fixture();
+    f.options.args = ['-e', `process.stdin.resume();process.stdin.on('end',()=>require('fs').writeFileSync(process.env.SIFT_WORK_RESULT_PATH,${JSON.stringify(JSON.stringify(authored))}));`];
+    expect(await consumeMobileDispatch(f.options)).toBe('failed');
+    expect(f.calls.some(call => call.path.endsWith('/review'))).toBe(false);
+    expect(f.calls.find(call => call.path.endsWith('/fail'))?.body.failureReason).toBe('Host result rejected because it contains inline secret material.');
+    expect(JSON.stringify(f.calls)).not.toContain('synthetic-output-sentinel');
+    const persisted = await readFile(join(f.directory, `${dispatchId}.json`), 'utf8');
+    expect(persisted).not.toContain('synthetic-output-sentinel');
+    expect(JSON.parse(persisted)).toMatchObject({state: 'failed', resultRejected: true});
+    expect(JSON.parse(persisted).result).toBeUndefined();
+    await expect(stat(join(f.directory, `${dispatchId}.result.json`))).rejects.toMatchObject({code: 'ENOENT'});
+  });
+
+  it.each(['finished', 'reviewed'])('guards and scrubs secret-bearing legacy %s receipts before any replay', async state => {
+    const f = await fixture();
+    const unsafeResult = {summary: 'sift_pat_synthetic_receipt_sentinel', artifactRefs: []};
+    await writeFile(join(f.directory, `${dispatchId}.json`), JSON.stringify({version: 1, dispatchId, workItemId, state, exitCode: 0, result: unsafeResult}));
+    await writeFile(join(f.directory, `${dispatchId}.result.json`), JSON.stringify(unsafeResult));
+    const starts = vi.mocked(spawn).mock.calls.length;
+    expect(await consumeMobileDispatch(f.options)).toBe('failed');
+    expect(vi.mocked(spawn).mock.calls).toHaveLength(starts);
+    expect(f.calls.some(call => call.path.endsWith('/review'))).toBe(false);
+    expect(JSON.stringify(f.calls)).not.toContain('synthetic_receipt_sentinel');
+    expect(await readFile(join(f.directory, `${dispatchId}.json`), 'utf8')).not.toContain('synthetic_receipt_sentinel');
+    await expect(stat(join(f.directory, `${dispatchId}.result.json`))).rejects.toMatchObject({code: 'ENOENT'});
+  });
+
+  it('retries sanitized output rejection without restoring rejected content', async () => {
+    const f = await fixture();
+    f.options.args = ['-e', `process.stdin.resume();process.stdin.on('end',()=>require('fs').writeFileSync(process.env.SIFT_WORK_RESULT_PATH,JSON.stringify({summary:'password=synthetic-retry-sentinel',artifactRefs:[]})));`];
+    const request = f.options.api.request.bind(f.options.api);
+    let lost = true;
+    f.options.api.request = async <T>(path: string, body: unknown, key?: string, signal?: AbortSignal): Promise<T> => {
+      const response = await request<T>(path, body, key, signal);
+      if (path.endsWith('/fail') && lost) throw new Error('Lost rejection acknowledgement');
+      return response;
+    };
+    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('Lost rejection acknowledgement');
+    const starts = vi.mocked(spawn).mock.calls.length;
+    lost = false;
+    expect(await consumeMobileDispatch(f.options)).toBe('failed');
+    expect(vi.mocked(spawn).mock.calls).toHaveLength(starts);
+    const failures = f.calls.filter(call => call.path.endsWith('/fail'));
+    expect(failures).toHaveLength(2);
+    expect(failures[0]).toEqual(failures[1]);
+    expect(JSON.stringify(f.calls)).not.toContain('synthetic-retry-sentinel');
+  });
+
+  it('preserves non-secret environment references in authored results', async () => {
+    const f = await fixture();
+    const summary = 'Read the API using Bearer $SIFT_TOKEN and token="$TOKEN"';
+    f.options.args = ['-e', `process.stdin.resume();process.stdin.on('end',()=>require('fs').writeFileSync(process.env.SIFT_WORK_RESULT_PATH,${JSON.stringify(JSON.stringify({summary,artifactRefs:[]}))}));`];
+    expect(await consumeMobileDispatch(f.options)).toBe('reviewed');
+    expect(f.calls.find(call => call.path.endsWith('/review'))?.body.resultSummary).toBe(summary);
+  });
+
+  it('scrubs legacy rejected content even when the server lease no longer permits failure', async () => {
+    const f = await fixture();
+    const receiptPath = join(f.directory, `${dispatchId}.json`);
+    await writeFile(receiptPath, JSON.stringify({version: 1, dispatchId, workItemId, state: 'reviewed', exitCode: 0,
+      apiKey: 'synthetic-retired-sentinel', result: {summary: 'Authorization: Bearer synthetic-retired-sentinel', artifactRefs: []}}));
+    await writeFile(join(f.directory, `${dispatchId}.result.json`), 'synthetic-retired-sentinel');
+    const request = f.options.api.request.bind(f.options.api);
+    f.options.api.request = async <T>(path: string, body: unknown, key?: string, signal?: AbortSignal): Promise<T> => {
+      if (path.endsWith('/heartbeat')) throw new Error('Lease is no longer active; reconcile on host');
+      return request<T>(path, body, key, signal);
+    };
+    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('Lease is no longer active');
+    const persisted = await readFile(receiptPath, 'utf8');
+    expect(persisted).not.toContain('synthetic-retired-sentinel');
+    expect(JSON.parse(persisted)).toMatchObject({state: 'finished', resultRejected: true});
+    expect(f.calls.some(call => call.path.endsWith('/review') || call.path.endsWith('/fail'))).toBe(false);
+    await expect(stat(join(f.directory, `${dispatchId}.result.json`))).rejects.toMatchObject({code: 'ENOENT'});
+  });
+
+  it('does not expose malformed receipt text through JSON parse errors', async () => {
+    const f = await fixture();
+    await writeFile(join(f.directory, `${dispatchId}.json`), '{"password":"synthetic-malformed-sentinel" broken');
+    await expect(consumeMobileDispatch(f.options)).rejects.toThrow('Invalid dispatch receipt.');
+    expect(f.calls.some(call => call.path.endsWith('/review'))).toBe(false);
+  });
+
 });

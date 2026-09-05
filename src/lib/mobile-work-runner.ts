@@ -2,6 +2,7 @@ import {spawn} from 'node:child_process';
 import {mkdir, readFile, rename, stat, open, rm} from 'node:fs/promises';
 import {join, resolve} from 'node:path';
 import {createHash, randomUUID} from 'node:crypto';
+import {hasInlineAgentWorkSecrets} from './agent-work-secrets.js';
 
 export interface MobileDispatchClaim {
   dispatch: {id: string; workItemId: string};
@@ -36,6 +37,7 @@ interface Receipt {
   exitSignal?: NodeJS.Signals;
   stopControlId?: string;
   result?: {summary: string; artifactRefs: unknown[]};
+  resultRejected?: boolean;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -138,6 +140,12 @@ export async function consumeMobileDispatch(options: MobileRunnerOptions): Promi
   await mkdir(options.receiptDirectory, {recursive: true, mode: 0o700});
   const receiptPath = join(options.receiptDirectory, `${dispatch.id}.json`);
   let receipt: Receipt = {version: 1, dispatchId: dispatch.id, workItemId: workItem.id, state: 'launching'};
+  const saveReceipt = async () => {
+    const temporaryPath = `${receiptPath}.${process.pid}.tmp`;
+    await durableWrite(temporaryPath, receipt);
+    await rename(temporaryPath, receiptPath);
+    await syncDirectory(options.receiptDirectory);
+  };
   let newReceipt = false;
   try {
     // Reserve before spawning. A second consumer or a restart cannot execute it again.
@@ -146,22 +154,25 @@ export async function consumeMobileDispatch(options: MobileRunnerOptions): Promi
     newReceipt = true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    receipt = JSON.parse(await readFile(receiptPath, 'utf8')) as Receipt;
+    try { receipt = JSON.parse(await readFile(receiptPath, 'utf8')) as Receipt; }
+    catch { throw new Error('Invalid dispatch receipt.'); }
     if (receipt.version !== 1 || receipt.dispatchId !== dispatch.id || receipt.workItemId !== workItem.id) {
       throw new Error('Dispatch receipt identity mismatch.');
     }
     if (receipt.state === 'launching') {
       throw new Error('Dispatch already launched or interrupted. Reconcile on the host before retrying; automatic re-execution is disabled.');
     }
+    if (hasInlineAgentWorkSecrets(receipt)) {
+      // Old receipts must pass the same policy before any replay or terminal-state shortcut.
+      receipt = {version: 1, dispatchId: dispatch.id, workItemId: workItem.id, state: 'finished',
+        exitCode: Number.isInteger(receipt.exitCode) ? receipt.exitCode : 0, resultRejected: true};
+      await saveReceipt();
+      try { await rm(join(options.receiptDirectory, `${dispatch.id}.result.json`), {force: true}); }
+      catch { throw new Error('Rejected host result cleanup failed.'); }
+    }
     if (receipt.state === 'reviewed' || receipt.state === 'failed') return receipt.state;
     if (receipt.state !== 'start_failed' && (!['finished', 'stopped'].includes(receipt.state) || !Number.isInteger(receipt.exitCode))) throw new Error('Invalid dispatch receipt.');
   }
-  const saveReceipt = async () => {
-    const temporaryPath = `${receiptPath}.${process.pid}.tmp`;
-    await durableWrite(temporaryPath, receipt);
-    await rename(temporaryPath, receiptPath);
-    await syncDirectory(options.receiptDirectory);
-  };
   const acknowledgeStartFailure = async (): Promise<'failed'> => {
     await api.request(`/api/v1/work-items/dispatches/${dispatch.id}/ack`,
       {workspaceId, claimToken: workItem.claimToken, state: 'failed'}, `${dispatch.id}:start-failed`);
@@ -242,7 +253,12 @@ export async function consumeMobileDispatch(options: MobileRunnerOptions): Promi
             if (typeof authored.summary !== 'string' || authored.summary.length > 16000 || !Array.isArray(authored.artifactRefs) || authored.artifactRefs.length > 50) {
               throw new Error('Invalid host result');
             }
-            receipt.result = {summary: authored.summary, artifactRefs: authored.artifactRefs};
+            if (hasInlineAgentWorkSecrets(authored)) {
+              receipt.resultRejected = true;
+              await rm(resultPath, {force: true});
+            } else {
+              receipt.result = {summary: authored.summary, artifactRefs: authored.artifactRefs};
+            }
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Host result file is invalid. Reconcile on the host before submitting it.');
           }
@@ -264,8 +280,10 @@ export async function consumeMobileDispatch(options: MobileRunnerOptions): Promi
   }
   // Revalidate the worker lease immediately before submitting the result.
   await heartbeat();
-  if (receipt.exitCode !== 0 || receipt.exitSignal) {
-    const failureReason = receipt.exitSignal
+  if (receipt.resultRejected || receipt.exitCode !== 0 || receipt.exitSignal) {
+    const failureReason = receipt.resultRejected
+      ? 'Host result rejected because it contains inline secret material.'
+      : receipt.exitSignal
       ? `Host worker terminated by ${receipt.exitSignal}.`
       : `Host worker exited with code ${receipt.exitCode}.`;
     await api.request(`/api/v1/work-items/${workItem.id}/fail`, {
