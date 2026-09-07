@@ -16835,7 +16835,8 @@
           "name": "limit",
           "hasDynamicHelp": false,
           "multiple": false,
-          "type": "option"
+          "type": "option",
+          "default": 50
         }
       },
       "hasDynamicHelp": false,
@@ -31212,5 +31213,5 @@
       ]
     }
   },
-  "version": "0.6.0"
+  "version": "0.7.0"
 }
