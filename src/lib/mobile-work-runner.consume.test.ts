@@ -24,7 +24,49 @@ function fakeClock() {
   return () => { timeout.mockRestore(); vi.useRealTimers(); };
 }
 
-async function committedClaimFixture(honorsAbort: boolean) {
+// Control only application deadlines and the listener wait. Real HTTP and child
+// processes must retain their real timers while the synthetic server lease ages.
+function requestClock() {
+  let now = Date.now();
+  let stopped = false;
+  const pending = new Set<{at: number; complete: () => void}>();
+  const schedule = (milliseconds: number, complete: () => void) => {
+    if (stopped) complete();
+    else pending.add({at: now + milliseconds, complete});
+  };
+  const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(milliseconds => {
+    const controller = new AbortController();
+    schedule(milliseconds, () => controller.abort(new DOMException('Synthetic timeout', 'TimeoutError')));
+    return controller.signal;
+  });
+  return {
+    now: () => now,
+    wait: (milliseconds: number) => new Promise<void>(resolve => schedule(milliseconds, resolve)),
+    advance: (milliseconds: number) => {
+      now += milliseconds;
+      for (const entry of pending) {
+        if (entry.at <= now) { pending.delete(entry); entry.complete(); }
+      }
+    },
+    stop: () => {
+      stopped = true;
+      for (const entry of pending) entry.complete();
+      pending.clear();
+    },
+    restore: () => timeout.mockRestore(),
+  };
+}
+
+async function fixtureStep<T>(phase: string, action: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([action, new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`HTTP fixture stalled: ${phase}`)), 8000);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+async function committedClaimFixture(honorsAbort: boolean, now: () => number) {
   const directory = await mkdtemp(join(tmpdir(), 'mobile-consume-deadline-'));
   const marker = join(directory, 'executions');
   const bodyStarted = deferred<void>();
@@ -44,16 +86,16 @@ async function committedClaimFixture(honorsAbort: boolean) {
     if (req.url?.endsWith('/consume')) {
       consumers.push(body.consumerId);
       if (committedClaims === 0) {
-        committedClaims = 1; leaseExpiresAt = Date.now() + 300_000; heldBody = res;
+        committedClaims = 1; leaseExpiresAt = now() + 300_000; heldBody = res;
         res.writeHead(200); res.write(responseJson.slice(0, 12)); return;
       }
-      if (body.consumerId !== consumers[0] || Date.now() >= leaseExpiresAt) {
+      if (body.consumerId !== consumers[0] || now() >= leaseExpiresAt) {
         res.writeHead(409); res.end('{}'); return;
       }
       res.end(responseJson); return;
     }
     if (req.url === '/api/v1/work-items/runners/heartbeat') runnerHeartbeats += 1;
-    else if (req.url?.endsWith('/heartbeat')) leaseExpiresAt = Date.now() + 300_000;
+    else if (req.url?.endsWith('/heartbeat')) leaseExpiresAt = now() + 300_000;
     if (req.url?.endsWith('/review')) reviews += 1;
     res.end('{}');
   });
@@ -83,6 +125,7 @@ async function committedClaimFixture(honorsAbort: boolean) {
     state: () => ({committedClaims, runnerHeartbeats, reviews, leaseExpiresAt}),
     refreshRunner: () => api.request('/api/v1/work-items/runners/heartbeat', {runnerId, workspaceId: null}),
     releaseBody: () => heldBody?.end(responseJson.slice(12)),
+    disconnect: () => server.closeAllConnections(),
     close: async () => {
       server.closeAllConnections();
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
@@ -125,46 +168,69 @@ describe('mobile consume deadline and claim recovery', () => {
   });
 
   it.each([true, false])('recovers a committed claim before expiry without respawning after a late response (transport abort=%s)', async honorsAbort => {
-    const fixture = await committedClaimFixture(honorsAbort);
-    const restoreClock = fakeClock();
+    const clock = requestClock();
+    const fixture = await committedClaimFixture(honorsAbort, clock.now).catch(error => { clock.restore(); throw error; });
     const finished = new Error('Synthetic listener finished');
     const retry = vi.fn();
+    const retryStarted = deferred<void>();
+    let stopping = false;
     let timeoutOutcome: unknown;
     const outcome = listenForMobileWork({
-      once: false, onRetry: retry, wait: ms => new Promise(resolve => setTimeout(resolve, ms)),
+      once: false, onRetry: retry, wait: ms => {
+        const waiting = clock.wait(ms);
+        retryStarted.resolve();
+        return waiting;
+      },
       poll: async () => {
-        await fixture.refreshRunner();
         try {
+          if (stopping) throw finished;
+          await fixture.refreshRunner();
+          if (stopping) throw finished;
           const state = await consumeMobileDispatch(fixture.options);
           if (state === 'reviewed') throw finished;
           return state;
-        } catch (error) { if (error !== finished) timeoutOutcome = error; throw error; }
+        } catch (error) {
+          if (stopping) throw finished;
+          if (error !== finished) timeoutOutcome = error;
+          throw error;
+        }
       },
     }).catch(error => error);
     try {
-      await fixture.bodyStarted.promise;
+      await fixtureStep('first consume response headers', fixture.bodyStarted.promise);
       expect(fixture.state().committedClaims).toBe(1);
       await expect(readFile(join(fixture.directory, `${dispatchId}.json`))).rejects.toMatchObject({code: 'ENOENT'});
-      await vi.advanceTimersByTimeAsync(10_000);
+      clock.advance(9999);
+      expect(fixture.signals[0]?.aborted).toBe(false);
+      expect(retry).not.toHaveBeenCalled();
+      clock.advance(1);
+      await fixtureStep('deadline rejection and retry wait', retryStarted.promise);
       expect(retry).toHaveBeenCalledWith(5000);
       expect(timeoutOutcome).toMatchObject({statusCode: 408});
       expect(fixture.signals[0]?.aborted).toBe(true);
-      await vi.advanceTimersByTimeAsync(5000);
-      expect(await outcome).toBe(finished);
+      clock.advance(4999);
+      expect(fixture.state().runnerHeartbeats).toBe(1);
+      clock.advance(1);
+      expect(await fixtureStep('claim recovery and child completion', outcome)).toBe(finished);
       expect(fixture.state()).toMatchObject({committedClaims: 1, runnerHeartbeats: 2, reviews: 1});
       expect(fixture.consumers).toHaveLength(2);
       expect(new Set(fixture.consumers).size).toBe(1);
       expect(JSON.parse(await readFile(join(fixture.directory, 'consumer.json'), 'utf8')).id).toBe(fixture.consumers[0]);
-      expect(Date.now()).toBeLessThan(fixture.state().leaseExpiresAt);
+      expect(clock.now()).toBeLessThan(fixture.state().leaseExpiresAt);
       expect(await readFile(fixture.marker, 'utf8')).toBe('once\n');
       // A transport ignoring cancellation cannot enter spawn after its deadline.
       fixture.releaseBody();
-      await fixture.bodyCompleted.promise;
-      expect(await consumeMobileDispatch(fixture.options)).toBe('reviewed');
+      await fixtureStep('late consume body completion', fixture.bodyCompleted.promise);
+      expect(await fixtureStep('durable receipt replay', consumeMobileDispatch(fixture.options))).toBe('reviewed');
       expect(await readFile(fixture.marker, 'utf8')).toBe('once\n');
       expect(fixture.state()).toMatchObject({committedClaims: 1, reviews: 1});
     } finally {
-      fixture.releaseBody(); restoreClock(); await outcome; await fixture.close();
+      stopping = true;
+      clock.stop();
+      fixture.releaseBody();
+      fixture.disconnect();
+      try { await fixtureStep('listener cleanup', outcome); }
+      finally { clock.restore(); await fixture.close(); }
     }
   });
 });
