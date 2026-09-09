@@ -15,6 +15,7 @@ import {link, mkdtemp, mkdir, readFile, rm, realpath, writeFile} from 'node:fs/p
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {JsonlSessionEventStore} from '../interactive-tui/agent-harness';
+import {SessionKernel} from '../interactive-tui/agent-harness/framework/session';
 import {
   agentHarnessAsk,
   getAgent,
@@ -300,7 +301,13 @@ describe('getAgent — per-session keyed agents', () => {
     setSessionCwd(dirs.parent);
     const key = getWorkspaceRoot();
 
-    await expect(inspectActiveThread()).resolves.toEqual({
+    const agent = (await getAgent()) as unknown as FakeAgent;
+    const journal = new SessionKernel({sessionId: 'inspection-test'});
+    journal.appendMessage({role: 'user', content: 'retained request'});
+    agent.getSessionEvents.mockReturnValue(journal.getEvents());
+    agent.getHistory.mockReturnValue(journal.getHistory());
+    await expect(inspectActiveThread()).resolves.toMatchObject({
+      inspection: {projectionVerified: true, messageCount: 1, latestRequest: null},
       sessionId: createHash('sha256')
         .update(`sift-interactive-session-v1\0${key}`, 'utf8')
         .digest('hex'),

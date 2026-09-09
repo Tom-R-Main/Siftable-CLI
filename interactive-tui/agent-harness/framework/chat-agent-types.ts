@@ -1,3 +1,4 @@
+import type {CandidateVerificationReceipt, CandidateVerificationInput} from '../../candidateVerification';
 /**
  * ChatAgent — Type Definitions
  *
@@ -10,16 +11,18 @@ import type { ToolDefinition } from "./types.js";
 import type { ToolRegistry } from "./registry.js";
 import type { ContextProvider } from "./context.js";
 import type { PromptOptions } from "./prompts.js";
-import type { AIAdapter, ChatContent, ChatMessage, ReasoningEffort } from "./adapters/types.js";
+import type { AIAdapter, AdapterConfig, AdapterEvent, ProviderReceipt, ChatContent, ChatMessage, ReasoningEffort } from "./adapters/types.js";
 import type { Store } from "./store.js";
 import type { SessionEvent, SessionEventStore } from "./session.js";
 import type { ToolOutputSpillPolicy } from "./tool-output.js";
+
+import type { ToolExecutionContext } from "./execution-context.js";
 
 // ─── Legible Run Records ──────────────────────────────────────────────────
 
 export const RUN_SCHEMA_VERSION = "siftable.agent-harness.run/1" as const;
 export const RUN_TOOL_SCHEDULING_POLICY_VERSION = "siftable.tool-scheduling/1" as const;
-export const RUN_TOOL_OUTPUT_POLICY_VERSION = "siftable.tool-output/1" as const;
+export const RUN_TOOL_OUTPUT_POLICY_VERSION = "siftable.tool-output/2" as const;
 
 export type RunToolExecutionMode = "exclusive" | "parallel-safe";
 
@@ -199,6 +202,10 @@ export interface ChatSessionConfig {
 // ─── Agent Config ──────────────────────────────────────────────────────────
 
 export interface ChatAgentConfig {
+  /** Trusted turn-scoped execution settings; never model-supplied arguments. */
+  executionContext?: () => Omit<ToolExecutionContext, "sessionId" | "turnId" | "callId" | "signal">;
+  /** Explicit transport configuration, kept out of journal envelopes. */
+  adapterConfig?: Partial<AdapterConfig>;
   /** Agent name (used in banners and metadata) */
   name?: string;
 
@@ -282,6 +289,9 @@ export interface ChatAgentConfig {
 // ─── Chat Results ──────────────────────────────────────────────────────────
 
 export interface ChatResult {
+  providerReceipts?: ProviderReceipt[];
+  /** Last explicitly configured candidate check, independently of run status. */
+  verification?: CandidateVerificationReceipt;
   /** Final text response */
   text: string;
 
@@ -324,6 +334,8 @@ export interface ChatStreamChunk {
 
   /** Incremental text (for type: "text") */
   text?: string;
+  /** Already delivered through the provider-event callback. */
+  streamed?: boolean;
 
   /** Tool call info (for type: "tool_call"). `callId` is the provider call id;
    * results carry the same id so parallel same-name calls stay correlated. */
@@ -348,6 +360,14 @@ export interface ChatStreamChunk {
 // ─── Chat Options ──────────────────────────────────────────────────────────
 
 export interface ChatAgentChatOptions {
+  /** Trusted user-supplied check; never an evaluator's held-out grader. */
+  completionVerification?: Omit<CandidateVerificationInput, 'context' | 'onPrepared'> & {
+    context: Omit<ToolExecutionContext, 'sessionId' | 'turnId' | 'callId' | 'signal'>;
+  };
+  /** Prepared and settled receipts, emitted only after their journal writes. */
+  onVerification?: (receipt: CandidateVerificationReceipt) => void;
+  /** Live provider progress; receipt events are also persisted. */
+  onProviderEvent?: (event: AdapterEvent) => void;
   /** Enable streaming response (returns AsyncIterable<ChatStreamChunk>) */
   stream?: boolean;
 
@@ -419,6 +439,7 @@ export interface ChatAgent {
 
   /** Immutable execution journal backing the projected model history. */
   getSessionEvents(): readonly SessionEvent[];
+  runVerification(input: CandidateVerificationInput): Promise<CandidateVerificationReceipt>;
 
   /** Clear immediately; throws while agent work is active. */
   reset(options?: ChatAgentResetOptions): void;

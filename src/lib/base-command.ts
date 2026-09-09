@@ -41,7 +41,7 @@ export abstract class BaseCommand extends Command {
     }),
     'api-url': Flags.string({
       description: 'API base URL',
-      default: DEFAULT_API_URL,
+      default: async () => envValue('SIFT_API_URL', 'EXF_API_URL') || DEFAULT_API_URL,
       helpGroup: 'GLOBAL',
     }),
     'no-input': Flags.boolean({
@@ -113,7 +113,7 @@ export abstract class BaseCommand extends Command {
     return response.json() as Promise<T>;
   }
 
-  private workspaceId(flagValue?: string | null): string | undefined {
+  protected workspaceId(flagValue?: string | null): string | undefined {
     try {
       return resolveWorkspaceTenantId(flagValue);
     } catch (error) {

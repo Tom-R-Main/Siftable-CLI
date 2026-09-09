@@ -162,14 +162,15 @@ describe('LocalControlClient — Codex engine', () => {
     expect(s2.authStatus).toBe('unauthenticated');
   });
 
-  it('keeps Siftable-token auth for non-Codex engines', async () => {
+  it('does not substitute a hosted Sift token for a local provider credential', async () => {
     const client = new LocalControlClient({
       getModel: () => ({provider: 'openrouter', model: 'google/gemini-3.8-flash'}),
       getToken: () => 'sift_pat_x',
+      hasProviderCredential: () => false,
       getCodexAccount: async () => null,
     });
     const s = await client.state();
-    expect(s.authStatus).toBe('authenticated');
+    expect(s.authStatus).toBe('unauthenticated');
   });
 
   it('reports codexStatus with account and active flag', async () => {

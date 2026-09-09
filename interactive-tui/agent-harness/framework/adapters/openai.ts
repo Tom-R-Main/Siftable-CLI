@@ -8,6 +8,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { compatibleBaseUrl, outputTokenLimit, providerTransport, readProviderResponse } from "./transport.js";
 import type {
   AIAdapter,
   AdapterConfig,
@@ -38,10 +39,11 @@ export function createOpenAIAdapter(config?: Partial<AdapterConfig>): AIAdapter 
   // a caller deliberately needs another GPT-5.6 tier or a retained mini model.
   const model = config?.model ?? "gpt-5.6-sol";
   const reasoningEffort = config?.reasoningEffort;
+  const maxOutputTokens = outputTokenLimit(config?.maxOutputTokens);
   const systemPrompt = config?.systemPrompt ?? "You are a helpful assistant with access to tools. Use tools when they're relevant.";
   const sessionStateKey = "openai.responses";
-  const sessionFingerprint = adapterFingerprint(sessionStateKey, model, OPENAI_RESPONSES_ENDPOINT);
-  const doFetch = config?.fetchImpl ?? fetch;
+  const endpoint = config?.baseUrl ? `${compatibleBaseUrl(config.baseUrl)}/responses` : OPENAI_RESPONSES_ENDPOINT;
+  const sessionFingerprint = adapterFingerprint(sessionStateKey, model, endpoint);
 
   return {
     name: config?.name ?? "OpenAI",
@@ -86,6 +88,7 @@ export function createOpenAIAdapter(config?: Partial<AdapterConfig>): AIAdapter 
         input,
         tools,
         include: ["reasoning.encrypted_content"],
+        ...(maxOutputTokens === undefined ? {} : { max_output_tokens: maxOutputTokens }),
         // Disable parallel tool calls — adapter only returns one tool_call
         // per round; running multiple in parallel orphans the rest. See
         // anthropic.ts for the same conservative fix.
@@ -112,99 +115,114 @@ export function createOpenAIAdapter(config?: Partial<AdapterConfig>): AIAdapter 
         body.tool_choice = { type: "function", name: options.toolChoice.name };
       }
 
-      const send = (requestBody: Record<string, unknown>) => doFetch(OPENAI_RESPONSES_ENDPOINT, {
-        method: "POST",
-        signal: options?.signal,
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(requestBody),
-      });
-
-      let continuationRecovery: AdapterContinuationRecovery | undefined;
-      let response = await send(body);
-      if (!response.ok) {
-        const error = await response.text();
-        if (!previousResponseId || !isMissingContinuationError(error, previousResponseId)) {
-          throw new Error(`OpenAI API error (${response.status}): ${error}`);
-        }
-        continuationRecovery = {
-          reason: "missing_or_expired",
-          failedContinuationId: previousResponseId,
-        };
-        const retryBody: Record<string, unknown> = {
-          ...body,
-          input: responsesInputFromHistory(messages, sessionStateKey, "OpenAI"),
-        };
-        delete retryBody.previous_response_id;
-        response = await send(retryBody);
-        if (!response.ok) {
-          const retryError = await response.text();
-          throw new Error(`OpenAI API error (${response.status}): ${retryError}`);
-        }
-      }
-
-      const data: unknown = await response.json();
-      const outputItems = responseOutputItems(data, "OpenAI");
-      const providerReplay: AdapterReplayPayload = { key: sessionStateKey, outputItems };
-      const responseId = responseIdentifier(data);
-      if (!options?.oneShot && responseId === undefined) {
-        throw new Error("OpenAI response id must be a non-empty string");
-      }
-      const nextSessionState: AdapterSessionState | undefined =
-        !options?.oneShot && responseId !== undefined
-          ? {
-              key: sessionStateKey,
-              continuationId: responseId,
-              fingerprint: sessionFingerprint,
-            }
-          : undefined;
-      const withProviderState = (parsed: AdapterResponse): AdapterResponse => ({
-        ...parsed,
-        providerReplay,
-        ...(nextSessionState === undefined ? {} : { sessionState: nextSessionState }),
-        ...(continuationRecovery === undefined ? {} : { continuationRecovery }),
-      });
-
-      const parsedCalls: NonNullable<AdapterResponse["toolCalls"]> = [];
-      const textParts: string[] = [];
-      for (const item of outputItems) {
-        if (!isRecord(item)) continue;
-        if (item.type === "function_call") {
-          parsedCalls.push({
-            id: requiredString(item.call_id, "OpenAI function call id"),
-            name: requiredString(item.name, "OpenAI function call name"),
-            args: parseToolArguments(item.arguments, "OpenAI function call arguments"),
-          });
-          continue;
-        }
-
-        if (item.type === "message") {
-          const text = outputMessageText(item);
-          if (text) textParts.push(text);
-        }
-      }
-
-      if (parsedCalls.length > 0 || textParts.length > 0) {
-        return withProviderState({
-          ...(textParts.length === 0 ? {} : { text: textParts.join("") }),
-          ...(parsedCalls.length === 1
-            ? { toolCall: parsedCalls[0] }
-            : parsedCalls.length > 1
-              ? { toolCalls: parsedCalls }
-              : {}),
+      const makeTransport = () => providerTransport({ ...config, name: config?.name ?? "OpenAI", model }, options);
+      let transport = makeTransport();
+      const priorReceipts: NonNullable<AdapterResponse["providerReceipts"]> = [];
+      if (transport.stream) body.stream = true;
+      try {
+        const send = (requestBody: Record<string, unknown>) => transport.fetch(endpoint, {
+          method: "POST",
+          signal: options?.signal,
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(requestBody),
         });
-      }
 
-      return withProviderState({ text: "(no response)" });
+        let continuationRecovery: AdapterContinuationRecovery | undefined;
+        let response = await send(body);
+        if (!response.ok) {
+          const error = await response.text();
+          if (!previousResponseId || !isMissingContinuationError(error, previousResponseId)) {
+            throw new Error(`OpenAI API error (${response.status})`);
+          }
+          transport.finish(undefined, "failed");
+          priorReceipts.push(...transport.receipts);
+          transport = makeTransport();
+          continuationRecovery = {
+            reason: "missing_or_expired",
+            failedContinuationId: previousResponseId,
+          };
+          const retryBody: Record<string, unknown> = {
+            ...body,
+            input: responsesInputFromHistory(messages, sessionStateKey, "OpenAI"),
+          };
+          delete retryBody.previous_response_id;
+          response = await send(retryBody);
+          if (!response.ok) {
+            await response.body?.cancel();
+            throw new Error(`OpenAI API error (${response.status})`);
+          }
+        }
+
+        const data: unknown = await readProviderResponse(response, "responses", transport.text, options?.signal, transport.capture);
+        transport.capture(data);
+        if (isRecord(data) && data.status !== undefined && data.status !== "completed") throw new Error("OpenAI response is incomplete");
+        const outputItems = responseOutputItems(data, "OpenAI");
+        const providerReplay: AdapterReplayPayload = { key: sessionStateKey, outputItems };
+        const responseId = responseIdentifier(data);
+        if (!options?.oneShot && responseId === undefined) {
+          throw new Error("OpenAI response id must be a non-empty string");
+        }
+        const nextSessionState: AdapterSessionState | undefined =
+          !options?.oneShot && responseId !== undefined
+            ? {
+                key: sessionStateKey,
+                continuationId: responseId,
+                fingerprint: sessionFingerprint,
+              }
+            : undefined;
+        const withProviderState = (parsed: AdapterResponse): AdapterResponse => ({
+          ...parsed,
+          providerReceipts: [...priorReceipts, ...transport.receipts],
+          providerReplay,
+          ...(nextSessionState === undefined ? {} : { sessionState: nextSessionState }),
+          ...(continuationRecovery === undefined ? {} : { continuationRecovery }),
+        });
+
+        const parsedCalls: NonNullable<AdapterResponse["toolCalls"]> = [];
+        const textParts: string[] = [];
+        for (const item of outputItems) {
+          if (!isRecord(item)) continue;
+          if (item.type === "function_call") {
+            parsedCalls.push({
+              id: requiredString(item.call_id, "OpenAI function call id"),
+              name: requiredString(item.name, "OpenAI function call name"),
+              args: parseToolArguments(item.arguments, "OpenAI function call arguments"),
+            });
+            continue;
+          }
+
+          if (item.type === "message") {
+            const text = outputMessageText(item);
+            if (text) textParts.push(text);
+          }
+        }
+
+        transport.finish(data);
+        if (parsedCalls.length > 0 || textParts.length > 0) {
+          return withProviderState({
+            ...(textParts.length === 0 ? {} : { text: textParts.join("") }),
+            ...(parsedCalls.length === 1
+              ? { toolCall: parsedCalls[0] }
+              : parsedCalls.length > 1
+                ? { toolCalls: parsedCalls }
+                : {}),
+          });
+        }
+
+        return withProviderState({ text: "(no response)" });
+      } catch (error) { transport.fail(); throw error; }
     },
   };
 }
 
 // ─── OpenAI-Compatible Chat Completions (shared by OpenRouter, xAI, etc.) ──
 
-interface ChatCompletionsConfig {
+export interface ChatCompletionsConfig extends Partial<AdapterConfig> {
+  /** OpenRouter has a unified nested field; direct compatible APIs use reasoning_effort. */
+  reasoningFormat?: "openrouter" | "standard";
   name: string;
   model: string;
   apiKey: string;
@@ -219,9 +237,10 @@ interface ChatCompletionsConfig {
  * Generic adapter for any OpenAI-compatible Chat Completions API.
  * Used by OpenRouter and any other compatible provider.
  */
-function createChatCompletionsAdapter(config: ChatCompletionsConfig): AIAdapter {
-  const { name, model, apiKey, baseUrl, reasoningEffort, provider } = config;
-  const doFetch = config.fetchImpl ?? fetch;
+export function createChatCompletionsAdapter(config: ChatCompletionsConfig): AIAdapter {
+  const { name, model, apiKey, reasoningEffort, provider } = config;
+  const baseUrl = compatibleBaseUrl(config.baseUrl);
+  const maxOutputTokens = outputTokenLimit(config.maxOutputTokens);
   const sysPrompt = config.systemPrompt ?? "You are a helpful assistant with access to tools. Use tools when they're relevant.";
 
   return {
@@ -276,14 +295,14 @@ function createChatCompletionsAdapter(config: ChatCompletionsConfig): AIAdapter 
       const body: Record<string, unknown> = {
         model,
         messages: openaiMessages,
+        ...(maxOutputTokens === undefined ? {} : { max_tokens: maxOutputTokens }),
         tools: registry.toOpenAIFormat(),
         ...(provider ? { provider } : {}),
         // Allow the model to fan out — the agent loop executes parallel tool
         // calls concurrently and returns one tool result per call id.
         parallel_tool_calls: true,
-        // max_tokens is intentionally omitted: a hardcoded cap truncates real
-        // answers (and reasoning models spend output tokens on thinking too).
-        // Matches codex-cli / t3-code, which let the model answer to its limit.
+        // An output cap is opt-in. Reasoning models may spend the budget on
+        // thinking, so a caller must deliberately choose a smaller limit.
       };
 
       // Temperature is only meaningful for non-reasoning turns — reasoning
@@ -292,11 +311,9 @@ function createChatCompletionsAdapter(config: ChatCompletionsConfig): AIAdapter 
         body.temperature = 0.7;
       }
 
-      // Reasoning effort. OpenRouter's unified `reasoning` field normalizes
-      // across model families: OpenAI-style `effort`, Anthropic-style thinking
-      // budgets, and Gemini all accept `{ effort }`. `none` disables it.
       if (reasoningEffort && reasoningEffort !== "none") {
-        body.reasoning = { effort: reasoningEffort };
+        if (config.reasoningFormat === "openrouter") body.reasoning = { effort: reasoningEffort };
+        else body.reasoning_effort = reasoningEffort;
       }
 
       // Tool choice support
@@ -306,52 +323,43 @@ function createChatCompletionsAdapter(config: ChatCompletionsConfig): AIAdapter 
         body.tool_choice = { type: "function", function: { name: options.toolChoice.name } };
       }
 
-      const first = await callChatCompletions({ name, baseUrl, apiKey, body, fetchImpl: doFetch, signal: options?.signal });
-      const parsed = parseChatCompletionChoice(name, first);
-      if (parsed) return parsed;
+      const receipts: NonNullable<AdapterResponse["providerReceipts"]> = [];
+      const call = async (requestBody: Record<string, unknown>) => {
+        const transport = providerTransport(config, options);
+        try {
+          const response = await transport.fetch(`${baseUrl}/chat/completions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+            body: JSON.stringify({ ...requestBody, ...(transport.stream ? { stream: true, stream_options: { include_usage: true } } : {}) }),
+          });
+          if (!response.ok) {
+            await response.body?.cancel();
+            throw new Error(`${name} API error (${response.status})`);
+          }
+          const data = await readProviderResponse(response, "chat", transport.text, options?.signal, transport.capture);
+          transport.capture(data);
+          const parsed = parseChatCompletionChoice(name, data);
+          transport.finish(data);
+          receipts.push(...transport.receipts);
+          return { data, parsed };
+        } catch (error) { transport.fail(); throw error; }
+      };
+      const first = await call(body);
+      if (first.parsed) return { ...first.parsed, providerReceipts: receipts };
 
-      // Some OpenAI-compatible gateways/models can return an empty assistant
-      // message when tools/reasoning are present but no tool call is selected.
-      // Recover once with a plain text request so the TUI doesn't show a silent
-      // "(no response)" for basic prompts like "hello".
+      // A fully completed but empty answer may be recovered once. Truncated
+      // streams or invalid tool arguments fail before this branch and are never retried.
       const retryBody = { ...body };
       delete retryBody.tools;
       delete retryBody.tool_choice;
       delete retryBody.parallel_tool_calls;
       delete retryBody.reasoning;
-      const retry = await callChatCompletions({ name, baseUrl, apiKey, body: retryBody, fetchImpl: doFetch, signal: options?.signal });
-      const retryParsed = parseChatCompletionChoice(name, retry);
-      if (retryParsed) return retryParsed;
-
-      return { text: emptyChatCompletionDiagnostic(name, first) };
+      delete retryBody.reasoning_effort;
+      const retry = await call(retryBody);
+      if (retry.parsed) return { ...retry.parsed, providerReceipts: receipts };
+      return { text: emptyChatCompletionDiagnostic(name, first.data), providerReceipts: receipts };
     },
   };
-}
-
-async function callChatCompletions(input: {
-  name: string;
-  baseUrl: string;
-  apiKey: string;
-  body: Record<string, unknown>;
-  fetchImpl?: typeof fetch;
-  signal?: AbortSignal;
-}): Promise<unknown> {
-  const response = await (input.fetchImpl ?? fetch)(`${input.baseUrl}/chat/completions`, {
-    method: "POST",
-    signal: input.signal,
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${input.apiKey}`,
-    },
-    body: JSON.stringify(input.body),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`${input.name} API error (${response.status}): ${error}`);
-  }
-
-  return response.json();
 }
 
 function parseChatCompletionChoice(name: string, data: unknown): AdapterResponse | null {
@@ -362,6 +370,9 @@ function parseChatCompletionChoice(name: string, data: unknown): AdapterResponse
   if (!choice) throw new Error(`No response from ${name}`);
   if (!isRecord(choice)) {
     throw new Error(`${name} response choice must be an object`);
+  }
+  if (choice.finish_reason !== undefined && !["stop", "tool_calls", "function_call"].includes(String(choice.finish_reason))) {
+    throw new Error(`${name} response incomplete (${choice.finish_reason})`);
   }
   const message = choice.message;
   if (!isRecord(message)) {
@@ -390,12 +401,13 @@ function parseChatCompletionChoice(name: string, data: unknown): AdapterResponse
       args: parseToolArguments(rawCall.function.arguments, `${label}.function.arguments`),
     };
   });
+  const content = message.content;
+  const text = typeof content === "string" && content.trim() ? {text: content} : {};
   // A lone call stays on `toolCall` (single-call path unchanged); only a
   // genuine fan-out uses `toolCalls`.
-  if (parsedCalls.length === 1) return { toolCall: parsedCalls[0] };
-  if (parsedCalls.length > 1) return { toolCalls: parsedCalls };
+  if (parsedCalls.length === 1) return { ...text, toolCall: parsedCalls[0] };
+  if (parsedCalls.length > 1) return { ...text, toolCalls: parsedCalls };
 
-  const content = message.content;
   if (typeof content === "string" && content.trim()) return { text: content };
   return null;
 }
@@ -732,10 +744,14 @@ export function createOpenRouterAdapter(config?: Partial<AdapterConfig>): AIAdap
     name: config?.name ?? "OpenRouter",
     model,
     apiKey,
-    baseUrl: "https://openrouter.ai/api/v1",
+    baseUrl: config?.baseUrl ?? "https://openrouter.ai/api/v1",
     systemPrompt: config?.systemPrompt,
     reasoningEffort: config?.reasoningEffort,
-    provider: openRouterProviderPriceCeiling(model),
+    reasoningFormat: "openrouter",
+    provider: !config?.baseUrl || compatibleBaseUrl(config.baseUrl) === "https://openrouter.ai/api/v1" ? openRouterProviderPriceCeiling(model) : undefined,
+    maxOutputTokens: config?.maxOutputTokens,
+    retry: config?.retry,
+    onEvent: config?.onEvent,
     fetchImpl: config?.fetchImpl,
   });
 }

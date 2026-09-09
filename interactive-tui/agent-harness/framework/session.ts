@@ -1,3 +1,4 @@
+import type {CandidateVerificationReceipt} from '../../candidateVerification';
 /**
  * Event-sourced session kernel for the Siftable agent harness.
  *
@@ -27,6 +28,8 @@ import type { Stats } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 
+import type { AdapterEvent } from "./adapters/types.js";
+import { PROVIDER_TERMINAL_ERROR_CODES } from "./adapters/types.js";
 import type {
   AdapterContinuationRecovery,
   AdapterReplayPayload,
@@ -62,6 +65,8 @@ export interface ModelToolSnapshotReference {
 }
 
 export interface ModelRequestSnapshot {
+  /** Recoverable non-secret request bytes; optional on legacy records. */
+  envelope?: { systemPrompt: string; tools: unknown[] };
   history: ModelHistoryReference;
   systemPromptSha256: string;
   tools: ModelToolSnapshotReference;
@@ -104,7 +109,11 @@ export interface SessionEventDataMap {
   "step/started": {
     index?: number;
   };
+  "verification/started": {receipt: CandidateVerificationReceipt};
+  "verification/recorded": {receipt: CandidateVerificationReceipt};
   "model/request-prepared": ModelRequestSnapshot;
+  "model/auxiliary-request-prepared": ModelRequestSnapshot & {purpose: "compaction"; input: ChatMessage[]; inputSha256: string};
+  "model/provider-event": { event: Exclude<AdapterEvent, {type: "provider.text.delta"}> };
   "model/response-received": ModelResponseSnapshot;
   "adapter/state-updated": {
     state: AdapterSessionState;
@@ -992,6 +1001,15 @@ export class SessionKernel {
       );
     }
 
+    const pendingChecks = new Map<string, CandidateVerificationReceipt>();
+    for (const event of this.events) {
+      if (event.type === "verification/started") pendingChecks.set(event.data.receipt.id, event.data.receipt);
+      else if (event.type === "verification/recorded") pendingChecks.delete(event.data.receipt.id);
+    }
+    for (const receipt of pendingChecks.values()) appended.push(this.append({type: "verification/recorded", data: {receipt: {
+      ...receipt, status: "unknown", completedAt: this.clock().toISOString(), terminationConfirmed: false, executionOutcome: "unknown",
+      reason: "Process interrupted during verification; check effects and termination before retrying",
+    }}}));
     return Object.freeze(appended);
   }
 
@@ -1398,6 +1416,7 @@ function projectEvent(
       return snapshotJson(event.data.history, "replacement history") as readonly ChatMessage[];
     case "message/appended":
       return snapshotJson([...current, event.data.message], "projected history") as readonly ChatMessage[];
+    case "model/auxiliary-request-prepared":
     case "model/request-prepared": {
       if (event.data.history.throughSeq !== event.seq - 1) {
         throw new SessionInvariantError(
@@ -1498,6 +1517,7 @@ interface ValidationPendingModelResponse {
 interface SessionValidationState {
   processedEvents: number;
   eventIds: Set<string>;
+  auxiliaryRequestIds: Set<string>;
   openTurns: Map<string, SessionEventOf<"turn/started">>;
   turnOrder: string[];
   openSteps: Map<string, SessionEventOf<"step/started">>;
@@ -1518,6 +1538,7 @@ function createSessionValidationState(): SessionValidationState {
   return {
     processedEvents: 0,
     eventIds: new Set(),
+    auxiliaryRequestIds: new Set(),
     openTurns: new Map(),
     turnOrder: [],
     openSteps: new Map(),
@@ -1581,10 +1602,14 @@ function validateCorrelationTransition(
   event: SessionEvent,
   state: SessionValidationState,
 ): void {
+  if (event.type === "model/auxiliary-request-prepared" && state.auxiliaryRequestIds.has(event.correlationId!)) throw new SessionInvariantError("duplicate auxiliary request correlation");
+  if (event.type === "model/provider-event" && !state.pendingModelRequest && event.correlationId && !state.auxiliaryRequestIds.has(event.correlationId)) throw new SessionInvariantError("provider event has unknown auxiliary request correlation");
   const pendingRequest = state.pendingModelRequest;
   if (pendingRequest !== undefined) {
     if (event.type === "model/response-received") {
       assertValidationContext(pendingRequest, event, "model request and response");
+    } else if (event.type === "model/provider-event") {
+      assertValidationContext(pendingRequest, event, "model request and provider event");
     } else if (event.type === "step/completed") {
       assertValidationContext(pendingRequest, event, "model request and step completion");
       if (event.data.outcome === "completed") {
@@ -2115,6 +2140,9 @@ function advanceSessionValidationState(
   state.eventIds.add(event.eventId);
 
   switch (event.type) {
+    case "model/auxiliary-request-prepared":
+      state.auxiliaryRequestIds.add(event.correlationId!);
+      break;
     case "session/reset":
     case "session/destroyed":
       clearValidationOpenWork(state);
@@ -2383,7 +2411,11 @@ const EVENT_TYPES: ReadonlySet<string> = new Set<SessionEventType>([
   "message/appended",
   "turn/started",
   "step/started",
+  "verification/started",
+  "verification/recorded",
   "model/request-prepared",
+  "model/auxiliary-request-prepared",
+  "model/provider-event",
   "model/response-received",
   "adapter/state-updated",
   "adapter/state-cleared",
@@ -2443,7 +2475,52 @@ function validateEventData(event: SessionEvent): void {
         throw new SessionInvariantError("step/started index must be a non-negative safe integer");
       }
       break;
+    case "verification/started":
+    case "verification/recorded": {
+      const receipt = event.data.receipt;
+      if (!isPlainObject(receipt) || receipt.schemaVersion !== 1 || receipt.sessionId !== event.sessionId) throw new SessionInvariantError("invalid verification session");
+      for (const field of ["id", "turnId", "callId", "workspaceRoot", "cwd"] as const) assertNonEmptyString(receipt[field], `verification ${field}`);
+      assertSha256(receipt.argvSha256, "verification command digest");
+      assertIsoTimestamp(receipt.startedAt);
+      if (event.type === "verification/recorded") assertIsoTimestamp(receipt.completedAt);
+      else if (receipt.completedAt !== "" || receipt.status !== "unknown") throw new SessionInvariantError("invalid prepared verification");
+      if (!["passed", "failed", "interrupted", "stale", "unknown"].includes(receipt.status)) throw new SessionInvariantError("invalid verification outcome");
+      if (!Array.isArray(receipt.files) || !Array.isArray(receipt.argv) || typeof receipt.dispatched !== "boolean" || typeof receipt.terminationConfirmed !== "boolean") throw new SessionInvariantError("invalid verification scope");
+      if (!receipt.files.length || receipt.files.some(path => typeof path !== 'string' || !path || /^(?:\/|[A-Za-z]:)/.test(path) || path.split(/[\\/]/).some(part => part === '..' || part === '.'))) throw new SessionInvariantError("invalid verification file path");
+      if (new Set(receipt.files).size !== receipt.files.length || receipt.argv.some(arg => typeof arg !== 'string')) throw new SessionInvariantError("invalid verification command or file mapping");
+      for (const snapshot of [receipt.before, receipt.after]) {
+        if (snapshot === null) continue;
+        if (!isPlainObject(snapshot) || !Array.isArray(snapshot.files) || snapshot.files.length !== receipt.files.length) throw new SessionInvariantError("invalid verification candidate snapshot");
+        assertSha256(snapshot.sha256, "verification candidate digest");
+        snapshot.files.forEach((file, index) => {
+          if (!isPlainObject(file) || file.path !== receipt.files[index]) throw new SessionInvariantError("verification candidate file mapping mismatch");
+          assertSha256(file.sha256, "verification file digest");
+          assertNonEmptyString(file.version, "verification file version");
+          if (!Number.isSafeInteger(file.bytes) || (file.bytes as number) < 0) throw new SessionInvariantError("invalid verification file length");
+        });
+        if (digestJson(snapshot.files) !== snapshot.sha256) throw new SessionInvariantError("verification candidate digest mismatch");
+      }
+      if (!["succeeded", "failed", "unknown"].includes(receipt.executionOutcome) || typeof receipt.stdout !== 'string' || typeof receipt.stderr !== 'string' || typeof receipt.outputTruncated !== 'boolean') throw new SessionInvariantError("invalid verification execution receipt");
+      if (receipt.status === "passed" && (!receipt.dispatched || !receipt.terminationConfirmed || receipt.executionOutcome !== "succeeded" || receipt.exitCode !== 0 || !receipt.before || !receipt.after || receipt.before.sha256 !== receipt.after.sha256)) throw new SessionInvariantError("passed verification requires a stable candidate and successful settled command");
+      break;
+    }
+    case "model/provider-event":
+      assertProviderEvent(event.data.event);
+      break;
+    case "model/auxiliary-request-prepared":
+      if (event.data.purpose !== "compaction" || event.data.envelope === undefined || !event.correlationId || event.turnId || event.stepId || event.runId) throw new SessionInvariantError("invalid auxiliary request context");
+      assertMessages(event.data.input, "auxiliary request input");
+      if (digestJson(event.data.input) !== event.data.inputSha256) throw new SessionInvariantError("auxiliary request input digest mismatch");
+      // Auxiliary requests carry their derived model input as well as the source-history reference.
     case "model/request-prepared":
+      if (event.data.envelope !== undefined) {
+        const envelope = event.data.envelope;
+        if (!isPlainObject(envelope) || typeof envelope.systemPrompt !== "string" || !Array.isArray(envelope.tools)
+          || digestJson(envelope.systemPrompt) !== event.data.systemPromptSha256
+          || digestJson(envelope.tools) !== event.data.tools.sha256) {
+          throw new SessionInvariantError("request envelope does not match recorded digests");
+        }
+      }
       assertModelHistoryReference(event.data.history);
       assertSha256(event.data.systemPromptSha256, "model/request-prepared systemPromptSha256");
       assertModelToolSnapshotReference(event.data.tools);
@@ -2719,6 +2796,55 @@ function assertAdapterContinuationRecovery(
     throw new SessionInvariantError(`${label}.reason must be missing_or_expired`);
   }
   assertNonEmptyString(value.failedContinuationId, `${label}.failedContinuationId`);
+}
+
+function assertProviderEvent(value: unknown): void {
+  if (!isPlainObject(value)) throw new SessionInvariantError("provider event must be an object");
+  const positive = (number: unknown, label: string) => {
+    if (!Number.isSafeInteger(number) || (number as number) < 1) throw new SessionInvariantError(`${label} must be a positive safe integer`);
+  };
+  const mode = (value: unknown) => {
+    if (value !== "streaming" && value !== "buffered") throw new SessionInvariantError("invalid provider mode");
+  };
+  const status = (value: unknown) => {
+    if (!Number.isSafeInteger(value) || (value as number) < 100 || (value as number) > 599) throw new SessionInvariantError("invalid provider HTTP status");
+  };
+  if (value.type === "provider.response") {
+    const receipt = value.receipt;
+    if (!isPlainObject(receipt)) throw new SessionInvariantError("provider receipt must be an object");
+    for (const field of ["requestId", "provider", "requestedModel"]) assertNonEmptyString(receipt[field], `provider receipt ${field}`);
+    for (const field of ["servedModel", "providerRequestId", "responseId"]) if (receipt[field] !== undefined) assertNonEmptyString(receipt[field], `provider receipt ${field}`);
+    // Cancellation can be observed before the first admitted HTTP attempt.
+    assertOptionalNonNegativeInteger(receipt.attempts, "provider receipt attempts");
+    if (receipt.attempts === undefined) throw new SessionInvariantError("provider receipt attempts is required");
+    mode(receipt.mode);
+    if (!["completed", "failed", "cancelled"].includes(receipt.outcome as string)) throw new SessionInvariantError("invalid provider receipt outcome");
+    if (receipt.outcome === "completed" && receipt.attempts === 0) throw new SessionInvariantError("completed provider receipt requires an attempt");
+    if (receipt.status !== undefined) status(receipt.status);
+    if (receipt.error !== undefined) {
+      if (!isPlainObject(receipt.error)
+        || !PROVIDER_TERMINAL_ERROR_CODES.includes(receipt.error.code as never)
+        || receipt.error.retryable !== false
+        || Object.keys(receipt.error).some(key => key !== "code" && key !== "retryable")
+        || receipt.outcome === "completed") throw new SessionInvariantError("invalid provider terminal error");
+    }
+    if (receipt.usage !== undefined) {
+      if (!isPlainObject(receipt.usage)) throw new SessionInvariantError("provider usage must be an object");
+      for (const field of ["inputTokens", "outputTokens", "cachedInputTokens", "totalTokens"]) assertOptionalNonNegativeInteger(receipt.usage[field], `provider usage ${field}`);
+    }
+    return;
+  }
+  assertNonEmptyString(value.requestId, "provider event requestId");
+  positive(value.attempt, "provider event attempt");
+  if (value.type === "provider.attempt") {
+    assertNonEmptyString(value.provider, "provider attempt provider");
+    assertNonEmptyString(value.requestedModel, "provider attempt requestedModel");
+    mode(value.mode);
+    if (typeof value.oneShot !== "boolean") throw new SessionInvariantError("provider attempt oneShot must be boolean");
+  } else if (value.type === "provider.retry") {
+    status(value.status);
+    if (typeof value.delayMs !== "number" || !Number.isFinite(value.delayMs) || value.delayMs < 0) throw new SessionInvariantError("invalid provider retry delay");
+  } else throw new SessionInvariantError("invalid provider receipt event");
 }
 
 function assertModelHistoryReference(value: unknown): asserts value is ModelHistoryReference {

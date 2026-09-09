@@ -50,7 +50,7 @@ export default class AiInvoke extends BaseCommand {
       for await (const event of client.generateAiStream(input)) {
         if (event.type === 'delta') {
           text += event.text;
-          if (!this.jsonEnabled()) this.log(event.text);
+          if (!this.jsonEnabled()) process.stdout.write(event.text);
         }
         if (event.type === 'usage') {
           inputTokens = event.inputTokens;

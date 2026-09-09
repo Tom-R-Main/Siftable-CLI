@@ -58,7 +58,7 @@ describe('LocalControlClient (in-process transport)', () => {
       });
 
       const received: SseEvent[] = [];
-      await client.send('hi', (e) => received.push(e));
+      await expect(client.send('hi', (e) => received.push(e))).rejects.toThrow('agent harness unavailable');
 
       expect(received).toHaveLength(1);
       expect(received[0].type).toBe('error');
@@ -77,6 +77,28 @@ describe('LocalControlClient (in-process transport)', () => {
       await expect(
         client.send('hi', () => {}, ctrl.signal),
       ).rejects.toMatchObject({name: 'AbortError'});
+    });
+
+    it('drains cancellation and preserves uncertain effects on both event and rejection', async () => {
+      let release!: () => void;
+      const settling = new Promise<void>((resolve) => { release = resolve; });
+      const controller = new AbortController();
+      const run = { status: 'cancelled', toolEffects: { state: 'partial', certainty: 'unknown', receipts: [], verificationRequired: 'inspect file state' } } as any;
+      const client = new LocalControlClient({ ask: async (_input, emit) => {
+        await settling;
+        emit({type: 'tool_result', toolResult: {name: 'write_file', success: false, executionOutcome: 'unknown'}});
+        return {text: '', status: 'interrupted', error: 'interrupted with effects', run};
+      } });
+      const events: SseEvent[] = [];
+      let settled = false;
+      const send = client.send('change a file', (event) => events.push(event), controller.signal).finally(() => { settled = true; });
+      controller.abort();
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      release();
+      await expect(send).rejects.toMatchObject({name: 'AbortError', run});
+      expect(events.map((event) => event.type)).toEqual(['status', 'tool_result', 'interrupted', 'error']);
+      expect(events.at(-1)?.error).toContain('Inspect the recorded results');
     });
 
     it('lets the brain change the persistent session workdir and resolve later paths from it', async () => {
@@ -301,9 +323,10 @@ describe('LocalControlClient (in-process transport)', () => {
   });
 
   describe('state()', () => {
-    it('reports authenticated when a token is present', async () => {
+    it('reports authenticated when the selected provider credential is present', async () => {
       const client = new LocalControlClient({
-        getToken: () => 'sift_pat_x',
+        getToken: () => undefined,
+        hasProviderCredential: () => true,
         getModel: () => ({provider: 'openrouter', model: 'google/gemini-3.8-flash'}),
       });
       const s = await client.state();
@@ -314,10 +337,16 @@ describe('LocalControlClient (in-process transport)', () => {
     });
 
     it('reports unauthenticated when no token is present (degraded)', async () => {
-      const client = new LocalControlClient({getToken: () => undefined});
+      const client = new LocalControlClient({getToken: () => undefined, hasProviderCredential: () => false});
       const s = await client.state();
       expect(s.available).toBe(false);
       expect(s.authStatus).toBe('unauthenticated');
+    });
+
+    it('does not treat a hosted PAT as authentication for the local model provider', async () => {
+      const client = new LocalControlClient({ getToken: () => 'hosted-only', hasProviderCredential: () => false,
+        getModel: () => ({provider: 'meta', model: 'fixture'}) });
+      expect(await client.state()).toMatchObject({available: false, authStatus: 'unauthenticated'});
     });
   });
 

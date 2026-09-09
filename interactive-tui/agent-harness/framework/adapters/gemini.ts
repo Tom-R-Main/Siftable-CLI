@@ -7,6 +7,7 @@
 
 import type { AIAdapter, AdapterConfig, ChatMessage, ChatOptions, AdapterResponse } from "./types.js";
 import type { ToolRegistry } from "../registry.js";
+import { compatibleBaseUrl, outputTokenLimit, providerTransport } from "./transport.js";
 import { safeJsonParse } from "./util.js";
 import { chatContentToText, imageBase64, imageMime, normalizeChatContent } from "./content.js";
 
@@ -19,9 +20,9 @@ export function createGeminiAdapter(config?: Partial<AdapterConfig>): AIAdapter 
   }
 
   const model = config?.model ?? process.env.GEMINI_MODEL ?? "gemini-3-flash-preview";
+  const maxOutputTokens = outputTokenLimit(config?.maxOutputTokens);
   const systemPrompt = config?.systemPrompt ?? "You are a helpful assistant with access to tools. Use tools when they're relevant.";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-  const doFetch = config?.fetchImpl ?? fetch;
+  const url = `${compatibleBaseUrl(config?.baseUrl ?? "https://generativelanguage.googleapis.com/v1beta")}/models/${encodeURIComponent(model)}:generateContent`;
 
   return {
     name: config?.name ?? "Gemini",
@@ -100,7 +101,7 @@ export function createGeminiAdapter(config?: Partial<AdapterConfig>): AIAdapter 
         tools: [{ functionDeclarations: registry.toGeminiFormat() }],
         // maxOutputTokens omitted on purpose: Gemini counts thinking tokens
         // against it, so a low cap truncates reasoning models before they answer.
-        generationConfig: { temperature: 0.7 },
+        generationConfig: { temperature: 0.7, ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }) },
         systemInstruction: {
           parts: [{ text: options?.systemPrompt ?? systemPrompt }],
         },
@@ -114,47 +115,62 @@ export function createGeminiAdapter(config?: Partial<AdapterConfig>): AIAdapter 
         body.toolConfig = { functionCallingConfig: { mode } };
       }
 
-      const response = await doFetch(url, {
-        method: "POST",
-        signal: options?.signal,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const transport = providerTransport({ ...config, name: config?.name ?? "Gemini", model }, options, false);
+      try {
+        const response = await transport.fetch(url, {
+          method: "POST",
+          signal: options?.signal,
+          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+          body: JSON.stringify(body),
+        });
 
-      if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`Gemini API error (${response.status}): ${error}`);
-      }
+        if (!response.ok) {
+          await response.body?.cancel();
+          throw new Error(`Gemini API error (${response.status})`);
+        }
 
-      const data = await response.json();
-      const candidate = data.candidates?.[0]?.content;
-      if (!candidate) throw new Error("No response from Gemini");
+        const data = await response.json();
+        transport.capture({ id: data.responseId, model: data.modelVersion, usage: data.usageMetadata ? {
+          input_tokens: data.usageMetadata.promptTokenCount,
+          output_tokens: typeof data.usageMetadata.candidatesTokenCount === "number"
+            ? data.usageMetadata.candidatesTokenCount + (data.usageMetadata.thoughtsTokenCount ?? 0)
+            : undefined,
+          total_tokens: data.usageMetadata.totalTokenCount,
+          input_tokens_details: { cached_tokens: data.usageMetadata.cachedContentTokenCount },
+        } : undefined });
+        const candidate = data.candidates?.[0]?.content;
+        if (!candidate) throw new Error("No response from Gemini");
 
-      // Gemini commonly emits a preamble text part alongside a functionCall
-      // ("I'll look that up..." then the tool call). Capture both — when
-      // both are present the text is preamble; when text is alone it's
-      // the final response.
-      const textParts =
-        candidate.parts
-          ?.filter((p: any) => typeof p.text === "string")
-          .map((p: any) => p.text as string)
-          .join("\n")
-          .trim() ?? "";
-      // Gemini can emit several functionCall parts in one turn (parallel
-      // function calling). Match results back by name (Gemini's contract).
-      const functionCallParts = (candidate.parts ?? [])
-        .filter((p: any) => p.functionCall);
-      const fnCalls = functionCallParts.map((p: any, i: number) => ({
-        id: p.functionCall.id ?? `gemini-${i}`,
-        name: p.functionCall.name,
-        args: p.functionCall.args ?? {},
-      }));
+        // Gemini commonly emits a preamble text part alongside a functionCall
+        // ("I'll look that up..." then the tool call). Capture both — when
+        // both are present the text is preamble; when text is alone it's
+        // the final response.
+        const textParts =
+          candidate.parts
+            ?.filter((p: any) => typeof p.text === "string")
+            .map((p: any) => p.text as string)
+            .join("\n")
+            .trim() ?? "";
+        // Gemini can emit several functionCall parts in one turn (parallel
+        // function calling). Match results back by name (Gemini's contract).
+        const functionCallParts = (candidate.parts ?? [])
+          .filter((p: any) => p.functionCall);
+        const fnCalls = functionCallParts.map((p: any, i: number) => ({
+          id: p.functionCall.id ?? `gemini-${i}`,
+          name: p.functionCall.name,
+          args: p.functionCall.args ?? {},
+        }));
 
-      const thinking = functionCallParts.length ? functionCallParts : undefined;
-      if (fnCalls.length === 1) return { toolCall: fnCalls[0], ...(thinking && { thinking }), ...(textParts && { text: textParts }) };
-      if (fnCalls.length > 1) return { toolCalls: fnCalls, ...(thinking && { thinking }), ...(textParts && { text: textParts }) };
+        const finishReason = data.candidates?.[0]?.finishReason;
+        if (finishReason !== undefined && finishReason !== "STOP") throw new Error(`Gemini response incomplete (${finishReason})`);
+        transport.finish();
+        const providerReceipts = transport.receipts;
+        const thinking = functionCallParts.length ? functionCallParts : undefined;
+        if (fnCalls.length === 1) return { providerReceipts, toolCall: fnCalls[0], ...(thinking && { thinking }), ...(textParts && { text: textParts }) };
+        if (fnCalls.length > 1) return { providerReceipts, toolCalls: fnCalls, ...(thinking && { thinking }), ...(textParts && { text: textParts }) };
 
-      return { text: textParts || "(no response)" };
+        return { providerReceipts, text: textParts || "(no response)" };
+      } catch (error) { transport.fail(); throw error; }
     },
   };
 }

@@ -9,6 +9,7 @@ import {
   type SearchSkippedByReason,
 } from './fsEngine';
 import { getSessionCwd, getWorkspaceRoot } from './navigation';
+import {mergeSearchScans, searchScanFromStats, searchPresentation, searchCancellation, validateSearchLimits, type SearchScan, type SearchPresentation} from './searchResult';
 import { relative as relativePath, resolve as resolvePath } from 'node:path';
 
 export type ExplorerMode = 'skipped' | 'targeted' | 'broad';
@@ -190,6 +191,9 @@ export interface ExplorerPrepareResult {
 export interface ExplorerGlobResult {
   matches: Array<{ path: string; bytes: number; depth: number }>;
   stats: {
+    scan: SearchScan;
+    presentation: SearchPresentation;
+    skippedByReason: SearchSkippedByReason;
     scannedFiles: number;
     skippedFiles: number;
     matchedFiles: number;
@@ -202,6 +206,9 @@ export interface ExplorerGlobResult {
 export interface ExplorerGrepResult {
   matches: Array<{ path: string; line: number; preview: string }>;
   stats: {
+    scan: SearchScan;
+    presentation: SearchPresentation;
+    skippedByReason: SearchSkippedByReason;
     scannedFiles: number;
     skippedFiles: number;
     matchedFiles: number;
@@ -969,36 +976,39 @@ export function compileExplorerQueries(text: string, maxQueries = 5): string[] {
 
 export async function globLocalFilesForExplorer(input: {
   root?: string;
+  signal?: AbortSignal;
   pattern: string;
   maxFiles?: number;
 }): Promise<ExplorerGlobResult> {
+  validateSearchLimits({maxFiles: input.maxFiles});
   const root = input.root || getWorkspaceRoot() || getSessionCwd();
   const pattern = String(input.pattern || '').trim();
-  if (!pattern) {
-    return {
-      matches: [],
-      stats: { scannedFiles: 0, skippedFiles: 0, matchedFiles: 0, truncated: false, capped: false, capReason: null },
-    };
-  }
+  if (!pattern) throw new Error('Glob pattern must not be empty');
   const maxFiles = Math.min(Math.max(input.maxFiles ?? 64, 1), 500);
   const manifest = await scanRepositoryManifest(root, {
     maxFiles: Math.max(maxFiles * 20, 1000),
     maxDepth: 12,
+    signal: input.signal,
     sourceOnly: true,
   });
   const regex = globToRegExp(pattern);
-  const matched = manifest.files
+  const allMatched = manifest.files
     .filter((file) => !isSecretLikeExplorerPath(file.path))
-    .filter((file) => regex.test(file.path))
-    .slice(0, maxFiles);
+    .filter((file) => regex.test(file.path));
+  const matched = allMatched.slice(0, maxFiles);
+  const presentation = searchPresentation(...(allMatched.length > maxFiles ? ["maxFiles"] : []));
+  const scan = mergeSearchScans(manifest.stats.scan, searchCancellation(input.signal));
   const capped = manifest.stats.capped || matched.length >= maxFiles;
   return {
     matches: matched,
     stats: {
+      scan,
+      presentation,
+      skippedByReason: {...manifest.stats.skippedByReason},
       scannedFiles: manifest.stats.scannedFiles,
       skippedFiles: manifest.stats.skippedFiles,
-      matchedFiles: matched.length,
-      truncated: manifest.stats.truncated > 0 || capped,
+      matchedFiles: allMatched.length,
+      truncated: scan.status !== "complete" || presentation.clipped,
       capped,
       capReason: manifest.stats.capReason || (matched.length >= maxFiles ? 'maxFiles' : null),
     },
@@ -1007,19 +1017,16 @@ export async function globLocalFilesForExplorer(input: {
 
 export async function grepLocalFilesForExplorer(input: {
   root?: string;
+  signal?: AbortSignal;
   pattern: string;
   include?: string;
   maxFiles?: number;
   maxMatches?: number;
 }): Promise<ExplorerGrepResult> {
+  validateSearchLimits({maxFiles: input.maxFiles, maxMatches: input.maxMatches});
   const root = input.root || getWorkspaceRoot() || getSessionCwd();
   const pattern = String(input.pattern || '').trim();
-  if (!pattern) {
-    return {
-      matches: [],
-      stats: { scannedFiles: 0, skippedFiles: 0, matchedFiles: 0, matches: 0, truncated: false, capped: false, capReason: null },
-    };
-  }
+  if (!pattern) throw new Error('Grep pattern must not be empty');
   const maxFiles = Math.min(Math.max(input.maxFiles ?? 250, 1), 1000);
   const maxMatches = Math.min(Math.max(input.maxMatches ?? 64, 1), 250);
   let regex: RegExp;
@@ -1032,28 +1039,37 @@ export async function grepLocalFilesForExplorer(input: {
   const manifest = await scanRepositoryManifest(root, {
     maxFiles: Math.max(maxFiles * 10, 1000),
     maxDepth: 12,
+    signal: input.signal,
     sourceOnly: true,
   });
-  const files = manifest.files
+  const eligibleFiles = manifest.files
     .filter((file) => !isSecretLikeExplorerPath(file.path))
-    .filter((file) => !includeRegex || includeRegex.test(file.path))
-    .slice(0, maxFiles);
+    .filter((file) => !includeRegex || includeRegex.test(file.path));
+  const files = eligibleFiles.slice(0, maxFiles);
+  const skippedByReason = {...manifest.stats.skippedByReason};
+  const scans: SearchScan[] = [manifest.stats.scan];
+  const displayReasons: string[] = [];
+  let scannedFiles = 0;
+  let readErrors = 0;
   const matches: ExplorerGrepResult['matches'] = [];
   const matchedFiles = new Set<string>();
   let truncated = manifest.stats.truncated > 0 || manifest.stats.capped;
   for (const file of files) {
+    if (input.signal?.aborted) break;
     if (matches.length >= maxMatches) {
       truncated = true;
       break;
     }
     try {
       const read = await readText(resolvePath(root, file.path), 96 * 1024);
-      if (read.truncated) truncated = true;
+      scannedFiles += 1;
+      if (read.truncated) { truncated = true; scans.push({status: "partial", reasons: ["maxBytes"]}); }
       const lines = read.content.split(/\r\n|\r|\n/);
       for (let index = 0; index < lines.length; index += 1) {
         regex.lastIndex = 0;
         if (!regex.test(lines[index])) continue;
         matchedFiles.add(file.path);
+        if (lines[index].length > 180) displayReasons.push("previewBytes");
         matches.push({ path: file.path, line: index + 1, preview: cleanScoutText(lines[index], 180) });
         if (matches.length >= maxMatches) {
           truncated = true;
@@ -1061,20 +1077,28 @@ export async function grepLocalFilesForExplorer(input: {
         }
       }
     } catch {
+      readErrors += 1;
+      skippedByReason.ioError += 1;
       truncated = true;
     }
   }
-  const capped = manifest.stats.capped || files.length >= maxFiles || matches.length >= maxMatches;
+  const capped = manifest.stats.capped || eligibleFiles.length > maxFiles || matches.length >= maxMatches;
+  const capReason = manifest.stats.capReason || (matches.length >= maxMatches ? "maxMatches" : eligibleFiles.length > maxFiles ? "maxFiles" : null);
+  const scan = mergeSearchScans(...scans, searchScanFromStats({capped, capReason, skippedByReason}), searchCancellation(input.signal));
+  const presentation = searchPresentation(...displayReasons);
   return {
     matches,
     stats: {
-      scannedFiles: files.length,
-      skippedFiles: manifest.stats.skippedFiles,
+      scan,
+      presentation,
+      skippedByReason,
+      scannedFiles,
+      skippedFiles: manifest.stats.skippedFiles + readErrors,
       matchedFiles: matchedFiles.size,
       matches: matches.length,
-      truncated,
+      truncated: truncated || scan.status !== "complete" || presentation.clipped,
       capped,
-      capReason: manifest.stats.capReason || (matches.length >= maxMatches ? 'maxMatches' : files.length >= maxFiles ? 'maxFiles' : null),
+      capReason,
     },
   };
 }

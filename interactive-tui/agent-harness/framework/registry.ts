@@ -19,6 +19,7 @@ import type {
 } from "./types.js";
 import { validateParams, formatValidationErrors } from "./validate.js";
 import { redactSensitiveText } from "./redaction.js";
+import { assertExecutionActive, currentExecutionContext, withExecutionContext, type ToolExecutionContext } from './execution-context.js';
 
 export class ToolRegistry {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -100,6 +101,7 @@ export class ToolRegistry {
   async execute(
     name: string,
     params: Record<string, unknown>,
+    context?: ToolExecutionContext,
   ): Promise<ToolResult> {
     const tool = this.tools.get(name);
     if (!tool) {
@@ -114,9 +116,22 @@ export class ToolRegistry {
       return { success: false, error: message, executionOutcome: "failed" };
     }
 
-    const start = Date.now();
     try {
-      const result = await tool.handler(params);
+      assertExecutionActive(context);
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Tool execution cancelled', executionOutcome: 'failed' };
+    }
+    const start = Date.now();
+    let admitted = false;
+    try {
+      const invoke = () => {
+        assertExecutionActive(currentExecutionContext() ?? context);
+        admitted = true;
+        return tool.handler(params, currentExecutionContext() ?? context);
+      };
+      const result = context
+        ? await withExecutionContext(context, invoke)
+        : await invoke();
       const duration = Date.now() - start;
       // Returning from a handler does not prove its declared result survived
       // the model/journal serialization boundary.
@@ -132,7 +147,7 @@ export class ToolRegistry {
         : "";
 
       // ── Rich error output ──────────────────────────────────────────────
-      console.error(`\n❓ ${name} threw after ${duration}ms; outcome is unknown`);
+      console.error(`\n❓ ${name} threw after ${duration}ms; ${admitted ? 'outcome is unknown' : 'not dispatched'}`);
       console.error(`   Error: ${message}`);
       // Inputs can contain credentials and personal data. Log shape only.
       console.error(`   Input keys: ${Object.keys(params).sort().join(", ") || "(none)"}`);
@@ -165,7 +180,7 @@ export class ToolRegistry {
       }
       console.error();
 
-      return { success: false, error: message, executionOutcome: "unknown" };
+      return { success: false, error: message, executionOutcome: admitted ? "unknown" : "failed" };
     }
   }
 

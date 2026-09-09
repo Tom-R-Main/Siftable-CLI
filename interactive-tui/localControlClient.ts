@@ -45,6 +45,8 @@ export interface LocalBrainDeps {
   getModel: typeof getBrainModel;
   /** Resolve the Siftable token from env (launcher sets SIFT_PAT). */
   getToken: () => string | undefined;
+  /** Metadata only: can the selected local adapter obtain its own credential? */
+  hasProviderCredential: (provider: string) => boolean;
   /** Read the Codex account (memoized in the engine); null when logged out. */
   getCodexAccount: typeof getCodexAccount;
   /** Force a context compaction on the active session's agent. */
@@ -56,6 +58,14 @@ const defaultDeps: LocalBrainDeps = {
   setModel: setBrainModel,
   getModel: getBrainModel,
   getToken: () => process.env.SIFT_PAT || process.env.EXF_PAT,
+  hasProviderCredential: (provider) => {
+    const names: Record<string, string> = {
+      openrouter: 'OPENROUTER_API_KEY', openai: 'OPENAI_API_KEY', meta: 'META_API_KEY',
+      gemini: 'GEMINI_API_KEY', anthropic: 'ANTHROPIC_API_KEY', claude: 'ANTHROPIC_API_KEY',
+      xai: 'XAI_API_KEY', grok: 'XAI_API_KEY',
+    };
+    return !!(names[provider] && process.env[names[provider]]);
+  },
   getCodexAccount,
   compact: compactActiveThread,
 };
@@ -81,7 +91,7 @@ export class LocalControlClient implements ControlTransport {
         context: { surface: "local", runningAgents: [] },
       };
     }
-    const authed = Boolean(this.deps.getToken());
+    const authed = this.deps.hasProviderCredential(model.provider);
     return {
       available: authed,
       model,
@@ -142,49 +152,33 @@ export class LocalControlClient implements ControlTransport {
   ): Promise<void> {
     if (signal?.aborted) throw abortError();
 
-    // Reject immediately so the TUI can show "paused" while the signal
-    // cooperatively interrupts the harness/provider. An already-started tool is
-    // allowed to settle in the background; late UI events remain suppressed.
-    let stopped = false;
-    const forward = (e: BrainEvent) => {
-      if (!stopped) onEvent(e as SseEvent);
-    };
-
-    const askPromise = this.deps.ask(input, forward, signal).then((result) => {
-      if (stopped) return;
-      // agentHarnessAsk never throws; a brain failure arrives as {error}.
-      // Surface it as an SSE error event the TUI already renders.
-      if (result.error) {
-        onEvent({ type: "error", error: result.error });
+    // Cancellation is a request, not proof that admitted effects stopped.
+    // Continue observing receipts and keep the caller busy until settlement.
+    const onAbort = () => onEvent({ type: "status", status: "stopping" });
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      const result = await this.deps.ask(input, (event) => onEvent(event as SseEvent), signal);
+      const run = result.run ?? result.result?.run;
+      if (signal?.aborted || result.status === 'interrupted') {
+        onEvent({type: 'interrupted', status: 'interrupted', run, providerReceipts: result.providerReceipts});
+        const uncertainty = run?.toolEffects?.verificationRequired ?? run?.cancellation?.verificationRequired;
+        if (uncertainty || run?.toolEffects?.certainty === 'unknown') {
+          onEvent({type: 'error', error: 'Turn interrupted; tool effects may have occurred. Inspect the recorded results before retrying.', run});
+        }
+        throw Object.assign(abortError(result.error), {run, providerReceipts: result.providerReceipts});
       }
-    });
-
-    if (!signal) {
-      await askPromise;
-      return;
+      if (result.error) {
+        onEvent({ type: "error", error: result.error, run, providerReceipts: result.providerReceipts });
+        throw Object.assign(new Error(result.error), {run, providerReceipts: result.providerReceipts});
+      }
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
     }
-
-    await new Promise<void>((resolve, reject) => {
-      const onAbort = () => {
-        stopped = true;
-        reject(abortError());
-      };
-      signal.addEventListener("abort", onAbort, { once: true });
-      askPromise
-        .then(() => {
-          signal.removeEventListener("abort", onAbort);
-          resolve();
-        })
-        .catch((err) => {
-          signal.removeEventListener("abort", onAbort);
-          reject(err);
-        });
-    });
   }
 }
 
-function abortError(): Error {
-  const err = new Error("aborted");
+function abortError(message = 'aborted'): Error {
+  const err = new Error(message);
   err.name = "AbortError";
   return err;
 }

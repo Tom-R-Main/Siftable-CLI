@@ -21,6 +21,7 @@
  * "bypass", that invariant is intentionally lifted for the rest of the session.
  */
 import { randomUUID } from "node:crypto";
+import { assertExecutionActive, currentExecutionContext, type ToolExecutionContext } from './agent-harness/framework/execution-context';
 
 export type ApprovalDecision = "deny" | "allow" | "always" | "bypass";
 
@@ -34,6 +35,8 @@ export interface ConfirmSpec {
   allowAlways?: boolean;
   /** Whether to offer the session-wide bypass option (default true). */
   allowBypass?: boolean;
+  /** Trusted approval scope; never supplied from model arguments. */
+  authorityScope?: string;
 }
 
 export interface ConfirmRequest extends ConfirmSpec {
@@ -47,11 +50,14 @@ interface PendingApproval {
   resolve: (decision: ApprovalDecision) => void;
   signal?: AbortSignal;
   onAbort?: () => void;
+  authorityScope?: string;
+  allowBypass?: boolean;
 }
 
 let listener: Listener | null = null;
 let cancellationListener: CancellationListener | null = null;
 let bypassing = false;
+const bypassScopes = new Set<string>();
 const pending = new Map<string, PendingApproval>();
 
 function notifyCancellation(id: string): void {
@@ -84,12 +90,12 @@ export function isBypassing(): boolean {
  */
 export function requestApproval(spec: ConfirmSpec, signal?: AbortSignal): Promise<ApprovalDecision> {
   if (signal?.aborted) return Promise.resolve("deny");
-  if (bypassing) return Promise.resolve("allow");
+  if (spec.authorityScope ? bypassScopes.has(spec.authorityScope) : bypassing) return Promise.resolve("allow");
   const activeListener = listener;
   if (!activeListener) return Promise.resolve("deny");
   const id = randomUUID();
   return new Promise<ApprovalDecision>((resolve) => {
-    const entry: PendingApproval = {resolve, signal};
+    const entry: PendingApproval = {resolve, signal, authorityScope: spec.authorityScope, allowBypass: spec.allowBypass};
     if (signal) {
       entry.onAbort = () => {
         if (pending.get(id) !== entry) return;
@@ -120,7 +126,12 @@ export function resolveApproval(id: string, decision: ApprovalDecision): void {
   if (!entry) return;
   pending.delete(id);
   if (entry.signal && entry.onAbort) entry.signal.removeEventListener("abort", entry.onAbort);
-  if (decision === "bypass") bypassing = true;
+  if (entry.signal?.aborted) { entry.resolve('deny'); return; }
+  if (decision === "bypass" && entry.allowBypass === false) { entry.resolve('deny'); return; }
+  if (decision === "bypass") {
+    if (entry.authorityScope) bypassScopes.add(entry.authorityScope);
+    else bypassing = true;
+  }
   entry.resolve(decision);
 }
 
@@ -146,13 +157,19 @@ export function pendingConfirmCount(): number {
 /** Clear bypass mode (teardown / tests / an explicit "re-arm approvals"). */
 export function resetBypass(): void {
   bypassing = false;
+  bypassScopes.clear();
 }
 
 // ── Boolean shims — the agent-harness write tools only care allow-vs-deny ────
 
 /** Boolean view of `requestApproval` for callers that don't need the 4-way decision. */
-export function requestConfirm(spec: ConfirmSpec): Promise<boolean> {
-  return requestApproval(spec).then((d) => d !== "deny");
+export async function requestConfirm(spec: ConfirmSpec, context: ToolExecutionContext | undefined = currentExecutionContext()): Promise<boolean> {
+  try { assertExecutionActive(context); } catch { return false; }
+  if (context?.approval?.policy === 'deny') return false;
+  if (context?.approval?.policy === 'allow') return true;
+  const decision = await requestApproval({ ...spec, authorityScope: context?.approval?.scopeId ?? context?.sessionId ?? spec.authorityScope }, context?.signal);
+  try { assertExecutionActive(context); } catch { return false; }
+  return decision !== 'deny';
 }
 
 /** Boolean view of `resolveApproval` (true → allow, false → deny). */

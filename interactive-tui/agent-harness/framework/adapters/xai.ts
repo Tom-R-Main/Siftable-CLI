@@ -9,6 +9,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { compatibleBaseUrl, outputTokenLimit, providerTransport, readProviderResponse } from "./transport.js";
 import type {
   AIAdapter,
   AdapterConfig,
@@ -33,10 +34,11 @@ export function createXAIAdapter(config?: Partial<AdapterConfig>): AIAdapter {
   }
 
   const model = config?.model ?? "grok-4.20-0309-reasoning";
+  const maxOutputTokens = outputTokenLimit(config?.maxOutputTokens);
   const systemPrompt = config?.systemPrompt ?? "You are a helpful assistant with access to tools. Use tools when they're relevant.";
   const sessionStateKey = "xai.responses";
-  const sessionFingerprint = adapterFingerprint(sessionStateKey, model, XAI_RESPONSES_ENDPOINT);
-  const doFetch = config?.fetchImpl ?? fetch;
+  const endpoint = config?.baseUrl ? `${compatibleBaseUrl(config.baseUrl)}/responses` : XAI_RESPONSES_ENDPOINT;
+  const sessionFingerprint = adapterFingerprint(sessionStateKey, model, endpoint);
 
   return {
     name: config?.name ?? "Grok",
@@ -86,6 +88,7 @@ export function createXAIAdapter(config?: Partial<AdapterConfig>): AIAdapter {
         input,
         tools,
         include: ["reasoning.encrypted_content"],
+        ...(maxOutputTokens === undefined ? {} : { max_output_tokens: maxOutputTokens }),
         // See anthropic.ts — adapter is single-call, so disable parallel
         // tool calls to avoid orphaned tool_use_ids on the next round.
         parallel_tool_calls: false,
@@ -113,94 +116,107 @@ export function createXAIAdapter(config?: Partial<AdapterConfig>): AIAdapter {
         body.tool_choice = { type: "function", name: options.toolChoice.name };
       }
 
-      const send = (requestBody: Record<string, unknown>) => doFetch(XAI_RESPONSES_ENDPOINT, {
-        method: "POST",
-        signal: options?.signal,
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(requestBody),
-      });
-
-      let continuationRecovery: AdapterContinuationRecovery | undefined;
-      let response = await send(body);
-      if (!response.ok) {
-        const error = await response.text();
-        if (!previousResponseId || !isMissingContinuationError(error, previousResponseId)) {
-          throw new Error(`xAI API error (${response.status}): ${error}`);
-        }
-        continuationRecovery = {
-          reason: "missing_or_expired",
-          failedContinuationId: previousResponseId,
-        };
-        const retryBody: Record<string, unknown> = {
-          ...body,
-          input: responsesInputFromHistory(messages, sessionStateKey, "xAI"),
-          instructions,
-        };
-        delete retryBody.previous_response_id;
-        response = await send(retryBody);
-        if (!response.ok) {
-          const retryError = await response.text();
-          throw new Error(`xAI API error (${response.status}): ${retryError}`);
-        }
-      }
-
-      const data: unknown = await response.json();
-      const outputItems = responseOutputItems(data, "xAI");
-      const providerReplay: AdapterReplayPayload = { key: sessionStateKey, outputItems };
-      const responseId = responseIdentifier(data);
-      if (!options?.oneShot && responseId === undefined) {
-        throw new Error("xAI response id must be a non-empty string");
-      }
-      const nextSessionState: AdapterSessionState | undefined =
-        !options?.oneShot && responseId !== undefined
-          ? {
-              key: sessionStateKey,
-              continuationId: responseId,
-              fingerprint: sessionFingerprint,
-              instructionsSha256,
-            }
-          : undefined;
-      const withProviderState = (parsed: AdapterResponse): AdapterResponse => ({
-        ...parsed,
-        providerReplay,
-        ...(nextSessionState === undefined ? {} : { sessionState: nextSessionState }),
-        ...(continuationRecovery === undefined ? {} : { continuationRecovery }),
-      });
-
-      const parsedCalls: NonNullable<AdapterResponse["toolCalls"]> = [];
-      const textParts: string[] = [];
-      for (const item of outputItems) {
-        if (!isRecord(item)) continue;
-        if (item.type === "function_call") {
-          parsedCalls.push({
-            id: requiredString(item.call_id, "xAI function call id"),
-            name: requiredString(item.name, "xAI function call name"),
-            args: parseToolArguments(item.arguments, "xAI function call arguments"),
-          });
-          continue;
-        }
-
-        if (item.type === "message") {
-          const text = outputMessageText(item);
-          if (text) textParts.push(text);
-        }
-      }
-
-      if (parsedCalls.length > 0 || textParts.length > 0) {
-        return withProviderState({
-          ...(textParts.length === 0 ? {} : { text: textParts.join("") }),
-          ...(parsedCalls.length === 1
-            ? { toolCall: parsedCalls[0] }
-            : parsedCalls.length > 1
-              ? { toolCalls: parsedCalls }
-              : {}),
+      const makeTransport = () => providerTransport({ ...config, name: config?.name ?? "Grok", model }, options);
+      let transport = makeTransport();
+      const priorReceipts: NonNullable<AdapterResponse["providerReceipts"]> = [];
+      if (transport.stream) body.stream = true;
+      try {
+        const send = (requestBody: Record<string, unknown>) => transport.fetch(endpoint, {
+          method: "POST",
+          signal: options?.signal,
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(requestBody),
         });
-      }
 
-      return withProviderState({ text: "(no response)" });
+        let continuationRecovery: AdapterContinuationRecovery | undefined;
+        let response = await send(body);
+        if (!response.ok) {
+          const error = await response.text();
+          if (!previousResponseId || !isMissingContinuationError(error, previousResponseId)) {
+            throw new Error(`xAI API error (${response.status})`);
+          }
+          transport.finish(undefined, "failed");
+          priorReceipts.push(...transport.receipts);
+          transport = makeTransport();
+          continuationRecovery = {
+            reason: "missing_or_expired",
+            failedContinuationId: previousResponseId,
+          };
+          const retryBody: Record<string, unknown> = {
+            ...body,
+            input: responsesInputFromHistory(messages, sessionStateKey, "xAI"),
+            instructions,
+          };
+          delete retryBody.previous_response_id;
+          response = await send(retryBody);
+          if (!response.ok) {
+            await response.body?.cancel();
+            throw new Error(`xAI API error (${response.status})`);
+          }
+        }
+
+        const data: unknown = await readProviderResponse(response, "responses", transport.text, options?.signal, transport.capture);
+        transport.capture(data);
+        if (isRecord(data) && data.status !== undefined && data.status !== "completed") throw new Error("xAI response is incomplete");
+        const outputItems = responseOutputItems(data, "xAI");
+        const providerReplay: AdapterReplayPayload = { key: sessionStateKey, outputItems };
+        const responseId = responseIdentifier(data);
+        if (!options?.oneShot && responseId === undefined) {
+          throw new Error("xAI response id must be a non-empty string");
+        }
+        const nextSessionState: AdapterSessionState | undefined =
+          !options?.oneShot && responseId !== undefined
+            ? {
+                key: sessionStateKey,
+                continuationId: responseId,
+                fingerprint: sessionFingerprint,
+                instructionsSha256,
+              }
+            : undefined;
+        const withProviderState = (parsed: AdapterResponse): AdapterResponse => ({
+          ...parsed,
+          providerReceipts: [...priorReceipts, ...transport.receipts],
+          providerReplay,
+          ...(nextSessionState === undefined ? {} : { sessionState: nextSessionState }),
+          ...(continuationRecovery === undefined ? {} : { continuationRecovery }),
+        });
+
+        const parsedCalls: NonNullable<AdapterResponse["toolCalls"]> = [];
+        const textParts: string[] = [];
+        for (const item of outputItems) {
+          if (!isRecord(item)) continue;
+          if (item.type === "function_call") {
+            parsedCalls.push({
+              id: requiredString(item.call_id, "xAI function call id"),
+              name: requiredString(item.name, "xAI function call name"),
+              args: parseToolArguments(item.arguments, "xAI function call arguments"),
+            });
+            continue;
+          }
+
+          if (item.type === "message") {
+            const text = outputMessageText(item);
+            if (text) textParts.push(text);
+          }
+        }
+
+        transport.finish(data);
+        if (parsedCalls.length > 0 || textParts.length > 0) {
+          return withProviderState({
+            ...(textParts.length === 0 ? {} : { text: textParts.join("") }),
+            ...(parsedCalls.length === 1
+              ? { toolCall: parsedCalls[0] }
+              : parsedCalls.length > 1
+                ? { toolCalls: parsedCalls }
+                : {}),
+          });
+        }
+
+        return withProviderState({ text: "(no response)" });
+      } catch (error) { transport.fail(); throw error; }
     },
   };
 }

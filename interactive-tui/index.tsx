@@ -25,6 +25,7 @@
  * Siftable-owned harness bundled with the TUI.
  */
 import {randomUUID} from "node:crypto";
+import { runSupervisedShell } from "./shellExecution";
 
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { type KeyEvent, type PasteEvent, type TextareaRenderable } from "@opentui/core";
@@ -95,6 +96,8 @@ import { getSessionCwd, getWorkspaceRoot, setSessionCwd } from "./navigation";
 import { createChildSessionController } from "./childSessionController";
 import {
   inspectActiveThread,
+  verifyActiveCandidate,
+  readActiveToolOutput,
   resetActiveThread,
   setAgentConversationKey,
   setSessionController,
@@ -188,7 +191,7 @@ type ImageAttachment = {
   validatedBy: "zig" | "ts";
 };
 type ComposerAttachment = PasteTextAttachment | ImageAttachment;
-type QueuedPrompt = { sendInput: ChatInput; displayText: string };
+type QueuedPrompt = { sendInput: ChatInput; displayText: string; shellCommand?: string };
 type CrewCreateDraft = {
   scope: "project" | "user";
   templateId: string;
@@ -273,6 +276,7 @@ function App() {
   // separate from the backend RunningAgent rows above.
   const [childBar, setChildBar] = createSignal<ChildBarEntry[]>([]);
   const [model, setModel] = createSignal("");
+  const [providerUsage, setProviderUsage] = createSignal("");
   const [effort, setEffort] = createSignal("");
   const [busy, setBusy] = createSignal(false);
   const [queued, setQueued] = createSignal<QueuedPrompt[]>([]);
@@ -366,7 +370,14 @@ function App() {
   });
 
   const push = (m: Msg) => setMessages(messages.length, m);
+  let quitRequested = false;
   const quit = () => {
+    quitRequested = true;
+    if (busy() && abortController) {
+      abortController.abort();
+      setStatus("stopping… waiting for active work to settle");
+      return;
+    }
     if (!renderer.isDestroyed) renderer.destroy();
   };
 
@@ -612,7 +623,9 @@ function App() {
           setStatus(
             s.model?.provider === "codex"
               ? "not signed in to Codex — run `/codex login`"
-              : "not signed in — run `sift auth login`",
+              : LOCAL
+                ? `${s.model?.provider || "Selected provider"} API key missing — use /key to configure it or /model to choose a provider`
+                : "not signed in — run `sift auth login`",
           );
         } else setStatus("ready");
       }
@@ -624,7 +637,7 @@ function App() {
   // --- Enter dispatch: slash / shell / queue-while-busy / send --------------
   function onEnter() {
     const text = input().trim();
-    if (!text) return;
+    if (!text || quitRequested) return;
     setTranscriptSelected(false);
     setText("");
     history.push(text);
@@ -634,14 +647,15 @@ function App() {
       void handleSlash(text);
       return;
     }
-    if (text.startsWith("!")) {
-      void runShell(text.slice(1).trim());
-      return;
-    }
     if (busy()) {
-      setQueued((q) => [...q, { sendInput: buildChatInput(text), displayText: text }]);
+      setQueued((q) => [...q, { sendInput: buildChatInput(text), displayText: text,
+        ...(text.startsWith("!") ? {shellCommand: text.slice(1).trim()} : {}) }]);
       clearUsedPasteChips(text);
       push({ role: "system", text: `↳ queued (${queued().length}) — runs when this turn finishes` });
+      return;
+    }
+    if (text.startsWith("!")) {
+      void runShell(text.slice(1).trim());
       return;
     }
     const sendInput = buildChatInput(text);
@@ -649,79 +663,87 @@ function App() {
     void submitOne(sendInput, text);
   }
 
+  function drainNextQueued() {
+    if (quitRequested || busy()) return;
+    const q = queued();
+    if (!q.length) return;
+    setQueued(q.slice(1));
+    if (q[0].shellCommand !== undefined) void runShell(q[0].shellCommand);
+    else void submitOne(q[0].sendInput, q[0].displayText);
+  }
+
   async function runShell(cmd: string) {
-    if (!cmd) return;
+    if (!cmd || quitRequested) return;
+    if (busy()) {
+      setQueued((q) => [...q, { sendInput: `!${cmd}`, displayText: `!${cmd}`, shellCommand: cmd }]);
+      return;
+    }
+    // The typed !command is itself the user's approval. It still shares the
+    // same admission, environment, cancellation, and settlement boundary.
+    setBusy(true);
+    const controller = new AbortController();
+    abortController = controller;
+    const cwd = getSessionCwd();
+    const workspaceRoot = getWorkspaceRoot();
+    setStatus("running command… (Esc to stop)");
     push({ role: "shell", text: `$ ${cmd}` });
-    const cdMatch = cmd.trim().match(/^cd(?:\s+(.+))?$/);
-    if (cdMatch) {
-      try {
+    let succeeded = false;
+    try {
+      const cdMatch = cmd.trim().match(/^cd(?:\s+(.+))?$/);
+      if (cdMatch) {
         const result = setSessionCwd((cdMatch[1] || process.env.HOME || ".").trim());
         push({ role: "shell", text: `workdir → ${result.cwd}\nworkspace → ${result.workspaceRoot}` });
-      } catch (err) {
-        push({ role: "system", text: `cd error: ${err instanceof Error ? err.message : String(err)}` });
+        succeeded = true;
+        return;
       }
-      return;
-    }
-    if (typeof Bun === "undefined") {
-      push({ role: "system", text: "shell unavailable (no Bun runtime)" });
-      return;
-    }
-    try {
-      const proc = Bun.spawnSync(["bash", "-lc", cmd], {
-        cwd: getSessionCwd(),
-        stdout: "pipe",
-        stderr: "pipe",
+      const result = await runSupervisedShell(cmd, cwd, {
+        context: { sessionId: `human:${workspaceRoot}`, turnId: randomUUID(), callId: randomUUID(),
+          workspaceRoot, sessionCwd: cwd, signal: controller.signal },
       });
-      const out = new TextDecoder().decode(proc.stdout).trimEnd();
-      const errOut = new TextDecoder().decode(proc.stderr).trimEnd();
-      const body = [out, errOut].filter(Boolean).join("\n") || "(no output)";
+      const body = result.output || "(no output)";
       const clipped = body.length > 4000 ? body.slice(0, 4000) + "\n… (truncated)" : body;
-      push({ role: "shell", text: clipped + (proc.exitCode ? `\n[exit ${proc.exitCode}]` : "") });
+      const outcome = result.executionOutcome === "unknown"
+        ? `\n[${result.cancelled ? "interrupted" : result.timedOut ? "timed out" : "outcome unknown"}; inspect effects before retrying${result.terminationConfirmed ? "" : "; process termination unconfirmed"}]`
+        : result.exitCode ? `\n[exit ${result.exitCode}; file effects were not rolled back]` : "";
+      push({ role: "shell", text: clipped + outcome });
+      succeeded = result.executionOutcome === "succeeded";
     } catch (err) {
       push({ role: "system", text: `shell error: ${err instanceof Error ? err.message : String(err)}` });
+    } finally {
+      if (abortController === controller) abortController = null;
+      setBusy(false);
+      setStatus("ready");
+      if (quitRequested) {
+        if (!renderer.isDestroyed) renderer.destroy();
+      } else if (succeeded) drainNextQueued();
     }
   }
 
   async function submitOne(input: ChatInput, displayText = typeof input === "string" ? input : input.map((p) => (p.type === "text" ? p.text : "[image]")).join("")) {
-    push({ role: "you", text: displayText });
-    // If the active explorer mode needs a provider key that isn't loaded (e.g.
-    // warp-grep → MORPH_API_KEY), pause and offer to apply it from vault before
-    // running the turn, rather than dead-ending on "key not set".
-    try {
-      const keyMsg = await ensureExplorerProviderKey(commandCtx());
-      if (keyMsg) push({ role: "system", text: keyMsg });
-    } catch (err) {
-      push({ role: "system", text: `vault key check failed: ${err instanceof Error ? err.message : String(err)}` });
+    if (quitRequested) return;
+    if (busy()) {
+      setQueued((q) => [...q, { sendInput: input, displayText }]);
+      return;
     }
-    let sendInput = input;
-    try {
-      const preflight = await renderSkillPreflight({
-        userText: displayText,
-        cwd: commandCtx().cwd(),
-        workspaceRoot: commandCtx().workspaceRoot(),
-        skills: discoverSkills({ projectRoot: commandCtx().workspaceRoot(), cwd: commandCtx().cwd() }),
-        apiClient,
-      });
-      if (preflight.text) {
-        sendInput = appendSkillPreflightContext(input, preflight.text);
-        if (process.env.SIFT_SKILL_PREFLIGHT_DEBUG === "1") push({ role: "system", text: preflight.summary });
-      }
-    } catch (err) {
-      if (process.env.SIFT_SKILL_PREFLIGHT_DEBUG === "1") {
-        push({ role: "system", text: `skill preflight unavailable: ${err instanceof Error ? err.message : String(err)}` });
-      }
-    }
-    playSound("confirm");
     setBusy(true);
-    setStatus("thinking… (Esc to stop)");
+    const controller = new AbortController();
+    abortController = controller;
+    const admissionCwd = getSessionCwd();
+    const admissionRoot = getWorkspaceRoot();
+    const assertAdmission = () => {
+      if (controller.signal.aborted || quitRequested) throw new DOMException("Turn interrupted during preparation", "AbortError");
+      if (getSessionCwd() !== admissionCwd || getWorkspaceRoot() !== admissionRoot) throw new Error("Workspace changed during preparation; submit again in the current workspace");
+    };
+    push({ role: "you", text: displayText });
+    setStatus("preparing… (Esc to stop)");
     const turnStart = messages.length;
-    abortController = new AbortController();
     let firstTool = true;
     // Lazy assistant bubble: text segments and tool-step lines interleave in
     // event order. A tool call closes the current text bubble so the next text
     // starts a fresh one below the step.
     let assistantIdx: number | null = null;
     const toolRows = new ToolRowTracker();
+    let turnSucceeded = false;
     let pendingAssistantIdx: number | null = null;
     const pendingTextDeltas: string[] = [];
     let textFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -773,12 +795,59 @@ function App() {
       }
     };
     try {
+      // If the active explorer mode needs a provider key that isn't loaded (e.g.
+      // warp-grep → MORPH_API_KEY), pause and offer to apply it from vault before
+      // running the turn, rather than dead-ending on "key not set".
+      try {
+        const keyMsg = await ensureExplorerProviderKey(commandCtx());
+        if (keyMsg) push({ role: "system", text: keyMsg });
+      } catch (err) {
+        push({ role: "system", text: `vault key check failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+      assertAdmission();
+      let sendInput = input;
+      try {
+        const preflight = await renderSkillPreflight({
+          userText: displayText,
+          cwd: admissionCwd,
+          workspaceRoot: admissionRoot,
+          skills: discoverSkills({ projectRoot: admissionRoot, cwd: admissionCwd }),
+          apiClient,
+        });
+        if (preflight.text) {
+          sendInput = appendSkillPreflightContext(input, preflight.text);
+          if (process.env.SIFT_SKILL_PREFLIGHT_DEBUG === "1") push({ role: "system", text: preflight.summary });
+        }
+      } catch (err) {
+        if (process.env.SIFT_SKILL_PREFLIGHT_DEBUG === "1") {
+          push({ role: "system", text: `skill preflight unavailable: ${err instanceof Error ? err.message : String(err)}` });
+        }
+      }
+      assertAdmission();
+      playSound("confirm");
+      setStatus("thinking… (Esc to stop)");
       await client.send(
         sendInput,
         (e) => {
+          if (e.type === "status" && e.status === "stopping") {
+            setStatus("stopping… waiting for active work to settle");
+            return;
+          }
+          if (e.type === "provider") {
+            const provider = e.providerEvent as { type?: string; delayMs?: number; requestedModel?: string; receipt?: {servedModel?: string; usage?: {inputTokens?: number; outputTokens?: number}} } | undefined;
+            if (provider?.type === "provider.response") {
+              const usage = provider.receipt?.usage;
+              setProviderUsage(usage ? `${usage.inputTokens ?? "?"} in / ${usage.outputTokens ?? "?"} out` : "usage unknown");
+            }
+            if (!abortController?.signal.aborted) {
+              if (provider?.type === "provider.retry") setStatus(`retrying in ${Math.ceil((provider.delayMs || 0) / 1000)}s… (Esc to stop)`);
+              else if (provider?.type === "provider.attempt") setStatus(`requesting ${provider.requestedModel || "model"}… (Esc to stop)`);
+            }
+            return;
+          }
           const delta = eventTextDelta(e);
           if (delta) {
-            if (!got) setStatus("responding… (Esc to stop)");
+            if (!got && !abortController?.signal.aborted) setStatus("responding… (Esc to stop)");
             got = true;
             queueStreamingText(ensureAssistant(), delta);
           } else if (e.type === "tool_call" && e.toolCall) {
@@ -801,6 +870,7 @@ function App() {
             const toolIdx = toolRows.settle(name, e.toolResult?.callId);
             if (toolIdx !== null && toolIdx !== undefined) {
               const ok = e.toolResult?.success !== false;
+              const unknown = e.toolResult?.executionOutcome === "unknown";
               const activity = asExplorerActivityView(e.toolResult?.explorerActivity);
               if (activity) {
                 setMessages(toolIdx, "text", `${ok ? "✓" : "✗"} ${formatExplorerActivityLine(activity)}`);
@@ -810,12 +880,12 @@ function App() {
                   latestExplorerReport = activity.rawReport;
                 }
               } else {
-                setMessages(toolIdx, "text", (t) => t.replace(/^(⚙|◇)/, ok ? "✓" : "✗"));
+                setMessages(toolIdx, "text", (t) => t.replace(/^(⚙|◇)/, unknown ? "?" : ok ? "✓" : "✗"));
                 const preview = clipOutput(e.toolResult?.output ?? "");
                 if (preview) setMessages(toolIdx, "out", preview);
               }
             }
-            setStatus("working… (Esc to stop)");
+            if (!abortController?.signal.aborted) setStatus("working… (Esc to stop)");
           } else if (e.type === "error") {
             flushStreamingText();
             got = true;
@@ -826,7 +896,7 @@ function App() {
             done = e;
           }
         },
-        abortController.signal
+        controller.signal
       );
       // A clean stream normally leaves no open rows. If the transport ends
       // without a matching result, make the terminal UI state explicit while
@@ -838,6 +908,7 @@ function App() {
         setMessages(ensureAssistant(), "text", fallback || "(no response)");
       }
       finalizeAssistantMarkdown();
+      turnSucceeded = true;
       playSound("notify"); // turn complete
       autoRenderMermaid(turnStart);
     } catch (err) {
@@ -847,7 +918,7 @@ function App() {
       playSound(aborted ? "panelClose" : "block");
       setMessages(ensureAssistant(), "text", (t) =>
         aborted
-          ? `${t}${t ? "  " : ""}⏸ paused`
+          ? `${t}${t ? "  " : ""}⏸ interrupted`
           : `[error: ${err instanceof Error ? err.message : String(err)}]`
       );
       finalizeAssistantMarkdown();
@@ -856,15 +927,13 @@ function App() {
         clearTimeout(textFlushTimer);
         textFlushTimer = null;
       }
-      abortController = null;
+      if (abortController === controller) abortController = null;
       setBusy(false);
       setStatus("ready");
       // Drain one queued message, if any.
-      const q = queued();
-      if (q.length) {
-        setQueued(q.slice(1));
-        void submitOne(q[0].sendInput, q[0].displayText);
-      }
+      if (quitRequested) {
+        if (!renderer.isDestroyed) renderer.destroy();
+      } else if (turnSucceeded) drainNextQueued();
     }
   }
 
@@ -940,6 +1009,25 @@ function App() {
       conversationKey: () => sessionCtx.activeConversationKey(),
       resetThread: () => resetActiveThread(),
       inspectThread: () => inspectActiveThread(),
+      readToolOutput: (reference: number, offset?: number) => readActiveToolOutput(reference, offset),
+      verifyCandidate: async (argv: string[], files: string[]) => {
+        if (busy()) { push({role: "system", text: "Wait for the active turn to settle before verifying."}); return; }
+        setBusy(true);
+        const controller = new AbortController();
+        abortController = controller;
+        setStatus("verifying… (Esc to stop)");
+        try {
+          const receipt = await verifyActiveCandidate(argv, files, controller.signal, 'allow');
+          push({role: "system", text: `Verification ${receipt.status}: ${receipt.files.length} explicit file(s) · candidate ${receipt.after?.sha256.slice(0, 12) || 'unavailable'}\n${receipt.reason || ''}\n${receipt.stdout}${receipt.stderr}${receipt.outputTruncated ? '\n[output truncated]' : ''}`});
+        } catch (error) {
+          push({role: "system", text: `Verification failed: ${error instanceof Error ? error.message : String(error)}`});
+        } finally {
+          if (abortController === controller) abortController = null;
+          setBusy(false);
+          setStatus("ready");
+          if (quitRequested && !renderer.isDestroyed) renderer.destroy();
+        }
+      },
       push,
       setMessages: (next: CommandMessage[]) => setMessages(next),
       submit: (sendText: string, displayText?: string) => {
@@ -1324,6 +1412,13 @@ function App() {
         const isEnter =
           key.name === "return" || key.name === "enter" || key.sequence === "\r" || key.sequence === "\n";
         const k = (n: string) => key.name === n || key.sequence === n || key.sequence === n.toUpperCase();
+        if (key.ctrl && key.name === "c" && abortController) {
+          abortController.abort();
+          resolveApproval(cf.id, "deny");
+          setConfirm(null);
+          setStatus("stopping… waiting for active work to settle");
+          return;
+        }
         let decision: ApprovalDecision | null = null;
         if (k("y") || isEnter) decision = "allow";
         else if (k("a") && cf.allowAlways !== false) decision = "always";
@@ -1715,7 +1810,7 @@ function App() {
         key.stopPropagation?.();
         if (busy() && abortController) {
           abortController.abort();
-          setStatus("paused");
+          setStatus("stopping… waiting for active work to settle");
         } else if (input()) {
           setText("");
         } else if (transcriptSelected()) {
@@ -1741,7 +1836,7 @@ function App() {
         key.stopPropagation?.();
         if (busy() && abortController) {
           abortController.abort();
-          setStatus("paused");
+          setStatus("stopping… waiting for active work to settle");
         } else if (input()) {
           setText("");
         } else if (transcriptSelected()) {
@@ -2753,6 +2848,9 @@ function App() {
         <Show when={model()}>
           <text fg={theme.dim} selectable={false}>{"   ·   "}</text>
           <text fg={theme.muted} selectable={false}>{model()}</text>
+        </Show>
+        <Show when={providerUsage()}>
+          <text fg={theme.dim} selectable={false}>{`   ·   last request: ${providerUsage()}`}</text>
         </Show>
         <Show when={effort()}>
           <text fg={theme.dim} selectable={false}>{"   ·   "}</text>

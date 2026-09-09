@@ -610,7 +610,7 @@ describe("Work Contract V1 warn observations", () => {
         ok: false,
         reason: expect.stringContaining("wrote outside declared scope"),
       });
-      if (!landed.ok) expect(landed.reason).not.toContain("proof_warn");
+      if (landed.ok === false) expect(landed.reason).not.toContain("proof_warn");
     } finally {
       await fx.cleanup();
     }

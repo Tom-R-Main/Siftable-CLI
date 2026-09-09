@@ -1,4 +1,5 @@
 import {randomUUID} from "node:crypto";
+import {formatSessionInspection, type SessionInspection} from "./requestInspection";
 import {homedir} from "node:os";
 import {existsSync, readFileSync, rmSync} from "node:fs";
 import {isAbsolute, join} from "node:path";
@@ -115,10 +116,13 @@ export interface InteractiveCommandContext {
   /** Reset the active live model-history journal. */
   resetThread?: () => Promise<boolean>;
   /** Inspect the active durable journal rather than the retired rollout mirror. */
+  readToolOutput?: (reference: number, offset?: number) => Promise<{seq: number; text: string; nextOffset: number; more: boolean; bytes: number}>;
+  verifyCandidate?: (argv: string[], files: string[]) => Promise<void>;
   inspectThread?: () => Promise<{
     sessionId: string;
     eventCount: number;
     messageCount: number;
+    inspection?: SessionInspection;
   }>;
   /** mergeMaster child-session control (/spawn · /children · /enter · /leave). */
   sessions: ChildSessionActions;
@@ -2258,6 +2262,50 @@ export const interactiveCommands: InteractiveCommand[] = [
     },
   },
   {
+    name: "verify",
+    description: "run a check against explicit candidate files",
+    usage: "--files file1,file2 -- command [args]",
+    run: async (ctx, args) => {
+      const separator = args.indexOf("--");
+      if (args[0] !== "--files" || separator !== 2 || args.length < 4 || !args[1]) {
+        ctx.push({role: "system", text: "usage: /verify --files src/file.ts,test/file.test.ts -- npm test"});
+        return;
+      }
+      if (!ctx.verifyCandidate) { ctx.push({role: "system", text: "Verification is unavailable for the active harness."}); return; }
+      await ctx.verifyCandidate(args.slice(separator + 1), args[1].split(",").filter(Boolean));
+    },
+  },
+  {
+    name: "context",
+    description: "inspect the recorded model request, compaction, and journal events",
+    usage: "[request|events|output <sequence> [byte-offset]]",
+    run: async (ctx, args) => {
+      if (args[0] === 'output') {
+        const seq = Number(args[1]);
+        const offset = args[2] === undefined ? 0 : Number(args[2]);
+        if (!ctx.readToolOutput || args.length > 3 || !Number.isSafeInteger(seq) || seq < 1 || !Number.isSafeInteger(offset) || offset < 0) { ctx.push({role: 'system', text: 'usage: /context output <sequence> [byte-offset]'}); return; }
+        try {
+          const page = await ctx.readToolOutput(seq, offset);
+          ctx.push({role: 'system', text: `Output #${page.seq} · ${page.bytes} bytes\n${page.text}${page.more ? `\n[more: /context output ${seq} ${page.nextOffset}]` : ''}`});
+        } catch (error) { ctx.push({role: 'system', text: `Output unavailable: ${error instanceof Error ? error.message : String(error)}`}); }
+        return;
+      }
+      const part = args[0] ?? "summary";
+      if (args.length > 1 || !["summary", "request", "events"].includes(part)) {
+        ctx.push({role: "system", text: "usage: /context [request|events]"});
+        return;
+      }
+      try {
+        const status = await ctx.inspectThread?.();
+        ctx.push({role: "system", text: status?.inspection
+          ? formatSessionInspection(status.inspection, part as "summary" | "request" | "events")
+          : "Request inspection is unavailable for the active harness."});
+      } catch (error) {
+        ctx.push({role: "system", text: `Could not inspect session context: ${error instanceof Error ? error.message : String(error)}`});
+      }
+    },
+  },
+  {
     name: "compact",
     aliases: ["compress"],
     description: "summarize older turns now to free up context",
@@ -2746,7 +2794,7 @@ export const interactiveCommands: InteractiveCommand[] = [
  * under "Other"), so nothing is hidden by omission.
  */
 const COMMAND_GROUPS: Array<{title: string; names: string[]}> = [
-  {title: "Session", names: ["help", "hotkeys", "status", "cwd", "copy", "clear", "compact", "threads", "quit"]},
+  {title: "Session", names: ["help", "hotkeys", "status", "cwd", "copy", "clear", "compact", "context", "threads", "quit"]},
   {title: "Model & Explorer", names: ["model", "codex", "explorer", "key", "login"]},
   {title: "Agents & branches", names: ["branches", "spawn", "merge", "rebase", "sendback", "reject", "queue", "handoff", "crew", "collab"]},
   {title: "Planning & work", names: ["plan", "focus", "proof", "remember", "ship", "recap"]},

@@ -250,7 +250,7 @@ async function buildBundle(runtimeRoot) {
   const sourceIdentityBeforeBuild = harnessSourceIdentity();
   const coreRoot = join(TUI_ROOT, 'node_modules', '@opentui', 'core');
   const appResult = await Bun.build({
-    entrypoints: [join(TUI_ROOT, 'index.tsx')],
+    entrypoints: [join(TUI_ROOT, 'index.tsx'), join(TUI_ROOT, 'headless.ts')],
     outdir: runtimeRoot,
     target: 'bun',
     minify: true,

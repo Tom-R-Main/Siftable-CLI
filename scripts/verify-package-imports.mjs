@@ -245,6 +245,7 @@ function verifyPackagedInteractiveRuntime(files, shipped, problems) {
 
   const required = [
     'interactive-tui/runtime/index.js',
+    'interactive-tui/runtime/headless.js',
     'interactive-tui/runtime/parser.worker.js',
     'interactive-tui/runtime/bunfig.toml',
     'interactive-tui/runtime/licenses/NOTICE.json',

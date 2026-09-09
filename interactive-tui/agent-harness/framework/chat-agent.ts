@@ -1,3 +1,4 @@
+import {verifyCandidate, verifyReceiptCurrent, verificationAllowsRepair, verificationFeedback, type CandidateVerificationReceipt, type CandidateVerificationInput} from '../../candidateVerification';
 /**
  * ChatAgent — Composable AI Chat Agent
  *
@@ -32,6 +33,8 @@ import type {
 } from "./adapters/types.js";
 import { validatedAdapterToolCalls } from "./adapters/types.js";
 import { chatContentToText } from "./adapters/content.js";
+import type { ToolExecutionContext } from "./execution-context.js";
+import type { AdapterEvent, ProviderReceipt } from "./adapters/types.js";
 import type { AIAdapter } from "./adapters/types.js";
 import { ToolRegistry } from "./registry.js";
 import {
@@ -83,9 +86,10 @@ import {
   RUN_TOOL_SCHEDULING_POLICY_VERSION,
   RunExecutionError,
 } from "./chat-agent-types.js";
-import { digestJson, SessionKernel } from "./session.js";
+import { digestJson, snapshotJson, SessionKernel } from "./session.js";
 import type { SessionEventContext } from "./session.js";
 import { classifyToolCall, runToolBatch } from "./tool-scheduler.js";
+import { createRepetitionTracker } from "./repetition.js";
 import {
   boundToolOutput,
   bytePrefix,
@@ -242,6 +246,13 @@ export async function createChatAgent(
       toolOutput: config.toolOutput,
       persistKey: config.persistKey,
       session: config.session,
+      executionContext: config.executionContext,
+      requestOptions: {
+        ...(config.reasoningEffort ? {reasoningEffort: config.reasoningEffort} : {}),
+        ...(config.adapterConfig?.baseUrl ? {baseUrl: config.adapterConfig.baseUrl} : {}),
+        ...(config.adapterConfig?.maxOutputTokens ? {maxOutputTokens: config.adapterConfig.maxOutputTokens} : {}),
+        ...(config.adapterConfig?.retry ? {retry: {...config.adapterConfig.retry}} : {}),
+      },
     });
   } catch (error) {
     await Promise.allSettled(
@@ -264,7 +275,11 @@ function requirePositiveInteger(
   }
 }
 
+class ProviderObservationError extends Error {}
+
 interface ChatAgentInternals {
+  executionContext?: ChatAgentConfig["executionContext"];
+  requestOptions?: Record<string, unknown>;
   name: string;
   adapter: AIAdapter;
   registry: ToolRegistry;
@@ -288,6 +303,11 @@ class ChatAgentImpl implements ChatAgent {
   readonly model: string;
 
   private adapter: AIAdapter;
+  private executionContext?: ChatAgentConfig["executionContext"];
+  private requestOptions: Record<string, unknown>;
+  private providerListener?: (event: AdapterEvent) => void;
+  private providerReceipts: ProviderReceipt[] = [];
+  private streamedResponses = new WeakSet<AdapterResponse>();
   private registry: ToolRegistry;
   private systemPrompt: string;
   private conversationMemory?: ConversationMemory;
@@ -312,6 +332,8 @@ class ChatAgentImpl implements ChatAgent {
   constructor(internals: ChatAgentInternals) {
     this.name = internals.name;
     this.adapter = internals.adapter;
+    this.executionContext = internals.executionContext;
+    this.requestOptions = snapshotJson(internals.requestOptions || {}) as Readonly<Record<string, unknown>>;
     this.registry = internals.registry;
     this.systemPrompt = internals.systemPrompt;
     this.conversationMemory = internals.conversationMemory;
@@ -554,17 +576,43 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     const summarizeEnd = plan.summarizeRange[1];
     if (summarizeEnd > 0) {
       const transcript = buildSummarizeTranscript(history, summarizeEnd);
+      const auxiliaryContext: SessionEventContext = { correlationId: randomUUID() };
+      const auxiliaryInput: ChatMessage[] = freezeJson([{ role: "user", content: `${COMPACTION_SUMMARY_INSTRUCTION}\n\n<conversation>\n${transcript}\n</conversation>` }]);
+      // Journal the derived summary input independently from the main model
+      // history. This must succeed before any provider attempt can begin, and
+      // must not be caught by the prune-only provider-failure fallback below.
+      this.session.append({
+        type: "model/auxiliary-request-prepared",
+        data: {
+          purpose: "compaction",
+          history: {
+            throughSeq: this.session.getEventCount(),
+            messageCount: history.length,
+            sha256: digestJson(history),
+          },
+          input: auxiliaryInput,
+          inputSha256: digestJson(auxiliaryInput),
+          envelope: { systemPrompt: COMPACTION_SUMMARY_SYSTEM, tools: [] },
+          systemPromptSha256: digestJson(COMPACTION_SUMMARY_SYSTEM),
+          tools: { names: [], sha256: digestJson([]) },
+          options: { ...this.requestOptions, oneShot: true, stream: false, sourceRange: [0, summarizeEnd] },
+          adapter: { name: this.provider, model: this.model },
+        },
+        ...auxiliaryContext,
+      });
       try {
         throwIfAborted(signal);
-        const resp = await this.adapter.chat([{ role: "user", content: `${COMPACTION_SUMMARY_INSTRUCTION}\n\n<conversation>\n${transcript}\n</conversation>` }], new ToolRegistry(), {
+        const resp = await this.adapter.chat(auxiliaryInput, new ToolRegistry(), {
           systemPrompt: COMPACTION_SUMMARY_SYSTEM,
           oneShot: true,
+          stream: false,
+          onEvent: (event) => { if (event.type !== "provider.text.delta") this.observeProvider(event, auxiliaryContext); },
           ...(signal === undefined ? {} : { signal }),
         });
         throwIfAborted(signal);
         summaryText = resp.text?.trim() || null;
       } catch (error) {
-        if (isAbortInterruption(error, signal)) throw error;
+        if (error instanceof ProviderObservationError || isAbortInterruption(error, signal)) throw error;
         summaryText = null; // fall back to prune-only
       }
     }
@@ -622,8 +670,8 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     };
   }
 
-  private modelToolSnapshot() {
-    return this.registry.getAll().map((tool) => ({
+  private modelToolSnapshot(registry = this.registry) {
+    return registry.getAll().map((tool) => ({
       name: tool.name,
       description: tool.description,
       inputSchema: tool.inputSchema,
@@ -634,7 +682,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
   private recordModelRequest(
     messages: ChatMessage[],
     systemPrompt: string,
-    toolSnapshot: Array<{ name: string }>,
+    toolSnapshot: ReturnType<ChatAgentImpl["modelToolSnapshot"]>,
     options: unknown,
     context: SessionEventContext,
   ): void {
@@ -647,11 +695,12 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
           sha256: digestJson(messages),
         },
         systemPromptSha256: digestJson(systemPrompt),
+        envelope: { systemPrompt, tools: toolSnapshot },
         tools: {
           names: toolSnapshot.map((tool) => tool.name).sort(),
           sha256: digestJson(toolSnapshot),
         },
-        options,
+        options: { ...this.requestOptions, ...(options as Record<string, unknown>) },
         adapter: { name: this.provider, model: this.model },
       },
       ...context,
@@ -680,6 +729,18 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     });
   }
 
+  private observeProvider(event: AdapterEvent, context: SessionEventContext = {}): void {
+    try {
+      if (event.type !== "provider.text.delta") {
+        this.session.append({ type: "model/provider-event", data: { event }, ...context });
+      }
+      if (event.type === "provider.response") this.providerReceipts.push(event.receipt);
+      this.providerListener?.(event);
+    } catch (error) {
+      throw new ProviderObservationError("Provider event could not be recorded or delivered", {cause: error});
+    }
+  }
+
   private async callAdapter(
     messages: ChatMessage[],
     registry: ToolRegistry,
@@ -691,11 +752,18 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     const projectedState = stateKey === undefined
       ? undefined
       : this.session.getAdapterSessionState(stateKey);
+    let streamed = false;
     const response = await this.adapter.chat(messages, registry, {
+      stream: this.providerListener !== undefined,
+      onEvent: (event) => {
+        if (event.type === "provider.text.delta" && this.providerListener) streamed = true;
+        this.observeProvider(event, context);
+      },
       systemPrompt,
       ...(signal === undefined ? {} : { signal }),
       ...(projectedState === undefined ? {} : { sessionState: { ...projectedState } }),
     });
+    if (streamed) this.streamedResponses.add(response);
     validatedAdapterToolCalls(response);
     this.recordModelResponse(response, context);
     if (response.sessionState !== undefined) {
@@ -744,6 +812,8 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     call: ToolCall,
     executionMode: RunToolExecutionMode,
     context: SessionEventContext,
+    executionContext: ToolExecutionContext,
+    registry: ToolRegistry,
     rememberEffect: (
       call: ToolCall,
       executionMode: RunToolExecutionMode,
@@ -768,7 +838,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
 
     let result: Awaited<ReturnType<ToolRegistry["execute"]>>;
     try {
-      result = await this.registry.execute(call.name, call.args);
+      result = await registry.execute(call.name, call.args, executionContext);
     } catch (error) {
       return this.recordUncertainToolResult(
         call,
@@ -781,11 +851,25 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
 
     const execution = normalizeToolResult(call.name, result);
     const normalizedResult = sanitizeToolResult(execution.result);
-    // Every result crosses ONE output boundary: identical under the caps,
-    // head+tail preview (with a spill ref when configured) over them. The
-    // bounded string is what the model, history, and journal all see.
-    const bounded = boundToolOutput(JSON.stringify(normalizedResult), this.toolOutput, call.id);
-    const modelContent = bounded.content;
+    const serializedResult = JSON.stringify(normalizedResult);
+    let modelResult = serializedResult;
+    const project = registry.get(call.name)?.modelResult;
+    if (project) {
+      try {
+        // Project a copy: presentation cannot mutate the execution receipt.
+        // Apply serialization hooks before validating or redacting, just as
+        // at the executor boundary. Hooks cannot replace checked content later.
+        const projected = sanitizeToolResult(JSON.parse(JSON.stringify(project(JSON.parse(serializedResult)))));
+        if (projected.success === normalizedResult.success
+          && projected.executionOutcome === normalizedResult.executionOutcome
+          && (projected.error === undefined || typeof projected.error === "string")) {
+          modelResult = JSON.stringify(projected);
+        }
+      } catch { /* A presentation failure must not change a known tool outcome. */ }
+    }
+    const bounded = boundToolOutput(serializedResult, this.toolOutput, call.id);
+    const modelContent = modelResult === serializedResult ? bounded.content
+      : boundToolOutput(modelResult, { ...this.toolOutput, spillDir: undefined }, call.id, bounded.fullOutputRef).content;
     const executionOutcome = execution.outcome;
     const normalizedRecord = normalizedResult as unknown as Record<string, unknown>;
     rememberEffect(call, executionMode, {
@@ -944,7 +1028,17 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     message: ChatContent,
     options?: ChatAgentChatOptions,
   ): AsyncGenerator<ChatStreamChunk> {
+    // Snapshot trusted checks before waiting for the turn or making a request.
+    const suppliedVerification = options?.completionVerification;
+    const completionVerification = suppliedVerification && {
+      ...suppliedVerification,
+      argv: [...suppliedVerification.argv], files: [...suppliedVerification.files],
+      context: {...suppliedVerification.context, approval: suppliedVerification.context.approval
+        ? {...suppliedVerification.context.approval} : undefined},
+    };
     const release = await this.acquireTurn(options?.signal);
+    this.providerListener = options?.onProviderEvent;
+    this.providerReceipts = [];
     try {
       throwIfAborted(options?.signal);
       this.switchThreadIfNeeded(options?.threadId);
@@ -982,6 +1076,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
       const adapterStateBefore = this.snapshotAdapterSessionState();
       const userMessage: ChatMessage = { role: "user", content: message };
       const toolCalls: ChatResult["toolCalls"] = [];
+      const repetition = createRepetitionTracker();
       const effectReceipts = new Map<string, RunToolEffectReceipt>();
       const effectReceiptKey = (
         stepId: string | undefined,
@@ -1025,6 +1120,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
       let rounds = 0;
       let maxRounds = this.maxToolRounds;
       let finalText = "";
+      let verification: CandidateVerificationReceipt | undefined;
       let assistantTurnComplete = false;
       let activeStepId: string | undefined;
       let turnStarted = false;
@@ -1117,19 +1213,25 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
             ...stepContext,
           });
           activeStepId = nextStepId;
+          const suppliedExecution = this.executionContext?.();
+          const executionSnapshot = suppliedExecution === undefined ? undefined : Object.freeze({
+            ...suppliedExecution,
+            ...(suppliedExecution.approval ? {approval: Object.freeze({...suppliedExecution.approval})} : {}),
+          });
+          const requestRegistry = snapshotToolRegistry(this.registry);
           const requestMessages = this.currentHistory();
-          const toolSnapshot = this.modelToolSnapshot();
+          const toolSnapshot = this.modelToolSnapshot(requestRegistry);
           this.recordModelRequest(
             requestMessages,
             prompt,
             toolSnapshot,
-            { toolChoice: "auto" },
+            { toolChoice: "auto", execution: executionSnapshot ? { workspaceRoot: executionSnapshot.workspaceRoot, sessionCwd: executionSnapshot.sessionCwd, approval: executionSnapshot.approval, deadline: executionSnapshot.deadline } : undefined },
             stepContext,
           );
           const stepAdapterStateBefore = this.snapshotAdapterSessionState();
           const response = await this.callAdapter(
             requestMessages,
-            this.registry,
+            requestRegistry,
             prompt,
             stepContext,
             options?.signal,
@@ -1138,7 +1240,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
 
           const calls = validatedAdapterToolCalls(response);
           if (response.text && calls.length > 0) {
-            yield { type: "text", text: response.text };
+            yield { type: "text", text: response.text, streamed: this.streamedResponses.has(response) };
           }
 
           if (calls.length > 0) {
@@ -1171,7 +1273,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
             toolExecutionStarted = true;
             journalRecoveryRequired = true;
             const callModes = calls.map((call) => (
-              classifyToolCall(this.registry.get(call.name), call.args)
+              classifyToolCall(requestRegistry.get(call.name), call.args)
             ));
             // Bounded admission: parallel-safe calls share a capped pool,
             // exclusive calls (the fail-closed default) run alone as
@@ -1185,6 +1287,14 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
                 call,
                 callModes[index] ?? "exclusive",
                 stepContext,
+                {
+                  workspaceRoot: process.cwd(), sessionCwd: process.cwd(),
+                  ...executionSnapshot,
+                  sessionId: this.session.sessionId,
+                  turnId: stepContext.turnId!, callId: call.id,
+                  signal: options?.signal,
+                },
+                requestRegistry,
                 rememberEffect,
               ),
               maxParallel: this.maxParallelTools,
@@ -1208,6 +1318,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
               }
             }
             const resultChunks: ChatStreamChunk[] = [];
+            const repetitionNotices: string[] = [];
             let uncertainExecution = false;
             for (let index = 0; index < calls.length; index += 1) {
               const call = calls[index];
@@ -1215,6 +1326,8 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
               // Cancelled-before-start: declared above, closed by the
               // kernel's interruption repair — no message or chunk here.
               if (execution === null) continue;
+              const repetitionNotice = repetition.observe(call);
+              if (repetitionNotice !== undefined) repetitionNotices.push(repetitionNotice);
               this.session.appendMessage({
                 role: "tool",
                 content: execution.modelContent,
@@ -1261,10 +1374,8 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
             // Journal every result before yielding any result chunk. A stream
             // consumer may close at a yield boundary, but completed effects
             // must still have model-facing receipts in call order.
-            for (const chunk of resultChunks) {
-              yield chunk;
-              throwIfAborted(options?.signal);
-            }
+            for (const chunk of resultChunks) yield chunk;
+            throwIfAborted(options?.signal);
             if (uncertainExecution) {
               throw new Error(
                 "One or more tool outcomes are unknown; verify side effects before deciding whether any retry is safe",
@@ -1276,6 +1387,12 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
               ...stepContext,
             });
             activeStepId = undefined;
+            // Notices follow the complete tool batch and are ordinary durable
+            // history, so replay and request hashing see the same model input.
+            for (const content of repetitionNotices) {
+              this.session.appendMessage({ role: "user", content }, baseContext);
+            }
+            effectHistoryCheckpoint = this.currentHistory();
             continue;
           }
 
@@ -1292,7 +1409,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
               stepContext,
             );
             assistantTurnComplete = true;
-            yield { type: "text", text: response.text };
+            yield { type: "text", text: response.text, streamed: this.streamedResponses.has(response) };
             throwIfAborted(options?.signal);
           }
           if (!response.text) {
@@ -1311,10 +1428,50 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
             ...stepContext,
           });
           activeStepId = undefined;
+          if (completionVerification && !response.text) {
+            throw new Error("The model returned no candidate answer; configured verification was not run");
+          }
+          if (completionVerification && response.text) {
+            // This is inside the turn lease: never call the public locking API.
+            verification = await this.recordVerification({
+              ...completionVerification,
+              context: {...completionVerification.context, sessionId: this.session.sessionId,
+                turnId: run.manifest.runId, callId: randomUUID(), signal: options?.signal},
+            }, receipt => {
+              // A prepared check may have effects even if the settled receipt
+              // subsequently cannot be written. Recovery must preserve that fact.
+              journalRecoveryRequired = receipt.completedAt === "";
+              effectHistoryCheckpoint = this.currentHistory();
+              effectStateCheckpoint = this.snapshotAdapterSessionState();
+              options?.onVerification?.(receipt);
+            });
+            if (verification.status === "passed") {
+              const freshness = verifyReceiptCurrent(verification);
+              if (!freshness.current) {
+                verification = {...verification, status: "stale", reason: freshness.reason};
+                this.session.append({type: "verification/recorded", data: {receipt: verification}});
+                options?.onVerification?.(structuredClone(verification));
+              }
+            }
+            throwIfAborted(options?.signal);
+            if (verification.status !== "passed") {
+              assistantTurnComplete = false;
+              finalText = "";
+              if (!verificationAllowsRepair(verification)) {
+                throw new Error(`Candidate verification ${verification.status}: ${verification.reason ?? 'check did not pass'}; automatic repair was not admitted`);
+              }
+              // This write must succeed before the next inference request.
+              this.session.appendMessage({role: "user", content: verificationFeedback(verification)}, baseContext);
+              effectHistoryCheckpoint = this.currentHistory();
+              effectStateCheckpoint = this.snapshotAdapterSessionState();
+              if (maxRounds <= 0) { maxRounds = -1; break; }
+              continue;
+            }
+          }
           break;
         }
 
-        if (!finalText && maxRounds < 0) {
+        if (!finalText && maxRounds < 0 && !completionVerification) {
           const finalizerStepId = randomUUID();
           const finalizerContext = this.eventContext(run, finalizerStepId);
           const finalizerPrompt = this.exhaustedToolRoundSystemPrompt(options?.systemPrompt);
@@ -1357,7 +1514,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
               finalizerContext,
             );
             assistantTurnComplete = true;
-            yield { type: "text", text: finalText };
+            yield { type: "text", text: finalText, streamed: this.streamedResponses.has(response) };
             throwIfAborted(options?.signal);
           }
           if (!finalText) {
@@ -1438,6 +1595,8 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
           type: "done",
           result: {
             text: finalText,
+            ...(verification ? {verification} : {}),
+            providerReceipts: [...this.providerReceipts],
             toolCalls,
             rounds,
             run,
@@ -1520,6 +1679,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
         }
       }
     } finally {
+      this.providerListener = undefined;
       release();
     }
   }
@@ -1657,6 +1817,27 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
 
   getHistory(): ChatMessage[] {
     return this.currentHistory();
+  }
+
+  async runVerification(input: CandidateVerificationInput): Promise<CandidateVerificationReceipt> {
+    const release = await this.acquireTurn(input.context.signal);
+    try {
+      return await this.recordVerification(input);
+    } finally { release(); }
+  }
+
+  private async recordVerification(
+    input: CandidateVerificationInput,
+    observe?: (receipt: CandidateVerificationReceipt) => void,
+  ): Promise<CandidateVerificationReceipt> {
+    if (input.context.sessionId !== this.session.sessionId) throw new Error("Verification belongs to another session");
+    const receipt = await verifyCandidate({...input, onPrepared: prepared => {
+      this.session.append({type: "verification/started", data: {receipt: prepared}});
+      observe?.(structuredClone(prepared));
+    }});
+    this.session.append({type: "verification/recorded", data: {receipt}});
+    observe?.(structuredClone(receipt));
+    return receipt;
   }
 
   getSessionEvents() {
@@ -2069,4 +2250,25 @@ function abortedTurnReason(signal: AbortSignal): string {
     return `chat turn aborted: ${signal.reason}`;
   }
   return "chat turn aborted";
+}
+
+/** Bind the exact advertised definitions through one model request and its effects. */
+function snapshotToolRegistry(source: ToolRegistry): ToolRegistry {
+  const snapshot = new ToolRegistry();
+  for (const tool of source.getAll()) {
+    snapshot.register(Object.freeze({
+      ...tool,
+      inputSchema: snapshotJson(tool.inputSchema) as typeof tool.inputSchema,
+      ...(tool.tags ? {tags: [...tool.tags]} : {}),
+    }));
+  }
+  return snapshot;
+}
+
+function freezeJson<T>(value: T): T {
+  if (value && typeof value === "object") {
+    for (const child of Object.values(value)) freezeJson(child);
+    Object.freeze(value);
+  }
+  return value;
 }

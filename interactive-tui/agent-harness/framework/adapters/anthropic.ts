@@ -8,6 +8,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { AIAdapter, AdapterConfig, ChatMessage, ChatOptions, AdapterResponse, ReasoningEffort } from "./types.js";
 import type { ToolRegistry } from "../registry.js";
+import { compatibleBaseUrl, outputTokenLimit, providerTransport } from "./transport.js";
 import { safeJsonParse } from "./util.js";
 import { chatContentToText, imageBase64, imageMime, normalizeChatContent } from "./content.js";
 
@@ -36,11 +37,9 @@ export function createAnthropicAdapter(config?: Partial<AdapterConfig>): AIAdapt
   }
 
   const model = normalizeClaudeModel(config?.model);
-  const doFetch = config?.fetchImpl ?? fetch;
-  const client = new Anthropic({ apiKey, fetch: doFetch });
   const systemPrompt = config?.systemPrompt ?? "You are a helpful assistant with access to tools. Use tools when they're relevant.";
   const effort = normalizeClaudeOpus5Effort(config?.reasoningEffort);
-  const maxTokens = effort === "xhigh" || effort === "max" ? 64_000 : 16_000;
+  const maxTokens = outputTokenLimit(config?.maxOutputTokens) ?? (effort === "xhigh" || effort === "max" ? 64_000 : 16_000);
 
   return {
     name: config?.name ?? "Claude",
@@ -158,38 +157,58 @@ export function createAnthropicAdapter(config?: Partial<AdapterConfig>): AIAdapt
         };
       }
 
-      const data = maxTokens > 16_000
-        ? await client.messages.stream(body, { signal: options?.signal }).finalMessage()
-        : await client.messages.create(body, { signal: options?.signal });
+      const transport = providerTransport({ ...config, name: config?.name ?? "Claude", model }, maxTokens > 16_000 ? { ...options, stream: true } : options);
+      // The shared transport owns retries; SDK retries would hide attempts and
+      // replay ambiguous failures outside the configured policy.
+      const client = new Anthropic({ apiKey, maxRetries: 0,
+        ...(config?.baseUrl ? { baseURL: compatibleBaseUrl(config.baseUrl) } : {}),
+        fetch: ((url, init) => transport.fetch(url as string, init ?? {})) as typeof fetch,
+      });
+      try {
+        const data = transport.stream || maxTokens > 16_000
+          ? await client.messages.stream(body, { signal: options?.signal }).on("text", (delta) => { if (options?.stream !== false) transport.text(delta); }).finalMessage()
+          : await client.messages.create(body, { signal: options?.signal });
+        transport.capture(data);
+        if (!["end_turn", "tool_use", "stop_sequence"].includes(String(data.stop_reason))) throw new Error("Anthropic response is incomplete");
+        transport.finish(data);
+        const providerReceipts = transport.receipts;
 
-      // Anthropic responses can contain both a text block (preamble like
-      // "Let me check that...") AND a tool_use block in the same turn.
-      // Capture both — when both are present the text is preamble; when
-      // text is alone it's the final response.
-      const blocks = data.content;
-      const textBlock = blocks.find((b) => b.type === "text");
-      const toolUseBlocks = blocks.filter((b) => b.type === "tool_use");
+        // Anthropic responses can contain both a text block (preamble like
+        // "Let me check that...") AND a tool_use block in the same turn.
+        // Capture both — when both are present the text is preamble; when
+        // text is alone it's the final response.
+        const blocks = data.content;
+        const textBlock = blocks.find((b) => b.type === "text");
+        const toolUseBlocks = blocks.filter((b) => b.type === "tool_use");
 
-      if (toolUseBlocks.length) {
-        // Preserve thinking/redacted_thinking blocks verbatim so the agent loop
-        // can replay them on the assistant turn that continues these calls.
-        const thinking = blocks.filter(
-          (b) => b.type === "thinking" || b.type === "redacted_thinking"
-        );
-        const calls = toolUseBlocks.map((b) => ({
-          id: b.id,
-          name: b.name,
-          args: isRecord(b.input) ? b.input : {},
-        }));
-        const extra = {
-          ...(textBlock?.text && { text: textBlock.text }),
-          ...(thinking.length && { thinking }),
-        };
-        // A lone call stays on `toolCall`; a real fan-out uses `toolCalls`.
-        return calls.length === 1 ? { toolCall: calls[0], ...extra } : { toolCalls: calls, ...extra };
+        if (toolUseBlocks.length) {
+          // Preserve thinking/redacted_thinking blocks verbatim so the agent loop
+          // can replay them on the assistant turn that continues these calls.
+          const thinking = blocks.filter(
+            (b) => b.type === "thinking" || b.type === "redacted_thinking"
+          );
+          const calls = toolUseBlocks.map((b) => ({
+            id: b.id,
+            name: b.name,
+            args: isRecord(b.input) ? b.input : {},
+          }));
+          const extra = {
+            providerReceipts,
+            ...(textBlock?.text && { text: textBlock.text }),
+            ...(thinking.length && { thinking }),
+          };
+          // A lone call stays on `toolCall`; a real fan-out uses `toolCalls`.
+          return calls.length === 1 ? { toolCall: calls[0], ...extra } : { toolCalls: calls, ...extra };
+        }
+
+        return { providerReceipts, text: textBlock?.text ?? "(no response)" };
+      } catch (error) {
+        transport.fail();
+        transport.throwIfObserverFailed();
+        transport.throwIfTerminalFailed();
+        if (error instanceof Anthropic.APIError && error.status !== undefined) throw new Error(`Anthropic API error (${error.status})`);
+        throw error;
       }
-
-      return { text: textBlock?.text ?? "(no response)" };
     },
   };
 }

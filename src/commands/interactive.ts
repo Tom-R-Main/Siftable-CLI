@@ -1,5 +1,6 @@
 import {spawnSync} from 'node:child_process';
 import {existsSync} from 'node:fs';
+import {constants} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {Flags} from '@oclif/core';
 import {BaseCommand, DEFAULT_API_URL} from '../lib/base-command.js';
@@ -125,7 +126,7 @@ export async function runInteractiveAiRequest(
  * replaced with an external runtime path.
  */
 export function buildChildEnv(opts: {
-  token: string;
+  token?: string;
   apiUrl: string;
   workspaceId?: string;
   userCwd?: string;
@@ -145,7 +146,10 @@ export function buildChildEnv(opts: {
   delete env.EXECUTERM_OPENFUNCTION_PATH;
 
   env.SIFT_LOCAL_BRAIN = '1';
-  env.SIFT_PAT = opts.token;
+  // Only the token resolved by the launcher may enable hosted tools.
+  delete env.SIFT_PAT;
+  delete env.EXF_PAT;
+  if (opts.token) env.SIFT_PAT = opts.token;
   env.SIFT_API_URL = opts.apiUrl;
   if (opts.tuiDir) env.SIFT_INTERACTIVE_TUI_DIR = opts.tuiDir;
   if (opts.workspaceId) env.SIFT_WORKSPACE_ID = opts.workspaceId;
@@ -262,7 +266,7 @@ export default class Interactive extends BaseCommand {
     }),
   };
 
-  async run(): Promise<void> {
+  async run(): Promise<unknown> {
     const {flags} = await this.parse(Interactive);
 
     if (flags['connected-models'] || flags.model) {
@@ -277,14 +281,12 @@ export default class Interactive extends BaseCommand {
           model: model.model,
           status: model.status,
         }));
-        if (this.jsonEnabled()) {
-          this.log(JSON.stringify(models));
-        } else {
+        if (!this.jsonEnabled()) {
           for (const model of models) {
             this.log(`${model.connectionId}\t${model.provider}\t${model.model}\t${model.connectionName}`);
           }
         }
-        return;
+        return models;
       }
       const result = await runInteractiveAiRequest(client, {
         connectionId: flags.connection,
@@ -293,22 +295,27 @@ export default class Interactive extends BaseCommand {
         maxOutputTokens: flags['max-output-tokens'],
         stream: flags.stream,
         onDelta: flags.stream && !this.jsonEnabled()
-          ? (delta: string) => this.log(delta)
+          ? (delta: string) => { process.stdout.write(delta); }
           : undefined,
       });
-      if (result.response) {
-        if (this.jsonEnabled()) this.log(JSON.stringify(result));
-        else if (!flags.stream) this.log(result.response.text);
-      } else {
-        this.log(`selected ${result.selected.connectionId} ${result.selected.model}`);
+      if (!this.jsonEnabled()) {
+        if (result.response) {
+          if (!flags.stream) this.log(result.response.text);
+        } else {
+          this.log(`selected ${result.selected.connectionId} ${result.selected.model}`);
+        }
       }
-      return;
+      return result;
     }
 
-    const token = flags.token || envValue('SIFT_TOKEN', 'EXF_TOKEN') || resolveToken();
-    if (!token) {
-      this.error('No authentication token found. Run `sift auth login` or set SIFT_TOKEN.');
+    if (flags['no-input'] || this.jsonEnabled()) {
+      this.error('The interactive TUI requires interactive input and human-readable output. Use --connected-models or --model with --prompt for a hosted request.', {exit: 2});
     }
+
+    // The local TUI can open before either provider or hosted credentials exist.
+    // /key configures the active provider; hosted gateway branches above still
+    // authenticate through BaseCommand.client.
+    const token = flags.token || envValue('SIFT_TOKEN', 'EXF_TOKEN') || resolveToken();
 
     const bun = findBun();
     if (!bun) {
@@ -327,7 +334,7 @@ export default class Interactive extends BaseCommand {
     const env = buildChildEnv({
       token,
       apiUrl: flags['api-url'] || envValue('SIFT_API_URL', 'EXF_API_URL') || DEFAULT_API_URL,
-      workspaceId: flags.workspace || envValue('SIFT_WORKSPACE_ID', 'EXF_WORKSPACE_ID'),
+      workspaceId: this.workspaceId(flags.workspace),
       userCwd: process.cwd(),
       tuiDir: tuiRuntime.cwd,
       baseEnv: process.env,
@@ -344,6 +351,13 @@ export default class Interactive extends BaseCommand {
 
     if (result.error) {
       this.error(`Failed to launch the copilot: ${result.error.message}`);
+    }
+    if (result.signal) {
+      const signalNumber = constants.signals[result.signal];
+      this.error(`Copilot terminated by ${result.signal}.`, {exit: signalNumber ? 128 + signalNumber : 1});
+    }
+    if (result.status === null) {
+      this.error('Copilot exited without a terminal status.');
     }
     if (typeof result.status === 'number' && result.status !== 0) {
       this.exit(result.status);

@@ -1,3 +1,7 @@
+import {readSessionOutput} from './sessionOutput';
+import {randomUUID} from 'node:crypto';
+import {verifyReceiptCurrent, type CandidateVerificationReceipt, type CandidateVerificationInput} from './candidateVerification';
+import {inspectSessionEvents, type SessionInspection} from './requestInspection';
 /**
  * In-process Siftable agent harness for `sift interactive`.
  *
@@ -17,6 +21,8 @@
  * value is inherited.
  */
 import {
+  AmbiguousEditError,
+  MutationReceiptError,
   assertAuthorizedDiscoveryRoot,
   batchReadFiles,
   codeSearch,
@@ -29,6 +35,11 @@ import {
   writeText,
 } from './fsEngine';
 import { requestConfirm } from './confirmGate';
+import { assertExecutionActive, currentExecutionContext, withExecutionContext, type ToolExecutionContext } from './agent-harness/framework/execution-context';
+import { projectShellResult, runSupervisedShell } from './shellExecution';
+import {projectSearchResult, searchToolFailure, searchToolResult} from './searchToolResult';
+import { ProcessJobManager } from './processJobs';
+import { assertFileVersion, fileVersion } from './fileObservation';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -83,21 +94,31 @@ import {
   sessionJournalIdForConversation,
 } from './sessionMailbox';
 import * as bundledAgentHarness from './agent-harness';
+import type { AdapterEvent, ProviderReceipt } from './agent-harness/framework/adapters/types';
+import type { ChatResult, ChatAgentChatOptions } from './agent-harness/framework/chat-agent-types';
 
 /** Relay-compatible event shape the TUI already understands (token, tool_call, tool_result, done, error). */
 export interface BrainEvent {
-  type: 'token' | 'tool_call' | 'tool_result' | 'done' | 'error';
+  type: 'token' | 'tool_call' | 'tool_result' | 'done' | 'error' | 'status' | 'provider' | 'verification';
   content?: string;
   error?: string;
   toolCall?: { name: string; args?: Record<string, unknown>; detail?: string; callId?: string };
-  toolResult?: { name: string; success?: boolean; output?: string; explorerActivity?: unknown; callId?: string };
+  toolResult?: { name: string; success?: boolean; executionOutcome?: "succeeded" | "failed" | "unknown"; output?: string; explorerActivity?: unknown; callId?: string };
   message?: { content?: string };
   [key: string]: unknown;
 }
 
 export interface BrainAskResult {
+  /** Terminal answer only; intermediate or failed partial text is separate. */
   text: string;
+  progressText?: string;
+  verification?: CandidateVerificationReceipt;
+  status?: "completed" | "failed" | "interrupted" | "limit_reached";
+  result?: ChatResult;
+  run?: ChatResult["run"];
+  providerReceipts?: ProviderReceipt[];
   error?: string;
+  jobCleanup?: 'confirmed' | 'unknown';
 }
 
 export type ChatInputPart =
@@ -122,9 +143,10 @@ const LEAN_PROMPT =
 interface AgentHarnessChunk {
   type: 'text' | 'tool_call' | 'tool_result' | 'done';
   text?: string;
+  streamed?: boolean;
   toolCall?: { name: string; args?: Record<string, unknown>; callId?: string };
-  toolResult?: { name: string; success?: boolean; callId?: string; outputPreview?: string };
-  result?: { content?: string; text?: string };
+  toolResult?: { name: string; success?: boolean; executionOutcome?: "succeeded" | "failed" | "unknown"; callId?: string; outputPreview?: string };
+  result?: ChatResult & { content?: string };
 }
 
 /** Outcome of an explicit harness compaction call. */
@@ -142,13 +164,14 @@ interface AgentHarnessModule {
     acquireLease: (sessionId: string) => {release: () => void};
   };
   createChatAgent: (config: Record<string, unknown>) => Promise<{
-    chat: (msg: ChatInput, o: { stream: true; signal?: AbortSignal }) => AsyncIterable<AgentHarnessChunk>;
+    chat: (msg: ChatInput, o: ChatAgentChatOptions & {stream: true}) => AsyncIterable<AgentHarnessChunk>;
     compact?: (options?: { force?: boolean }) => Promise<AgentHarnessCompactionOutcome>;
     reset?: (options?: {threadId?: string}) => Promise<void>;
     resetAsync?: (options?: {threadId?: string}) => Promise<void>;
     ingestExternalMessage?: (message: ChatInput, options: {id: string}) => Promise<boolean>;
     getHistory?: () => unknown[];
     getSessionEvents?: () => unknown[];
+  runVerification?: (input: CandidateVerificationInput) => Promise<CandidateVerificationReceipt>;
     close?: () => Promise<void>;
     destroy?: () => Promise<void>;
   }>;
@@ -157,6 +180,7 @@ interface AgentHarnessModule {
     description: string;
     inputSchema: Record<string, unknown>;
     handler: (params: Record<string, unknown>) => Promise<unknown>;
+    modelResult?: typeof projectShellResult;
     /** Concurrency class for the harness tool scheduler; omitted = exclusive. */
     executionMode?: (args: Record<string, unknown>) => 'exclusive' | 'parallel-safe';
   }) => unknown;
@@ -172,13 +196,14 @@ interface AgentHarnessModule {
 // first. read_only children that share the parent's cwd intentionally share its
 // agent; their visible transcripts stay separate via sessionContext.
 type AgentHarnessAgent = {
-  chat: (msg: ChatInput, o: { stream: true; signal?: AbortSignal }) => AsyncIterable<AgentHarnessChunk>;
+  chat: (msg: ChatInput, o: ChatAgentChatOptions & {stream: true}) => AsyncIterable<AgentHarnessChunk>;
   compact?: (options?: { force?: boolean }) => Promise<AgentHarnessCompactionOutcome>;
   reset?: (options?: {threadId?: string}) => Promise<void>;
   resetAsync?: (options?: {threadId?: string}) => Promise<void>;
   ingestExternalMessage?: (message: ChatInput, options: {id: string}) => Promise<boolean>;
   getHistory?: () => unknown[];
   getSessionEvents?: () => unknown[];
+  runVerification?: (input: CandidateVerificationInput) => Promise<CandidateVerificationReceipt>;
   close?: () => Promise<void>;
   destroy?: () => Promise<void>;
 };
@@ -287,6 +312,7 @@ const CODEX_PROVIDER = 'codex';
 const DEFAULT_AGENT_HARNESS_MODEL = 'google/gemini-3.8-flash';
 
 let currentProvider = process.env.EXECUTERM_MODEL_PROVIDER || 'openrouter';
+let currentBaseUrl: string | undefined = process.env.SIFT_MODEL_BASE_URL;
 let currentModel = process.env.EXECUTERM_MODEL || DEFAULT_AGENT_HARNESS_MODEL;
 let currentEffort: string | undefined = process.env.EXECUTERM_MODEL_EFFORT || undefined;
 
@@ -396,8 +422,11 @@ export function setBrainModel(input: {
   model?: string;
   apiKey?: string;
   effort?: string;
+  baseUrl?: string;
 }): { provider: string; model: string; effort?: string } {
+  if (input.provider && input.provider !== currentProvider && input.baseUrl === undefined) currentBaseUrl = undefined;
   if (input.provider) currentProvider = input.provider;
+  if (input.baseUrl !== undefined) currentBaseUrl = input.baseUrl || undefined;
   if (input.model) currentModel = input.model;
   // effort is explicitly settable to "" to clear it back to provider default.
   if (input.effort !== undefined) currentEffort = input.effort || undefined;
@@ -423,51 +452,16 @@ export function setSessionController(ctrl: ChildSessionController | null): void 
 }
 
 const MAX_READ_BYTES = 64 * 1024;
-const COMMAND_MAX_OUTPUT_BYTES = 12 * 1024;
 const COMMAND_DEFAULT_TIMEOUT_MS = 30_000;
-const COMMAND_MAX_TIMEOUT_MS = 60_000;
+let processJobs: ProcessJobManager | undefined;
+let processJobsClosing = false;
+function activeProcessJobs(): ProcessJobManager {
+  if (processJobsClosing) throw new Error('Agent sessions are shutting down');
+  return processJobs ??= new ProcessJobManager();
+}
 
-async function runShellCommand(
-  command: string,
-  cwd: string,
-  timeoutMs = COMMAND_DEFAULT_TIMEOUT_MS,
-): Promise<{command: string; cwd: string; exitCode: number | null; stdout: string; stderr: string; output: string; timedOut: boolean}> {
-  const { spawn } = await import('node:child_process');
-  const timeout = Math.max(1, Math.min(timeoutMs, COMMAND_MAX_TIMEOUT_MS));
-  const shell = process.env.SHELL || '/bin/sh';
-
-  return await new Promise((resolve) => {
-    const proc = spawn(shell, ['-lc', command], {
-      cwd,
-      env: process.env,
-    });
-    let stdout = '';
-    let stderr = '';
-    let timedOut = false;
-    const clip = (value: string) => value.length > COMMAND_MAX_OUTPUT_BYTES
-      ? value.slice(0, COMMAND_MAX_OUTPUT_BYTES) + '\n… output truncated'
-      : value;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      proc.kill('SIGTERM');
-    }, timeout);
-
-    proc.stdout.on('data', (chunk) => {
-      stdout = clip(stdout + String(chunk));
-    });
-    proc.stderr.on('data', (chunk) => {
-      stderr = clip(stderr + String(chunk));
-    });
-    proc.on('close', (code) => {
-      clearTimeout(timer);
-      const output = [stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join('\n');
-      resolve({command, cwd, exitCode: code, stdout, stderr, output, timedOut});
-    });
-    proc.on('error', (err) => {
-      clearTimeout(timer);
-      resolve({command, cwd, exitCode: 1, stdout, stderr: err.message, output: err.message, timedOut});
-    });
-  });
+async function runShellCommand(command: string, cwd: string, timeoutMs = COMMAND_DEFAULT_TIMEOUT_MS) {
+  return runSupervisedShell(command, cwd, { timeoutMs, context: currentExecutionContext() });
 }
 
 /**
@@ -501,12 +495,20 @@ export function refreshSkills(): SkillInfo[] {
  */
 function buildLocalTools(of: AgentHarnessModule): unknown[] {
   // Writable root for A1. Empty → write/edit tools are not registered at all.
+  const observedFiles = new Map<string, string | null>();
   const writableRootAvailable = Boolean(process.env.SIFT_WORKSPACE_ROOT);
-  const currentUserCwd = () => getSessionCwd();
-  const currentWorkspaceRoot = () => getWorkspaceRoot();
+  const currentUserCwd = () => currentExecutionContext()?.sessionCwd ?? getSessionCwd();
+  const currentWorkspaceRoot = () => currentExecutionContext()?.workspaceRoot ?? getWorkspaceRoot();
   const defaultWorkspaceRoot = () => currentWorkspaceRoot() || currentUserCwd();
-  const resolveLocalPath = (p: string) => resolveSessionPath(p || '.');
+  const resolveLocalPath = (p: string) => resolveSessionPath(p || '.', currentUserCwd());
   const resolveWorkspacePath = (p: string) => resolveSessionPath(p || defaultWorkspaceRoot(), defaultWorkspaceRoot());
+  const assertLocalEffect = () => {
+    assertExecutionActive();
+    const context = currentExecutionContext();
+    if (context && (resolve(context.workspaceRoot) !== resolve(getWorkspaceRoot()) || resolve(context.sessionCwd) !== resolve(getSessionCwd()))) {
+      throw new Error('Workspace or working directory changed after dispatch; retry in the current context');
+    }
+  };
   const clearNavigationCaches = (previousRoot: string, nextRoot: string) => {
     clearRepoExplorerCache(previousRoot);
     clearRepoExplorerCache(nextRoot);
@@ -514,7 +516,8 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
     clearWorkspaceFileCache(nextRoot);
   };
   const changeSessionDirectory = async (pathInput: string) => {
-    const result = setSessionCwd(pathInput || '.');
+    assertLocalEffect();
+    const result = setSessionCwd(resolveLocalPath(pathInput || '.'));
     if (result.workspaceRootChanged) clearNavigationCaches(result.previousWorkspaceRoot, result.workspaceRoot);
     return result;
   };
@@ -540,6 +543,7 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
 
   const runTerminalCommand = of.defineTool({
     name: 'run_terminal_command',
+    modelResult: projectShellResult,
     description:
       "Run a shell command in the current sift interactive workdir after explicit user approval. For persistent directory changes, use change_directory or a plain `cd <path>` command; compound shell `cd` only affects that subprocess.",
     inputSchema: {
@@ -563,16 +567,69 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
         const cwd = resolveLocalPath(String(params.cwd || currentUserCwd()));
         const approved = await requestConfirm({ kind: 'command', path: command, detail: `cwd=${cwd}` });
         if (!approved) return of.err('command declined by user');
+        assertLocalEffect();
         const result = await runShellCommand(command, cwd, typeof params.timeoutMs === 'number' ? params.timeoutMs : undefined);
         clearRepoExplorerCache(currentWorkspaceRoot());
         clearWorkspaceFileCache(currentWorkspaceRoot());
-        if (result.timedOut) return of.err(`command timed out after ${Math.min(typeof params.timeoutMs === 'number' ? params.timeoutMs : COMMAND_DEFAULT_TIMEOUT_MS, COMMAND_MAX_TIMEOUT_MS)}ms`);
-        return result.exitCode === 0
-          ? of.ok(result, result.output || `exit ${result.exitCode}`)
-          : of.err(`exit ${result.exitCode}\n${result.output || result.stderr || result.stdout}`.trim());
+        if (result.executionOutcome === 'succeeded') return of.ok(result, result.output || 'exit 0');
+        const reason = result.cancelled ? 'command cancelled' : result.timedOut ? 'command timed out' : `exit ${result.exitCode}`;
+        return { success: false, data: result, executionOutcome: result.executionOutcome,
+          error: `${reason}; ${!result.started ? 'not dispatched' : result.executionOutcome === 'unknown' ? 'effects may have occurred; inspect before retrying' : 'command completed; file effects were not rolled back'}\n${result.output}`.trim() };
       } catch (e) {
         return of.err(e instanceof Error ? e.message : String(e));
       }
+    },
+  });
+
+  const startProcessJob = of.defineTool({
+    name: 'start_process_job',
+    description: 'Start a session-owned background job after command approval. Keep the service in the foreground (do not append &). Returns a job ID, not a readiness guarantee. Jobs survive tool calls, but stop on cancellation, lifetime expiry, or host/session shutdown. They cannot be recovered after a host restart.',
+    inputSchema: {type: 'object', properties: {
+      command: {type: 'string'}, cwd: {type: 'string'},
+      lifetimeMs: {type: 'integer', minimum: 1, maximum: 10800000, description: 'Maximum job lifetime, default one hour; also bounded by the host deadline.'},
+    }, required: ['command']},
+    handler: async params => {
+      try {
+        const command = String(params.command || '').trim();
+        if (!command) return of.err('command is required');
+        const cwd = resolveLocalPath(String(params.cwd || currentUserCwd()));
+        if (!await requestConfirm({kind: 'command', path: command, detail: `background job; cwd=${cwd}`})) return of.err('job declined by user');
+        assertLocalEffect();
+        const context = currentExecutionContext();
+        if (!context) return of.err('Job execution requires a trusted session context');
+        const result = await activeProcessJobs().start(command, cwd, context, typeof params.lifetimeMs === 'number' ? params.lifetimeMs : undefined);
+        clearRepoExplorerCache(currentWorkspaceRoot()); clearWorkspaceFileCache(currentWorkspaceRoot());
+        return of.ok(result);
+      } catch (error) { return of.err(error instanceof Error ? error.message : String(error)); }
+    },
+  });
+  const readProcessJob = of.defineTool({
+    name: 'read_process_job',
+    description: 'Read status and a bounded page of combined stdout/stderr from a job owned by this session. Use nextOffset for subsequent reads. outputLost means older bytes were evicted. Running does not imply service readiness.',
+    executionMode: () => 'parallel-safe',
+    inputSchema: {type: 'object', properties: {jobId: {type: 'string'}, offset: {type: 'integer', minimum: 0}}, required: ['jobId']},
+    handler: async params => {
+      try { return of.ok(activeProcessJobs().read(String(params.jobId), currentExecutionContext()!, params.offset === undefined ? 0 : Number(params.offset))); }
+      catch (error) { return of.err(error instanceof Error ? error.message : String(error)); }
+    },
+  });
+  const listProcessJobs = of.defineTool({
+    name: 'list_process_jobs',
+    description: 'List retained job identities and lifecycle status owned by this session and workspace. Retrieve output separately with read_process_job.',
+    executionMode: () => 'parallel-safe',
+    inputSchema: {type: 'object', properties: {}},
+    handler: async () => of.ok(activeProcessJobs().list(currentExecutionContext()!)),
+  });
+  const stopProcessJob = of.defineTool({
+    name: 'stop_process_job',
+    description: 'Stop a job owned by this session, escalating TERM to KILL for its process group. Check terminationConfirmed; an unknown result must not be treated as successful cleanup. File effects are not rolled back.',
+    inputSchema: {type: 'object', properties: {jobId: {type: 'string'}}, required: ['jobId']},
+    handler: async params => {
+      try {
+        const result = await activeProcessJobs().stop(String(params.jobId), currentExecutionContext()!);
+        if (!result.terminationConfirmed) return {success: false, data: result, executionOutcome: 'unknown', error: 'Job termination could not be confirmed'};
+        return of.ok(result);
+      } catch (error) { return of.err(error instanceof Error ? error.message : String(error)); }
     },
   });
 
@@ -621,8 +678,11 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
         if (isSecretLikeExplorerPath(path)) {
           return of.err('refusing to read secret-like file path');
         }
+        const version = fileVersion(path);
         const result = await readText(path, MAX_READ_BYTES);
-        return of.ok(result);
+        assertFileVersion(path, version);
+        observedFiles.set(path, version);
+        return of.ok({ ...result, observedVersion: version });
       } catch (e) {
         return of.err(e instanceof Error ? e.message : String(e));
       }
@@ -659,6 +719,7 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
 
   const searchLocalFiles = of.defineTool({
     name: 'search_local_files',
+    modelResult: projectSearchResult,
     executionMode: () => 'parallel-safe',
     description:
       "Search local workspace file CONTENTS for a literal string. This is grep-like content search, not file-name search. Bounded, read-only, skips hidden/noisy dirs and binary/large files by default.",
@@ -685,8 +746,9 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
         const root = params.root ? resolveLocalPath(String(params.root)) : currentUserCwd();
         await assertAuthorizedDiscoveryRoot(root, defaultWorkspaceRoot());
         const query = String(params.query || '');
-        if (!query) return of.err('query is required');
+        if (!query) return searchToolFailure(new Error('query is required'));
         const result = await searchLiteral(root, query, {
+          signal: currentExecutionContext()?.signal,
           maxFiles: typeof params.maxFiles === 'number' ? params.maxFiles : undefined,
           maxMatches: typeof params.maxMatches === 'number' ? params.maxMatches : 100,
           includeHidden: params.includeHidden === true,
@@ -696,9 +758,9 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
           excludeSensitive: true,
           detail: ['paths', 'locations', 'snippets', 'full'].includes(String(params.detail)) ? String(params.detail) as 'paths' | 'locations' | 'snippets' | 'full' : undefined,
         });
-        return of.ok(result, `Found ${result.matches.length} match(es)`);
+        return searchToolResult(result);
       } catch (e) {
-        return of.err(e instanceof Error ? e.message : String(e));
+        return searchToolFailure(e);
       }
     },
   });
@@ -730,6 +792,7 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
 
   const findLocalFilesTool = of.defineTool({
     name: 'find_local_files',
+    modelResult: projectSearchResult,
     executionMode: () => 'parallel-safe',
     description:
       'Fuzzy path/name search for local files, similar to Codex @-mention file search. This matches file paths, not file contents.',
@@ -751,22 +814,24 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
         const root = params.root ? resolveLocalPath(String(params.root)) : currentUserCwd();
         await assertAuthorizedDiscoveryRoot(root, defaultWorkspaceRoot());
         const query = String(params.query || '');
-        if (!query) return of.err('query is required');
+        if (!query) return searchToolFailure(new Error('query is required'));
         const result = await findLocalFiles({
+          signal: currentExecutionContext()?.signal,
           root,
           query,
           limit: typeof params.limit === 'number' ? params.limit : 64,
           respectGitignore: typeof params.respectGitignore === 'boolean' ? params.respectGitignore : undefined,
         });
-        return of.ok(result, `Found ${result.matches.length} path match(es)`);
+        return searchToolResult(result, 'files');
       } catch (e) {
-        return of.err(e instanceof Error ? e.message : String(e));
+        return searchToolFailure(e);
       }
     },
   });
 
   const codeSearchTool = of.defineTool({
     name: 'code_search',
+    modelResult: projectSearchResult,
     executionMode: () => 'parallel-safe',
     description:
       'Broad read-only code search for codebase questions. Compiles likely content queries, ranks files/spans, and suggests batch_read_files follow-ups. Use for "where is X handled" or "scour this codebase" style questions.',
@@ -792,9 +857,10 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
       try {
         const root = params.root ? resolveLocalPath(String(params.root)) : defaultWorkspaceRoot();
         const intent = String(params.intent || '');
-        if (!intent) return of.err('intent is required');
+        if (!intent) return searchToolFailure(new Error('intent is required'));
         const queries = Array.isArray(params.queries) ? params.queries.map(String) : undefined;
-        return of.ok(await codeSearch({
+        return searchToolResult(await codeSearch({
+          signal: currentExecutionContext()?.signal,
           root,
           authorizedRoot: defaultWorkspaceRoot(),
           intent,
@@ -805,9 +871,9 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
           maxCacheAgeMs: typeof params.maxCacheAgeMs === 'number' ? params.maxCacheAgeMs : undefined,
           useContentCache: params.useContentCache === true,
           respectGitignore: typeof params.respectGitignore === 'boolean' ? params.respectGitignore : undefined,
-        }));
+        }), 'spans');
       } catch (e) {
-        return of.err(e instanceof Error ? e.message : String(e));
+        return searchToolFailure(e);
       }
     },
   });
@@ -863,7 +929,13 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
             };
           })
           .filter((item) => item.path);
-        return of.ok(await batchReadFiles(files, root));
+        const versions = files.map((file) => ({ path: resolveSessionPath(file.path, root), version: fileVersion(resolveSessionPath(file.path, root)) }));
+        const result = await batchReadFiles(files, root);
+        for (const file of versions) {
+          assertFileVersion(file.path, file.version);
+          observedFiles.set(file.path, file.version);
+        }
+        return of.ok(result);
       } catch (e) {
         return of.err(e instanceof Error ? e.message : String(e));
       }
@@ -873,7 +945,7 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
   const writeFile = of.defineTool({
     name: 'write_file',
     description:
-      "Create or overwrite a UTF-8 text file on the user's machine. Requires interactive user approval and is restricted to the current workspace. Writes are atomic (temp file + rename).",
+      "Create or overwrite a UTF-8 text file on the user's machine. Requires interactive user approval and is restricted to the current workspace. Writes are atomic (temp file + rename). Read an existing file before overwriting it; stale observations are refused.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -884,21 +956,37 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
       required: ['path', 'content'],
     },
     handler: async (params) => {
+      let mutationState: 'not_applied' | 'applied' | 'unknown' = 'not_applied';
       try {
         const path = resolveLocalPath(String(params.path));
         const content = String(params.content ?? '');
+        const version = fileVersion(path);
+        if (version !== null && params.createOnly !== true && observedFiles.get(path) !== version) {
+          return of.err('read_file or batch_read_files must observe the current file before whole-file overwrite');
+        }
         const approved = await requestConfirm({ kind: 'write', path, detail: `${content.length} bytes` });
         if (!approved) return of.err('write declined by user');
-        const result = await writeText(path, content, {
-          root: currentWorkspaceRoot(),
-          makePath: true,
-          createOnly: params.createOnly === true,
-        });
+        assertLocalEffect();
+        assertFileVersion(path, version);
+        mutationState = 'unknown';
+        let result;
+        try {
+          result = await writeText(path, content, {
+            root: currentWorkspaceRoot(),
+            makePath: true,
+            createOnly: params.createOnly === true,
+          });
+        } catch (error) {
+          if (error instanceof MutationReceiptError) mutationState = error.mutationState;
+          throw error;
+        }
+        mutationState = 'applied';
+        observedFiles.delete(path);
         clearRepoExplorerCache(currentWorkspaceRoot());
         clearWorkspaceFileCache(currentWorkspaceRoot());
-        return of.ok(result, `Wrote ${result.bytesWritten} bytes${result.created ? ' (created)' : ''}`);
+        return of.ok({...result, mutationState}, `Wrote ${result.bytesWritten} bytes${result.created ? ' (created)' : ''}`);
       } catch (e) {
-        return of.err(e instanceof Error ? e.message : String(e));
+        return { success: false, error: e instanceof Error ? e.message : String(e), executionOutcome: mutationState === 'not_applied' ? 'failed' : 'unknown', data: {mutationState} };
       }
     },
   });
@@ -917,19 +1005,37 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
       required: ['path', 'old', 'new'],
     },
     handler: async (params) => {
+      let mutationState: 'not_applied' | 'applied' | 'unknown' = 'not_applied';
       try {
         const path = resolveLocalPath(String(params.path));
         const oldStr = String(params.old ?? '');
         const newStr = String(params.new ?? '');
         if (!oldStr) return of.err("edit_file: 'old' must not be empty");
+        const version = fileVersion(path);
         const approved = await requestConfirm({ kind: 'edit', path, detail: `replace ${oldStr.length}→${newStr.length} chars` });
         if (!approved) return of.err('edit declined by user');
-        const result = await editText(path, oldStr, newStr, { root: currentWorkspaceRoot() });
+        assertLocalEffect();
+        assertFileVersion(path, version);
+        mutationState = 'unknown';
+        let result;
+        try {
+          result = await editText(path, oldStr, newStr, { root: currentWorkspaceRoot() });
+        } catch (error) {
+          // Only the filesystem's typed pre-write rejection is safely recoverable.
+          // Errors after a write (including result observers below) remain unknown.
+          if (error instanceof AmbiguousEditError) {
+            return { success: false, error: error.message, executionOutcome: 'failed' as const, data: {mutationState: 'not_applied'} };
+          }
+          if (error instanceof MutationReceiptError) mutationState = error.mutationState;
+          throw error;
+        }
+        mutationState = 'applied';
+        observedFiles.delete(path);
         clearRepoExplorerCache(currentWorkspaceRoot());
         clearWorkspaceFileCache(currentWorkspaceRoot());
-        return of.ok(result, `Edited (${result.replacements} replacement${result.replacements === 1 ? '' : 's'})`);
+        return of.ok({...result, mutationState}, `Edited (${result.replacements} replacement${result.replacements === 1 ? '' : 's'})`);
       } catch (e) {
-        return of.err(e instanceof Error ? e.message : String(e));
+        return { success: false, error: e instanceof Error ? e.message : String(e), executionOutcome: mutationState === 'not_applied' ? 'failed' : 'unknown', data: {mutationState} };
       }
     },
   });
@@ -1142,7 +1248,8 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
       required: ['id'],
     },
     handler: async (params) => {
-      if (!sessionController) return of.err('merge_branch: no child-session controller available.');
+      const controller = sessionController;
+      if (!controller) return of.err('merge_branch: no child-session controller available.');
       const id = Number(params.id);
       if (!Number.isInteger(id)) return of.err('merge_branch: id must be a session id (integer).');
       // Landing mutates the user's base + force-deletes the child branch, so it is
@@ -1153,8 +1260,9 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
         detail: params.keep ? 'squash-merge · keep worktree + branch' : 'squash-merge · remove worktree + branch',
       });
       if (!approved) return of.err('merge_branch declined by user');
+      assertLocalEffect();
       try {
-        const res = await sessionController.mergeChild(id, {
+        const res = await controller.mergeChild(id, {
           keep: params.keep === true,
           message: typeof params.message === 'string' ? params.message : undefined,
         });
@@ -1272,9 +1380,27 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
     },
   });
 
+  const readToolOutput = of.defineTool({
+    name: 'read_tool_output',
+    description: 'Retrieve a bounded page of an earlier tool result from this session, including retained large output. Use its tool call ID and byte offset; repeat using nextOffset while more is true.',
+    inputSchema: {type: 'object', properties: {call_id: {type: 'string'}, offset: {type: 'integer', minimum: 0}}, required: ['call_id']},
+    executionMode: () => 'parallel-safe',
+    handler: async params => {
+      const context = currentExecutionContext();
+      if (context && context.sessionId !== sessionJournalIdForConversation(agentSessionKey())) return of.err('Active session changed before output retrieval');
+      try { return of.ok(await readActiveToolOutput(String(params.call_id), Number(params.offset || 0))); }
+      catch (error) { return of.err(error instanceof Error ? error.message : String(error)); }
+    },
+  });
+
   const tools: unknown[] = [
+    readToolOutput,
     changeDirectory,
     runTerminalCommand,
+    startProcessJob,
+    readProcessJob,
+    listProcessJobs,
+    stopProcessJob,
     findLocalWorkspacesTool,
     inspectWorkspace,
     findLocalFilesTool,
@@ -1296,7 +1422,21 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
   // A1 write surface: only when a workspace root is set. Each call is still
   // confirm-gated and Zig-jailed; registration just exposes the tools.
   if (writableRootAvailable) tools.push(writeFile, editFile);
-  return tools;
+  return tools.map((value) => {
+    const tool = value as { handler: (params: Record<string, unknown>, context?: ToolExecutionContext) => Promise<unknown>; [key: string]: unknown };
+    const handler = tool.handler;
+    return { ...tool, handler: (params: Record<string, unknown>, supplied?: ToolExecutionContext) => {
+      const context = supplied ?? currentExecutionContext() ?? {
+        sessionId: sessionJournalIdForConversation(agentSessionKey()), turnId: 'direct', callId: 'direct',
+        workspaceRoot: getWorkspaceRoot(), sessionCwd: getSessionCwd(),
+      };
+      return withExecutionContext(context, async () => {
+        assertExecutionActive();
+        if (tool.executionMode === undefined) assertLocalEffect();
+        return handler(params, currentExecutionContext());
+      });
+    } };
+  });
 }
 
 /**
@@ -1359,10 +1499,13 @@ export async function getAgent(): Promise<AgentHarnessAgent> {
         provider: currentProvider,
         model: currentModel,
         ...(currentEffort ? { reasoningEffort: currentEffort } : {}),
-        providers: ['siftable'],
+        providers: process.env.SIFT_LOCAL_ONLY === '1' || !(process.env.SIFT_PAT || process.env.EXF_PAT) ? [] : ['siftable'],
+        adapterConfig: { ...(currentBaseUrl ? {baseUrl: currentBaseUrl} : {}),
+          ...(process.env.SIFT_AGENT_MAX_OUTPUT_TOKENS ? {maxOutputTokens: Number(process.env.SIFT_AGENT_MAX_OUTPUT_TOKENS)} : {}) },
+        executionContext: () => ({ workspaceRoot: getWorkspaceRoot() || getSessionCwd(), sessionCwd: getSessionCwd() }),
         tools: buildLocalTools(of),
         memory: false,
-        maxToolRounds: 24,
+        maxToolRounds: Number(process.env.SIFT_AGENT_MAX_ROUNDS || 24),
         prompt: LEAN_PROMPT + formatSkillsForPrompt(currentSkills()),
         // Retain the legacy key for one-time migration. The event journal above
         // is the always-on durable authority for resume and recovery.
@@ -1433,21 +1576,53 @@ export async function resetActiveThread(): Promise<boolean> {
   return false;
 }
 
+export async function readActiveToolOutput(reference: number | string, offset = 0) {
+  const key = agentSessionKey();
+  const agent = await getAgent();
+  if (key !== agentSessionKey() || !agent.getSessionEvents) throw new Error('Active session changed or does not expose output references');
+  return readSessionOutput(agent.getSessionEvents() as import('./agent-harness/framework/session').SessionEvent[], reference, join(sessionEventRoot(), 'tool-output'), offset);
+}
+
+/** Explicit user-defined check, recorded separately from model turn completion. */
+export async function verifyActiveCandidate(argv: string[], files: string[], signal?: AbortSignal, approval: 'allow' | 'deny' = 'deny'): Promise<CandidateVerificationReceipt> {
+  const key = agentSessionKey();
+  const workspaceRoot = getWorkspaceRoot();
+  const sessionCwd = getSessionCwd();
+  const agent = await getAgent();
+  if (!agent.runVerification) throw new Error('The active harness cannot persist verification receipts');
+  if (key !== agentSessionKey() || workspaceRoot !== getWorkspaceRoot() || sessionCwd !== getSessionCwd()) throw new Error('Verification context changed before admission');
+  const id = randomUUID();
+  const receipt = await agent.runVerification({argv, files, context: {
+    sessionId: sessionJournalIdForConversation(key), turnId: `verification:${id}`, callId: id,
+    workspaceRoot, sessionCwd, signal, approval: {policy: approval, scopeId: id},
+  }});
+  return receipt;
+}
+
 /** Read the active event journal, never the deprecated rollout mirror. */
 export async function inspectActiveThread(): Promise<{
   sessionId: string;
   eventCount: number;
   messageCount: number;
+  inspection: SessionInspection;
 }> {
   const key = agentSessionKey();
   const agent = await getAgent();
   if (typeof agent.getSessionEvents !== 'function' || typeof agent.getHistory !== 'function') {
     throw new Error('the active agent harness does not expose durable session inspection');
   }
+  const inspection = structuredClone(inspectSessionEvents(agent.getSessionEvents() as import('./agent-harness/framework/session').SessionEvent[], agent.getHistory() as import('./agent-harness/framework/adapters/types').ChatMessage[]));
+  for (const item of inspection.verifications || []) {
+    const freshness = item.receipt.workspaceRoot === getWorkspaceRoot()
+      ? verifyReceiptCurrent(item.receipt) : {current: false, reason: 'workspace_changed'};
+    item.current = freshness.current;
+    item.freshnessReason = freshness.reason;
+  }
   return {
     sessionId: sessionJournalIdForConversation(key),
     eventCount: agent.getSessionEvents().length,
     messageCount: agent.getHistory().length,
+    inspection,
   };
 }
 
@@ -1500,8 +1675,10 @@ function buildRepoExplorerScoutTools(
     maxElapsedMs: DEFAULT_SCOUT_BUDGET.maxElapsedMs,
   },
 ): unknown[] {
-  const userCwd = () => getSessionCwd();
-  const workspaceRoot = () => getWorkspaceRoot() || userCwd();
+  const scoutCwd = getSessionCwd();
+  const scoutRoot = getWorkspaceRoot() || scoutCwd;
+  const userCwd = () => scoutCwd;
+  const workspaceRoot = () => scoutRoot;
   const startedAt = Date.now();
   const usage = { toolCalls: 0, searches: 0, filesRead: 0 };
   const resolveLocalPath = (p: string) => resolveSessionPath(p || '.', userCwd());
@@ -1512,6 +1689,7 @@ function buildRepoExplorerScoutTools(
     return root;
   };
   const checkBudget = (kind: 'tool' | 'search' | 'read', readCount = 0) => {
+    assertExecutionActive();
     if (Date.now() - startedAt > budget.maxElapsedMs) {
       throw new Error('repo explorer scout budget exceeded: elapsed time');
     }
@@ -1555,6 +1733,7 @@ function buildRepoExplorerScoutTools(
 
   const searchLocalFiles = of.defineTool({
     name: 'search_local_files',
+    modelResult: projectSearchResult,
     description: 'Read-only literal content search. Use locations or paths detail unless already narrowed.',
     inputSchema: {
       type: 'object',
@@ -1571,26 +1750,28 @@ function buildRepoExplorerScoutTools(
       try {
         checkBudget('search');
         const query = String(params.query || '');
-        if (!query) return of.err('query is required');
+        if (!query) return searchToolFailure(new Error('query is required'));
         const detail = ['paths', 'locations', 'snippets'].includes(String(params.detail))
           ? String(params.detail) as 'paths' | 'locations' | 'snippets'
           : 'locations';
         const root = await resolveAuthorizedRoot(params.root ? String(params.root) : undefined);
         const result = await searchLiteral(root, query, {
+          signal: currentExecutionContext()?.signal,
           detail,
           maxFiles: Math.min(typeof params.maxFiles === 'number' ? params.maxFiles : 1000, 1000),
           maxMatches: Math.min(typeof params.maxMatches === 'number' ? params.maxMatches : 30, 30),
           excludeSensitive: true,
         });
-        return of.ok(result, `Found ${result.matches.length} match(es)`);
+        return searchToolResult(result);
       } catch (e) {
-        return of.err(e instanceof Error ? e.message : String(e));
+        return searchToolFailure(e);
       }
     },
   });
 
   const globLocalFiles = of.defineTool({
     name: 'glob_local_files',
+    modelResult: projectSearchResult,
     description: 'Read-only glob over source files using Explorer skip policy. Use for quick path discovery such as **/*.ts or **/commands/**.',
     inputSchema: {
       type: 'object',
@@ -1605,22 +1786,24 @@ function buildRepoExplorerScoutTools(
       try {
         checkBudget('search');
         const pattern = String(params.pattern || '');
-        if (!pattern) return of.err('pattern is required');
+        if (!pattern) return searchToolFailure(new Error('pattern is required'));
         const root = await resolveAuthorizedRoot(params.root ? String(params.root) : undefined);
         const result = await globLocalFilesForExplorer({
+          signal: currentExecutionContext()?.signal,
           root,
           pattern,
           maxFiles: Math.min(typeof params.maxFiles === 'number' ? params.maxFiles : 80, 120),
         });
-        return of.ok(result, `Matched ${result.matches.length} file(s)`);
+        return searchToolResult(result, 'files');
       } catch (e) {
-        return of.err(e instanceof Error ? e.message : String(e));
+        return searchToolFailure(e);
       }
     },
   });
 
   const grepLocalFiles = of.defineTool({
     name: 'grep_local_files',
+    modelResult: projectSearchResult,
     description: 'Read-only regex grep over source files using Explorer skip policy. Use for broad identifier or command-routing discovery.',
     inputSchema: {
       type: 'object',
@@ -1637,18 +1820,19 @@ function buildRepoExplorerScoutTools(
       try {
         checkBudget('search');
         const pattern = String(params.pattern || '');
-        if (!pattern) return of.err('pattern is required');
+        if (!pattern) return searchToolFailure(new Error('pattern is required'));
         const root = await resolveAuthorizedRoot(params.root ? String(params.root) : undefined);
         const result = await grepLocalFilesForExplorer({
+          signal: currentExecutionContext()?.signal,
           root,
           pattern,
           include: params.include ? String(params.include) : undefined,
           maxFiles: Math.min(typeof params.maxFiles === 'number' ? params.maxFiles : 250, 400),
           maxMatches: Math.min(typeof params.maxMatches === 'number' ? params.maxMatches : 80, 120),
         });
-        return of.ok(result, `Found ${result.matches.length} match(es)`);
+        return searchToolResult(result);
       } catch (e) {
-        return of.err(e instanceof Error ? e.message : String(e));
+        return searchToolFailure(e);
       }
     },
   });
@@ -1784,14 +1968,15 @@ export function deterministicExplorerQuery(prose: string, blobs: string[]): stri
 // main agent's transcript, so the main model's own context is unchanged. The
 // model read everything and decided what matters, so the explorer still acts on
 // the full intent of the paste.
-async function distillExplorerQueryWithMainModel(of: AgentHarnessModule, raw: string): Promise<string> {
+async function distillExplorerQueryWithMainModel(of: AgentHarnessModule, raw: string, signal?: AbortSignal): Promise<string> {
+  throwIfExplorerAborted(signal);
   const provider = currentProvider === CODEX_PROVIDER ? 'openrouter' : currentProvider;
   const model = currentProvider === CODEX_PROVIDER ? DEFAULT_AGENT_HARNESS_MODEL : currentModel;
   const agent = await of.createChatAgent({
     name: 'siftable-explorer-query-distill',
     provider,
     model,
-    providers: ['siftable'],
+    providers: process.env.SIFT_LOCAL_ONLY === '1' || !(process.env.SIFT_PAT || process.env.EXF_PAT) ? [] : ['siftable'],
     tools: [],
     memory: false,
     prompt:
@@ -1801,29 +1986,34 @@ async function distillExplorerQueryWithMainModel(of: AgentHarnessModule, raw: st
       'change. The pasted context is usually external (logs, docs, API dumps), not repo source, so translate it ' +
       'into what to find in the codebase rather than quoting it back.',
   });
-  const collected = await collectScoutText(
-    agent.chat(`User request and pasted context:\n${raw}\n\nReturn only the search brief.`, { stream: true }),
+  try {
+    throwIfExplorerAborted(signal);
+    const collected = await collectScoutText(
+    agent.chat(`User request and pasted context:\n${raw}\n\nReturn only the search brief.`, { stream: true, signal }),
     { maxReturnedChars: 4_000, maxToolCalls: 0 },
   );
-  return collected.text.trim();
+    return collected.text.trim();
+  } finally { await agent.close?.(); }
 }
 
 // Resolve the search query for any scout backend. Under the gate → verbatim
 // (normal use is untouched). Over the gate → main-model distill (primary), with
 // the deterministic prose+terms compaction as the backup if the model call
 // errors or times out.
-async function buildExplorerQuery(of: AgentHarnessModule, input: ChatInput): Promise<{ text: string; distill: ExplorerQueryDistill }> {
+async function buildExplorerQuery(of: AgentHarnessModule, input: ChatInput, signal?: AbortSignal): Promise<{ text: string; distill: ExplorerQueryDistill }> {
+  throwIfExplorerAborted(signal);
   const raw = chatInputText(input);
   if (raw.length <= EXPLORER_QUERY_DISTILL_CHARS) {
     return { text: raw, distill: { method: 'verbatim', originalChars: raw.length, finalChars: raw.length } };
   }
   const { prose, blobs } = splitPastedBlobs(raw);
   try {
-    const brief = await withTimeout(distillExplorerQueryWithMainModel(of, raw), EXPLORER_QUERY_DISTILL_TIMEOUT_MS);
+    const brief = await withTimeout((boundedSignal) => distillExplorerQueryWithMainModel(of, raw, boundedSignal), EXPLORER_QUERY_DISTILL_TIMEOUT_MS, signal);
     if (brief) {
       return { text: brief, distill: { method: 'main-model', originalChars: raw.length, finalChars: brief.length } };
     }
   } catch {
+    throwIfExplorerAborted(signal);
     // fall through to the deterministic backup
   }
   const det = deterministicExplorerQuery(prose, blobs) || raw.slice(0, EXPLORER_QUERY_DISTILL_CHARS);
@@ -1839,28 +2029,32 @@ function formatExplorerQueryDistill(distill: ExplorerQueryDistill | undefined): 
 async function runRepoExplorerScout(
   input: ChatInput,
   deterministicReport: ExplorerReport,
+  signal?: AbortSignal,
 ): Promise<RepoExplorerScoutState> {
   const startedAt = Date.now();
   const budget = repoExplorerScoutBudget();
   const state: RepoExplorerScoutState = { enabled: true, ran: true, elapsedMs: 0, failed: false };
+  let scout: AgentHarnessAgent | undefined;
   try {
+    throwIfExplorerAborted(signal);
     const of = await loadAgentHarnessModule();
+    throwIfExplorerAborted(signal);
     const provider = process.env.SIFT_EXPLORER_PROVIDER ||
       process.env.SIFT_EXPLORER_SCOUT_PROVIDER ||
       (currentProvider === CODEX_PROVIDER ? 'openrouter' : currentProvider);
     const model = process.env.SIFT_EXPLORER_MODEL ||
       process.env.SIFT_EXPLORER_SCOUT_MODEL ||
       (currentProvider === CODEX_PROVIDER ? DEFAULT_AGENT_HARNESS_MODEL : currentModel);
-    const scout = await of.createChatAgent({
+    scout = await of.createChatAgent({
       name: 'siftable-repo-explorer-scout',
       provider,
       model,
-      providers: ['siftable'],
+      providers: process.env.SIFT_LOCAL_ONLY === '1' || !(process.env.SIFT_PAT || process.env.EXF_PAT) ? [] : ['siftable'],
       tools: buildRepoExplorerScoutTools(of),
       memory: false,
       prompt: SCOUT_PROMPT,
     });
-    const query = await buildExplorerQuery(of, input);
+    const query = await buildExplorerQuery(of, input, signal);
     state.queryDistill = query.distill;
     const scoutInput = [
       formatExplorerReport(deterministicReport),
@@ -1870,12 +2064,13 @@ async function runRepoExplorerScout(
       '',
       'Return JSON only.',
     ].join('\n');
+    const activeScout = scout;
     const collected = await withTimeout(
-      collectScoutText(scout.chat(scoutInput, { stream: true }), {
+      (boundedSignal) => collectScoutText(activeScout.chat(scoutInput, { stream: true, signal: boundedSignal }), {
         maxReturnedChars: budget.maxReturnedChars,
         maxToolCalls: budget.maxToolCalls,
       }),
-      budget.maxElapsedMs,
+      budget.maxElapsedMs, signal,
     );
     const parsed = parseRepoExplorerScoutReportDetailed(collected.text);
     const report = parsed.report;
@@ -1892,7 +2087,7 @@ async function runRepoExplorerScout(
     state.invalidJson = /json/i.test(state.failureReason);
     markRepoExplorerScoutState(deterministicReport, state);
     return state;
-  }
+  } finally { await scout?.close?.(); }
 }
 
 function explorerWarpgrepEnabled(): boolean {
@@ -1920,6 +2115,7 @@ interface WarpGrepResultLike {
 async function runRepoExplorerWarpGrep(
   input: ChatInput,
   deterministicReport: ExplorerReport,
+  signal?: AbortSignal,
 ): Promise<RepoExplorerScoutState> {
   const startedAt = Date.now();
   const budget = repoExplorerScoutBudget();
@@ -1935,7 +2131,7 @@ async function runRepoExplorerWarpGrep(
     await loadAgentHarnessEnv();
     const apiKey = process.env.MORPH_API_KEY;
     if (!apiKey) return fail('MORPH_API_KEY not set (use /key vault morph to load it from vault, or /key morph <key>)');
-    let MorphClientCtor: new (config: { apiKey: string }) => {
+    let MorphClientCtor: new (config: { apiKey: string; timeout?: number }) => {
       warpGrep: { execute: (input: { searchTerm: string; repoRoot: string }) => Promise<WarpGrepResultLike> };
     };
     try {
@@ -1943,13 +2139,15 @@ async function runRepoExplorerWarpGrep(
     } catch (err) {
       return fail(`@morphllm/morphsdk unavailable: ${err instanceof Error ? err.message : String(err)}`);
     }
-    const morph = new MorphClientCtor({ apiKey });
+    const morph = new MorphClientCtor({ apiKey, timeout: Math.max(budget.maxElapsedMs, 20_000) });
     const repoRoot = getWorkspaceRoot() || getSessionCwd();
     // Distill the query before it goes over the wire: warp-grep 400s once its
     // searchTerm exceeds Morph's ~85k-token window, which a giant pasted context
     // blows through. buildExplorerQuery is a no-op under the size gate.
+    throwIfExplorerAborted(signal);
     const of = await loadAgentHarnessModule();
-    const query = await buildExplorerQuery(of, input);
+    throwIfExplorerAborted(signal);
+    const query = await buildExplorerQuery(of, input, signal);
     state.queryDistill = query.distill;
     // warp-grep is a remote subagent (its own grep/read loop), not a local
     // token stream, so the per-scout token budget doesn't govern it. Real runs
@@ -1957,8 +2155,8 @@ async function runRepoExplorerWarpGrep(
     // under medium/quick budgets, while deep can still push it higher.
     const warpTimeoutMs = Math.max(budget.maxElapsedMs, 20_000);
     const result = await withTimeout(
-      morph.warpGrep.execute({ searchTerm: query.text, repoRoot }),
-      warpTimeoutMs,
+      () => morph.warpGrep.execute({ searchTerm: query.text, repoRoot }),
+      warpTimeoutMs, signal,
     );
     const contexts = Array.isArray(result?.contexts) ? result.contexts : [];
     const seen = new Set<string>();
@@ -1996,6 +2194,7 @@ async function runRepoExplorerWarpGrep(
 async function runRepoExplorerFanout(
   input: ChatInput,
   deterministicReport: ExplorerReport,
+  signal?: AbortSignal,
 ): Promise<RepoExplorerFanoutState> {
   const startedAt = Date.now();
   const fanoutBudget = repoExplorerFanoutBudget();
@@ -2018,8 +2217,9 @@ async function runRepoExplorerFanout(
   // Distill ONCE here (not per-branch): a string is a valid ChatInput, so each
   // branch's chatInputText() returns the resolved query verbatim — no N model calls.
   const of = await loadAgentHarnessModule();
-  const query = await buildExplorerQuery(of, input);
+  const query = await buildExplorerQuery(of, input, signal);
   state.queryDistill = query.distill;
+  throwIfExplorerAborted(signal);
   const fanoutRun = await runCollabBranches({
     root: deterministicReport.root,
     cwd: getSessionCwd(),
@@ -2034,7 +2234,7 @@ async function runRepoExplorerFanout(
       maxToolCalls: Math.min(branch.role.budget.maxToolCalls, fanoutBudget.maxScoutToolCalls),
       maxElapsedMs: Math.min(branch.role.budget.maxElapsedMs, fanoutBudget.maxElapsedMs),
     }),
-    runBranch: (context) => runRepoExplorerFanoutBranch(query.text, deterministicReport, fanoutBudget, context),
+    runBranch: (context) => runRepoExplorerFanoutBranch(query.text, deterministicReport, fanoutBudget, context, signal),
     finalizeBranch: (result) => result.branch.status === 'failed'
       ? { status: 'failed', error: result.branch.failureReason ?? 'branch failed' }
       : {
@@ -2062,10 +2262,14 @@ async function runRepoExplorerFanoutBranch(
   deterministicReport: ExplorerReport,
   fanoutBudget = repoExplorerFanoutBudget(),
   context: CollabBranchRunContext<FanoutBranchSpec>,
+  signal?: AbortSignal,
 ): Promise<{ branch: RepoExplorerFanoutBranch; report?: ReturnType<typeof parseScoutReportForFanout> }> {
   const { branch, startedAt } = context;
+  let scout: AgentHarnessAgent | undefined;
   try {
+    throwIfExplorerAborted(signal);
     const of = await loadAgentHarnessModule();
+    throwIfExplorerAborted(signal);
     const provider = process.env.SIFT_EXPLORER_PROVIDER ||
       process.env.SIFT_EXPLORER_SCOUT_PROVIDER ||
       (currentProvider === CODEX_PROVIDER ? 'openrouter' : currentProvider);
@@ -2073,11 +2277,11 @@ async function runRepoExplorerFanoutBranch(
       process.env.SIFT_EXPLORER_SCOUT_MODEL ||
       (currentProvider === CODEX_PROVIDER ? DEFAULT_AGENT_HARNESS_MODEL : currentModel);
     context.appendEvent('agent_configured', { provider, model });
-    const scout = await of.createChatAgent({
+    scout = await of.createChatAgent({
       name: `siftable-repo-explorer-fanout-${branch.id}`,
       provider,
       model,
-      providers: ['siftable'],
+      providers: process.env.SIFT_LOCAL_ONLY === '1' || !(process.env.SIFT_PAT || process.env.EXF_PAT) ? [] : ['siftable'],
       tools: buildRepoExplorerScoutTools(of, {
         maxToolCalls: Math.min(branch.role.budget.maxToolCalls, fanoutBudget.maxScoutToolCalls),
         maxSearches: Math.min(branch.role.budget.maxSearches, fanoutBudget.maxSearchesPerScout),
@@ -2102,12 +2306,13 @@ async function runRepoExplorerFanoutBranch(
       timeoutMs,
       maxToolCalls: Math.min(branch.role.budget.maxToolCalls, fanoutBudget.maxScoutToolCalls),
     });
+    const activeScout = scout;
     const collected = await withTimeout(
-      collectScoutText(scout.chat(scoutInput, { stream: true }), {
+      (boundedSignal) => collectScoutText(activeScout.chat(scoutInput, { stream: true, signal: boundedSignal }), {
         maxReturnedChars: Math.min(branch.role.budget.maxReturnedChars, fanoutBudget.maxScoutSectionChars),
         maxToolCalls: Math.min(branch.role.budget.maxToolCalls, fanoutBudget.maxScoutToolCalls),
       }),
-      timeoutMs,
+      timeoutMs, signal,
     );
     context.heartbeat();
     context.appendEvent('scout_collected', {
@@ -2155,7 +2360,7 @@ async function runRepoExplorerFanoutBranch(
       },
     };
     return result;
-  }
+  } finally { await scout?.close?.(); }
 }
 
 function parseScoutReportForFanout(text: string) {
@@ -2272,17 +2477,26 @@ async function collectScoutText(
   };
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timeout: NodeJS.Timeout | undefined;
+function throwIfExplorerAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new DOMException('Explorer cancelled', 'AbortError');
+}
+
+/** Abort supported work on its deadline, then drain the operation. An SDK that
+ * cannot accept a signal may take longer to settle; never leave it detached. */
+async function withTimeout<T>(operation: (signal: AbortSignal) => Promise<T>, timeoutMs: number, parentSignal?: AbortSignal): Promise<T> {
+  const controller = new AbortController();
+  const abort = () => controller.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) abort();
+  else parentSignal?.addEventListener('abort', abort, {once: true});
+  const timeout = setTimeout(() => controller.abort(new Error('repo explorer scout timed out')), Math.max(1, timeoutMs));
   try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => {
-        timeout = setTimeout(() => reject(new Error('repo explorer scout timed out')), timeoutMs);
-      }),
-    ]);
+    throwIfExplorerAborted(controller.signal);
+    const result = await operation(controller.signal);
+    throwIfExplorerAborted(controller.signal);
+    return result;
   } finally {
-    if (timeout) clearTimeout(timeout);
+    clearTimeout(timeout);
+    parentSignal?.removeEventListener('abort', abort);
   }
 }
 
@@ -2320,6 +2534,34 @@ export async function agentHarnessAsk(
   input: ChatInput,
   onEvent: (event: BrainEvent) => void,
   signal?: AbortSignal,
+  options?: Pick<ChatAgentChatOptions, 'completionVerification'>,
+): Promise<BrainAskResult> {
+  // Capture before dispatch: navigation while stopping cannot retarget cleanup.
+  const sessionId = sessionJournalIdForConversation(agentSessionKey());
+  let result: BrainAskResult;
+  try {
+    result = await agentHarnessAskTurn(input, onEvent, signal, options);
+  } catch (error) {
+    result = {text: '', status: signal?.aborted ? 'interrupted' : 'failed', error: agentHarnessErrorMessage(error)};
+  }
+  if (signal?.aborted) {
+    try {
+      // Includes jobs from older turns; other sessions retain their ownership.
+      await processJobs?.stopSession(sessionId);
+      result = {...result, status: 'interrupted', jobCleanup: 'confirmed'};
+    } catch (error) {
+      result = {...result, status: 'interrupted', jobCleanup: 'unknown',
+        error: `${result.error ? `${result.error}; ` : ''}${agentHarnessErrorMessage(error)}; process ownership retained, retry session shutdown`};
+    }
+  }
+  return result;
+}
+
+async function agentHarnessAskTurn(
+  input: ChatInput,
+  onEvent: (event: BrainEvent) => void,
+  signal?: AbortSignal,
+  options?: Pick<ChatAgentChatOptions, 'completionVerification'>,
 ): Promise<BrainAskResult> {
   let preparedInput = input;
   let explorerEffectiveness: RepoExplorerEffectiveness | null = null;
@@ -2342,9 +2584,10 @@ export async function agentHarnessAsk(
     onEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer', detail: 'read-only preflight' } });
     try {
       const report = await buildExplorerReport(input);
+      throwIfExplorerAborted(signal);
       if (report.mode !== 'skipped' && explorerWarpgrepEnabled()) {
         onEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer_warpgrep', detail: 'Morph warp-grep code search' } });
-        const warpState = await runRepoExplorerWarpGrep(input, report);
+        const warpState = await runRepoExplorerWarpGrep(input, report, signal);
         onEvent({
           type: 'tool_result',
           toolResult: {
@@ -2357,7 +2600,7 @@ export async function agentHarnessAsk(
         });
       } else if (report.mode !== 'skipped' && explorerFanoutEnabled()) {
         onEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer_fanout', detail: 'read-only parallel scouts' } });
-        const fanoutState = await runRepoExplorerFanout(input, report);
+        const fanoutState = await runRepoExplorerFanout(input, report, signal);
         onEvent({
           type: 'tool_result',
           toolResult: {
@@ -2368,7 +2611,7 @@ export async function agentHarnessAsk(
         });
       } else if (report.mode !== 'skipped' && explorerScoutEnabled()) {
         onEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer_scout', detail: 'read-only model scout' } });
-        const scoutState = await runRepoExplorerScout(input, report);
+        const scoutState = await runRepoExplorerScout(input, report, signal);
         onEvent({
           type: 'tool_result',
           toolResult: {
@@ -2414,11 +2657,14 @@ export async function agentHarnessAsk(
     }
   }
 
+  if (signal?.aborted) return {text: '', status: 'interrupted', error: 'Turn cancelled during explorer preparation'};
+
   // Codex engine: when the active provider is `codex`, drive the OpenAI
   // `codex app-server` sidecar (ChatGPT-subscription auth) instead of the
   // Siftable agent harness. Codex remains lazy to avoid a static import cycle
   // (codexEngine type-imports this module).
   if (currentProvider === CODEX_PROVIDER) {
+    if (options?.completionVerification) return {text: '', status: 'failed', error: 'Configured completion verification requires the local Sift harness.'};
     const { codexAsk } = await import('./codexEngine');
     // Pass the model only when it isn't the harness default, so a fresh
     // /codex switch lets app-server pick its own default model.
@@ -2441,11 +2687,40 @@ export async function agentHarnessAsk(
   }
 
   let assembled = '';
+  let streamedRequestId: string | undefined;
+  let streamedTextStart = 0;
+  let lastResponseText: {text: string; start: number} | undefined;
+  let verification: CandidateVerificationReceipt | undefined;
+  let finalResult: ChatResult | undefined;
+  const providerReceipts: ProviderReceipt[] = [];
+  const onProviderEvent = (event: AdapterEvent) => {
+    if (event.type === 'provider.text.delta') {
+      if (event.requestId !== streamedRequestId) {
+        streamedRequestId = event.requestId;
+        streamedTextStart = assembled.length;
+      }
+      assembled += event.delta;
+      emitPostExplorer({ type: 'token', phase: 'response', content: event.delta });
+    } else {
+      if (event.type === 'provider.response') providerReceipts.push(event.receipt);
+      emitPostExplorer({ type: 'provider', providerEvent: event });
+    }
+  };
   try {
-    for await (const chunk of agent.chat(preparedInput, { stream: true, signal })) {
+    for await (const chunk of agent.chat(preparedInput, { stream: true, signal, onProviderEvent,
+      completionVerification: options?.completionVerification,
+      onVerification: receipt => {
+        verification = structuredClone(receipt);
+        if (!receipt.completedAt) emitPostExplorer({type: 'status', phase: 'verification', status: 'verifying'});
+        emitPostExplorer({type: 'verification', phase: 'verification', receipt});
+      },
+    })) {
       if (chunk.type === 'text' && typeof chunk.text === 'string') {
+        lastResponseText = {text: chunk.text, start: chunk.streamed ? streamedTextStart : assembled.length};
+      }
+      if (chunk.type === 'text' && typeof chunk.text === 'string' && !chunk.streamed) {
         assembled += chunk.text;
-        emitPostExplorer({ type: 'token', content: chunk.text });
+        emitPostExplorer({ type: 'token', phase: 'response', content: chunk.text });
       } else if (chunk.type === 'tool_call') {
         // Surface the call and a salient arg (path/query/command) so the user
         // sees what each tool is doing — the TUI derives a one-line label.
@@ -2464,6 +2739,7 @@ export async function agentHarnessAsk(
           toolResult: {
             name: chunk.toolResult?.name ?? 'tool',
             success: chunk.toolResult?.success ?? true,
+            executionOutcome: chunk.toolResult?.executionOutcome,
             ...(chunk.toolResult?.callId ? { callId: chunk.toolResult.callId } : {}),
             // Bounded preview from the harness output boundary — the TUI
             // renders it (clipped further for display) instead of hiding
@@ -2472,17 +2748,39 @@ export async function agentHarnessAsk(
           },
         });
       } else if (chunk.type === 'done') {
+        finalResult = chunk.result;
         const finalContent = chunk.result?.content || chunk.result?.text;
         emitPostExplorer({
-          type: 'done',
-          ...(finalContent ? { message: { content: finalContent }, result: { text: finalContent } } : {}),
+          type: 'done', phase: 'final',
+          ...(finalContent ? { message: { content: finalContent } } : {}),
+          result: chunk.result,
         });
       }
     }
-    return { text: assembled };
+    if (!finalResult) return {text: '', progressText: assembled, verification, status: 'failed', providerReceipts, error: 'Agent stream ended without a terminal result.'};
+    const limited = finalResult?.run?.status === 'limit_reached';
+    return { text: finalResult.text, progressText: lastResponseText?.text === finalResult.text ? assembled.slice(0, lastResponseText.start) : assembled, verification, status: limited ? 'limit_reached' : 'completed', result: finalResult, providerReceipts,
+      ...(limited ? {error: 'Agent reached its tool-round limit; task completion is not verified.'} : {}) };
   } catch (err) {
-    return { text: assembled, error: agentHarnessErrorMessage(err) };
+    return { text: '', progressText: assembled, verification, status: signal?.aborted ? 'interrupted' : 'failed', providerReceipts,
+      ...(err && typeof err === 'object' && 'run' in err ? {run: (err as {run: ChatResult['run']}).run} : {}),
+      error: agentHarnessErrorMessage(err) };
   } finally {
     finishExplorerEffectiveness();
   }
+}
+
+/** Drain this process's cached sessions without deleting durable evidence. */
+export async function closeBrain(): Promise<void> {
+  processJobsClosing = true;
+  const cached = [...agents.values()];
+  agents.clear();
+  const settled = await Promise.allSettled([processJobs?.close(), ...cached.map(async (pending) => (await pending).close?.()), ...agentRetirements.values(), ...mailboxDrains.values()]);
+  // A failed bounded cleanup is not release of process ownership. Preserve the
+  // manager so another shutdown attempt can reconcile and retry its jobs.
+  if (settled[0].status === 'fulfilled') processJobs = undefined;
+  processJobsClosing = false;
+  releaseAllSessionJournalLeases();
+  const failures = settled.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'One or more agent sessions failed to close');
 }

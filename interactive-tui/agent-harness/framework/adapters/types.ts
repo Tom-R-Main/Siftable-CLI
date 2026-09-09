@@ -53,6 +53,49 @@ export interface AdapterContinuationRecovery {
   failedContinuationId: string;
 }
 
+export interface ProviderUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+  totalTokens?: number;
+}
+
+/** Provider evidence contains identifiers and counters, never credentials or request bodies. */
+export const PROVIDER_TERMINAL_ERROR_CODES = [
+  "gateway_attempt_limit", "gateway_spend_limit", "gateway_ledger_limit",
+  "gateway_ledger_unavailable", "gateway_deadline", "gateway_revoked",
+] as const;
+export type ProviderErrorCode = typeof PROVIDER_TERMINAL_ERROR_CODES[number];
+
+export interface ProviderReceipt {
+  requestId: string;
+  provider: string;
+  requestedModel: string;
+  servedModel?: string;
+  providerRequestId?: string;
+  responseId?: string;
+  attempts: number;
+  mode: "streaming" | "buffered";
+  outcome: "completed" | "failed" | "cancelled";
+  status?: number;
+  usage?: ProviderUsage;
+  error?: { code: ProviderErrorCode; retryable: false };
+}
+
+export type AdapterEvent =
+  | { type: "provider.attempt"; requestId: string; attempt: number; provider: string; requestedModel: string; oneShot: boolean; mode: "streaming" | "buffered" }
+  | { type: "provider.retry"; requestId: string; attempt: number; status: number; delayMs: number }
+  | { type: "provider.text.delta"; requestId: string; delta: string }
+  | { type: "provider.response"; receipt: ProviderReceipt };
+
+export interface AdapterRetryPolicy {
+  /** Total HTTP attempts, including the first. Default 3; bounded to 1–5. */
+  maxAttempts?: number;
+  baseDelayMs?: number;
+  /** Retry-After above this bound terminates the call instead of retrying early. */
+  maxDelayMs?: number;
+}
+
 /** Explicit, JSON-safe continuation state owned by the session journal. */
 export interface AdapterSessionState {
   /** Stable adapter protocol key, such as `openai.responses`. */
@@ -94,6 +137,7 @@ export interface ChatMessage {
 
 /** What the adapter returns after calling the AI */
 export interface AdapterResponse {
+  providerReceipts?: ProviderReceipt[];
   /** Text response from the AI (if any) */
   text?: string;
 
@@ -210,6 +254,13 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 /** Configuration for an adapter */
 export interface AdapterConfig {
+  /** Compatible API root, e.g. https://api.meta.ai/v1 (never include credentials). */
+  baseUrl?: string;
+  /** Explicit output budget; omit to retain provider defaults. Integer 1–131072. */
+  maxOutputTokens?: number;
+  retry?: AdapterRetryPolicy;
+  /** Default observer, including auxiliary calls. A per-call observer overrides it. */
+  onEvent?: (event: AdapterEvent) => void;
   /** Display name (e.g. "Gemini", "OpenAI") */
   name: string;
 
@@ -240,6 +291,9 @@ export interface AdapterConfig {
 
 /** Options for controlling AI behavior on a per-call basis */
 export interface ChatOptions {
+  onEvent?: (event: AdapterEvent) => void;
+  /** Stream when supported. Defaults to true when an event observer is supplied. */
+  stream?: boolean;
   /** Abort the provider request when supported by its transport. */
   signal?: AbortSignal;
 

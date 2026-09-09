@@ -803,6 +803,9 @@ export function boundToolOutput(
   serialized: string,
   config: ToolOutputConfig | undefined,
   spillKey: string,
+  // A model projection may share the retained rich receipt containing its
+  // output. Never spill a second copy of the same tool output in that case.
+  retainedReceiptRef?: string,
 ): BoundedToolOutput {
   const maxBytes = normalizeCap(config?.maxBytes, DEFAULT_TOOL_OUTPUT_MAX_BYTES, MIN_TOOL_OUTPUT_MAX_BYTES);
   const maxLines = normalizeCap(config?.maxLines, DEFAULT_TOOL_OUTPUT_MAX_LINES, MIN_TOOL_OUTPUT_MAX_LINES);
@@ -814,9 +817,9 @@ export function boundToolOutput(
     return { content: serialized, truncated: false, byteCount, lineCount };
   }
 
-  const fullOutputRef = config?.spillDir
+  const fullOutputRef = retainedReceiptRef ?? (config?.spillDir
     ? spillFullOutput(config.spillDir, spillKey, serialized, config)
-    : undefined;
+    : undefined);
   // The absolute ref remains local journal metadata. Model-facing content
   // only states whether retention succeeded so local usernames and paths are
   // never sent to the external model on the next round.

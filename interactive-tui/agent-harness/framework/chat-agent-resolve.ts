@@ -9,7 +9,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import type { AIAdapter, AdapterConfig } from "./adapters/types.js";
 import { createGeminiAdapter } from "./adapters/gemini.js";
-import { createOpenAIAdapter, createOpenRouterAdapter } from "./adapters/openai.js";
+import { createOpenAIAdapter, createOpenRouterAdapter, createChatCompletionsAdapter } from "./adapters/openai.js";
 import { createAnthropicAdapter } from "./adapters/anthropic.js";
 import { createXAIAdapter } from "./adapters/xai.js";
 import type { ToolRegistry } from "./registry.js";
@@ -30,6 +30,13 @@ const PROVIDER_MAP: Record<string, AdapterFactory> = {
   anthropic: createAnthropicAdapter,
   claude: createAnthropicAdapter,
   openrouter: createOpenRouterAdapter,
+  meta: (config) => createChatCompletionsAdapter({
+    ...config,
+    name: "Meta",
+    apiKey: config?.apiKey || process.env.META_API_KEY || "",
+    model: config?.model || "muse-spark-1.3-contributor",
+    baseUrl: config?.baseUrl || "https://api.meta.ai/v1",
+  }),
   xai: createXAIAdapter,
   grok: createXAIAdapter,
 };
@@ -47,7 +54,7 @@ const ENV_DETECTION_ORDER: Array<{ env: string; factory: AdapterFactory }> = [
  * or auto-detection from environment variables.
  */
 export function resolveAdapter(config: ChatAgentConfig, systemPrompt?: string): AIAdapter {
-  const opts: Partial<AdapterConfig> = {};
+  const opts: Partial<AdapterConfig> = { ...config.adapterConfig };
   if (config.model) opts.model = config.model;
   if (systemPrompt) opts.systemPrompt = systemPrompt;
   if (config.reasoningEffort) opts.reasoningEffort = config.reasoningEffort;

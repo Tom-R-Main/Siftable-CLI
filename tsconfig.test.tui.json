@@ -36,6 +36,8 @@
     "test/commands/interactive.crew-commands.test.ts",
     "test/commands/interactive.explorer.test.ts",
     "test/commands/interactive.fs-engine.test.ts",
+    "test/commands/interactive.fs-engine.mutation.test.ts",
+    "test/commands/interactive.search-completeness.test.ts",
     "test/commands/interactive.gemini-adapter.test.ts",
     "test/commands/interactive.image-engine.test.ts",
     "test/commands/interactive.journal-redaction.test.ts",
@@ -66,7 +68,13 @@
     "test/mergeView.projection.test.ts",
     "test/sessionContext.test.ts",
     "test/squashMerge.gitops.test.ts",
-    "test/workHubOverlay.test.ts"
+    "test/workHubOverlay.test.ts",
+    "test/brain.auxiliary-cancellation.test.ts",
+    "test/brain.execution-context.test.ts",
+    "test/commands/interactive.context.test.ts",
+    "test/execution-control.test.ts",
+    "test/process-jobs.test.ts",
+    "test/tui-execution-admission.test.ts"
   ],
   "include": [
     "test/workContract.e2e.test.ts"

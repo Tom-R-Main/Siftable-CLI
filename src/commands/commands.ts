@@ -30,6 +30,26 @@ const TOPICS = [
   {topic: 'capabilities', description: 'Capability readiness map'},
 ];
 
+/** Derive discovery from the same loaded command registry used by dispatch/help. */
+export function commandTopics(
+  commands: ReadonlyArray<{id: string; hidden?: boolean; description?: string}>,
+  configuredTopics: ReadonlyArray<{name: string; description?: string}> = [],
+): Array<{topic: string; description: string}> {
+  const descriptions = new Map(TOPICS.map(entry => [entry.topic, entry.description]));
+  for (const topic of configuredTopics) {
+    if (topic.description) descriptions.set(topic.name, topic.description);
+  }
+  const visible = commands.filter(command => !command.hidden);
+  return [...new Set(visible.map(command => command.id.split(':')[0]!))]
+    .sort()
+    .map(topic => ({
+      topic,
+      description: descriptions.get(topic)
+        ?? visible.find(command => command.id === topic)?.description?.split('\n')[0]
+        ?? `${topic} commands`,
+    }));
+}
+
 export default class Commands extends BaseCommand {
   static description = 'Show agent-friendly command topics and workflow entry points';
 
@@ -39,9 +59,10 @@ export default class Commands extends BaseCommand {
 
   async run(): Promise<unknown> {
     await this.parse(Commands);
+    const topics = commandTopics(this.config.commands, this.config.topics);
     const result = {
       ok: true,
-      topics: TOPICS,
+      topics,
       capabilityIds: STATIC_READINESS_CAPABILITIES.map((capability) => capability.id),
       recipeIds: RECIPES.map((recipe) => recipe.id),
       next: [
@@ -54,7 +75,7 @@ export default class Commands extends BaseCommand {
     };
 
     if (!this.jsonEnabled()) {
-      renderTable(TOPICS, [
+      renderTable(topics, [
         {key: 'topic', header: 'Topic'},
         {key: 'description', header: 'Description'},
       ]);

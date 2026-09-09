@@ -679,7 +679,7 @@ describe('interactive repo explorer preflight', () => {
         chat: async function* (message: unknown) {
           capturedInput = message;
           yield {type: 'text', text: 'ok'};
-          yield {type: 'done', result: {content: 'ok'}};
+          yield {type: 'done', result: {text: 'ok'}};
         },
       }),
       defineTool: (def: unknown) => def,
@@ -713,7 +713,7 @@ describe('interactive repo explorer preflight', () => {
         chat: async function* (message: unknown) {
           capturedInput = message;
           yield {type: 'text', text: 'ok'};
-          yield {type: 'done', result: {content: 'ok'}};
+          yield {type: 'done', result: {text: 'ok'}};
         },
       }),
       defineTool: (def: unknown) => def,
@@ -765,7 +765,7 @@ describe('interactive repo explorer preflight', () => {
         chat: async function* (message: unknown) {
           capturedInput = message;
           yield {type: 'text', text: 'ok'};
-          yield {type: 'done', result: {content: 'ok'}};
+          yield {type: 'done', result: {text: 'ok'}};
         },
       }),
       defineTool: (def: unknown) => def,
@@ -808,7 +808,7 @@ describe('interactive repo explorer preflight', () => {
         chat: async function* (message: unknown) {
           capturedInput = message;
           yield {type: 'text', text: 'ok'};
-          yield {type: 'done', result: {content: 'ok'}};
+          yield {type: 'done', result: {text: 'ok'}};
         },
       }),
       defineTool: (def: unknown) => def,
@@ -854,7 +854,7 @@ describe('interactive repo explorer preflight', () => {
             yield {type: 'tool_result', toolResult: {name: 'read_file', success: true}};
           }
           yield {type: 'text', text: 'ok'};
-          yield {type: 'done', result: {content: 'ok'}};
+          yield {type: 'done', result: {text: 'ok'}};
         },
       }),
       defineTool: (def: unknown) => def,
@@ -899,7 +899,7 @@ describe('interactive repo explorer preflight', () => {
         chat: async function* (message: unknown) {
           capturedInput = message;
           yield {type: 'text', text: 'ok'};
-          yield {type: 'done', result: {content: 'ok'}};
+          yield {type: 'done', result: {text: 'ok'}};
         },
       }),
       defineTool: (def: unknown) => def,
@@ -971,7 +971,7 @@ describe('interactive repo explorer preflight', () => {
             yield {type: 'tool_result', toolResult: {name: 'read_file', success: true}};
           }
           yield {type: 'text', text: 'ok'};
-          yield {type: 'done', result: {content: 'ok'}};
+          yield {type: 'done', result: {text: 'ok'}};
         },
       }),
       defineTool: (def: unknown) => def,
@@ -1038,7 +1038,7 @@ describe('interactive repo explorer preflight', () => {
               return;
             }
             yield {type: 'text', text: 'ok'};
-            yield {type: 'done', result: {content: 'ok'}};
+            yield {type: 'done', result: {text: 'ok'}};
           },
         };
       },
@@ -1100,7 +1100,7 @@ describe('interactive repo explorer preflight', () => {
             return;
           }
           yield {type: 'text', text: 'ok'};
-          yield {type: 'done', result: {content: 'ok'}};
+          yield {type: 'done', result: {text: 'ok'}};
         },
       }),
       defineTool: (def: unknown) => def,
@@ -1162,7 +1162,7 @@ describe('interactive repo explorer preflight', () => {
           }
           capturedMainInput = message;
           yield {type: 'text', text: 'ok'};
-          yield {type: 'done', result: {content: 'ok'}};
+          yield {type: 'done', result: {text: 'ok'}};
         },
       }),
       defineTool: (def: unknown) => def,
@@ -1217,7 +1217,7 @@ describe('interactive repo explorer preflight', () => {
           }
           capturedMainInput = 'main ran';
           yield {type: 'text', text: 'ok'};
-          yield {type: 'done', result: {content: 'ok'}};
+          yield {type: 'done', result: {text: 'ok'}};
         },
       }),
       defineTool: (def: unknown) => def,
@@ -1272,7 +1272,7 @@ describe('interactive repo explorer preflight', () => {
           }
           capturedMainInput = message;
           yield {type: 'text', text: 'ok'};
-          yield {type: 'done', result: {content: 'ok'}};
+          yield {type: 'done', result: {text: 'ok'}};
         },
       }),
       defineTool: (def: unknown) => def,
@@ -1353,7 +1353,7 @@ describe('interactive repo explorer preflight', () => {
             yield {type: 'tool_result', toolResult: {name: 'read_file', success: true}};
           }
           yield {type: 'text', text: 'ok'};
-          yield {type: 'done', result: {content: 'ok'}};
+          yield {type: 'done', result: {text: 'ok'}};
         },
       }),
       defineTool: (def: unknown) => def,
@@ -1443,7 +1443,7 @@ describe('interactive repo explorer preflight', () => {
       createChatAgent: async () => ({
         chat: async function* () {
           yield {type: 'tool_call', toolCall: {name: 'read_file', args: {path: 'src/fsEngine.ts'}}};
-          yield {type: 'done', result: {content: 'ok'}};
+          yield {type: 'done', result: {text: 'ok'}};
         },
       }),
       defineTool: (def: unknown) => def,

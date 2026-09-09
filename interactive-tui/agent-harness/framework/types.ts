@@ -7,6 +7,9 @@
 
 // ─── JSON Schema (subset used for tool parameters) ─────────────────────────
 
+import type { ToolExecutionContext } from './execution-context.js';
+export type { ToolExecutionContext } from './execution-context.js';
+
 export interface JsonSchemaProperty {
   type: "string" | "number" | "integer" | "boolean" | "array" | "object";
   description?: string;
@@ -43,7 +46,11 @@ export interface ToolDefinition<
   inputSchema: InputSchema;
 
   /** The function that runs when the tool is called */
-  handler: (params: TParams) => Promise<ToolResult<TResult>>;
+  handler: (params: TParams, context?: ToolExecutionContext) => Promise<ToolResult<TResult>>;
+
+  /** Optional model projection of the sanitized receipt. The original receipt
+   * remains available to diagnostics. Must preserve success and outcome. */
+  modelResult?: (result: ToolResult) => ToolResult;
 
   /**
    * Whether a call with these args may run concurrently with other
