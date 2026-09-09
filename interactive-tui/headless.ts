@@ -175,7 +175,10 @@ export async function runHeadless(options: HeadlessOptions): Promise<number> {
   return status === 'completed' && (!options.verifyArgv || verification?.status === 'passed') ? 0 : status === 'interrupted' ? 130 : 1;
 }
 
-if (import.meta.main) {
+// Bun sets import.meta.main for the entry module. The pinned @types/node used by
+// CI predates the Node 24 typing, so read it through an explicit shape.
+const invokedAsEntryPoint = (import.meta as ImportMeta & {main?: boolean}).main === true;
+if (invokedAsEntryPoint) {
   // Libraries may log diagnostics; stdout is reserved for the public protocol.
   console.log = (...values: unknown[]) => console.error(...values);
   console.info = (...values: unknown[]) => console.error(...values);
