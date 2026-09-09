@@ -91,10 +91,12 @@ import {
   gutterIndent,
 } from "./toolView";
 import { ToolRowTracker } from "./toolRowTracker";
+import { createConfirmedQuit } from "./confirmedQuit";
 import { serializeConversation } from "./transcript";
 import { getSessionCwd, getWorkspaceRoot, setSessionCwd } from "./navigation";
 import { createChildSessionController } from "./childSessionController";
 import {
+  closeBrain,
   inspectActiveThread,
   verifyActiveCandidate,
   readActiveToolOutput,
@@ -371,6 +373,23 @@ function App() {
 
   const push = (m: Msg) => setMessages(messages.length, m);
   let quitRequested = false;
+  const closeForQuit = createConfirmedQuit(closeBrain, () => {
+    if (!renderer.isDestroyed) renderer.destroy();
+  });
+  const finishQuit = async () => {
+    setBusy(true);
+    setStatus("stopping… waiting for session jobs to close");
+    try {
+      await closeForQuit();
+    } catch (error) {
+      // Keep ownership and a usable UI when bounded cleanup cannot confirm
+      // absence. A later quit request may retry the retained shutdown work.
+      quitRequested = false;
+      setBusy(false);
+      setStatus("shutdown incomplete — retry quit to reconcile remaining jobs");
+      push({role: "system", text: `Session shutdown failed: ${error instanceof Error ? error.message : String(error)}`});
+    }
+  };
   const quit = () => {
     quitRequested = true;
     if (busy() && abortController) {
@@ -378,7 +397,7 @@ function App() {
       setStatus("stopping… waiting for active work to settle");
       return;
     }
-    if (!renderer.isDestroyed) renderer.destroy();
+    void finishQuit();
   };
 
   const workRunController = createWorkRunController({
@@ -714,7 +733,7 @@ function App() {
       setBusy(false);
       setStatus("ready");
       if (quitRequested) {
-        if (!renderer.isDestroyed) renderer.destroy();
+        void finishQuit();
       } else if (succeeded) drainNextQueued();
     }
   }
@@ -932,7 +951,7 @@ function App() {
       setStatus("ready");
       // Drain one queued message, if any.
       if (quitRequested) {
-        if (!renderer.isDestroyed) renderer.destroy();
+        void finishQuit();
       } else if (turnSucceeded) drainNextQueued();
     }
   }
@@ -1025,7 +1044,7 @@ function App() {
           if (abortController === controller) abortController = null;
           setBusy(false);
           setStatus("ready");
-          if (quitRequested && !renderer.isDestroyed) renderer.destroy();
+          if (quitRequested) void finishQuit();
         }
       },
       push,

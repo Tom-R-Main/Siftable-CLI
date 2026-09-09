@@ -291,7 +291,7 @@ describe('Siftable agent-harness chat loop', () => {
         failClosedMode: 'exclusive',
       },
       output: {
-        policyVersion: 'siftable.tool-output/1',
+        policyVersion: 'siftable.tool-output/2',
         maxBytes: 50 * 1024,
         maxLines: 2000,
         spill: {
@@ -1307,7 +1307,7 @@ describe('Siftable agent-harness chat loop', () => {
       expect(output?.fullOutputRef).toBeDefined();
       expect(content).not.toContain(output!.fullOutputRef!);
       expect(chunks.at(-1)?.result?.run.manifest.execution?.output).toEqual({
-        policyVersion: 'siftable.tool-output/1',
+        policyVersion: 'siftable.tool-output/2',
         maxBytes: 2048,
         maxLines: 2000,
         spill: {

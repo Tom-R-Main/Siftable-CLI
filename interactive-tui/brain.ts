@@ -2759,7 +2759,10 @@ async function agentHarnessAskTurn(
     }
     if (!finalResult) return {text: '', progressText: assembled, verification, status: 'failed', providerReceipts, error: 'Agent stream ended without a terminal result.'};
     const limited = finalResult?.run?.status === 'limit_reached';
-    return { text: finalResult.text, progressText: lastResponseText?.text === finalResult.text ? assembled.slice(0, lastResponseText.start) : assembled, verification, status: limited ? 'limit_reached' : 'completed', result: finalResult, providerReceipts,
+    // A legacy done result may carry no text; only strip the final answer when it was actually observed as a response.
+    const finalText = finalResult.text ?? '';
+    const progressText = lastResponseText !== undefined && lastResponseText.text === finalText ? assembled.slice(0, lastResponseText.start) : assembled;
+    return { text: finalText, progressText, verification, status: limited ? 'limit_reached' : 'completed', result: finalResult, providerReceipts,
       ...(limited ? {error: 'Agent reached its tool-round limit; task completion is not verified.'} : {}) };
   } catch (err) {
     return { text: '', progressText: assembled, verification, status: signal?.aborted ? 'interrupted' : 'failed', providerReceipts,

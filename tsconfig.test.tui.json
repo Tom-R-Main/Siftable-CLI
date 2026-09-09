@@ -74,6 +74,7 @@
     "test/commands/interactive.context.test.ts",
     "test/execution-control.test.ts",
     "test/process-jobs.test.ts",
+    "test/commands/interactive.quit.test.ts",
     "test/tui-execution-admission.test.ts"
   ],
   "include": [

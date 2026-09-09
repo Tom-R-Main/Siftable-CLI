@@ -39,6 +39,9 @@ function harness() {
     messages, push: (value: any) => messages.push(value),
     setMessages: (index: number, field: string, value: any) => { messages[index][field] = typeof value === 'function' ? value(messages[index][field]) : value; },
     renderer: { isDestroyed: false, destroy: jest.fn() },
+    // The real finishQuit awaits owned session shutdown before destroying; the
+    // admission tests only observe that destruction follows settlement.
+    finishQuit: async () => { if (!sandbox.renderer.isDestroyed) sandbox.renderer.destroy(); },
     history: [], histIndex: 0, setTranscriptSelected: jest.fn(), clearUsedPasteChips: jest.fn(),
     buildChatInput: (text: string) => text, handleSlash: jest.fn(),
     getSessionCwd: () => '/workspace', getWorkspaceRoot: () => '/workspace',

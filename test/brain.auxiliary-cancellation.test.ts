@@ -110,7 +110,7 @@ describe('truthful brain settlement', () => {
       if (text) yield {type: 'text', text};
     }}));
     const result = await agentHarnessAsk('hello', jest.fn());
-    expect(result).toMatchObject({status: 'failed', text, error: 'Agent stream ended without a terminal result.'});
+    expect(result).toMatchObject({status: 'failed', text: '', progressText: text, error: 'Agent stream ended without a terminal result.'});
     expect(result.result).toBeUndefined();
   });
 
