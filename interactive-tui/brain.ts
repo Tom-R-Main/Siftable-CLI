@@ -1,3 +1,4 @@
+import {noninteractivePromptBlock} from './agent-harness/framework/settlement';
 import {readSessionOutput} from './sessionOutput';
 import {randomUUID} from 'node:crypto';
 import {verifyReceiptCurrent, type CandidateVerificationReceipt, type CandidateVerificationInput} from './candidateVerification';
@@ -125,6 +126,13 @@ export type ChatInputPart =
   | { type: 'text'; text: string }
   | { type: 'image'; mime: string; dataUrl: string; detail?: 'auto' | 'low' | 'high' };
 export type ChatInput = string | ChatInputPart[];
+
+/** Headless runs (CLI-044): tell the model no person can answer or approve during the turn. */
+function noninteractivePromptSuffix(): string {
+  const policy = process.env.SIFT_AGENT_NONINTERACTIVE;
+  if (policy !== 'allow' && policy !== 'deny') return '';
+  return noninteractivePromptBlock(policy);
+}
 
 const LEAN_PROMPT =
   'You are the Siftable assistant in the user\'s terminal. Identify yourself as the Siftable assistant, not a generic terminal copilot. ' +
@@ -1506,7 +1514,7 @@ export async function getAgent(): Promise<AgentHarnessAgent> {
         tools: buildLocalTools(of),
         memory: false,
         maxToolRounds: Number(process.env.SIFT_AGENT_MAX_ROUNDS || 24),
-        prompt: LEAN_PROMPT + formatSkillsForPrompt(currentSkills()),
+        prompt: LEAN_PROMPT + noninteractivePromptSuffix() + formatSkillsForPrompt(currentSkills()),
         // Retain the legacy key for one-time migration. The event journal above
         // is the always-on durable authority for resume and recovery.
         persistKey: key,
@@ -2534,7 +2542,7 @@ export async function agentHarnessAsk(
   input: ChatInput,
   onEvent: (event: BrainEvent) => void,
   signal?: AbortSignal,
-  options?: Pick<ChatAgentChatOptions, 'completionVerification'>,
+  options?: Pick<ChatAgentChatOptions, 'completionVerification' | 'noninteractive'>,
 ): Promise<BrainAskResult> {
   // Capture before dispatch: navigation while stopping cannot retarget cleanup.
   const sessionId = sessionJournalIdForConversation(agentSessionKey());
@@ -2561,7 +2569,7 @@ async function agentHarnessAskTurn(
   input: ChatInput,
   onEvent: (event: BrainEvent) => void,
   signal?: AbortSignal,
-  options?: Pick<ChatAgentChatOptions, 'completionVerification'>,
+  options?: Pick<ChatAgentChatOptions, 'completionVerification' | 'noninteractive'>,
 ): Promise<BrainAskResult> {
   let preparedInput = input;
   let explorerEffectiveness: RepoExplorerEffectiveness | null = null;
@@ -2709,6 +2717,7 @@ async function agentHarnessAskTurn(
   try {
     for await (const chunk of agent.chat(preparedInput, { stream: true, signal, onProviderEvent,
       completionVerification: options?.completionVerification,
+      noninteractive: options?.noninteractive,
       onVerification: receipt => {
         verification = structuredClone(receipt);
         if (!receipt.completedAt) emitPostExplorer({type: 'status', phase: 'verification', status: 'verifying'});

@@ -1,4 +1,5 @@
 import {verifyCandidate, verifyReceiptCurrent, verificationAllowsRepair, verificationFeedback, type CandidateVerificationReceipt, type CandidateVerificationInput} from '../../candidateVerification';
+import {detectUserDirectedRequest, noninteractiveFeedback, NONINTERACTIVE_UNSETTLED_ERROR} from './settlement';
 /**
  * ChatAgent — Composable AI Chat Agent
  *
@@ -1122,6 +1123,8 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
       let finalText = "";
       let verification: CandidateVerificationReceipt | undefined;
       let assistantTurnComplete = false;
+      // One feedback round per turn: a second user-directed answer fails the run.
+      let settlementFeedbackGiven = false;
       let activeStepId: string | undefined;
       let turnStarted = false;
       let terminalRecorded = false;
@@ -1428,6 +1431,28 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
             ...stepContext,
           });
           activeStepId = undefined;
+          if (options?.noninteractive && response.text) {
+            // No person will ever answer a question asked here. Treat the answer
+            // as unsettled: one bounded reminder, then an honest failure.
+            const request = detectUserDirectedRequest(response.text);
+            if (request) {
+              const approvalPolicy = options.noninteractive.approvalPolicy;
+              if (settlementFeedbackGiven) {
+                this.session.append({type: "settlement/user-directed", data: {cue: request.cue, action: "failed", approvalPolicy}, ...baseContext});
+                throw new Error(NONINTERACTIVE_UNSETTLED_ERROR);
+              }
+              settlementFeedbackGiven = true;
+              this.session.append({type: "settlement/user-directed", data: {cue: request.cue, action: "feedback", approvalPolicy}, ...baseContext});
+              assistantTurnComplete = false;
+              finalText = "";
+              // This write must succeed before the next inference request.
+              this.session.appendMessage({role: "user", content: noninteractiveFeedback(approvalPolicy, request)}, baseContext);
+              effectHistoryCheckpoint = this.currentHistory();
+              effectStateCheckpoint = this.snapshotAdapterSessionState();
+              if (maxRounds <= 0) throw new Error(NONINTERACTIVE_UNSETTLED_ERROR);
+              continue;
+            }
+          }
           if (completionVerification && !response.text) {
             throw new Error("The model returned no candidate answer; configured verification was not run");
           }

@@ -1,3 +1,4 @@
+import type { NoninteractiveSettlement } from "./settlement";
 import type {CandidateVerificationReceipt, CandidateVerificationInput} from '../../candidateVerification';
 /**
  * ChatAgent — Type Definitions
@@ -360,6 +361,9 @@ export interface ChatStreamChunk {
 // ─── Chat Options ──────────────────────────────────────────────────────────
 
 export interface ChatAgentChatOptions {
+  /** Headless execution: no person can answer during the turn. A user-directed
+   * final answer gets one bounded feedback round, then fails the run (CLI-044). */
+  noninteractive?: NoninteractiveSettlement;
   /** Trusted user-supplied check; never an evaluator's held-out grader. */
   completionVerification?: Omit<CandidateVerificationInput, 'context' | 'onPrepared'> & {
     context: Omit<ToolExecutionContext, 'sessionId' | 'turnId' | 'callId' | 'signal'>;

@@ -111,6 +111,8 @@ export interface SessionEventDataMap {
   };
   "verification/started": {receipt: CandidateVerificationReceipt};
   "verification/recorded": {receipt: CandidateVerificationReceipt};
+  /** A noninteractive run's final answer asked the absent user to act (CLI-044). */
+  "settlement/user-directed": {cue: string; action: "feedback" | "failed"; approvalPolicy: "allow" | "deny"};
   "model/request-prepared": ModelRequestSnapshot;
   "model/auxiliary-request-prepared": ModelRequestSnapshot & {purpose: "compaction"; input: ChatMessage[]; inputSha256: string};
   "model/provider-event": { event: Exclude<AdapterEvent, {type: "provider.text.delta"}> };
@@ -2413,6 +2415,7 @@ const EVENT_TYPES: ReadonlySet<string> = new Set<SessionEventType>([
   "step/started",
   "verification/started",
   "verification/recorded",
+  "settlement/user-directed",
   "model/request-prepared",
   "model/auxiliary-request-prepared",
   "model/provider-event",

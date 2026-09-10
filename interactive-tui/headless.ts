@@ -85,6 +85,8 @@ export async function runHeadless(options: HeadlessOptions): Promise<number> {
   process.env.SIFT_USER_CWD = options.cwd;
   process.env.SIFT_WORKSPACE_ROOT = options.cwd;
   process.env.SIFT_AGENT_MAX_ROUNDS = String(options.maxRounds);
+  // CLI-044: the harness prompt and settlement check both key off this.
+  process.env.SIFT_AGENT_NONINTERACTIVE = options.approval;
   if (options.maxOutputTokens !== undefined) process.env.SIFT_AGENT_MAX_OUTPUT_TOKENS = String(options.maxOutputTokens);
   const brain = await import('./brain');
   const approvals = await import('./confirmGate');
@@ -121,11 +123,14 @@ export async function runHeadless(options: HeadlessOptions): Promise<number> {
     result = await brain.agentHarnessAsk(options.prompt, (event: BrainEvent) => {
       emit(event);
       if (options.format === 'text' && event.type === 'token') process.stdout.write(event.content || '');
-    }, controller.signal, options.verifyArgv ? {completionVerification: {
-      argv: options.verifyArgv, files: options.verifyFiles || [],
-      context: {workspaceRoot: options.cwd, sessionCwd: options.cwd, deadline,
-        approval: {policy: options.approval, scopeId: runId}},
-    }} : undefined);
+    }, controller.signal, {
+      noninteractive: {approvalPolicy: options.approval},
+      ...(options.verifyArgv ? {completionVerification: {
+        argv: options.verifyArgv, files: options.verifyFiles || [],
+        context: {workspaceRoot: options.cwd, sessionCwd: options.cwd, deadline,
+          approval: {policy: options.approval, scopeId: runId}},
+      }} : {}),
+    });
     verification = result.verification;
     if (handoff && result.status === 'completed' && !result.error && (!options.verifyArgv || verification?.status === 'passed') && !controller.signal.aborted) {
       // The model is settled. Grading gets a separate bounded window, with no
