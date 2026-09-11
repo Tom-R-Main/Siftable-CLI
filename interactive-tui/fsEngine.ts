@@ -311,6 +311,13 @@ const decoder = new TextDecoder("utf-8", { fatal: false });
 
 const STATUS_OK = 0;
 const STATUS_OUTPUT_TOO_SMALL = 9;
+/**
+ * Native statuses the engine returns before any byte is written (argument, root,
+ * lookup, size, encoding, freshness and match checks all precede the atomic write
+ * in native/fs_engine.zig). Permission (5) and I/O (13) can occur on either side of
+ * the write and stay unknown. CLI-047.
+ */
+const PRE_WRITE_STATUSES: ReadonlySet<number> = new Set([1, 2, 3, 4, 6, 7, 8, 10, 11, 12, 14, 15]);
 const WRITE_FLAG_CREATE_ONLY = 0x1;
 const WRITE_FLAG_MAKE_PATH = 0x2;
 const EDIT_FLAG_REQUIRE_UNIQUE = 0x1;
@@ -1227,7 +1234,7 @@ export async function writeText(path: string, content: string, opts: WriteTextOp
         cap = growMutationReceipt(cap, needed);
         continue;
       }
-      throw new MutationReceiptError("unknown", new Error(nativeStatusMessage(status, "write_file")));
+      throw new MutationReceiptError(PRE_WRITE_STATUSES.has(status) ? "not_applied" : "unknown", new Error(nativeStatusMessage(status, "write_file")));
     }
     throw new MutationReceiptError("not_applied", new Error("write_file: native mutation receipt remained too small; no write was performed"));
   }
@@ -1278,7 +1285,7 @@ export async function editText(
         continue;
       }
       if (status === 12) throw new AmbiguousEditError();
-      throw new MutationReceiptError("unknown", new Error(nativeStatusMessage(status, "edit_file")));
+      throw new MutationReceiptError(PRE_WRITE_STATUSES.has(status) ? "not_applied" : "unknown", new Error(nativeStatusMessage(status, "edit_file")));
     }
     throw new MutationReceiptError("not_applied", new Error("edit_file: native mutation receipt remained too small; no edit was performed"));
   }
@@ -1287,9 +1294,10 @@ export async function editText(
 
 async function writeTextFallback(path: string, content: string, opts: WriteTextOptions): Promise<WriteTextResult> {
   const root = opts.root ?? "";
-  if (!withinRoot(root, path)) throw new Error("write_file: path is outside the writable root");
+  // Everything before the atomic write is a typed not-applied rejection.
+  if (!withinRoot(root, path)) throw new MutationReceiptError("not_applied", new Error("write_file: path is outside the writable root"));
   const created = !existsSync(path);
-  if (opts.createOnly && !created) throw new Error("write_file: file already exists");
+  if (opts.createOnly && !created) throw new MutationReceiptError("not_applied", new Error("write_file: file already exists"));
   try {
     await atomicWriteTs(path, content, Boolean(opts.makePath));
   } catch (error) {
@@ -1305,14 +1313,20 @@ async function editTextFallback(
   opts: EditTextOptions,
 ): Promise<EditTextResult> {
   const root = opts.root ?? "";
-  if (!oldString) throw new Error("edit_file: the text to replace must not be empty");
-  if (!withinRoot(root, path)) throw new Error("edit_file: path is outside the writable root");
-  const data = (await readFile(path)).toString("utf8");
+  // Everything before the atomic write is a typed not-applied rejection (CLI-047).
+  if (!oldString) throw new MutationReceiptError("not_applied", new Error("edit_file: the text to replace must not be empty"));
+  if (!withinRoot(root, path)) throw new MutationReceiptError("not_applied", new Error("edit_file: path is outside the writable root"));
+  let data: string;
+  try {
+    data = (await readFile(path)).toString("utf8");
+  } catch (error) {
+    throw new MutationReceiptError("not_applied", error);
+  }
   if (opts.expectedHash != null && contentHash(data) !== (opts.expectedHash >>> 0)) {
-    throw new Error("edit_file: stale: the file changed since it was read");
+    throw new MutationReceiptError("not_applied", new Error("edit_file: stale: the file changed since it was read"));
   }
   const occ = countOccurrencesTs(data, oldString);
-  if (occ === 0) throw new Error("edit_file: no match for the text to replace");
+  if (occ === 0) throw new MutationReceiptError("not_applied", new Error("edit_file: no match for the text to replace"));
   if ((opts.requireUnique ?? true) && occ > 1) {
     throw new AmbiguousEditError();
   }

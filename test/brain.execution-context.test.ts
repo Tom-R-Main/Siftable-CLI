@@ -181,6 +181,19 @@ test('edit errors with ambiguous-match prose do not assert no effects', async ()
   } finally {edit.mockRestore();}
 });
 
+test('a no-match edit is a typed pre-write rejection: failed, not unknown, and the model may retry (CLI-047)', async () => {
+  const path = join(root, 'file.txt'); await writeFile(path, 'original');
+  setConfirmListener(request => resolveApproval(request.id, 'allow'));
+  const missing = await tools.edit_file.handler({path, old: 'not present anywhere', new: 'new'}, context(root));
+  expect(missing).toMatchObject({success: false, executionOutcome: 'failed', data: {mutationState: 'not_applied'}});
+  expect(String((missing as {error?: string}).error)).toContain('no match for the text to replace');
+  expect(await readFile(path, 'utf8')).toBe('original');
+  const absent = await tools.edit_file.handler({path: join(root, 'nope.txt'), old: 'x', new: 'y'}, context(root));
+  expect(absent).toMatchObject({success: false, executionOutcome: 'failed', data: {mutationState: 'not_applied'}});
+  const outside = await tools.write_file.handler({path: join(root, '..', 'escape.txt'), content: 'x'}, context(root));
+  expect(outside).toMatchObject({success: false, executionOutcome: 'failed', data: {mutationState: 'not_applied'}});
+});
+
 test('post-write observer errors stay unknown even when typed as an edit rejection', async () => {
   const path = join(root, 'file.txt'); await writeFile(path, 'original');
   setConfirmListener(request => resolveApproval(request.id, 'allow'));
