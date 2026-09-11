@@ -8,7 +8,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { compatibleBaseUrl, outputTokenLimit, providerTransport, readProviderResponse } from "./transport.js";
+import { compatibleBaseUrl, outputTokenLimit, providerTransport, readProviderResponse, ProviderHttpError, ProviderIncompleteError } from "./transport.js";
 import type {
   AIAdapter,
   AdapterConfig,
@@ -334,7 +334,7 @@ export function createChatCompletionsAdapter(config: ChatCompletionsConfig): AIA
           });
           if (!response.ok) {
             await response.body?.cancel();
-            throw new Error(`${name} API error (${response.status})`);
+            throw new ProviderHttpError(name, response.status);
           }
           const data = await readProviderResponse(response, "chat", transport.text, options?.signal, transport.capture);
           transport.capture(data);
@@ -372,7 +372,9 @@ function parseChatCompletionChoice(name: string, data: unknown): AdapterResponse
     throw new Error(`${name} response choice must be an object`);
   }
   if (choice.finish_reason !== undefined && !["stop", "tool_calls", "function_call"].includes(String(choice.finish_reason))) {
-    throw new Error(`${name} response incomplete (${choice.finish_reason})`);
+    const partial = isRecord(choice.message) ? choice.message : {};
+    const visible = (typeof partial.content === "string" && partial.content.length > 0) || (Array.isArray(partial.tool_calls) && partial.tool_calls.length > 0);
+    throw new ProviderIncompleteError(name, String(choice.finish_reason), visible);
   }
   const message = choice.message;
   if (!isRecord(message)) {

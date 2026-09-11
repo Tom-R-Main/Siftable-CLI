@@ -20,6 +20,28 @@ export class ProviderRequestError extends Error {
   }
 }
 
+/** Non-OK HTTP reply from the provider; status only, never the body. */
+export class ProviderHttpError extends Error {
+  constructor(readonly provider: string, readonly status: number) {
+    super(`${provider} API error (${status})`);
+    this.name = "ProviderHttpError";
+  }
+}
+
+/** The provider ended a response early (finish_reason other than stop/tool call). A
+ * response with no visible output at all (reasoning consumed the cap) is retryable
+ * once or twice by the caller; one with partial visible output is not replayed. */
+export class ProviderIncompleteError extends Error {
+  constructor(readonly provider: string, readonly finishReason: string, readonly visibleOutput: boolean) {
+    super(`${provider} response incomplete (${finishReason})`);
+    this.name = "ProviderIncompleteError";
+  }
+}
+
+export function reasoningOnlyTruncation(error: unknown): error is ProviderIncompleteError {
+  return error instanceof ProviderIncompleteError && error.finishReason === "length" && !error.visibleOutput;
+}
+
 function terminalGatewayError(response: Response): ProviderRequestError | undefined {
   const code = response.headers?.get("x-sift-error-code");
   if (!response.ok && response.headers?.get("x-sift-error-retryable") === "false" &&
@@ -221,7 +243,7 @@ export async function readProviderResponse(response: Response, protocol: "chat" 
   for await (const raw of serverEvents(response, signal)) {
     if (raw === "[DONE]") {
       if (protocol !== "chat" || !finishReason) throw new Error("Provider stream ended without a completed response");
-      if (!["stop", "tool_calls", "function_call"].includes(finishReason)) throw new Error(`Provider response incomplete (${finishReason})`);
+      if (!["stop", "tool_calls", "function_call"].includes(finishReason)) throw new ProviderIncompleteError("Provider", finishReason, content.length > 0 || calls.size > 0);
       return { ...metadata, choices: [{ finish_reason: finishReason, message: { role: "assistant", content, ...(calls.size ? { tool_calls: [...calls].sort(([a], [b]) => a - b).map(([, call]) => call) } : {}) } }] };
     }
     const event = record(JSON.parse(raw));

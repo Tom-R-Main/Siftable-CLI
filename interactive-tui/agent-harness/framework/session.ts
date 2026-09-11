@@ -113,6 +113,10 @@ export interface SessionEventDataMap {
   "verification/recorded": {receipt: CandidateVerificationReceipt};
   /** A noninteractive run's final answer asked the absent user to act (CLI-044). */
   "settlement/user-directed": {cue: string; action: "feedback" | "failed"; approvalPolicy: "allow" | "deny"};
+  /** Older tool results were stubbed so the request fits the provider's limit (CLI-046). */
+  "model/request-pruned": {reason: "preemptive" | "http-413"; beforeBytes: number; afterBytes: number; ceilingBytes: number; prunedCalls: number};
+  /** A reasoning-only response hit the output cap and the same request is retried (CLI-045). */
+  "model/incomplete-retry": {finishReason: string; attempt: number};
   "model/request-prepared": ModelRequestSnapshot;
   "model/auxiliary-request-prepared": ModelRequestSnapshot & {purpose: "compaction"; input: ChatMessage[]; inputSha256: string};
   "model/provider-event": { event: Exclude<AdapterEvent, {type: "provider.text.delta"}> };
@@ -2131,7 +2135,11 @@ function isInternalTurnRollbackReason(reason: string | undefined): boolean {
     || reason === "turn_interrupted"
     || reason === "turn_failed_partial_effects"
     || reason === "turn_interrupted_partial_effects"
-    || reason === "turn_without_assistant_rolled_back";
+    || reason === "turn_without_assistant_rolled_back"
+    // In-turn request budgeting (CLI-046): between steps, older tool results are
+    // stubbed so the next request fits the provider. Not a rollback, but the same
+    // ownership rules apply: no open step or tool, and the turn stays open.
+    || reason === "in_turn_tool_results_pruned";
 }
 
 function advanceSessionValidationState(
@@ -2416,6 +2424,8 @@ const EVENT_TYPES: ReadonlySet<string> = new Set<SessionEventType>([
   "verification/started",
   "verification/recorded",
   "settlement/user-directed",
+  "model/request-pruned",
+  "model/incomplete-retry",
   "model/request-prepared",
   "model/auxiliary-request-prepared",
   "model/provider-event",
@@ -2478,6 +2488,20 @@ function validateEventData(event: SessionEvent): void {
         throw new SessionInvariantError("step/started index must be a non-negative safe integer");
       }
       break;
+    case "model/request-pruned": {
+      const data = event.data;
+      if (data.reason !== "preemptive" && data.reason !== "http-413") throw new SessionInvariantError("invalid request-pruned reason");
+      for (const field of ["beforeBytes", "afterBytes", "ceilingBytes", "prunedCalls"] as const) {
+        if (!Number.isSafeInteger(data[field]) || data[field] < 0) throw new SessionInvariantError(`request-pruned ${field} must be a non-negative integer`);
+      }
+      break;
+    }
+    case "model/incomplete-retry": {
+      const data = event.data;
+      assertNonEmptyString(data.finishReason, "incomplete-retry finishReason");
+      if (!Number.isSafeInteger(data.attempt) || data.attempt < 1) throw new SessionInvariantError("incomplete-retry attempt must be a positive integer");
+      break;
+    }
     case "settlement/user-directed": {
       const data = event.data;
       assertNonEmptyString(data.cue, "settlement cue");

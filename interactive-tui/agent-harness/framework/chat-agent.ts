@@ -1,5 +1,9 @@
 import {verifyCandidate, verifyReceiptCurrent, verificationAllowsRepair, verificationFeedback, type CandidateVerificationReceipt, type CandidateVerificationInput} from '../../candidateVerification';
 import {detectUserDirectedRequest, noninteractiveFeedback, NONINTERACTIVE_UNSETTLED_ERROR} from './settlement';
+import {fitHistoryToRequestBudget, estimateRequestBytes} from './request-budget';
+/** Bounded replay of a reasoning-only output-limited response (CLI-045). */
+const INCOMPLETE_RETRY_LIMIT = 2;
+import {ProviderHttpError, ProviderIncompleteError, reasoningOnlyTruncation} from './adapters/transport.js';
 /**
  * ChatAgent — Composable AI Chat Agent
  *
@@ -742,6 +746,21 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     }
   }
 
+  /** Fit the current history to the lane's request budget between steps, recording any pruning. */
+  private fitRequestBudget(systemPrompt: string, context: SessionEventContext, reason: "preemptive" | "http-413", aggressive = false): boolean {
+    const history = this.currentHistory();
+    // After a 413 the provider has already rejected this size, whatever the lane estimate
+    // says: target well below the current request and keep only the newest result.
+    const outcome = fitHistoryToRequestBudget(history, systemPrompt, {
+      provider: this.provider,
+      ...(aggressive ? { keepLast: 1, ceilingBytes: Math.floor(estimateRequestBytes(history, systemPrompt) * 0.6) } : {}),
+    });
+    if (outcome.pruned.length === 0) return false;
+    this.session.replaceHistory(outcome.history, "in_turn_tool_results_pruned", context);
+    this.session.append({ type: "model/request-pruned", data: { reason, beforeBytes: outcome.beforeBytes, afterBytes: outcome.afterBytes, ceilingBytes: outcome.ceilingBytes, prunedCalls: outcome.pruned.length }, ...context });
+    return true;
+  }
+
   private async callAdapter(
     messages: ChatMessage[],
     registry: ToolRegistry,
@@ -1205,8 +1224,12 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
         this.session.appendMessage(userMessage, baseContext);
         throwIfAborted(options?.signal);
 
+        let incompleteRetries = 0;
+        let tooLargeRetried = false;
         while (maxRounds-- > 0) {
           throwIfAborted(options?.signal);
+          // Between steps: keep the request inside the lane's byte ceiling (CLI-046).
+          if (this.fitRequestBudget(prompt, baseContext, "preemptive")) effectHistoryCheckpoint = this.currentHistory();
           rounds += 1;
           const nextStepId = randomUUID();
           const stepContext = this.eventContext(run, nextStepId);
@@ -1232,13 +1255,36 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
             stepContext,
           );
           const stepAdapterStateBefore = this.snapshotAdapterSessionState();
-          const response = await this.callAdapter(
-            requestMessages,
-            requestRegistry,
-            prompt,
-            stepContext,
-            options?.signal,
-          );
+          let response: AdapterResponse;
+          try {
+            response = await this.callAdapter(
+              requestMessages,
+              requestRegistry,
+              prompt,
+              stepContext,
+              options?.signal,
+            );
+          } catch (error) {
+            throwIfAborted(options?.signal);
+            const tooLarge = error instanceof ProviderHttpError && error.status === 413 && !tooLargeRetried;
+            const truncated = reasoningOnlyTruncation(error) && incompleteRetries < INCOMPLETE_RETRY_LIMIT;
+            if (!tooLarge && !truncated) throw error;
+            // The attempt is its own journal step: close it as failed, then retry in a
+            // fresh step. A 413 prunes harder once (CLI-046); a reasoning-only
+            // truncation replays the same request, bounded (CLI-045).
+            this.restoreAdapterSessionState(stepAdapterStateBefore, "failed_model_request_rolled_back", stepContext);
+            this.session.append({ type: "step/completed", data: { outcome: "failed", reason: tooLarge ? "request_too_large_retry" : "provider_incomplete_retry" }, ...stepContext });
+            activeStepId = undefined;
+            if (tooLarge) {
+              tooLargeRetried = true;
+              if (!this.fitRequestBudget(prompt, baseContext, "http-413", true)) throw error;
+              effectHistoryCheckpoint = this.currentHistory();
+            } else {
+              incompleteRetries += 1;
+              this.session.append({ type: "model/incomplete-retry", data: { finishReason: (error as ProviderIncompleteError).finishReason, attempt: incompleteRetries }, ...baseContext });
+            }
+            continue;
+          }
           throwIfAborted(options?.signal);
 
           const calls = validatedAdapterToolCalls(response);
@@ -1509,6 +1555,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
         }
 
         if (!finalText && maxRounds < 0 && !completionVerification) {
+          if (this.fitRequestBudget(prompt, baseContext, "preemptive")) effectHistoryCheckpoint = this.currentHistory();
           const finalizerStepId = randomUUID();
           const finalizerContext = this.eventContext(run, finalizerStepId);
           const finalizerPrompt = this.exhaustedToolRoundSystemPrompt(options?.systemPrompt);
