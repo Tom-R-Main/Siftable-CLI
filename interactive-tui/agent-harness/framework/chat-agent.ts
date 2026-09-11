@@ -1,5 +1,5 @@
 import {verifyCandidate, verifyReceiptCurrent, verificationAllowsRepair, verificationFeedback, type CandidateVerificationReceipt, type CandidateVerificationInput} from '../../candidateVerification';
-import {detectUserDirectedRequest, noninteractiveFeedback, NONINTERACTIVE_UNSETTLED_ERROR} from './settlement';
+import {detectUserDirectedRequest, noninteractiveFeedback, truncationNudge, NONINTERACTIVE_UNSETTLED_ERROR} from './settlement';
 import {fitHistoryToRequestBudget, estimateRequestBytes} from './request-budget';
 /** Bounded replay of a reasoning-only output-limited response (CLI-045). */
 const INCOMPLETE_RETRY_LIMIT = 2;
@@ -1281,7 +1281,13 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
               effectHistoryCheckpoint = this.currentHistory();
             } else {
               incompleteRetries += 1;
-              this.session.append({ type: "model/incomplete-retry", data: { finishReason: (error as ProviderIncompleteError).finishReason, attempt: incompleteRetries }, ...baseContext });
+              const finishReason = (error as ProviderIncompleteError).finishReason;
+              this.session.append({ type: "model/incomplete-retry", data: { finishReason, attempt: incompleteRetries }, ...baseContext });
+              if (incompleteRetries === INCOMPLETE_RETRY_LIMIT) {
+                // The identical request has already been replayed once; change the ask.
+                this.session.appendMessage({ role: "user", content: truncationNudge(finishReason, incompleteRetries) }, baseContext);
+                effectHistoryCheckpoint = this.currentHistory();
+              }
             }
             continue;
           }

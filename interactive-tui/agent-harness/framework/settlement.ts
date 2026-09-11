@@ -97,3 +97,12 @@ export function noninteractiveFeedback(policy: NoninteractiveApprovalPolicy, req
 }
 
 export const NONINTERACTIVE_UNSETTLED_ERROR = 'Final answer asked the user to act in a noninteractive run; the task was not completed';
+
+/** Appended before the last replay of a reasoning-only truncated request (CLI-045):
+ * the same request has already been replayed once, so the retry must change the ask. */
+export function truncationNudge(finishReason: string, attempt: number): string {
+  return [
+    `output_limit: your previous ${attempt} response${attempt === 1 ? '' : 's'} reached the output token limit (${finishReason}) before producing any visible text or tool call.`,
+    'Reply now with the single next tool call, or a brief final message. Keep reasoning short; you can continue thinking in later steps.',
+  ].join(' ');
+}

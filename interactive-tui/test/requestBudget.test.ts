@@ -68,6 +68,9 @@ test('a reasoning-only output-limited response is replayed, bounded, and recorde
     const result = await f.agent.chat('go');
     expect(result.text).toBe('done'); expect(f.requests).toHaveLength(3);
     expect(f.agent.getSessionEvents().filter(e => e.type === 'model/incomplete-retry').map(e => e.data.attempt)).toEqual([1, 2]);
+    // First replay is identical; the last one carries the nudge.
+    expect(f.requests[1]).toEqual(f.requests[0]);
+    expect(f.requests[2]!.at(-1)!.content).toContain('output_limit');
   } finally {await f.close();}
   const g = await harness([new ProviderIncompleteError('Meta', 'length', false), new ProviderIncompleteError('Meta', 'length', false), new ProviderIncompleteError('Meta', 'length', false)]);
   try {
