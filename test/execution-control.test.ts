@@ -98,9 +98,15 @@ test('shell interrupts a running process group including its child', async () =>
   expect(() => process.kill(childPid, 0)).toThrow();
 });
 
-test('shell deadline escalates when TERM is ignored', async () => {
+test('shell deadline escalates when TERM is ignored; a confirmed-dead timeout is a known failure (CLI-048)', async () => {
   const result = await runSupervisedShell("trap '' TERM; while :; do :; done", process.cwd(), { timeoutMs: 40, killGraceMs: 30 });
-  expect(result).toMatchObject({ timedOut: true, started: true, executionOutcome: 'unknown', terminationConfirmed: true, signal: 'SIGKILL' });
+  expect(result).toMatchObject({ timedOut: true, started: true, executionOutcome: 'failed', terminationConfirmed: true, signal: 'SIGKILL' });
+});
+
+test('a timed-out command keeps its partial output and only unconfirmed termination stays unknown', async () => {
+  const result = await runSupervisedShell('echo partial; sleep 30', process.cwd(), { timeoutMs: 100, killGraceMs: 30 });
+  expect(result).toMatchObject({ timedOut: true, cancelled: false, executionOutcome: 'failed', terminationConfirmed: true });
+  expect(result.output).toContain('partial');
 });
 
 test('shell does not report clean completion while a background descendant survives', async () => {

@@ -95,9 +95,14 @@ export async function runSupervisedShell(command: string, cwd: string, options: 
       if (result.outputTruncated) result.output += '\n… output truncated';
       // A fully observed nonzero exit is a known command failure, not proof
       // of rollback. Preserve its output so a failed test can guide repairs.
+      // A deadline the supervisor enforced itself, with the whole process group
+      // confirmed dead, is likewise a known failure: the command did not finish,
+      // its partial output is retained, and the model may narrow or retry it.
+      // Only cancellation and unconfirmed termination stay unknown (CLI-048).
       result.executionOutcome = !result.started ? 'failed'
         : !stopping && confirmed && result.exitCode !== null
           ? result.exitCode === 0 ? 'succeeded' : 'failed'
+          : result.timedOut && !result.cancelled && confirmed ? 'failed'
           : 'unknown';
       child.stdout.destroy();
       child.stderr.destroy();

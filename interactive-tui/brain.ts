@@ -583,7 +583,7 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
         if (result.executionOutcome === 'succeeded') return of.ok(result, result.output || 'exit 0');
         const reason = result.cancelled ? 'command cancelled' : result.timedOut ? 'command timed out' : `exit ${result.exitCode}`;
         return { success: false, data: result, executionOutcome: result.executionOutcome,
-          error: `${reason}; ${!result.started ? 'not dispatched' : result.executionOutcome === 'unknown' ? 'effects may have occurred; inspect before retrying' : 'command completed; file effects were not rolled back'}\n${result.output}`.trim() };
+          error: `${reason}; ${!result.started ? 'not dispatched' : result.executionOutcome === 'unknown' ? 'effects may have occurred; inspect before retrying' : result.timedOut ? 'the process group was terminated; partial effects may exist, so inspect before retrying, or run a narrower command with a longer timeoutMs' : 'command completed; file effects were not rolled back'}\n${result.output}`.trim() };
       } catch (e) {
         return of.err(e instanceof Error ? e.message : String(e));
       }
