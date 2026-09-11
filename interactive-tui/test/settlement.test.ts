@@ -139,3 +139,8 @@ test('a configured completion check settles the task instead of the detector', a
     expect(agent.getSessionEvents().some(event => event.type === 'settlement/user-directed')).toBe(false);
   } finally {await agent.close(); await rmp(root, {recursive: true, force: true});}
 });
+
+test('lazy block-quote continuations stay quoted until a blank line', () => {
+  expect(detectUserDirectedRequest('> Original ticket:\nPlease confirm whether the migration should run.\n\nI ran the migration and the suite passes.')).toBeUndefined();
+  expect(detectUserDirectedRequest('> Original ticket:\nThe report was empty.\n\nPlease confirm whether I should also drop the table.')?.cue).toMatch(/confirm whether/);
+});

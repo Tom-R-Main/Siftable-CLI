@@ -41,11 +41,20 @@ const CUES: RegExp[] = [
  * block quotes are deliverable or quoted content (a drafted email, a shown command) and
  * never a request to the reader. */
 export function conversationalProse(text: string): string {
-  return text
+  const unfenced = text
     .replace(/```[\s\S]*?(?:```|$)/g, ' ')
     .replace(/~~~[\s\S]*?(?:~~~|$)/g, ' ')
-    .replace(/`[^`\n]*`/g, ' ')
-    .split('\n').filter(line => !/^\s*>/.test(line)).join('\n');
+    .replace(/`[^`\n]*`/g, ' ');
+  // Block quotes include lazy continuations: unmarked lines after a `>` line stay quoted
+  // until a blank line ends the quote.
+  const kept: string[] = [];
+  let quoting = false;
+  for (const line of unfenced.split('\n')) {
+    if (/^\s*>/.test(line)) { quoting = true; continue; }
+    if (line.trim() === '') { quoting = false; kept.push(line); continue; }
+    if (!quoting) kept.push(line);
+  }
+  return kept.join('\n');
 }
 
 /** Returns the first matched cue when `text` asks the (absent) user to act or decide. */
