@@ -1431,9 +1431,10 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
             ...stepContext,
           });
           activeStepId = undefined;
-          if (options?.noninteractive && response.text) {
+          if (options?.noninteractive && response.text && !completionVerification) {
             // No person will ever answer a question asked here. Treat the answer
-            // as unsettled: one bounded reminder, then an honest failure.
+            // as unsettled: one bounded reminder, then an honest failure. When an
+            // objective completion check is configured it settles the task instead.
             const request = detectUserDirectedRequest(response.text);
             if (request) {
               const approvalPolicy = options.noninteractive.approvalPolicy;
@@ -1538,6 +1539,15 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
               },
               finalizerContext,
             );
+            if (options?.noninteractive && !completionVerification) {
+              // The response is projected; with no retry round left, a
+              // user-directed finalizer answer fails the run outright.
+              const request = detectUserDirectedRequest(finalText);
+              if (request) {
+                this.session.append({type: "settlement/user-directed", data: {cue: request.cue, action: "failed", approvalPolicy: options.noninteractive.approvalPolicy}, ...finalizerContext});
+                throw new Error(NONINTERACTIVE_UNSETTLED_ERROR);
+              }
+            }
             assistantTurnComplete = true;
             yield { type: "text", text: finalText, streamed: this.streamedResponses.has(response) };
             throwIfAborted(options?.signal);

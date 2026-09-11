@@ -31,13 +31,29 @@ const CUES: RegExp[] = [
   /\b(?:please\s+)?(?:confirm|reply|respond|tell me)\s+(?:that|whether|if|which|so|with|and|before)\b/i,
   /\b(?:please\s+)?run\s+(?:these|the following|this)\s+(?:commands?|steps?)\b[^.\n]{0,40}\b(?:yourself|manually|and (?:paste|share|send))\b/i,
   /\bawaiting\s+(?:your\s+)?(?:approval|confirmation|go[- ]ahead|input)\b/i,
+  // Direct commands to the reader: do it yourself, then report back.
+  /\b(?:run|execute|apply|install|rerun|re-run|start|restart)\b[^.\n]{0,80}\byourself\b/i,
+  /\b(?:paste|send|share|report)\s+(?:me\s+)?(?:back\s+)?(?:the|its|their|any)\s+(?:output|result|results|log|logs|error|errors|stack trace)\b/i,
+  /\byou(?:'ll| will)?\s+need\s+to\s+(?:run|execute|apply|install|approve|restart|rerun|re-run)\b/i,
 ];
+
+/** Only the model's own conversational prose is inspected: fenced code, inline code, and
+ * block quotes are deliverable or quoted content (a drafted email, a shown command) and
+ * never a request to the reader. */
+export function conversationalProse(text: string): string {
+  return text
+    .replace(/```[\s\S]*?(?:```|$)/g, ' ')
+    .replace(/~~~[\s\S]*?(?:~~~|$)/g, ' ')
+    .replace(/`[^`\n]*`/g, ' ')
+    .split('\n').filter(line => !/^\s*>/.test(line)).join('\n');
+}
 
 /** Returns the first matched cue when `text` asks the (absent) user to act or decide. */
 export function detectUserDirectedRequest(text: string): UserDirectedRequest | undefined {
   if (!text) return undefined;
+  const prose = conversationalProse(text);
   for (const cue of CUES) {
-    const match = cue.exec(text);
+    const match = cue.exec(prose);
     if (match) return {cue: match[0].slice(0, 120)};
   }
   return undefined;

@@ -2478,6 +2478,13 @@ function validateEventData(event: SessionEvent): void {
         throw new SessionInvariantError("step/started index must be a non-negative safe integer");
       }
       break;
+    case "settlement/user-directed": {
+      const data = event.data;
+      assertNonEmptyString(data.cue, "settlement cue");
+      if (data.action !== "feedback" && data.action !== "failed") throw new SessionInvariantError("invalid settlement action");
+      if (data.approvalPolicy !== "allow" && data.approvalPolicy !== "deny") throw new SessionInvariantError("invalid settlement approval policy");
+      break;
+    }
     case "verification/started":
     case "verification/recorded": {
       const receipt = event.data.receipt;

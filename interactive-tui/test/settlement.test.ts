@@ -106,3 +106,36 @@ test('interactive turns are untouched: the same answer is a normal final result'
     expect(f.agent.getSessionEvents().some(event => event.type === 'settlement/user-directed')).toBe(false);
   } finally {await f.close();}
 });
+
+test('quoted, fenced, and inline content never counts as a request to the reader', () => {
+  const drafted = 'Here is the email draft you asked for:\n\n```\nHi Sam,\nPlease confirm whether Thursday works and let me know if not.\n```\n\nSaved to /app/draft.txt.';
+  expect(detectUserDirectedRequest(drafted)).toBeUndefined();
+  expect(detectUserDirectedRequest('> Should I proceed with the migration?\n\nThe quoted question above came from the ticket; I applied the migration and the tests pass.')).toBeUndefined();
+  expect(detectUserDirectedRequest('Run `npm test` yourself and paste the output.')?.cue).toMatch(/yourself/);
+  expect(detectUserDirectedRequest("You'll need to run the migration before the tests pass.")?.cue).toMatch(/need to run/);
+});
+
+test('the exhausted-round finalizer cannot end with a request to the reader', async () => {
+  const f = await harness([{toolCall: {id: 'r1', name: 'recover', args: {}}}, {text: 'Approve running the verification commands and I will finish.'}], 1);
+  try {
+    await expect(f.agent.chat('Recover the database', {noninteractive: {approvalPolicy: 'allow'}})).rejects.toThrow(NONINTERACTIVE_UNSETTLED_ERROR);
+    const events = f.agent.getSessionEvents().filter(event => event.type === 'settlement/user-directed');
+    expect(events.map(event => event.data.action)).toEqual(['failed']);
+  } finally {await f.close();}
+});
+
+test('a configured completion check settles the task instead of the detector', async () => {
+  const {mkdtemp: mk, writeFile: wf, realpath: rp, rm: rmp} = await import('node:fs/promises');
+  const root = await rp(await mk(join(tmpdir(), 'sift-settlement-check-')));
+  await wf(join(root, 'candidate.txt'), 'repaired');
+  const agent = await createChatAgent({memory: false, maxToolRounds: 2, session: {id: 'settlement-check'}, executionContext: () => ({workspaceRoot: root, sessionCwd: root}),
+    tools: [], adapter: {name: 'fixture', model: 'fixture', chat: async () => ({text: ROUND2_ANSWER})}});
+  try {
+    const result = await agent.chat('Repair it', {noninteractive: {approvalPolicy: 'allow'}, completionVerification: {
+      argv: ['/bin/sh', '-c', '[ "$(cat candidate.txt)" = repaired ]'], files: ['candidate.txt'],
+      context: {workspaceRoot: root, sessionCwd: root, deadline: Date.now() + 10_000, approval: {policy: 'allow', scopeId: 'check'}}}});
+    expect(result.verification?.status).toBe('passed');
+    expect(result.run.status).toBe('completed');
+    expect(agent.getSessionEvents().some(event => event.type === 'settlement/user-directed')).toBe(false);
+  } finally {await agent.close(); await rmp(root, {recursive: true, force: true});}
+});
