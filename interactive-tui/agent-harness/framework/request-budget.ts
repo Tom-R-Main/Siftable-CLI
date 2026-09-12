@@ -39,7 +39,8 @@ export interface RequestBudgetOutcome {
 
 /** Provider request ceilings (bytes). Meta rejects at ~300 KB; others allow far more. */
 const PROVIDER_CEILINGS: Array<[RegExp, number]> = [
-  [/meta|muse|llama/i, 240_000],
+  // Meta rejects at ~300 KB and stalled three times in round 3 at 225–250 KB; stay clear of both.
+  [/meta|muse|llama/i, 200_000],
   [/deepseek/i, 400_000],
 ];
 const DEFAULT_CEILING = 800_000;

@@ -13,8 +13,8 @@ function toolMessage(id: string, bytes: number): ChatMessage {
 }
 
 test('lane ceilings: Meta is tight, others generous, env overrides', () => {
-  expect(requestByteCeiling('Meta')).toBe(240_000);
-  expect(requestByteCeiling('muse-spark-1.3-contributor')).toBe(240_000);
+  expect(requestByteCeiling('Meta')).toBe(200_000);
+  expect(requestByteCeiling('muse-spark-1.3-contributor')).toBe(200_000);
   expect(requestByteCeiling('openai')).toBe(800_000);
   process.env.SIFT_REQUEST_BYTE_CEILING = '1234';
   try { expect(requestByteCeiling('Meta')).toBe(1234); } finally { delete process.env.SIFT_REQUEST_BYTE_CEILING; }
