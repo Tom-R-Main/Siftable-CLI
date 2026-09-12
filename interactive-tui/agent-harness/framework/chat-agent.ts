@@ -1,6 +1,6 @@
 import {verifyCandidate, verifyReceiptCurrent, verificationAllowsRepair, verificationFeedback, type CandidateVerificationReceipt, type CandidateVerificationInput} from '../../candidateVerification';
 import {detectUserDirectedRequest, noninteractiveFeedback, truncationNudge, NONINTERACTIVE_UNSETTLED_ERROR} from './settlement';
-import {fitHistoryToRequestBudget, estimateRequestBytes, FRAMING_BYTES} from './request-budget';
+import {fitHistoryToRequestBudget, estimateRequestBytes, requestByteCeiling, FRAMING_BYTES} from './request-budget';
 /** Bounded replay of a reasoning-only output-limited response (CLI-045). */
 const INCOMPLETE_RETRY_LIMIT = 2;
 import {ProviderHttpError, ProviderIncompleteError, reasoningOnlyTruncation} from './adapters/transport.js';
@@ -756,7 +756,11 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     // says: target well below the current request and keep only the newest result.
     const outcome = fitHistoryToRequestBudget(history, systemPrompt, {
       provider: this.provider, overheadBytes,
-      ...(aggressive ? { keepLast: 1, ceilingBytes: Math.floor(estimateRequestBytes(history, systemPrompt, overheadBytes) * 0.6) } : {}),
+      ...(aggressive ? {
+        keepLast: 1,
+        // Never above the lane's own ceiling, even when the rejected request was small.
+        ceilingBytes: Math.min(requestByteCeiling(this.provider), Math.floor(estimateRequestBytes(history, systemPrompt, overheadBytes) * 0.6)),
+      } : {}),
     });
     if (outcome.pruned.length === 0) return false;
     this.session.replaceHistory(outcome.history, "in_turn_tool_results_pruned", context);
@@ -1155,6 +1159,10 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
       let journalRecoveryRequired = false;
       let effectHistoryCheckpoint: ChatMessage[] | undefined;
       let effectStateCheckpoint: AdapterSessionState | undefined;
+      // Set only once a tool batch has durable result receipts. Request pruning
+      // before that point must not turn a failed turn into a partial-effects
+      // rollback that retains the unanswered user message.
+      let toolEffectsCheckpointed = false;
       let pendingFailure: RunExecutionError | undefined;
       let pendingTerminal: {
         outcome: "failed" | "interrupted";
@@ -1232,7 +1240,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
         while (maxRounds-- > 0) {
           throwIfAborted(options?.signal);
           // Between steps: keep the request inside the lane's byte ceiling (CLI-046).
-          if (this.fitRequestBudget(prompt, baseContext, "preemptive")) effectHistoryCheckpoint = this.currentHistory();
+          if (this.fitRequestBudget(prompt, baseContext, "preemptive") && toolEffectsCheckpointed) effectHistoryCheckpoint = this.currentHistory();
           rounds += 1;
           const nextStepId = randomUUID();
           const stepContext = this.eventContext(run, nextStepId);
@@ -1275,15 +1283,17 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
             // The attempt is its own journal step: close it as failed, then retry in a
             // fresh step. A 413 prunes harder once (CLI-046); a reasoning-only
             // truncation replays the same request, bounded (CLI-045). A retry does not
-            // consume a tool round, so the last permitted round can still be replayed.
+            // consume a tool round, so the last permitted round can still be replayed,
+            // and it is not a reported round either.
             maxRounds += 1;
+            rounds -= 1;
             this.restoreAdapterSessionState(stepAdapterStateBefore, "failed_model_request_rolled_back", stepContext);
             this.session.append({ type: "step/completed", data: { outcome: "failed", reason: tooLarge ? "request_too_large_retry" : "provider_incomplete_retry" }, ...stepContext });
             activeStepId = undefined;
             if (tooLarge) {
               tooLargeRetried = true;
               if (!this.fitRequestBudget(prompt, baseContext, "http-413", true)) throw error;
-              effectHistoryCheckpoint = this.currentHistory();
+              if (toolEffectsCheckpointed) effectHistoryCheckpoint = this.currentHistory();
             } else {
               incompleteRetries += 1;
               const finishReason = (error as ProviderIncompleteError).finishReason;
@@ -1428,6 +1438,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
             // run at turn close to give it its not-started receipt.
             effectHistoryCheckpoint = this.currentHistory();
             effectStateCheckpoint = this.snapshotAdapterSessionState();
+            toolEffectsCheckpointed = true;
             journalRecoveryRequired = batchOutcomes.some(
               (outcome) => outcome.status === "cancelled",
             );
@@ -1566,10 +1577,11 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
         }
 
         if (!finalText && maxRounds < 0 && !completionVerification) {
-          if (this.fitRequestBudget(prompt, baseContext, "preemptive")) effectHistoryCheckpoint = this.currentHistory();
+          // The finalizer sends its own, longer prompt: fit the request against that one.
+          const finalizerPrompt = this.exhaustedToolRoundSystemPrompt(options?.systemPrompt);
+          if (this.fitRequestBudget(finalizerPrompt, baseContext, "preemptive") && toolEffectsCheckpointed) effectHistoryCheckpoint = this.currentHistory();
           const finalizerStepId = randomUUID();
           const finalizerContext = this.eventContext(run, finalizerStepId);
-          const finalizerPrompt = this.exhaustedToolRoundSystemPrompt(options?.systemPrompt);
           this.session.append({
             type: "step/started",
             data: { index: rounds },

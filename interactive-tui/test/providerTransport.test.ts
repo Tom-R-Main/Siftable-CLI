@@ -3,7 +3,7 @@ import { createChatCompletionsAdapter, createOpenAIAdapter, createOpenRouterAdap
 import { createGeminiAdapter } from "../agent-harness/framework/adapters/gemini";
 import { createAnthropicAdapter } from "../agent-harness/framework/adapters/anthropic";
 import { createXAIAdapter } from "../agent-harness/framework/adapters/xai";
-import { compatibleBaseUrl, ProviderRequestError, retryAfterMs } from "../agent-harness/framework/adapters/transport";
+import { compatibleBaseUrl, ProviderHttpError, ProviderIncompleteError, ProviderRequestError, retryAfterMs } from "../agent-harness/framework/adapters/transport";
 import type { AdapterEvent, ChatMessage } from "../agent-harness/framework/adapters/types";
 import { ToolRegistry } from "../agent-harness/framework/registry";
 
@@ -280,6 +280,55 @@ describe("provider transport reliability", () => {
       expect(result.providerReceipts?.[0]).toMatchObject({ mode: "streaming", usage: { inputTokens: 3, outputTokens: 2 } });
       expect(events.filter(event => event.type === "provider.text.delta")).toHaveLength(1);
     }
+  });
+
+  it("maps Responses HTTP failures to ProviderHttpError, before and after continuation recovery", async () => {
+    // Initial request: a 413 must surface as a typed HTTP error so the agent can prune and retry.
+    let calls = 0;
+    const initial = createOpenAIAdapter({ apiKey: "test", model: "test-model", baseUrl: "http://127.0.0.1:1234/v1", fetchImpl: (async () => { calls++; return new Response("too large", { status: 413 }); }) as typeof fetch });
+    await expect(initial.chat(messages, registry)).rejects.toBeInstanceOf(ProviderHttpError);
+    await expect(initial.chat(messages, registry)).rejects.toMatchObject({ status: 413 });
+    expect(calls).toBe(2);
+
+    // Continuation recovery: the missing-continuation branch still resends the full
+    // history, and a 413 on that resend is typed as well.
+    const bodies: Record<string, unknown>[] = [];
+    let stage = 0;
+    const client = createOpenAIAdapter({ apiKey: "test", model: "test-model", baseUrl: "http://127.0.0.1:1234/v1", fetchImpl: (async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      bodies.push(body);
+      stage++;
+      if (stage === 1) return sse([{ type: "response.output_text.delta", delta: "hello" }, { type: "response.completed", response: { id: "resp-1", model: "actual", status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "hello" }] }] } }], false);
+      if (stage === 2) return new Response("previous_response_id resp-1 not found", { status: 400 });
+      return new Response("too large", { status: 413 });
+    }) as typeof fetch });
+    const first = await client.chat(messages, registry);
+    expect(first.sessionState?.continuationId).toBe("resp-1");
+    const followUp: ChatMessage[] = [...messages, { role: "assistant", content: "hello", providerReplay: first.providerReplay }, { role: "user", content: "again" }];
+    await expect(client.chat(followUp, registry, { sessionState: first.sessionState })).rejects.toMatchObject({ name: "ProviderHttpError", status: 413 });
+    expect(bodies).toHaveLength(3);
+    expect(bodies[1]!.previous_response_id).toBe("resp-1");
+    expect(bodies[2]!.previous_response_id).toBeUndefined();
+  });
+
+  it("classifies Responses output-limit truncation as ProviderIncompleteError with visible-output tracking", async () => {
+    const make = (fetchImpl: typeof fetch) => createOpenAIAdapter({ apiKey: "test", model: "test-model", baseUrl: "http://127.0.0.1:1234/v1", fetchImpl });
+    const incomplete = (reason: string, output: unknown[] = []) => ({ id: "resp-x", model: "actual", status: "incomplete", incomplete_details: { reason }, output });
+    // Streamed: reasoning consumed the cap with nothing visible -> replayable.
+    await expect(make((async () => sse([{ type: "response.incomplete", response: incomplete("max_output_tokens") }], false)) as typeof fetch).chat(messages, registry))
+      .rejects.toMatchObject({ name: "ProviderIncompleteError", finishReason: "length", visibleOutput: false });
+    // Streamed: partial text already went out -> not replayable.
+    await expect(make((async () => sse([{ type: "response.output_text.delta", delta: "partial" }, { type: "response.incomplete", response: incomplete("max_output_tokens") }], false)) as typeof fetch).chat(messages, registry))
+      .rejects.toMatchObject({ name: "ProviderIncompleteError", finishReason: "length", visibleOutput: true });
+    // Non-streamed: same classification from the response body.
+    await expect(make((async () => Response.json(incomplete("max_output_tokens"))) as typeof fetch).chat(messages, registry))
+      .rejects.toMatchObject({ name: "ProviderIncompleteError", finishReason: "length", visibleOutput: false });
+    await expect(make((async () => Response.json(incomplete("max_output_tokens", [{ type: "function_call", call_id: "c1", name: "write_file", arguments: "{}" }]))) as typeof fetch).chat(messages, registry))
+      .rejects.toMatchObject({ name: "ProviderIncompleteError", finishReason: "length", visibleOutput: true });
+    // Any other incomplete reason stays a plain, non-retryable error.
+    const other = make((async () => Response.json(incomplete("content_filter"))) as typeof fetch);
+    await expect(other.chat(messages, registry)).rejects.toThrow("OpenAI response is incomplete");
+    await expect(other.chat(messages, registry)).rejects.not.toBeInstanceOf(ProviderIncompleteError);
   });
 
   it("cancels blocked stream reads and retains a cancelled outcome", async () => {

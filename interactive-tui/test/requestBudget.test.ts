@@ -123,6 +123,46 @@ test('an HTTP 413 prunes harder once and retries; a second 413 fails', async () 
   } finally {await h.close();}
 });
 
+test('a retry is not a reported round and the aggressive ceiling never exceeds the lane ceiling', async () => {
+  const f = await harness([new ProviderIncompleteError('Meta', 'length', false), {text: 'done'}]);
+  try {
+    await f.agent.chat('go');
+    const completed = f.agent.getSessionEvents().find(e => e.type === 'turn/completed');
+    expect(completed?.data.rounds).toBe(1);
+  } finally {await f.close();}
+
+  process.env.SIFT_REQUEST_BYTE_CEILING = '20000';
+  const g = await harness([{toolCall: {id: 'a', name: 'read_file', args: {}}}, {toolCall: {id: 'b', name: 'read_file', args: {}}}, new ProviderHttpError('Meta', 413), {text: 'done'}], {big: 3_000});
+  try {
+    await g.agent.chat('go');
+    const pruned = g.agent.getSessionEvents().filter(e => e.type === 'model/request-pruned' && e.data.reason === 'http-413');
+    expect(pruned).toHaveLength(1);
+    expect(pruned[0]!.data.ceilingBytes).toBeLessThanOrEqual(requestByteCeiling('Meta'));
+    expect(pruned[0]!.data.ceilingBytes).toBeLessThanOrEqual(20_000);
+  } finally {delete process.env.SIFT_REQUEST_BYTE_CEILING; await g.close();}
+});
+
+test('pruning before any tool effect does not turn a failed turn into a partial-effects rollback', async () => {
+  // Turn one fits under a generous ceiling; the ceiling is then lowered so turn two
+  // must prune the earlier tool results before its first request, before any tool effect.
+  process.env.SIFT_REQUEST_BYTE_CEILING = '1000000';
+  const calls = Array.from({length: 6}, (_, i) => ({toolCall: {id: `r${i}`, name: 'read_file', args: {}}}));
+  const f = await harness([...calls, {text: 'first done'}, new Error('provider exploded')], {big: 45_000});
+  try {
+    await f.agent.chat('read everything');
+    const before = f.agent.getHistory();
+    const eventsBefore = f.agent.getSessionEvents().length;
+    expect(before.filter(m => m.role === 'tool').length).toBe(6);
+    process.env.SIFT_REQUEST_BYTE_CEILING = '200000';
+    await expect(f.agent.chat('again')).rejects.toThrow('provider exploded');
+    const replaced = f.agent.getSessionEvents().slice(eventsBefore).filter(e => e.type === 'history/replaced').map(e => e.data.reason);
+    expect(replaced).toEqual(['in_turn_tool_results_pruned', 'turn_failed']);
+    // The failed turn rolls back to its starting history: no retained unanswered
+    // user message and the pruned results are back in full.
+    expect(f.agent.getHistory()).toEqual(before);
+  } finally {delete process.env.SIFT_REQUEST_BYTE_CEILING; await f.close();}
+});
+
 test('a retry on the last permitted round still happens', async () => {
   // maxRounds 1: the only round truncates, is replayed, and completes.
   const f = await harness([new ProviderIncompleteError('Meta', 'length', false), {text: 'done'}]);

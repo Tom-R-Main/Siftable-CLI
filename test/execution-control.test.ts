@@ -3,6 +3,10 @@ import { currentExecutionContext, withExecutionContext, type ToolExecutionContex
 import { runSupervisedShell, shellEnvironment } from '../interactive-tui/shellExecution';
 import { requestConfirm, resolveApproval, resetBypass, rejectAllConfirms, setConfirmListener } from '../interactive-tui/confirmGate';
 
+// runSupervisedShell returns before spawning on win32, so the POSIX deadline
+// escalation paths cannot be observed there.
+const posixTest = process.platform === 'win32' ? test.skip : test;
+
 const context = (overrides: Partial<ToolExecutionContext> = {}): ToolExecutionContext => ({
   sessionId: 'session-A', turnId: 'turn-A', callId: 'call-A', workspaceRoot: process.cwd(), sessionCwd: process.cwd(), ...overrides,
 });
@@ -98,12 +102,12 @@ test('shell interrupts a running process group including its child', async () =>
   expect(() => process.kill(childPid, 0)).toThrow();
 });
 
-test('shell deadline escalates when TERM is ignored; a confirmed-dead timeout is a known failure (CLI-048)', async () => {
+posixTest('shell deadline escalates when TERM is ignored; a confirmed-dead timeout is a known failure (CLI-048)', async () => {
   const result = await runSupervisedShell("trap '' TERM; while :; do :; done", process.cwd(), { timeoutMs: 40, killGraceMs: 30 });
   expect(result).toMatchObject({ timedOut: true, started: true, executionOutcome: 'failed', terminationConfirmed: true, signal: 'SIGKILL' });
 });
 
-test('a timed-out command keeps its partial output and only unconfirmed termination stays unknown', async () => {
+posixTest('a timed-out command keeps its partial output and only unconfirmed termination stays unknown', async () => {
   const result = await runSupervisedShell('echo partial; sleep 30', process.cwd(), { timeoutMs: 100, killGraceMs: 30 });
   expect(result).toMatchObject({ timedOut: true, cancelled: false, executionOutcome: 'failed', terminationConfirmed: true });
   expect(result.output).toContain('partial');

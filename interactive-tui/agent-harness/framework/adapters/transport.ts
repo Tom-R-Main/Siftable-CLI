@@ -234,12 +234,25 @@ export async function* serverEvents(response: Response, signal?: AbortSignal): A
   }
 }
 
+/** Visible output in a Responses API result: any message text or a function call. */
+export function responsesVisibleOutput(response: unknown): boolean {
+  const output = record(response).output;
+  if (!Array.isArray(output)) return false;
+  return output.some((item: any) => {
+    if (!item || typeof item !== "object") return false;
+    if (item.type === "function_call") return true;
+    if (item.type !== "message" || !Array.isArray(item.content)) return false;
+    return item.content.some((part: any) => part && part.type === "output_text" && typeof part.text === "string" && part.text.length > 0);
+  });
+}
+
 export async function readProviderResponse(response: Response, protocol: "chat" | "responses", text: (delta: string) => void, signal?: AbortSignal, capture?: (data: unknown) => void): Promise<unknown> {
   if (!response.headers?.get("content-type")?.includes("text/event-stream")) return response.json();
   const calls = new Map<number, { id: string; type: string; function: { name: string; arguments: string } }>();
   let content = "";
   let finishReason: string | undefined;
   let metadata: Record<string, unknown> = {};
+  let responsesVisible = false;
   for await (const raw of serverEvents(response, signal)) {
     if (raw === "[DONE]") {
       if (protocol !== "chat" || !finishReason) throw new Error("Provider stream ended without a completed response");
@@ -252,9 +265,22 @@ export async function readProviderResponse(response: Response, protocol: "chat" 
       for (const key of ["id", "model", "usage"]) if (event[key] !== undefined && event[key] !== null) metadata[key] = event[key];
       capture?.(metadata);
     }
-    if (event.error || event.type === "error" || event.type === "response.failed" || event.type === "response.incomplete") throw new Error("Provider stream reported a failed or incomplete response");
+    if (event.type === "response.incomplete") {
+      // Only an output-token cap is a replayable truncation (CLI-045); every
+      // other incomplete reason stays terminal.
+      const reason = record(record(event.response).incomplete_details).reason;
+      if (reason === "max_output_tokens") {
+        throw new ProviderIncompleteError("Provider", "length", responsesVisible || responsesVisibleOutput(event.response));
+      }
+      throw new Error("Provider stream reported a failed or incomplete response");
+    }
+    if (event.error || event.type === "error" || event.type === "response.failed") throw new Error("Provider stream reported a failed or incomplete response");
     if (protocol === "responses") {
-      if (event.type === "response.output_text.delta" && typeof event.delta === "string") text(event.delta);
+      if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
+        if (event.delta.length > 0) responsesVisible = true;
+        text(event.delta);
+      }
+      if (event.type === "response.output_item.added" && record(event.item).type === "function_call") responsesVisible = true;
       if (event.type === "response.completed") {
         if (record(event.response).status !== "completed") throw new Error("Provider response is not completed");
         return event.response;

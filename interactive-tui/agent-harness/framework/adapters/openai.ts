@@ -8,7 +8,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { compatibleBaseUrl, outputTokenLimit, providerTransport, readProviderResponse, ProviderHttpError, ProviderIncompleteError } from "./transport.js";
+import { compatibleBaseUrl, outputTokenLimit, providerTransport, readProviderResponse, responsesVisibleOutput, ProviderHttpError, ProviderIncompleteError } from "./transport.js";
 import type {
   AIAdapter,
   AdapterConfig,
@@ -135,7 +135,8 @@ export function createOpenAIAdapter(config?: Partial<AdapterConfig>): AIAdapter 
         if (!response.ok) {
           const error = await response.text();
           if (!previousResponseId || !isMissingContinuationError(error, previousResponseId)) {
-            throw new Error(`OpenAI API error (${response.status})`);
+            // Typed so the chat agent can apply its bounded 413 prune-and-retry.
+            throw new ProviderHttpError("OpenAI", response.status);
           }
           transport.finish(undefined, "failed");
           priorReceipts.push(...transport.receipts);
@@ -152,13 +153,21 @@ export function createOpenAIAdapter(config?: Partial<AdapterConfig>): AIAdapter 
           response = await send(retryBody);
           if (!response.ok) {
             await response.body?.cancel();
-            throw new Error(`OpenAI API error (${response.status})`);
+            throw new ProviderHttpError("OpenAI", response.status);
           }
         }
 
         const data: unknown = await readProviderResponse(response, "responses", transport.text, options?.signal, transport.capture);
         transport.capture(data);
-        if (isRecord(data) && data.status !== undefined && data.status !== "completed") throw new Error("OpenAI response is incomplete");
+        if (isRecord(data) && data.status !== undefined && data.status !== "completed") {
+          // An output-token cap is a replayable truncation (CLI-045) when nothing
+          // visible was produced; other incomplete reasons stay terminal.
+          const reason = isRecord(data.incomplete_details) ? data.incomplete_details.reason : undefined;
+          if (data.status === "incomplete" && reason === "max_output_tokens") {
+            throw new ProviderIncompleteError("OpenAI", "length", responsesVisibleOutput(data));
+          }
+          throw new Error("OpenAI response is incomplete");
+        }
         const outputItems = responseOutputItems(data, "OpenAI");
         const providerReplay: AdapterReplayPayload = { key: sessionStateKey, outputItems };
         const responseId = responseIdentifier(data);
