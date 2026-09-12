@@ -3552,29 +3552,29 @@ Cancel the remote conversation; worker termination remains unconfirmed
 
 **Arguments**
 
-- `connection` *(required)*
-- `dispatch` *(required)*
+- `connection` *(required)* — A2A connection ID
+- `dispatch` *(required)* — Outbound dispatch ID
 
 #### `sift work a2a continue`
 Send one explicit clarification to a waiting A2A conversation
 
 **Arguments**
 
-- `connection` *(required)*
-- `dispatch` *(required)*
+- `connection` *(required)* — A2A connection ID
+- `dispatch` *(required)* — Outbound dispatch ID
 
 **Flags**
 
 - `--request-key <value>` *(required)* — Stable key to reuse when retrying this operation
-- `--text <value>` *(required)*
+- `--text <value>` *(required)* — Clarification text to send on this conversation
 
 #### `sift work a2a recover`
 Recover an addressed blocked dispatch after repairing authority
 
 **Arguments**
 
-- `connection` *(required)*
-- `dispatch` *(required)*
+- `connection` *(required)* — A2A connection ID
+- `dispatch` *(required)* — Outbound dispatch ID
 
 **Flags**
 
@@ -3585,40 +3585,40 @@ Inspect scoped A2A dispatch history, artifacts and verification
 
 **Arguments**
 
-- `id` *(required)*
+- `id` *(required)* — Local work item ID
 
 #### `sift work a2a run`
 Run or poll an addressed outbound A2A dispatch
 
 **Arguments**
 
-- `connection` *(required)*
-- `dispatch` *(required)*
+- `connection` *(required)* — A2A connection ID
+- `dispatch` *(required)* — Outbound dispatch ID
 
 #### `sift work a2a send`
 Send one bounded assignment to an explicit A2A connection and remote work item
 
 **Arguments**
 
-- `connection` *(required)*
-- `work` *(required)*
+- `connection` *(required)* — A2A connection ID
+- `work` *(required)* — Local work item ID that holds the assignment and review
 
 **Flags**
 
 - `--deadline <value>` *(required)* — Absolute ISO deadline for this conversation
-- `--max-turns <value>` *(default: 8)*
-- `--remote-work <value>` *(required)*
+- `--max-turns <value>` *(default: 8)* — Maximum outgoing sends in this conversation, including the opening
+- `--remote-work <value>` *(required)* — Remote work item UUID the receiver re-authorizes
 - `--remote-workspace <value>` — Remote workspace UUID; omit for personal scope
 - `--request-key <value>` *(required)* — Stable key to reuse when retrying this assignment
-- `--text <value>` *(required)*
+- `--text <value>` *(required)* — Assignment text to send to the remote agent
 
 #### `sift work a2a status`
 Read an addressed outbound A2A dispatch
 
 **Arguments**
 
-- `connection` *(required)*
-- `dispatch` *(required)*
+- `connection` *(required)* — A2A connection ID
+- `dispatch` *(required)* — Outbound dispatch ID
 
 #### `sift work block`
 Mark a work item as blocked

@@ -3,7 +3,7 @@ import {BaseCommand} from '../../../lib/base-command.js';
 
 export default class WorkA2aRun extends BaseCommand {
   static description = 'Run or poll an addressed outbound A2A dispatch';
-  static args = {connection: Args.string({required: true}), dispatch: Args.string({required: true})};
+  static args = {connection: Args.string({required: true, description: 'A2A connection ID'}), dispatch: Args.string({required: true, description: 'Outbound dispatch ID'})};
   static flags = {...BaseCommand.baseFlags};
   async run(): Promise<unknown> {
     const {args, flags} = await this.parse(WorkA2aRun);

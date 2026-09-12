@@ -3,7 +3,7 @@ import {BaseCommand} from '../../../lib/base-command.js';
 
 export default class WorkA2aRecover extends BaseCommand {
   static description = 'Recover an addressed blocked dispatch after repairing authority';
-  static args = {connection: Args.string({required: true}), dispatch: Args.string({required: true})};
+  static args = {connection: Args.string({required: true, description: 'A2A connection ID'}), dispatch: Args.string({required: true, description: 'Outbound dispatch ID'})};
   static flags = {...BaseCommand.baseFlags,
     generation: Flags.integer({required: true, min: 0, description: 'Observed dispatch generation'}),
   };

@@ -3,9 +3,9 @@ import {BaseCommand} from '../../../lib/base-command.js';
 
 export default class WorkA2aContinue extends BaseCommand {
   static description = 'Send one explicit clarification to a waiting A2A conversation';
-  static args = {connection: Args.string({required: true}), dispatch: Args.string({required: true})};
+  static args = {connection: Args.string({required: true, description: 'A2A connection ID'}), dispatch: Args.string({required: true, description: 'Outbound dispatch ID'})};
   static flags = {...BaseCommand.baseFlags,
-    text: Flags.string({required: true}),
+    text: Flags.string({required: true, description: 'Clarification text to send on this conversation'}),
     'request-key': Flags.string({required: true, description: 'Stable key to reuse when retrying this operation'}),
   };
   async run(): Promise<unknown> {
