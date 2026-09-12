@@ -266,6 +266,49 @@ describe('production headless brain', () => {
       });
     }, 15_000);
 
+    modeTest(`${mode}: a withdrawn user-directed answer never becomes the result; a streamed one is marked in place`, async () => {
+      const withdrawn = 'Approve running the recovery commands and I will finish.';
+      const accepted = 'Recovered 9 rows into recover.json.';
+      // Non-streamed responses: the withdrawn answer is simply never projected.
+      await fixture((body, index) => completion(body, {role: 'assistant', content: index === 1 ? withdrawn : accepted}), async ({bodies, run}) => {
+        const text = await run({mode, args: ['--format', 'text', '--approval', 'allow']});
+        requireSuccess(text);
+        expect(bodies).toHaveLength(2);
+        expect(text.stdout).toBe(`${accepted}\n`);
+      });
+      await fixture((body, index) => completion(body, {role: 'assistant', content: index === 1 ? withdrawn : accepted}), async ({run}) => {
+        const result = await run({mode, args: ['--approval', 'allow']});
+        requireSuccess(result);
+        const events = jsonl(result.stdout);
+        expect(events.find(event => event.type === 'status' && event.phase === 'settlement')).toMatchObject({status: 'withdrawn', streamed: false});
+        expect(events.at(-1).type).toBe('run.completed');
+        expect(events.at(-1).text).toBe(accepted);
+      });
+      // Streamed responses already reached stdout, so the withdrawal is marked in place.
+      const sse = (body: ProviderBody, content: string) => {
+        const encoder = new TextEncoder();
+        return new Response(new ReadableStream({start(controller) {
+          const send = (delta: Record<string, unknown>, finish_reason: string | null = null) => controller.enqueue(encoder.encode(`data: ${JSON.stringify({id: 'stream-reply', model: body.model, choices: [{index: 0, delta, finish_reason}]})}\n\n`));
+          send({role: 'assistant', content});
+          send({}, 'stop');
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        }}), {headers: {'content-type': 'text/event-stream'}});
+      };
+      await fixture((body, index) => sse(body, index === 1 ? withdrawn : accepted), async ({bodies, run}) => {
+        const text = await run({mode, args: ['--format', 'text', '--approval', 'allow']});
+        requireSuccess(text);
+        expect(bodies).toHaveLength(2);
+        const marker = '[withdrawn: the answer above asked an absent user to act; retrying once]';
+        expect(text.stdout).toContain(withdrawn);
+        expect(text.stdout).toContain(marker);
+        expect(text.stdout.trimEnd().endsWith(accepted)).toBe(true);
+        expect(text.stdout.indexOf(marker)).toBeGreaterThan(text.stdout.indexOf(withdrawn));
+        expect(text.stdout.indexOf(marker)).toBeLessThan(text.stdout.indexOf(accepted));
+        expect(text.stdout.match(new RegExp(accepted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))).toHaveLength(1);
+      });
+    }, 30_000);
+
     modeTest(`${mode}: final answer excludes tool progress and failed partial text stays separate`, async () => {
       for (const fail of [false, true]) {
         await fixture((body, index) => index === 1

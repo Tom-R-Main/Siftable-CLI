@@ -79,6 +79,53 @@ test('a user-directed answer in a noninteractive run gets one feedback round, th
   } finally {await f.close();}
 });
 
+test('a rejected answer is never yielded as answer text; the stream carries its withdrawal', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'sift-settlement-stream-')));
+  const responses: AdapterResponse[] = [{text: ROUND2_ANSWER}, {text: 'Recovered 9 rows into /app/recover.json.'}];
+  const agent = await createChatAgent({memory: false, maxToolRounds: 4, session: {id: 'settlement-stream'},
+    executionContext: () => ({workspaceRoot: root, sessionCwd: root}), tools: [],
+    adapter: {name: 'fixture', model: 'fixture', chat: async (_history, _registry, options) => {
+      const response = responses.shift(); if (!response) throw new Error('Unexpected extra model request');
+      // Stream the answer as deltas the way a live provider would; streaming
+      // is a headless contract and is deliberately not buffered.
+      options?.onEvent?.({type: 'provider.text.delta', requestId: `req-${responses.length}`, delta: response.text!});
+      return response;
+    }}});
+  try {
+    const deltas: string[] = [];
+    const chunks: Array<Record<string, unknown>> = [];
+    let result: {text: string} | undefined;
+    for await (const chunk of agent.chat('Recover /app/trunc.db', {stream: true, noninteractive: {approvalPolicy: 'allow'},
+      onProviderEvent: event => {if (event.type === 'provider.text.delta') deltas.push(event.delta);}})) {
+      if (chunk.type === 'text') chunks.push({type: 'text', text: chunk.text, streamed: chunk.streamed});
+      if (chunk.type === 'settlement') chunks.push({type: 'settlement', ...chunk.settlement});
+      if (chunk.type === 'done') result = chunk.result;
+    }
+    expect(result?.text).toBe('Recovered 9 rows into /app/recover.json.');
+    expect(deltas).toEqual([ROUND2_ANSWER, 'Recovered 9 rows into /app/recover.json.']);
+    // The withdrawn answer is announced before any answer text, and never appears as answer text.
+    expect(chunks).toEqual([
+      {type: 'settlement', action: 'feedback', cue: expect.stringMatching(/need shell access|Approve running these/), streamed: true},
+      {type: 'text', text: 'Recovered 9 rows into /app/recover.json.', streamed: true},
+    ]);
+  } finally {await agent.close(); await rm(root, {recursive: true, force: true});}
+});
+
+test('a failing second answer is withdrawn on the stream before the run fails', async () => {
+  const f = await harness([{text: ROUND2_ANSWER}, {text: 'Understood. Shall I proceed with the recovery commands?'}]);
+  try {
+    const seen: string[] = [];
+    let failure: unknown;
+    try {
+      for await (const chunk of f.agent.chat('Recover the database', {stream: true, noninteractive: {approvalPolicy: 'allow'}})) {
+        seen.push(chunk.type === 'settlement' ? `settlement:${chunk.settlement!.action}` : chunk.type);
+      }
+    } catch (error) { failure = error; }
+    expect(String(failure)).toContain(NONINTERACTIVE_UNSETTLED_ERROR);
+    expect(seen).toEqual(['settlement:feedback', 'settlement:failed']);
+  } finally {await f.close();}
+});
+
 test('a second user-directed answer fails the run instead of reporting completion', async () => {
   const f = await harness([{text: ROUND2_ANSWER}, {text: 'Understood. Shall I proceed with the recovery commands?'}]);
   try {

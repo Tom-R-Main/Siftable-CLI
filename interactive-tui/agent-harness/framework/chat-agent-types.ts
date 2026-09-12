@@ -331,12 +331,18 @@ export interface ChatResult {
 
 export interface ChatStreamChunk {
   /** Event type */
-  type: "text" | "tool_call" | "tool_result" | "done";
+  type: "text" | "tool_call" | "tool_result" | "settlement" | "done";
 
   /** Incremental text (for type: "text") */
   text?: string;
   /** Already delivered through the provider-event callback. */
   streamed?: boolean;
+
+  /** A noninteractive run withdrew the model's last answer because it asked
+   * the absent user to act (for type: "settlement"). `streamed` says whether
+   * that answer's deltas already reached the provider-event callback, so a
+   * live transcript can mark it as withdrawn instead of presenting it. */
+  settlement?: { action: "feedback" | "failed"; cue: string; streamed: boolean };
 
   /** Tool call info (for type: "tool_call"). `callId` is the provider call id;
    * results carry the same id so parallel same-name calls stay correlated. */

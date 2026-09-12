@@ -149,9 +149,10 @@ const LEAN_PROMPT =
   'If a search result is truncated/capped, describe it as partial and narrow or explicitly broaden before treating absence as definitive.';
 
 interface AgentHarnessChunk {
-  type: 'text' | 'tool_call' | 'tool_result' | 'done';
+  type: 'text' | 'tool_call' | 'tool_result' | 'settlement' | 'done';
   text?: string;
   streamed?: boolean;
+  settlement?: { action: 'feedback' | 'failed'; cue: string; streamed: boolean };
   toolCall?: { name: string; args?: Record<string, unknown>; callId?: string };
   toolResult?: { name: string; success?: boolean; executionOutcome?: "succeeded" | "failed" | "unknown"; callId?: string; outputPreview?: string };
   result?: ChatResult & { content?: string };
@@ -2756,6 +2757,11 @@ async function agentHarnessAskTurn(
             ...(chunk.toolResult?.outputPreview ? { output: chunk.toolResult.outputPreview } : {}),
           },
         });
+      } else if (chunk.type === 'settlement' && chunk.settlement) {
+        // The withdrawn answer is progress, never the result. Consumers that
+        // already printed its streamed deltas render the withdrawal.
+        emitPostExplorer({type: 'status', phase: 'settlement', status: chunk.settlement.action === 'feedback' ? 'withdrawn' : 'failed',
+          cue: chunk.settlement.cue, streamed: chunk.settlement.streamed});
       } else if (chunk.type === 'done') {
         finalResult = chunk.result;
         const finalContent = chunk.result?.content || chunk.result?.text;

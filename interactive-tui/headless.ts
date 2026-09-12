@@ -123,6 +123,11 @@ export async function runHeadless(options: HeadlessOptions): Promise<number> {
     result = await brain.agentHarnessAsk(options.prompt, (event: BrainEvent) => {
       emit(event);
       if (options.format === 'text' && event.type === 'token') process.stdout.write(event.content || '');
+      if (options.format === 'text' && event.type === 'status' && event.phase === 'settlement' && event.streamed) {
+        // The withdrawn answer already streamed to stdout; say so in place
+        // rather than letting it read as the result.
+        process.stdout.write(`\n[withdrawn: the answer above asked an absent user to act; ${event.status === 'withdrawn' ? 'retrying once' : 'the run fails'}]\n`);
+      }
     }, controller.signal, {
       noninteractive: {approvalPolicy: options.approval},
       ...(options.verifyArgv ? {completionVerification: {

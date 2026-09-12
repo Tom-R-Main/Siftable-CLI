@@ -1399,6 +1399,13 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
             continue;
           }
 
+          // Settle before projecting: a user-directed answer in a noninteractive
+          // run is never yielded as answer text. Streamed deltas may already
+          // have reached the listener, so the stream carries an explicit
+          // settlement chunk that consumers render as a withdrawal.
+          const unsettledRequest = options?.noninteractive && response.text && !completionVerification
+            ? detectUserDirectedRequest(response.text)
+            : undefined;
           if (response.text) {
             finalText = response.text;
             this.session.appendMessage(
@@ -1411,9 +1418,11 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
               },
               stepContext,
             );
-            assistantTurnComplete = true;
-            yield { type: "text", text: response.text, streamed: this.streamedResponses.has(response) };
-            throwIfAborted(options?.signal);
+            if (!unsettledRequest) {
+              assistantTurnComplete = true;
+              yield { type: "text", text: response.text, streamed: this.streamedResponses.has(response) };
+              throwIfAborted(options?.signal);
+            }
           }
           if (!response.text) {
             this.restoreAdapterSessionState(
@@ -1431,19 +1440,21 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
             ...stepContext,
           });
           activeStepId = undefined;
-          if (options?.noninteractive && response.text && !completionVerification) {
+          if (options?.noninteractive && unsettledRequest) {
             // No person will ever answer a question asked here. Treat the answer
             // as unsettled: one bounded reminder, then an honest failure. When an
             // objective completion check is configured it settles the task instead.
-            const request = detectUserDirectedRequest(response.text);
-            if (request) {
+            const request = unsettledRequest;
+            {
               const approvalPolicy = options.noninteractive.approvalPolicy;
               if (settlementFeedbackGiven) {
                 this.session.append({type: "settlement/user-directed", data: {cue: request.cue, action: "failed", approvalPolicy}, ...baseContext});
+                yield { type: "settlement", settlement: { action: "failed", cue: request.cue, streamed: this.streamedResponses.has(response) } };
                 throw new Error(NONINTERACTIVE_UNSETTLED_ERROR);
               }
               settlementFeedbackGiven = true;
               this.session.append({type: "settlement/user-directed", data: {cue: request.cue, action: "feedback", approvalPolicy}, ...baseContext});
+              yield { type: "settlement", settlement: { action: "feedback", cue: request.cue, streamed: this.streamedResponses.has(response) } };
               assistantTurnComplete = false;
               finalText = "";
               // This write must succeed before the next inference request.
@@ -1545,6 +1556,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
               const request = detectUserDirectedRequest(finalText);
               if (request) {
                 this.session.append({type: "settlement/user-directed", data: {cue: request.cue, action: "failed", approvalPolicy: options.noninteractive.approvalPolicy}, ...finalizerContext});
+                yield { type: "settlement", settlement: { action: "failed", cue: request.cue, streamed: this.streamedResponses.has(response) } };
                 throw new Error(NONINTERACTIVE_UNSETTLED_ERROR);
               }
             }
