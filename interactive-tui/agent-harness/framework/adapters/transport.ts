@@ -282,8 +282,13 @@ export async function readProviderResponse(response: Response, protocol: "chat" 
         if (event.delta.length > 0) responsesVisible = true;
         text(event.delta);
       }
-      // A refusal is rendered as assistant text by the parser, so it is visible output too.
-      if (event.type === "response.refusal.delta" && typeof event.delta === "string" && event.delta.length > 0) responsesVisible = true;
+      // A refusal is rendered as assistant text by the parser, so it is visible
+      // output and is delivered like text: a truncated refusal must still reach
+      // the listener before the incomplete event ends the stream.
+      if (event.type === "response.refusal.delta" && typeof event.delta === "string" && event.delta.length > 0) {
+        responsesVisible = true;
+        text(event.delta);
+      }
       if (event.type === "response.output_item.added" && record(event.item).type === "function_call") responsesVisible = true;
       if (event.type === "response.completed") {
         if (record(event.response).status !== "completed") throw new Error("Provider response is not completed");
