@@ -31402,6 +31402,566 @@
         "agent",
         "run.js"
       ]
+    },
+    "work:a2a:cancel": {
+      "aliases": [],
+      "args": {
+        "connection": {
+          "name": "connection",
+          "required": true
+        },
+        "dispatch": {
+          "name": "dispatch",
+          "required": true
+        }
+      },
+      "description": "Cancel the remote conversation; worker termination remains unconfirmed",
+      "enableJsonFlag": true,
+      "flags": {
+        "api-url": {
+          "default": "https://siftable.io",
+          "description": "API base URL",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "api-url",
+          "type": "option"
+        },
+        "json": {
+          "allowNo": false,
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "type": "boolean"
+        },
+        "no-input": {
+          "allowNo": false,
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "token",
+          "type": "option"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "workspace",
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:a2a:cancel",
+      "isESM": false,
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "a2a",
+        "cancel.js"
+      ],
+      "strict": true
+    },
+    "work:a2a:continue": {
+      "aliases": [],
+      "args": {
+        "connection": {
+          "name": "connection",
+          "required": true
+        },
+        "dispatch": {
+          "name": "dispatch",
+          "required": true
+        }
+      },
+      "description": "Send one explicit clarification to a waiting A2A conversation",
+      "enableJsonFlag": true,
+      "flags": {
+        "api-url": {
+          "default": "https://siftable.io",
+          "description": "API base URL",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "api-url",
+          "type": "option"
+        },
+        "json": {
+          "allowNo": false,
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "type": "boolean"
+        },
+        "no-input": {
+          "allowNo": false,
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "type": "boolean"
+        },
+        "request-key": {
+          "description": "Stable key to reuse when retrying this operation",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "name": "request-key",
+          "required": true,
+          "type": "option"
+        },
+        "text": {
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "name": "text",
+          "required": true,
+          "type": "option"
+        },
+        "token": {
+          "description": "Personal access token",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "token",
+          "type": "option"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "workspace",
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:a2a:continue",
+      "isESM": false,
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "a2a",
+        "continue.js"
+      ],
+      "strict": true
+    },
+    "work:a2a:recover": {
+      "aliases": [],
+      "args": {
+        "connection": {
+          "name": "connection",
+          "required": true
+        },
+        "dispatch": {
+          "name": "dispatch",
+          "required": true
+        }
+      },
+      "description": "Recover an addressed blocked dispatch after repairing authority",
+      "enableJsonFlag": true,
+      "flags": {
+        "api-url": {
+          "default": "https://siftable.io",
+          "description": "API base URL",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "api-url",
+          "type": "option"
+        },
+        "generation": {
+          "description": "Observed dispatch generation",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "name": "generation",
+          "required": true,
+          "type": "option"
+        },
+        "json": {
+          "allowNo": false,
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "type": "boolean"
+        },
+        "no-input": {
+          "allowNo": false,
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "token",
+          "type": "option"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "workspace",
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:a2a:recover",
+      "isESM": false,
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "a2a",
+        "recover.js"
+      ],
+      "strict": true
+    },
+    "work:a2a:review": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Inspect scoped A2A dispatch history, artifacts and verification",
+      "enableJsonFlag": true,
+      "flags": {
+        "api-url": {
+          "default": "https://siftable.io",
+          "description": "API base URL",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "api-url",
+          "type": "option"
+        },
+        "json": {
+          "allowNo": false,
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "type": "boolean"
+        },
+        "no-input": {
+          "allowNo": false,
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "token",
+          "type": "option"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "workspace",
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:a2a:review",
+      "isESM": false,
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "a2a",
+        "review.js"
+      ],
+      "strict": true
+    },
+    "work:a2a:run": {
+      "aliases": [],
+      "args": {
+        "connection": {
+          "name": "connection",
+          "required": true
+        },
+        "dispatch": {
+          "name": "dispatch",
+          "required": true
+        }
+      },
+      "description": "Run or poll an addressed outbound A2A dispatch",
+      "enableJsonFlag": true,
+      "flags": {
+        "api-url": {
+          "default": "https://siftable.io",
+          "description": "API base URL",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "api-url",
+          "type": "option"
+        },
+        "json": {
+          "allowNo": false,
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "type": "boolean"
+        },
+        "no-input": {
+          "allowNo": false,
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "token",
+          "type": "option"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "workspace",
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:a2a:run",
+      "isESM": false,
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "a2a",
+        "run.js"
+      ],
+      "strict": true
+    },
+    "work:a2a:send": {
+      "aliases": [],
+      "args": {
+        "connection": {
+          "name": "connection",
+          "required": true
+        },
+        "work": {
+          "name": "work",
+          "required": true
+        }
+      },
+      "description": "Send one bounded assignment to an explicit A2A connection and remote work item",
+      "enableJsonFlag": true,
+      "flags": {
+        "api-url": {
+          "default": "https://siftable.io",
+          "description": "API base URL",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "api-url",
+          "type": "option"
+        },
+        "deadline": {
+          "description": "Absolute ISO deadline for this conversation",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "name": "deadline",
+          "required": true,
+          "type": "option"
+        },
+        "json": {
+          "allowNo": false,
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "type": "boolean"
+        },
+        "max-turns": {
+          "default": 8,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "name": "max-turns",
+          "type": "option"
+        },
+        "no-input": {
+          "allowNo": false,
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "type": "boolean"
+        },
+        "remote-work": {
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "name": "remote-work",
+          "required": true,
+          "type": "option"
+        },
+        "remote-workspace": {
+          "description": "Remote workspace UUID; omit for personal scope",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "name": "remote-workspace",
+          "type": "option"
+        },
+        "request-key": {
+          "description": "Stable key to reuse when retrying this assignment",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "name": "request-key",
+          "required": true,
+          "type": "option"
+        },
+        "text": {
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "name": "text",
+          "required": true,
+          "type": "option"
+        },
+        "token": {
+          "description": "Personal access token",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "token",
+          "type": "option"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "workspace",
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:a2a:send",
+      "isESM": false,
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "a2a",
+        "send.js"
+      ],
+      "strict": true
+    },
+    "work:a2a:status": {
+      "aliases": [],
+      "args": {
+        "connection": {
+          "name": "connection",
+          "required": true
+        },
+        "dispatch": {
+          "name": "dispatch",
+          "required": true
+        }
+      },
+      "description": "Read an addressed outbound A2A dispatch",
+      "enableJsonFlag": true,
+      "flags": {
+        "api-url": {
+          "default": "https://siftable.io",
+          "description": "API base URL",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "api-url",
+          "type": "option"
+        },
+        "json": {
+          "allowNo": false,
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "type": "boolean"
+        },
+        "no-input": {
+          "allowNo": false,
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "token",
+          "type": "option"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "hasDynamicHelp": false,
+          "helpGroup": "GLOBAL",
+          "multiple": false,
+          "name": "workspace",
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:a2a:status",
+      "isESM": false,
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "a2a",
+        "status.js"
+      ],
+      "strict": true
     }
   },
   "version": "0.7.0"

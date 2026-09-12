@@ -100,9 +100,9 @@ Link work to a planning task with `sift work create --task <task-id>` rather tha
 
 ## Command reference
 
-All 314 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
+All 341 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
 
-**Topics:** [General](#general) · [Agents](#agents) · [Ai](#ai) · [Approvals](#approvals) · [Auth](#auth) · [Billing](#billing) · [Calendar](#calendar) · [Capabilities](#capabilities) · [Code](#code) · [Codex](#codex) · [Context](#context) · [Crm](#crm) · [Datasets](#datasets) · [Documents](#documents) · [Env](#env) · [Events](#events) · [Evidence](#evidence) · [Grants](#grants) · [Graph](#graph) · [Notes](#notes) · [Organizations](#organizations) · [People](#people) · [Projects](#projects) · [Recipes](#recipes) · [Relationships](#relationships) · [Research](#research) · [Skills](#skills) · [Tasks](#tasks) · [Timeline](#timeline) · [Vault](#vault) · [Work](#work) · [Worker](#worker) · [Workspaces](#workspaces)
+**Topics:** [General](#general) · [Agent](#agent) · [Agents](#agents) · [Ai](#ai) · [Approvals](#approvals) · [Auth](#auth) · [Billing](#billing) · [Calendar](#calendar) · [Capabilities](#capabilities) · [Code](#code) · [Codebase](#codebase) · [Codex](#codex) · [Context](#context) · [Crm](#crm) · [Datasets](#datasets) · [Documents](#documents) · [Env](#env) · [Events](#events) · [Evidence](#evidence) · [Grants](#grants) · [Graph](#graph) · [Lead-discovery](#lead-discovery) · [Notes](#notes) · [Organizations](#organizations) · [People](#people) · [Projects](#projects) · [Recipes](#recipes) · [Relationships](#relationships) · [Research](#research) · [Skills](#skills) · [Tasks](#tasks) · [Timeline](#timeline) · [Vault](#vault) · [Work](#work) · [Worker](#worker) · [Workspaces](#workspaces)
 
 
 ### General
@@ -147,6 +147,31 @@ Render a Mermaid diagram to the terminal (flowchart, sequence, state, class, ER,
 - `--overflow <allow|clip|error>` *(default: "clip")* — What to do when the diagram exceeds the bounds
 - `--unicode` — Use Unicode box drawing (default)
 - `--width <value>` — Fit into an exact N-column pane (pads/clips)
+
+
+### Agent
+
+#### `sift agent run`
+Run Sift’s local agent harness headlessly with durable session events
+
+**Flags**
+
+- `--approval <deny|allow>` *(default: "deny")* — Tool approval policy; allow approves local tool requests. Shell commands run with host permissions
+- `--base-url <value>` — Compatible provider endpoint (HTTPS or loopback HTTP)
+- `--cwd <value>` — Local workspace directory and writable root (defaults to current directory)
+- `--deadline-ms <value>` *(default: 600000)* — Turn deadline in milliseconds
+- `--effort <none|minimal|low|medium|high|xhigh|max>` — Provider reasoning effort
+- `--format <jsonl|json|text>` *(default: "jsonl")* — Output protocol (--json selects json)
+- `--handoff-timeout-ms <value>` — Maximum external grading handoff duration
+- `--max-output-tokens <value>` — Maximum provider output tokens
+- `--max-rounds <value>` *(default: 24)* — Maximum tool rounds
+- `--model <value>` *(required)* — Exact provider model ID
+- `--prompt <value>` *(required)* — Task for the local agent
+- `--provider <value>` *(required)* — Provider adapter; credentials are read from the environment
+- `--session <value>` — Resume this session ID; defaults to a fresh session
+- `--supervisor-handoff` — Keep session jobs owned during external grading; requires a supervisor stdin pipe and JSONL
+- `--verify-command <value>` — Explicit post-run check as a JSON argv array; requires --verify-file
+- `--verify-file <value>` *(repeatable)* — Exact candidate file to bind to the check (repeat for each file)
 
 
 ### Agents
@@ -581,6 +606,16 @@ Supersede a code memory with a new fact; old memory retained as lineage
 - `--file <value>` — Related file path
 - `--path <value>` *(repeatable)* — Additional related path (repeatable)
 - `--reason <value>` *(required)* — Audit reason
+
+
+### Codebase
+
+#### `sift codebase search`
+Explain the retired source-code search command and its local recovery
+
+**Arguments**
+
+- `query` — Legacy source-code search query
 
 
 ### Codex
@@ -1659,6 +1694,109 @@ Search linkable entities for graph work
 
 - `--limit <value>` *(default: 20)* — Maximum results
 - `--types <value>` — Comma-separated entity types
+
+
+### Lead-discovery
+
+#### `sift lead-discovery candidates list`
+List source-backed review candidates for a durable discovery run
+
+**Arguments**
+
+- `runId` *(required)* — Discovery run UUID
+
+#### `sift lead-discovery candidates review`
+Versioned shortlist, reject, or restore of one discovery candidate
+
+**Arguments**
+
+- `candidateId` *(required)* — Discovery candidate UUID
+
+**Flags**
+
+- `--expected-review-version <value>` *(required)* — Current review version used for optimistic concurrency
+- `--idempotency-key <value>` — Stable retry key; generated when omitted
+- `--reason-code <value>` *(required)* — Structured shortlist/reject reason code
+- `--reason-note <value>` — Optional private review note
+- `--state <discovered|shortlisted|rejected>` *(required)* — New review state
+
+#### `sift lead-discovery candidates review-many`
+Review up to 25 discovery candidates with ordered per-item receipts
+
+**Flags**
+
+- `--reviews <value>` — Exact versioned review commands as a JSON array
+- `--reviews-file <value>` — Path to exact versioned review commands JSON array
+
+#### `sift lead-discovery companies prepare`
+Prepare an exact company-discovery quote without dispatching provider work
+
+**Flags**
+
+- `--idempotency-key <value>` — Stable retry key; generated when omitted
+- `--query <value>` — Exact lead-discovery query JSON object
+- `--query-file <value>` — Path to an exact lead-discovery query JSON object
+- `--target-kind <organization|organization_person>` *(default: "organization")* — Discovery target kind
+
+#### `sift lead-discovery companies run`
+Run one exact opaque prepared company-discovery contract
+
+**Arguments**
+
+- `preparedQueryId` *(required)* — Opaque prepared-query UUID
+
+**Flags**
+
+- `--approved-maximum-charge-micros <value>` *(required)* — Exact maximum charge returned by prepare and approved by the caller
+- `--query-digest <value>` *(required)* — Exact digest returned by prepare
+
+#### `sift lead-discovery companies search`
+Prepare and run a bounded company search under an explicit approved maximum charge
+
+**Flags**
+
+- `--idempotency-key <value>` — Stable retry key; generated when omitted
+- `--maximum-charge-micros <value>` *(required)* — Caller-approved charge ceiling in micro-USD
+- `--query <value>` — Exact lead-discovery query JSON object
+- `--query-file <value>` — Path to an exact lead-discovery query JSON object
+
+#### `sift lead-discovery import-plan create`
+Create or recover the import plan bound to an exact reviewed shortlist
+
+**Arguments**
+
+- `runId` *(required)* — Discovery run UUID
+
+**Flags**
+
+- `--candidate-id <value>` *(required; repeatable)* — Shortlisted candidate UUID; repeat for each candidate
+- `--expected-shortlist-digest <value>` *(required)* — Exact 64-character shortlist digest
+- `--idempotency-key <value>` — Stable retry key; generated when omitted
+
+#### `sift lead-discovery import-plan lookup`
+Recover the import plan bound to a run and exact shortlist digest
+
+**Arguments**
+
+- `runId` *(required)* — Discovery run UUID
+
+**Flags**
+
+- `--expected-shortlist-digest <value>` *(required)* — Exact 64-character shortlist digest
+
+#### `sift lead-discovery origin get`
+Get persisted discovery-origin evidence for an imported organization
+
+**Arguments**
+
+- `organizationId` *(required)* — Organization UUID
+
+#### `sift lead-discovery runs get`
+Recover durable discovery run status and receipt by stable run ID
+
+**Arguments**
+
+- `runId` *(required)* — Discovery run UUID
 
 
 ### Notes
@@ -3409,6 +3547,79 @@ Create one exact short-lived environment bundle artifact outside the Git worktre
 
 Executable agent work queue.
 
+#### `sift work a2a cancel`
+Cancel the remote conversation; worker termination remains unconfirmed
+
+**Arguments**
+
+- `connection` *(required)*
+- `dispatch` *(required)*
+
+#### `sift work a2a continue`
+Send one explicit clarification to a waiting A2A conversation
+
+**Arguments**
+
+- `connection` *(required)*
+- `dispatch` *(required)*
+
+**Flags**
+
+- `--request-key <value>` *(required)* — Stable key to reuse when retrying this operation
+- `--text <value>` *(required)*
+
+#### `sift work a2a recover`
+Recover an addressed blocked dispatch after repairing authority
+
+**Arguments**
+
+- `connection` *(required)*
+- `dispatch` *(required)*
+
+**Flags**
+
+- `--generation <value>` *(required)* — Observed dispatch generation
+
+#### `sift work a2a review`
+Inspect scoped A2A dispatch history, artifacts and verification
+
+**Arguments**
+
+- `id` *(required)*
+
+#### `sift work a2a run`
+Run or poll an addressed outbound A2A dispatch
+
+**Arguments**
+
+- `connection` *(required)*
+- `dispatch` *(required)*
+
+#### `sift work a2a send`
+Send one bounded assignment to an explicit A2A connection and remote work item
+
+**Arguments**
+
+- `connection` *(required)*
+- `work` *(required)*
+
+**Flags**
+
+- `--deadline <value>` *(required)* — Absolute ISO deadline for this conversation
+- `--max-turns <value>` *(default: 8)*
+- `--remote-work <value>` *(required)*
+- `--remote-workspace <value>` — Remote workspace UUID; omit for personal scope
+- `--request-key <value>` *(required)* — Stable key to reuse when retrying this assignment
+- `--text <value>` *(required)*
+
+#### `sift work a2a status`
+Read an addressed outbound A2A dispatch
+
+**Arguments**
+
+- `connection` *(required)*
+- `dispatch` *(required)*
+
 #### `sift work block`
 Mark a work item as blocked
 
@@ -3457,6 +3668,103 @@ Claim the next available executable agent work item
 - `--agent <value>` — Agent alias to claim for
 - `--lease <value>` *(default: 1800)* — Lease seconds
 - `--owner <value>` *(required)* — Claim owner identity
+
+#### `sift work collaboration acknowledge`
+Advance a named mailbox cursor through one exact, durably processed sequence
+
+**Arguments**
+
+- `id` *(required)* — Work item UUID
+
+**Flags**
+
+- `--as-agent-id <value>` — Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)
+- `--consumer-key <value>` *(required)* — Stable non-secret key naming this durable event consumer
+- `--last-sequence <value>` *(required)* — Exact highest contiguous sequence durably processed by this consumer
+
+#### `sift work collaboration events`
+List ordered mailbox events without advancing any durable cursor
+
+**Arguments**
+
+- `id` *(required)* — Work item UUID
+
+**Flags**
+
+- `--after-sequence <value>` — Return events after this exact sequence
+- `--as-agent-id <value>` — Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)
+- `--limit <value>` — Maximum events to return
+
+#### `sift work collaboration participant add`
+Add a contributor, reviewer, or observer to a work-item mailbox
+
+**Arguments**
+
+- `id` *(required)* — Work item UUID
+
+**Flags**
+
+- `--agent-alias-id <value>` — Agent alias UUID represented by the participant
+- `--as-agent-id <value>` — Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)
+- `--idempotency-key <value>` *(required)* — Caller-owned stable 8-128 character key for exact retries
+- `--participant-user-id <value>` *(required)* — User UUID represented by the participant
+- `--role <contributor|reviewer|observer>` *(required)* — Participant role
+
+#### `sift work collaboration participant remove`
+Remove an assignable participant from a work-item mailbox
+
+**Arguments**
+
+- `id` *(required)* — Work item UUID
+- `participantId` *(required)* — Collaboration participant UUID
+
+**Flags**
+
+- `--as-agent-id <value>` — Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)
+- `--idempotency-key <value>` *(required)* — Caller-owned stable 8-128 character key for exact retries
+
+#### `sift work collaboration participants`
+List the durable collaboration participants for a work item
+
+**Arguments**
+
+- `id` *(required)* — Work item UUID
+
+**Flags**
+
+- `--as-agent-id <value>` — Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)
+
+#### `sift work collaboration send`
+Append a retry-safe message or artifact event to a work-item mailbox
+
+**Arguments**
+
+- `id` *(required)* — Work item UUID
+
+**Flags**
+
+- `--as-agent-id <value>` — Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)
+- `--idempotency-key <value>` *(required)* — Caller-owned stable 8-128 character key for exact retries
+- `--kind <message|artifact_published>` *(default: "message")* — Client event kind
+- `--parts <value>` — Exact collaboration event parts as a JSON array
+- `--reply-to-event-id <value>` — Existing event UUID this event replies to
+- `--supersedes-event-id <value>` — Caller-authored event UUID this event supersedes
+- `--text <value>` — Convenience text part; cannot be combined with --parts
+
+#### `sift work collaboration wait`
+Wait for mailbox events at least once; never acknowledges them automatically
+
+**Arguments**
+
+- `id` *(required)* — Work item UUID
+
+**Flags**
+
+- `--after-sequence <value>` — Override cursor resume and wait after this sequence
+- `--as-agent-id <value>` — Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)
+- `--consumer-key <value>` *(required)* — Stable non-secret key naming this durable event consumer
+- `--limit <value>` — Maximum events to return
+- `--wait-ms <value>` — Long-poll duration in milliseconds
 
 #### `sift work complete`
 Approve and complete an executable agent work item
@@ -3625,7 +3933,7 @@ List executable agent work items
 **Flags**
 
 - `--agent <value>` — Filter by assigned agent alias
-- `--limit <value>` — Maximum results
+- `--limit <value>` *(default: 50)* — Maximum results
 - `--project <value>` — Filter by project ID
 - `--status <value>` — Filter by status
 - `--task <value>` — Filter by parent human planning task ID
@@ -3792,6 +4100,22 @@ Build a no-spend, surface-neutral plan for exactly two AWS agent workers
 - `--source-sha <value>` — Reviewed 40-character source Git SHA; defaults to a clean current HEAD
 - `--surface <cli|t3|codex|claude-code|mcp>` *(default: "cli")* — Calling control surface; does not change dispatch identity
 - `--work-item <value>` *(required; repeatable)* — Queued Sift work-item UUID; repeat exactly twice
+
+#### `sift worker listen`
+Receive reviewed mobile launches on a host-configured local worker
+
+**Flags**
+
+- `--agent-alias-id <value>` — Agent alias UUID for this runner; defaults to the credential binding
+- `--arg <value>` *(default: []; repeatable)* — Fixed executable argument (repeatable)
+- `--checkpoint-arg <value>` *(default: []; repeatable)* — Fixed checkpoint argument (repeatable)
+- `--checkpoint-executable <value>` — Optional host-approved checkpoint executable
+- `--cwd <value>` *(required)* — Host-approved working directory
+- `--executable <value>` *(required)* — Host-approved executable; receives work JSON on stdin
+- `--name <value>` *(required)* — Runner name shown on the phone
+- `--once` — Register and poll once, then exit
+- `--receipts <value>` *(required)* — Durable local receipt directory
+- `--runner <value>` *(required)* — Stable runner UUID
 
 #### `sift worker run`
 Claim executable work, run a local worker command, and report needs-review artifacts
