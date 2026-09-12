@@ -21,6 +21,7 @@ const requiredCases = [
   'streamed tool progress and final answer retain separate response boundaries',
   'configured failed check reaches the model, repairs and passes in the same turn',
   'cleanup edits invalidate a previously passing check',
+  'a withdrawn user-directed answer never becomes the result; a streamed one is marked in place',
 ];
 
 export function assertAcceptanceReport(xml) {
