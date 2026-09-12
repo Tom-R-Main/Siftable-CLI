@@ -16,6 +16,8 @@ import { chatContentToText } from "./adapters/content.js";
 export interface RequestBudgetOptions {
   /** Byte ceiling for the serialized request; the lane default when omitted. */
   ceilingBytes?: number;
+  /** Bytes the adapter adds beyond prompt and history: tool definitions, settings, framing. */
+  overheadBytes?: number;
   /** Number of most recent tool results that are never pruned. */
   keepLast?: number;
   /** Tool results at or below this size are never pruned. */
@@ -56,9 +58,12 @@ export function requestByteCeiling(provider?: string): number {
   return DEFAULT_CEILING;
 }
 
-/** Serialized size of what the adapter will send, without provider framing. */
-export function estimateRequestBytes(history: ChatMessage[], systemPrompt: string): number {
-  return Buffer.byteLength(systemPrompt, "utf8") + Buffer.byteLength(JSON.stringify(history), "utf8");
+/** Fixed allowance for provider framing (model, settings, streaming fields). */
+export const FRAMING_BYTES = 2_048;
+
+/** Serialized size of what the adapter will send: prompt, history, tool definitions and framing. */
+export function estimateRequestBytes(history: ChatMessage[], systemPrompt: string, overheadBytes = FRAMING_BYTES): number {
+  return Buffer.byteLength(systemPrompt, "utf8") + Buffer.byteLength(JSON.stringify(history), "utf8") + overheadBytes;
 }
 
 function messageBytes(message: ChatMessage): number {
@@ -83,7 +88,8 @@ export function fitHistoryToRequestBudget(
   const ceilingBytes = options.ceilingBytes ?? requestByteCeiling(options.provider);
   const keepLast = options.keepLast ?? DEFAULT_KEEP_LAST;
   const minBytes = options.minBytes ?? DEFAULT_MIN_BYTES;
-  const beforeBytes = estimateRequestBytes(history, systemPrompt);
+  const overheadBytes = options.overheadBytes ?? FRAMING_BYTES;
+  const beforeBytes = estimateRequestBytes(history, systemPrompt, overheadBytes);
   if (beforeBytes <= ceilingBytes) return { history, beforeBytes, afterBytes: beforeBytes, ceilingBytes, pruned: [] };
   const toolIndexes = history.map((m, i) => (m.role === "tool" ? i : -1)).filter(i => i >= 0);
   const protectedIndexes = new Set(toolIndexes.slice(Math.max(0, toolIndexes.length - keepLast)));

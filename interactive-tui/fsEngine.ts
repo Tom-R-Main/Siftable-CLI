@@ -312,12 +312,18 @@ const decoder = new TextDecoder("utf-8", { fatal: false });
 const STATUS_OK = 0;
 const STATUS_OUTPUT_TOO_SMALL = 9;
 /**
- * Native statuses the engine returns before any byte is written (argument, root,
- * lookup, size, encoding, freshness and match checks all precede the atomic write
- * in native/fs_engine.zig). Permission (5) and I/O (13) can occur on either side of
- * the write and stay unknown. CLI-047.
+ * Native statuses that can only be produced before any byte is written (CLI-047).
+ * The native ABI does not distinguish preflight from commit-phase failures, so a
+ * status is listed here only when the commit phase (createFileAtomic, which may
+ * create parent directories under makePath, the streamed write, and the rename)
+ * cannot also produce it. For edits the read/validate phase alone yields invalid
+ * arguments, outside-root, binary, invalid UTF-8, no match, ambiguous match and
+ * stale; not-found, not-a-file, too-large, permission and I/O can come from either
+ * phase and stay unknown. For writes only argument, root and exists checks precede
+ * the commit phase.
  */
-const PRE_WRITE_STATUSES: ReadonlySet<number> = new Set([1, 2, 3, 4, 6, 7, 8, 10, 11, 12, 14, 15]);
+const EDIT_PRE_WRITE_STATUSES: ReadonlySet<number> = new Set([1, 6, 8, 11, 12, 14, 15]);
+const WRITE_PRE_WRITE_STATUSES: ReadonlySet<number> = new Set([1, 10, 15]);
 const WRITE_FLAG_CREATE_ONLY = 0x1;
 const WRITE_FLAG_MAKE_PATH = 0x2;
 const EDIT_FLAG_REQUIRE_UNIQUE = 0x1;
@@ -1234,7 +1240,7 @@ export async function writeText(path: string, content: string, opts: WriteTextOp
         cap = growMutationReceipt(cap, needed);
         continue;
       }
-      throw new MutationReceiptError(PRE_WRITE_STATUSES.has(status) ? "not_applied" : "unknown", new Error(nativeStatusMessage(status, "write_file")));
+      throw new MutationReceiptError(WRITE_PRE_WRITE_STATUSES.has(status) ? "not_applied" : "unknown", new Error(nativeStatusMessage(status, "write_file")));
     }
     throw new MutationReceiptError("not_applied", new Error("write_file: native mutation receipt remained too small; no write was performed"));
   }
@@ -1285,7 +1291,7 @@ export async function editText(
         continue;
       }
       if (status === 12) throw new AmbiguousEditError();
-      throw new MutationReceiptError(PRE_WRITE_STATUSES.has(status) ? "not_applied" : "unknown", new Error(nativeStatusMessage(status, "edit_file")));
+      throw new MutationReceiptError(EDIT_PRE_WRITE_STATUSES.has(status) ? "not_applied" : "unknown", new Error(nativeStatusMessage(status, "edit_file")));
     }
     throw new MutationReceiptError("not_applied", new Error("edit_file: native mutation receipt remained too small; no edit was performed"));
   }

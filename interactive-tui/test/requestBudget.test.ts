@@ -122,3 +122,22 @@ test('an HTTP 413 prunes harder once and retries; a second 413 fails', async () 
     expect(h.requests).toHaveLength(2);
   } finally {await h.close();}
 });
+
+test('a retry on the last permitted round still happens', async () => {
+  // maxRounds 1: the only round truncates, is replayed, and completes.
+  const f = await harness([new ProviderIncompleteError('Meta', 'length', false), {text: 'done'}]);
+  const agent = await createChatAgent({memory: false, maxToolRounds: 1, session: {id: 'last-round'}, executionContext: () => ({workspaceRoot: '/tmp', sessionCwd: '/tmp'}), tools: [],
+    adapter: {name: 'Meta', model: 'm', chat: async () => { const n = script.shift(); if (n instanceof Error) throw n; return n!; }}});
+  const script: Array<AdapterResponse | Error> = [new ProviderIncompleteError('Meta', 'length', false), {text: 'done'}];
+  try {
+    const result = await agent.chat('go');
+    expect(result.text).toBe('done'); expect(result.run.status).toBe('completed');
+  } finally {await agent.close(); await f.close();}
+});
+
+test('tool definitions count toward the request estimate', () => {
+  const history: ChatMessage[] = [{role: 'user', content: 'x'.repeat(1_000)}];
+  expect(estimateRequestBytes(history, 'sys', 0)).toBeLessThan(estimateRequestBytes(history, 'sys', 50_000));
+  const outcome = fitHistoryToRequestBudget([{role: 'user', content: 'x'}, ...Array.from({length: 3}, (_, i) => toolMessage(`c${i}`, 5_000))], 'sys', {ceilingBytes: 20_000, keepLast: 1, overheadBytes: 12_000});
+  expect(outcome.pruned.length).toBeGreaterThan(0);
+});
