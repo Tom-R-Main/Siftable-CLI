@@ -234,7 +234,7 @@ export async function* serverEvents(response: Response, signal?: AbortSignal): A
   }
 }
 
-/** Visible output in a Responses API result: any message text or a function call. */
+/** Visible output in a Responses API result: any message text, a refusal, or a function call. */
 export function responsesVisibleOutput(response: unknown): boolean {
   const output = record(response).output;
   if (!Array.isArray(output)) return false;
@@ -242,7 +242,9 @@ export function responsesVisibleOutput(response: unknown): boolean {
     if (!item || typeof item !== "object") return false;
     if (item.type === "function_call") return true;
     if (item.type !== "message" || !Array.isArray(item.content)) return false;
-    return item.content.some((part: any) => part && part.type === "output_text" && typeof part.text === "string" && part.text.length > 0);
+    return item.content.some((part: any) => part
+      && ((part.type === "output_text" && typeof part.text === "string" && part.text.length > 0)
+        || (part.type === "refusal" && typeof part.refusal === "string" && part.refusal.length > 0)));
   });
 }
 
@@ -280,6 +282,8 @@ export async function readProviderResponse(response: Response, protocol: "chat" 
         if (event.delta.length > 0) responsesVisible = true;
         text(event.delta);
       }
+      // A refusal is rendered as assistant text by the parser, so it is visible output too.
+      if (event.type === "response.refusal.delta" && typeof event.delta === "string" && event.delta.length > 0) responsesVisible = true;
       if (event.type === "response.output_item.added" && record(event.item).type === "function_call") responsesVisible = true;
       if (event.type === "response.completed") {
         if (record(event.response).status !== "completed") throw new Error("Provider response is not completed");

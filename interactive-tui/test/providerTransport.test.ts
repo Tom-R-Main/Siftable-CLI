@@ -325,6 +325,11 @@ describe("provider transport reliability", () => {
       .rejects.toMatchObject({ name: "ProviderIncompleteError", finishReason: "length", visibleOutput: false });
     await expect(make((async () => Response.json(incomplete("max_output_tokens", [{ type: "function_call", call_id: "c1", name: "write_file", arguments: "{}" }]))) as typeof fetch).chat(messages, registry))
       .rejects.toMatchObject({ name: "ProviderIncompleteError", finishReason: "length", visibleOutput: true });
+    // A refusal is visible output: refusal-only truncations are not replayed, buffered or streamed.
+    await expect(make((async () => Response.json(incomplete("max_output_tokens", [{ type: "message", content: [{ type: "refusal", refusal: "I cannot help with that." }] }]))) as typeof fetch).chat(messages, registry))
+      .rejects.toMatchObject({ name: "ProviderIncompleteError", finishReason: "length", visibleOutput: true });
+    await expect(make((async () => sse([{ type: "response.refusal.delta", delta: "I cannot" }, { type: "response.incomplete", response: incomplete("max_output_tokens") }], false)) as typeof fetch).chat(messages, registry))
+      .rejects.toMatchObject({ name: "ProviderIncompleteError", finishReason: "length", visibleOutput: true });
     // Any other incomplete reason stays a plain, non-retryable error.
     const other = make((async () => Response.json(incomplete("content_filter"))) as typeof fetch);
     await expect(other.chat(messages, registry)).rejects.toThrow("OpenAI response is incomplete");
