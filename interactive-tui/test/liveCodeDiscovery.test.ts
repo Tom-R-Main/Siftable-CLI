@@ -40,7 +40,7 @@ describe("authorized live code discovery", () => {
     }
   });
 
-  it("honors the worktree boundary, gitignore, secret exclusions, and result caps", async () => {
+  it("honors the worktree boundary, gitignore, and secret exclusions", async () => {
     const root = tempRoot("sift-live-code-");
     mkdirSync(join(root, ".git"), { recursive: true });
     mkdirSync(join(root, "src"), { recursive: true });
@@ -64,13 +64,38 @@ describe("authorized live code discovery", () => {
     expect(result.spans.some((span) => span.path.includes("ignored.ts"))).toBe(false);
     expect(result.spans.some((span) => span.path.includes("credentials.json"))).toBe(false);
     expect(result.stats.excludedSensitiveFiles).toBe(1);
-    expect(result.stats.truncated).toBe(true);
+    expect(result.stats.scan.status).toBe("complete");
+    expect(result.stats.presentation).toEqual({ clipped: false, reasons: [] });
+    expect(result.stats.truncated).toBe(false);
 
     const literalResult = await searchLiteral(root, "ultraSecretValue", {
       excludeSensitive: true,
       respectGitignore: true,
     });
     expect(literalResult.matches).toHaveLength(0);
+  });
+
+  it("reports clipping only when eligible spans exceed the result cap", async () => {
+    const root = tempRoot("sift-live-code-cap-");
+    writeFileSync(join(root, "first.ts"), "export const first = authToken;\n", "utf8");
+    writeFileSync(join(root, "second.ts"), "export const second = authToken;\n", "utf8");
+
+    for (const maxSpans of [1, 2]) {
+      const result = await codeSearch({
+        root,
+        authorizedRoot: root,
+        intent: "authToken",
+        queries: ["authToken"],
+        maxSpans,
+      });
+      expect(result.spans).toHaveLength(maxSpans);
+      expect(result.stats.scan.status).toBe("complete");
+      expect(result.stats.presentation).toEqual({
+        clipped: maxSpans === 1,
+        reasons: maxSpans === 1 ? ["maxSpans"] : [],
+      });
+      expect(result.stats.truncated).toBe(maxSpans === 1);
+    }
   });
 
   it("rejects an explicit root or symlink that escapes the authorized worktree", async () => {

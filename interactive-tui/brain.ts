@@ -320,9 +320,9 @@ const CODEX_PROVIDER = 'codex';
 /** Local harness default model — used to decide when to pass a model override to Codex. */
 const DEFAULT_AGENT_HARNESS_MODEL = 'google/gemini-3.8-flash';
 
-let currentProvider = process.env.EXECUTERM_MODEL_PROVIDER || 'openrouter';
+let currentProvider = process.env.EXECUTERM_MODEL_PROVIDER || (process.env.EXECUTERM_MODEL ? 'openrouter' : CODEX_PROVIDER);
 let currentBaseUrl: string | undefined = process.env.SIFT_MODEL_BASE_URL;
-let currentModel = process.env.EXECUTERM_MODEL || DEFAULT_AGENT_HARNESS_MODEL;
+let currentModel = process.env.EXECUTERM_MODEL || (currentProvider === CODEX_PROVIDER ? 'gpt-5.6-sol' : DEFAULT_AGENT_HARNESS_MODEL);
 let currentEffort: string | undefined = process.env.EXECUTERM_MODEL_EFFORT || undefined;
 
 const SCOUT_PROMPT =
@@ -424,7 +424,8 @@ export function getBrainModel(): { provider: string; model: string; effort?: str
 
 /**
  * Switch the model/provider/reasoning-effort and/or store a provider API key
- * (the /model and /key commands). Rebuilds the agent lazily.
+ * (the /model and /key commands). A provider/key-only update preserves model
+ * selection. All changes retire cached agents so refreshed keys take effect.
  */
 export function setBrainModel(input: {
   provider?: string;
@@ -433,6 +434,13 @@ export function setBrainModel(input: {
   effort?: string;
   baseUrl?: string;
 }): { provider: string; model: string; effort?: string } {
+  // /key configures credentials independently of /model. Rebuild cached agents
+  // so an active adapter captures a refreshed key, without mixing providers/models.
+  if (input.apiKey && input.provider && input.model === undefined && input.effort === undefined && input.baseUrl === undefined) {
+    process.env[`${input.provider.toUpperCase()}_API_KEY`] = input.apiKey;
+    retireAgentsAfterCurrentTurns();
+    return getBrainModel();
+  }
   if (input.provider && input.provider !== currentProvider && input.baseUrl === undefined) currentBaseUrl = undefined;
   if (input.provider) currentProvider = input.provider;
   if (input.baseUrl !== undefined) currentBaseUrl = input.baseUrl || undefined;
@@ -2793,7 +2801,8 @@ export async function closeBrain(): Promise<void> {
   processJobsClosing = true;
   const cached = [...agents.values()];
   agents.clear();
-  const settled = await Promise.allSettled([processJobs?.close(), ...cached.map(async (pending) => (await pending).close?.()), ...agentRetirements.values(), ...mailboxDrains.values()]);
+  const codexClose = import('./codexEngine').then(({closeCodex}) => closeCodex());
+  const settled = await Promise.allSettled([processJobs?.close(), codexClose, ...cached.map(async (pending) => (await pending).close?.()), ...agentRetirements.values(), ...mailboxDrains.values()]);
   // A failed bounded cleanup is not release of process ownership. Preserve the
   // manager so another shutdown attempt can reconcile and retry its jobs.
   if (settled[0].status === 'fulfilled') processJobs = undefined;

@@ -15,10 +15,13 @@ import {
   codexAsk,
   ensureThread,
   shutdownCodex,
+  closeCodex,
+  getCodexAccount,
   __resetCodexThreadsForTests,
   __setCodexClientForTests,
   type CodexSpawnFn,
 } from '../../interactive-tui/codexEngine';
+import {closeBrain, setBrainModel, getBrainModel} from '../../interactive-tui/brain';
 import {getSessionCwd, setSessionCwd} from '../../interactive-tui/navigation';
 import {
   isBypassing,
@@ -663,5 +666,109 @@ describe('ensureThread — per-session keyed threads', () => {
     setSessionCwd(dirs.parent);
     const tid = await startMiss(client, procs[1], 't-clean');
     expect(tid).toBe('t-clean');
+  });
+});
+
+
+describe('owned Codex sidecar drain', () => {
+  it('permits a fresh Codex connection after successful drain', async () => {
+    __setCodexClientForTests(null);
+    await closeCodex();
+    const ready = jest.spyOn(CodexClient.prototype, 'ensureReady').mockResolvedValue(undefined);
+    const request = jest.spyOn(CodexClient.prototype, 'request').mockResolvedValue({account: {type: 'chatgpt'}});
+    try {
+      await expect(getCodexAccount(true)).resolves.toEqual({type: 'chatgpt'});
+      expect(ready).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledWith('account/read', {refreshToken: false});
+    } finally {
+      ready.mockRestore(); request.mockRestore(); __setCodexClientForTests(null);
+    }
+  });
+
+  it('blocks reconnection while draining and after a failed drain, until retry succeeds', async () => {
+    const owned = new CodexClient(() => { throw new Error('test must not spawn'); });
+    let fail!: (error: Error) => void;
+    const close = jest.spyOn(owned, 'close').mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { fail = reject; }));
+    __setCodexClientForTests(owned);
+    const ready = jest.spyOn(CodexClient.prototype, 'ensureReady').mockResolvedValue(undefined);
+    const request = jest.spyOn(CodexClient.prototype, 'request').mockResolvedValue({account: {type: 'chatgpt'}});
+    try {
+      const draining = closeCodex();
+      await expect(getCodexAccount(true)).resolves.toBeNull();
+      fail(new Error('fixture drain failure'));
+      await expect(draining).rejects.toThrow('fixture drain failure');
+      await expect(getCodexAccount(true)).resolves.toBeNull();
+      expect(ready).not.toHaveBeenCalled();
+      close.mockResolvedValueOnce(undefined);
+      await closeCodex();
+      await expect(getCodexAccount(true)).resolves.toEqual({type: 'chatgpt'});
+      expect(ready).toHaveBeenCalledTimes(1);
+    } finally {
+      close.mockRestore(); ready.mockRestore(); request.mockRestore(); __setCodexClientForTests(null);
+    }
+  });
+
+  it('waits for child stdio close rather than treating SIGTERM delivery as shutdown', async () => {
+    const {client, proc} = await readyClient();
+    let closed = false;
+    const closing = client.close().then(() => { closed = true; });
+    expect(proc.killSignal).toBe('SIGTERM');
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    proc.exit();
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    proc.emit('close', 0, null);
+    await closing;
+    expect(closed).toBe(true);
+    await expect(client.ensureReady()).rejects.toThrow('shut down');
+  });
+
+  for (const stop of ['shutdown', 'exit'] as const) {
+    it(`retains ownership after ${stop} until stdio closes`, async () => {
+      const {client, proc} = await readyClient();
+      if (stop === 'shutdown') client.shutdown();
+      else proc.exit();
+      let closed = false;
+      const closing = client.close().then(() => { closed = true; });
+      await Promise.resolve();
+      expect(closed).toBe(false);
+      expect(proc.killSignal).toBe('SIGTERM');
+      proc.emit('close', 0, null);
+      await closing;
+      expect(closed).toBe(true);
+    });
+  }
+
+  it('escalates only its owned child and rejects if closure cannot be confirmed', async () => {
+    const {client, proc} = await readyClient();
+    await expect(client.close(5)).rejects.toThrow('process ownership retained');
+    expect(proc.killSignal).toBe('SIGKILL');
+    const retry = client.close();
+    proc.emit('close', null, 'SIGKILL');
+    await expect(retry).resolves.toBeUndefined();
+  });
+
+  it('drains an existing Codex sidecar after the user switches to Meta', async () => {
+    const {client, proc} = await readyClient();
+    const prior = getBrainModel();
+    __setCodexClientForTests(client);
+    setBrainModel({provider: 'meta', model: 'muse-spark-1.3-contributor'});
+    try {
+      let closed = false;
+      const closing = closeBrain().then(() => { closed = true; });
+      // closeBrain dynamically loads Codex; wait for shutdown dispatch.
+      for (let attempt = 0; !proc.killed && attempt < 100; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+      expect(proc.killSignal).toBe('SIGTERM');
+      expect(closed).toBe(false);
+      proc.emit('close', 0, null);
+      await closing;
+      expect(closed).toBe(true);
+    } finally {
+      __setCodexClientForTests(null);
+      setBrainModel({...prior, effort: prior.effort ?? ''});
+    }
   });
 });

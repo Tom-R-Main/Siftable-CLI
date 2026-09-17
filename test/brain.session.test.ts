@@ -19,6 +19,7 @@ import {SessionKernel} from '../interactive-tui/agent-harness/framework/session'
 import {
   agentHarnessAsk,
   getAgent,
+  getBrainModel,
   inspectActiveThread,
   resetActiveThread,
   setAgentConversationKey,
@@ -167,6 +168,26 @@ describe('getAgent — per-session keyed agents', () => {
     expect(after).not.toBe(before);
     expect(before.close).toHaveBeenCalledTimes(1);
     expect(before.destroy).not.toHaveBeenCalled();
+  });
+
+  it('rebuilds the cached agent on credential-only refresh without changing selection', async () => {
+    const prior = getBrainModel();
+    const priorKey = process.env.META_API_KEY;
+    setSessionCwd(dirs.parent);
+    setBrainModel({provider: 'meta', model: 'muse-spark-1.3-contributor', effort: 'medium'});
+    try {
+      const before = (await getAgent()) as unknown as FakeAgent;
+      setBrainModel({provider: 'meta', apiKey: 'fixture-refreshed-key'});
+      const after = (await getAgent()) as unknown as FakeAgent;
+      expect(after).not.toBe(before);
+      expect(before.close).toHaveBeenCalledTimes(1);
+      expect(after.__config).toMatchObject({provider: 'meta', model: 'muse-spark-1.3-contributor', reasoningEffort: 'medium'});
+      expect(process.env.META_API_KEY).toBe('fixture-refreshed-key');
+    } finally {
+      if (priorKey === undefined) delete process.env.META_API_KEY;
+      else process.env.META_API_KEY = priorKey;
+      setBrainModel({...prior, effort: prior.effort ?? ''});
+    }
   });
 
   it('waits for the retiring agent to close before reopening its stable journal', async () => {

@@ -503,6 +503,17 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     reasoningEfforts: GPT5_EFFORTS,
     defaultEffort: "low",
   },
+  {
+    id: "meta/muse-spark-1.3-contributor",
+    provider: "meta",
+    model: "muse-spark-1.3-contributor",
+    label: "Muse Spark 1.3 Contributor",
+    description: "direct Meta API",
+    aliases: ["muse", "muse-spark", "muse-spark-1.3", "muse-spark-1.3-contributor"],
+    auth: "api-key",
+    requiredEnv: "META_API_KEY",
+    keyHint: "/key meta <key>",
+  },
   // ── Specialized (not general chat brains) ──
   {
     id: "openrouter/morph/morph-v3-large",
@@ -827,8 +838,9 @@ async function selectCodexModel(ctx: InteractiveCommandContext, choice: Interact
 
 /**
  * Apply a resolved model choice (+ optional reasoning effort). Routes Codex
- * through its sign-in flow and direct-Anthropic through the API-key gate; both
- * the `/model <id>` command and the interactive picker funnel through here.
+ * through its sign-in flow and direct providers through their API-key gates.
+ * Both the slash command and picker use this path, which clears inherited
+ * reasoning effort when the new choice supplies none.
  */
 export async function applyModelChoice(
   ctx: InteractiveCommandContext,
@@ -865,7 +877,8 @@ export async function applyModelChoice(
     const result = await ctx.client.config({
       provider: choice.provider,
       model: choice.model,
-      ...(selectedEffort ? {effort: selectedEffort} : {}),
+      // Empty effort resets the previous model's setting to the provider default.
+      effort: selectedEffort ?? '',
     });
     ctx.setModel(result.model);
     persistModelChoice(choice, selectedEffort);
@@ -890,7 +903,8 @@ export function resolveModelChoiceEffort(
  * message. This restores the *selection* only — it sets the brain to the saved
  * model/effort directly (including Codex) without triggering Codex sign-in or
  * vault key prompts at launch. Missing auth/keys surface in the status line and
- * on first use, exactly as they would for the default model.
+ * on first use, exactly as they would for the default model. An absent saved
+ * effort clears any setting inherited from the startup model.
  */
 export async function restoreSavedModel(ctx: InteractiveCommandContext): Promise<void> {
   const saved = loadPrefs().model;
@@ -901,7 +915,7 @@ export async function restoreSavedModel(ctx: InteractiveCommandContext): Promise
     const result = await ctx.client.config({
       provider: choice.provider,
       model: choice.model,
-      ...(saved.effort ? {effort: saved.effort} : {}),
+      effort: saved.effort ?? '',
     });
     ctx.setModel(result.model);
   } catch {
@@ -946,9 +960,11 @@ function normalizeAdHocOpenRouterModel(model: string): string {
   return model;
 }
 
+/** Parse uncatalogued model IDs, retaining explicit direct-provider routes. */
 function parseAdHocModel(raw: string): {provider?: string; model: string} {
   const id = raw.trim();
   if (id.startsWith("openrouter/")) return {provider: "openrouter", model: normalizeAdHocOpenRouterModel(id.slice("openrouter/".length))};
+  if (id.startsWith("meta/")) return {provider: "meta", model: id.slice("meta/".length)};
   if (id.startsWith("openai/")) return {provider: "openai", model: id.slice("openai/".length)};
   if (id.startsWith("gemini/")) return {provider: "gemini", model: id.slice("gemini/".length)};
   if (id.startsWith("anthropic/") && !id.includes(".")) return {provider: "anthropic", model: id.slice("anthropic/".length)};
@@ -2425,7 +2441,7 @@ export const interactiveCommands: InteractiveCommand[] = [
         const secret = args.slice(1).join(" ");
         if (isBrainProvider(provider)) {
           await ctx.client.config({provider, apiKey: secret});
-          ctx.push({role: "system", text: `stored ${provider} API key for the model brain.`});
+          ctx.push({role: "system", text: `stored ${provider} API key for this session. Model selection unchanged.`});
         } else {
           // Search-only providers (e.g. morph for warp-grep) aren't served by the
           // brain — set the env var directly instead of switching the brain to an

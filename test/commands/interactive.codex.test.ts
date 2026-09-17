@@ -15,6 +15,16 @@ import {
   type InteractiveCommandContext,
 } from '../../interactive-tui/commands';
 import type {ControlTransport} from '../../interactive-tui/controlClient';
+import * as prefs from '../../interactive-tui/prefs';
+
+beforeEach(() => {
+  jest.spyOn(prefs, 'loadPrefs').mockReturnValue({});
+  jest.spyOn(prefs, 'savePrefs').mockImplementation(() => undefined);
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
+});
 
 describe('Codex binary resolution', () => {
   it('prefers an explicit CODEX_BIN override', () => {
@@ -483,7 +493,7 @@ describe('model catalog + reasoning effort', () => {
     expect(messages.at(-1)?.text).toContain('openrouter/google/gemini-3.1-flash-lite');
 
     await runInteractiveCommand(ctx, '/model openrouter/moonshotai/kimi-k2');
-    expect(config).toHaveBeenLastCalledWith({provider: 'openrouter', model: 'moonshotai/kimi-k2.6'});
+    expect(config).toHaveBeenLastCalledWith({provider: 'openrouter', model: 'moonshotai/kimi-k2.6', effort: ''});
 
     await runInteractiveCommand(ctx, '/model openrouter/z-ai/glm-5');
     expect(config).toHaveBeenLastCalledWith({provider: 'openrouter', model: 'z-ai/glm-5.2'});

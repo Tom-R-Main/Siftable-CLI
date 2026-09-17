@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createContext, runInContext } from 'node:vm';
 import ts from 'typescript';
-import { agentHarnessAsk, closeBrain, getAgent, setAgentConversationKey, __resetBrainAgentsForTests } from '../interactive-tui/brain';
+import { agentHarnessAsk, closeBrain, getAgent, getBrainModel, setBrainModel, setAgentConversationKey, __resetBrainAgentsForTests } from '../interactive-tui/brain';
 import * as explorer from '../interactive-tui/explorer';
 
 
@@ -75,10 +75,13 @@ test('a cancelled auxiliary request is never admitted', async () => {
 describe('truthful brain settlement', () => {
   const environmentKeys = ['SIFT_WORKSPACE_ROOT', 'SIFT_USER_CWD', 'SIFT_EXPLORER', 'SIFT_CONTEXT_COMPACTION', 'SIFT_SESSION_EVENT_ROOT', 'SIFT_INTERACTIVE_TUI_DIR'] as const;
   let savedEnvironment: Record<string, string | undefined>;
+  let savedModel: ReturnType<typeof getBrainModel>;
   let root: string;
   let createChatAgent: jest.Mock;
 
   beforeEach(async () => {
+    savedModel = getBrainModel();
+    setBrainModel({provider: 'openrouter', model: 'fixture-harness-model', effort: ''});
     savedEnvironment = Object.fromEntries(environmentKeys.map(key => [key, process.env[key]]));
     root = await realpath(await mkdtemp(join(tmpdir(), 'sift-brain-terminal-')));
     process.env.SIFT_WORKSPACE_ROOT = root;
@@ -97,6 +100,7 @@ describe('truthful brain settlement', () => {
 
   afterEach(async () => {
     __resetBrainAgentsForTests();
+    setBrainModel({...savedModel, effort: savedModel.effort ?? ''});
     delete (globalThis as any).__SIFT_AGENT_HARNESS__;
     for (const key of environmentKeys) {
       if (savedEnvironment[key] === undefined) delete process.env[key];

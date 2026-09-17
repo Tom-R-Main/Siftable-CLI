@@ -101,6 +101,10 @@ Git-native parent/child sessions, each in its own worktree.
 
 The model picker (`/model`) is a two-stage overlay: choose a **model** (↑/↓), then a **reasoning effort** (←/→). Your choice persists to `~/.siftable/prefs.json` and is restored on the next launch.
 
+**Muse Spark 1.3 Contributor** is available through the direct Meta adapter: `/model muse` (or `/model meta/muse-spark-1.3-contributor`). It requires `META_API_KEY`; `/key meta <key>` sets the key for this session. The selection is restored on the next launch.
+
+New installations start with **GPT-5.6 Sol through Codex**. A saved model selection takes precedence on subsequent launches, including a personal Muse selection.
+
 The catalog includes:
 
 - **GPT-5.6 Sol, Terra, and Luna** — run through your ChatGPT plan via the Codex engine (see below). `/codex login` and `/codex on` select Sol by default. Efforts: low/medium/high/xhigh/max.
@@ -111,7 +115,7 @@ The catalog includes:
 **Engine routing:**
 
 - **Codex** (`provider = codex`) drives the OpenAI `codex app-server` sidecar over JSON-RPC on stdio. Siftable does **not** own the OAuth — Codex manages ChatGPT sign-in; `/codex login` runs a device-code flow. Turns run in a `workspace-write` sandbox confined to the repo root with on-request approvals routed through the confirmation gate. Override the binary with `CODEX_BIN`.
-- **All other providers** (OpenRouter, Anthropic, Gemini, OpenAI) route through the bundled Siftable agent harness, which reads `<PROVIDER>_API_KEY` from the environment. `/key <provider> <key>` sets it for the session. Vault plaintext hydration is retired; capability-broker execution replaces that workflow.
+- **All other providers** (OpenRouter, Anthropic, Gemini, OpenAI, Meta) route through the bundled Siftable agent harness, which reads `<PROVIDER>_API_KEY` from the environment. `/key <provider> <key>` sets it for the session. Vault plaintext hydration is retired; capability-broker execution replaces that workflow.
 
 First-party provider keys: `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, or `<PROVIDER>_API_KEY` generically.
 

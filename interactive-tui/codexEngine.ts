@@ -181,6 +181,9 @@ type Approver = (req: CodexApprovalRequest, signal: AbortSignal) => Promise<Appr
  */
 export class CodexClient {
   private proc: CodexProc | null = null;
+  private readonly ownedProcs = new Set<CodexProc>();
+  private closing: Promise<void> | null = null;
+  private closed = false;
   private generation: CodexGeneration | null = null;
   private buffer = '';
   private nextId = 1;
@@ -199,12 +202,15 @@ export class CodexClient {
     this.approver = fn;
   }
 
+  /** Share one initialization handshake; a drained client cannot reconnect. */
   async ensureReady(): Promise<void> {
+    if (this.closed) throw new Error('codex client shut down');
     if (this.ready) return this.ready;
     this.ready = this.connect();
     return this.ready;
   }
 
+  /** Spawn an owned app-server generation and initialize its JSON-RPC transport. */
   private connect(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       let proc: CodexProc;
@@ -215,6 +221,8 @@ export class CodexClient {
         return;
       }
       this.proc = proc;
+      this.ownedProcs.add(proc);
+      proc.once('close', () => this.ownedProcs.delete(proc));
       const onError = (err: Error) => {
         // A child-process error is not guaranteed to be followed by exit.
         // Tear down and terminate this generation here so the next request can
@@ -456,6 +464,43 @@ export class CodexClient {
     return () => generation.disconnectListeners.delete(fn);
   }
 
+  /** Stop only this client's children and wait for process and stdio closure. */
+  close(graceMs = 1000): Promise<void> {
+    if (this.closing) return this.closing;
+    this.closed = true;
+    this.closing = Promise.allSettled([...this.ownedProcs].map(proc => this.drainChild(proc, graceMs)))
+      .then(results => {
+        const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+        if (failures.length) throw new AggregateError(failures.map(result => result.reason),
+          'codex app-server did not close after shutdown; process ownership retained');
+      }).finally(() => { this.closing = null; });
+    return this.closing;
+  }
+
+  /** Wait for one owned child to close, escalating within a bounded grace period. */
+  private drainChild(proc: CodexProc, graceMs: number): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout>;
+      const onClose = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      proc.once('close', onClose);
+      timer = setTimeout(() => {
+        try { proc.kill('SIGKILL'); } catch { /* bounded close evidence still required */ }
+        if (!this.ownedProcs.has(proc)) return;
+        timer = setTimeout(() => {
+          proc.removeListener('close', onClose);
+          reject(new Error('codex app-server did not close after shutdown; process ownership retained'));
+        }, graceMs);
+      }, graceMs);
+      if (this.proc === proc) this.shutdown();
+      else {
+        try { proc.kill('SIGTERM'); } catch { /* wait for close or bounded failure */ }
+      }
+    });
+  }
+
   shutdown(): void {
     if (this.proc) {
       this.teardownGeneration(this.proc, new Error('codex client shut down'), true);
@@ -468,6 +513,7 @@ export class CodexClient {
 
 // ── Singleton + lifecycle ────────────────────────────────────────────────────
 let client: CodexClient | null = null;
+let closingCodex = false;
 let installState: CodexInstallState = 'unknown';
 // One Codex thread per active-session context, keyed by `${cwd}|${workspaceRoot}|${model}`.
 // Lane C: a child session runs in its own worktree (cwd), so it must hold its own
@@ -479,7 +525,6 @@ const threads = new Map<string, string>();
 let accountCache: { account: CodexAccount | null; ts: number } | null = null;
 const ACCOUNT_TTL_MS = 15_000;
 
-/** Resolve (or lazily spawn) the Codex client; null if the CLI is unavailable. */
 /** Repo/workspace root codex may write to, and run commands from. */
 function workspaceRoot(): string {
   return getWorkspaceRoot() || getSessionCwd();
@@ -490,7 +535,9 @@ function approvalPolicyNow(): 'never' | 'on-request' {
   return isBypassing() ? 'never' : 'on-request';
 }
 
+/** Resolve the ready singleton, or return null while draining or when unavailable. */
 async function getClient(): Promise<CodexClient | null> {
+  if (closingCodex) return null;
   if (!client) {
     client = new CodexClient();
     // Route codex's approval requests through the shared 4-way confirm gate.
@@ -510,13 +557,26 @@ async function getClient(): Promise<CodexClient | null> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (/ENOENT|not found|spawn/i.test(message)) installState = 'missing';
-    client = null;
+    if (!closingCodex) client = null;
     return null;
   }
 }
 
 export function getCodexInstallState(): CodexInstallState {
   return installState;
+}
+
+/** Drain the owned sidecar; permit reuse only after successful process closure. */
+export async function closeCodex(): Promise<void> {
+  closingCodex = true;
+  const owned = client;
+  await owned?.close();
+  if (client === owned) client = null;
+  threads.clear();
+  accountCache = null;
+  // A different session may fail to close, leaving the interface alive.
+  // Reopen Codex normally after a confirmed drain, but keep the guard on failure.
+  closingCodex = false;
 }
 
 export function shutdownCodex(): void {
@@ -536,6 +596,7 @@ export function __setCodexClientForTests(
   nextClient: CodexClient | null,
   account: CodexAccount | null = null,
 ): void {
+  closingCodex = false;
   client = nextClient;
   threads.clear();
   accountCache = nextClient ? { account, ts: Date.now() } : null;
