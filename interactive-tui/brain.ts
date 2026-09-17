@@ -2154,7 +2154,7 @@ async function runRepoExplorerWarpGrep(
     try {
       ({ MorphClient: MorphClientCtor } = (await import('@morphllm/morphsdk')) as never);
     } catch (err) {
-      return fail(`@morphllm/morphsdk unavailable: ${err instanceof Error ? err.message : String(err)}`);
+      return fail(`@morphllm/morphsdk unavailable (${err instanceof Error ? err.message : String(err)}); install it next to the CLI to enable warp-grep`);
     }
     const morph = new MorphClientCtor({ apiKey, timeout: Math.max(budget.maxElapsedMs, 20_000) });
     const repoRoot = getWorkspaceRoot() || getSessionCwd();
