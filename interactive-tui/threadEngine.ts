@@ -11,6 +11,7 @@
  * one summarize call and the history rewrite.
  */
 import { existsSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -56,20 +57,66 @@ let native:
   | null
   | undefined;
 
+/**
+ * Why the native thread engine could not be loaded. Stable and machine-readable
+ * — these values are journaled verbatim by the agent harness.
+ */
+export type NativeEngineFailure =
+  /** SIFT_NATIVE=0 — forced kill-switch, exercises the packaged-runtime path. */
+  | "native-disabled"
+  /** Library file or path shim absent (or a non-Bun runtime). */
+  | "native-missing"
+  /** Library present but dlopen rejected it (arch/ABI/symbol mismatch). */
+  | "native-load-failed";
+
+/** Failure recorded by the most recent nativeSymbols() resolution attempt. */
+let nativeFailure: NativeEngineFailure | null = null;
+
 function nativeSymbols() {
+  // SIFT_NATIVE=0 forces the native-absent path so tests can exercise it in a
+  // source checkout without touching the on-disk library. SIFT_NO_NATIVE=1 is
+  // the switch the other engines (fs, merge, collab, composer, image, skills)
+  // honor; both are accepted so one setting disables every native path.
+  if (process.env.SIFT_NATIVE === "0" || process.env.SIFT_NO_NATIVE === "1") {
+    nativeFailure = "native-disabled";
+    return null;
+  }
   if (native !== undefined) return native;
+  nativeFailure = null;
   if (typeof Bun === "undefined") {
     native = null;
+    nativeFailure = "native-missing";
     return native;
   }
-  const { default: nativeLibraryPath } = require("./native/thread_engine") as { default: string };
+  let shimPath: string;
+  try {
+    ({ default: shimPath } = require("./native/thread_engine") as { default: string });
+  } catch {
+    // The path shim itself is absent from this runtime (e.g. a packaged build
+    // that did not stage native assets).
+    native = null;
+    nativeFailure = "native-missing";
+    return native;
+  }
+  // The packaged runtime is universal: libraries are staged per platform-arch
+  // (libthread_engine.<platform>-<arch>.<suffix>) so one artifact serves every
+  // target. A source checkout keeps the host build at the plain shim path.
+  const file = basename(shimPath);
+  const dot = file.lastIndexOf(".");
+  const keyed = join(
+    dirname(shimPath),
+    `${file.slice(0, dot)}.${process.platform}-${process.arch}${file.slice(dot)}`,
+  );
+  const nativeLibraryPath = existsSync(keyed) ? keyed : shimPath;
   if (!existsSync(nativeLibraryPath)) {
     native = null;
+    nativeFailure = "native-missing";
     return native;
   }
 
-  const { dlopen, FFIType } = require("bun:ffi") as typeof import("bun:ffi");
-  const lib = dlopen(nativeLibraryPath, {
+  try {
+    const { dlopen, FFIType } = require("bun:ffi") as typeof import("bun:ffi");
+    const lib = dlopen(nativeLibraryPath, {
     // ptr accepts a Uint8Array and matches Zig's [*]const u8 C ABI.
     sift_thread_estimate_tokens: { args: [FFIType.ptr, FFIType.u32], returns: FFIType.u32 },
     sift_thread_plan_chunks: {
@@ -88,9 +135,14 @@ function nativeSymbols() {
       args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr],
       returns: FFIType.u32,
     },
-  });
-
-  native = lib.symbols;
+    });
+    native = lib.symbols;
+  } catch {
+    // Contain dlopen failures (wrong arch, missing symbol, truncated library):
+    // degrade to the no-native path rather than crash the agent process.
+    native = null;
+    nativeFailure = "native-load-failed";
+  }
   return native;
 }
 
@@ -277,6 +329,46 @@ export interface CompactionPlan {
   tailStartIndex: number;
 }
 
+/**
+ * Structural check on a parsed native plan. The planner speaks JSON over a
+ * byte buffer, so a well-formed document can still carry wrong types, floats
+ * where indices belong, or ranges outside the message list — all of which
+ * would corrupt history downstream. Anything misshapen is planner-failed.
+ */
+export function isUsableCompactionPlan(plan: unknown, messageCount: number): plan is CompactionPlan {
+  if (typeof plan !== "object" || plan === null) return false;
+  const candidate = plan as Record<string, unknown>;
+  if (typeof candidate.needsCompaction !== "boolean") return false;
+  for (const field of [candidate.estimatedTokens, candidate.usableTokens, candidate.prunedTokens]) {
+    if (!Number.isSafeInteger(field) || (field as number) < 0) return false;
+  }
+  if (!Array.isArray(candidate.prune)) return false;
+  for (const index of candidate.prune) {
+    if (!Number.isSafeInteger(index) || (index as number) < 0 || (index as number) >= messageCount) return false;
+  }
+  const range: unknown = candidate.summarizeRange;
+  if (!Array.isArray(range) || range.length !== 2) return false;
+  const [start, end] = range as unknown[];
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return false;
+  if ((start as number) < 0 || (start as number) > (end as number) || (end as number) > messageCount) return false;
+  const tail = candidate.tailStartIndex;
+  if (!Number.isSafeInteger(tail) || (tail as number) < 0 || (tail as number) > messageCount) return false;
+  // The summary covers [start, end) and the verbatim tail starts at tail, so
+  // end > tail would place messages in both — summarize and retain disagree.
+  if ((end as number) > (tail as number)) return false;
+  return true;
+}
+
+/** Why a compaction plan could not be produced. */
+export type CompactionPlanFailure =
+  | NativeEngineFailure
+  /** The native call itself failed or returned an unusable plan. */
+  | "planner-failed";
+
+export type CompactionPlanOutcome =
+  | { ok: true; plan: CompactionPlan }
+  | { ok: false; reason: CompactionPlanFailure; detail?: string };
+
 const ROLE_CODE: Record<PlanRole, number> = { user: 0, assistant: 1, tool: 2 };
 const FLAG_PROTECTED = 0x1;
 const STATUS_OK = 0;
@@ -302,15 +394,16 @@ function frameMessages(messages: PlanMessage[]): Uint8Array {
 
 /**
  * Decide what to do with an over-budget conversation: prune-then-summarize,
- * turn-aligned. Native-only — returns null when the Zig library is unavailable,
- * in which case the caller should skip compaction (degrading to no compaction).
+ * turn-aligned. Native-only — when the plan can't be produced the outcome
+ * carries a stable reason so the caller can report the degradation instead of
+ * silently skipping compaction.
  */
 export function planCompaction(
   messages: PlanMessage[],
   config: CompactionConfig,
-): CompactionPlan | null {
+): CompactionPlanOutcome {
   const symbols = nativeSymbols();
-  if (!symbols) return null;
+  if (!symbols) return { ok: false, reason: nativeFailure ?? "native-missing" };
 
   const msgs = frameMessages(messages);
   const cfg = Uint32Array.from([
@@ -328,25 +421,39 @@ export function planCompaction(
     const out = new Uint8Array(cap);
     const written = new Uint32Array(1);
     const needed = new Uint32Array(1);
-    const status = symbols.sift_thread_plan_compaction(
-      msgs,
-      msgs.byteLength,
-      cfg,
-      out,
-      out.byteLength,
-      written,
-      needed,
-    );
+    let status: number;
+    try {
+      status = symbols.sift_thread_plan_compaction(
+        msgs,
+        msgs.byteLength,
+        cfg,
+        out,
+        out.byteLength,
+        written,
+        needed,
+      );
+    } catch {
+      return { ok: false, reason: "planner-failed", detail: "call-threw" };
+    }
     if (status === STATUS_OK) {
-      return JSON.parse(decoder.decode(out.subarray(0, written[0]))) as CompactionPlan;
+      try {
+        const plan = JSON.parse(decoder.decode(out.subarray(0, written[0]))) as CompactionPlan;
+        if (!isUsableCompactionPlan(plan, messages.length)) {
+          return { ok: false, reason: "planner-failed", detail: "invalid-plan" };
+        }
+        return { ok: true, plan };
+      } catch {
+        return { ok: false, reason: "planner-failed", detail: "invalid-plan" };
+      }
     }
     if (status === STATUS_OUTPUT_TOO_SMALL) {
       cap = Math.max(needed[0]! + 64, cap * 2);
       continue;
     }
-    return null; // invalid args / unexpected — treat as "no plan"
+    // Bounded detail: a native status code, never a raw error string.
+    return { ok: false, reason: "planner-failed", detail: `status-${status}` };
   }
-  return null;
+  return { ok: false, reason: "planner-failed", detail: "capacity-exhausted" };
 }
 
 // ── Rollout persistence bridge ───────────────────────────────────────────────

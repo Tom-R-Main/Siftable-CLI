@@ -10,11 +10,17 @@ import { homedir } from "node:os";
 import { existsSync, rmSync } from "node:fs";
 import { createChatAgent } from "../agent-harness";
 import { rolloutPathForKey } from "../threadEngine";
+import {
+  InMemorySessionEventStore,
+  SessionInvariantError,
+  SessionKernel,
+} from "../agent-harness/framework/session";
 import type { AIAdapter } from "../agent-harness/framework/adapters/types";
 
 const KEY = `__sift_test_compact_${process.pid}`;
 const PATH = rolloutPathForKey(homedir(), KEY);
 const prevFlag = process.env.SIFT_CONTEXT_COMPACTION;
+const prevNative = process.env.SIFT_NATIVE;
 
 beforeAll(() => {
   process.env.SIFT_CONTEXT_COMPACTION = "1";
@@ -23,6 +29,8 @@ beforeAll(() => {
 afterAll(() => {
   if (prevFlag === undefined) delete process.env.SIFT_CONTEXT_COMPACTION;
   else process.env.SIFT_CONTEXT_COMPACTION = prevFlag;
+  if (prevNative === undefined) delete process.env.SIFT_NATIVE;
+  else process.env.SIFT_NATIVE = prevNative;
   if (existsSync(PATH)) rmSync(PATH);
 });
 
@@ -123,5 +131,114 @@ describe.serial("ChatAgent.compact() (manual /compact)", () => {
 
     await expect(compaction).rejects.toThrow("cancel compaction");
     expect(agent.getHistory()).toEqual(before);
+  });
+
+  it("journals planner degradation once per session when the native engine is disabled", async () => {
+    process.env.SIFT_NATIVE = "0";
+    try {
+      const store = new InMemorySessionEventStore();
+      const sessionId = `${KEY}_nonative`;
+      const agent = await createChatAgent({
+        name: "t",
+        adapter: mockAdapter(),
+        persistKey: `${KEY}_nonative`,
+        session: { id: sessionId, store },
+        memory: false,
+        tools: [],
+      });
+      for (let i = 0; i < 5; i += 1) await agent.chat(`question ${i}`);
+      // Auto-compaction already attempted a plan (history reached 8 messages);
+      // these manual calls must not journal the degradation again.
+      const outcome = await agent.compact({ force: true });
+      expect(outcome.ran).toBe(false);
+      expect(outcome.reason).toContain("native-disabled");
+      await agent.compact({ force: true });
+
+      const journal = store.read(sessionId);
+      const unavailable = journal.filter((e) => e.type === "compaction/planner-unavailable");
+      expect(unavailable).toHaveLength(1);
+      const event = unavailable[0]!;
+      if (event.type !== "compaction/planner-unavailable") throw new Error("unexpected event type");
+      expect(event.data.reason).toBe("native-disabled");
+      expect(event.correlationId).toBeTruthy();
+      expect(event.turnId).toBeUndefined();
+      expect(event.stepId).toBeUndefined();
+
+      // The journal replays cleanly: a fresh kernel validates every event.
+      const reopened = new SessionKernel({ sessionId, store: new InMemorySessionEventStore(journal) });
+      expect(reopened.getEvents()).toEqual(journal);
+    } finally {
+      delete process.env.SIFT_NATIVE;
+    }
+  });
+
+  it("stays silent when a reopened session already journaled the degradation", async () => {
+    process.env.SIFT_NATIVE = "0";
+    try {
+      const sessionId = `${KEY}_reopened`;
+      const store = new InMemorySessionEventStore();
+      new SessionKernel({ sessionId, store }).append({
+        type: "compaction/planner-unavailable",
+        data: { reason: "native-disabled" },
+        correlationId: "seed",
+      });
+      const agent = await createChatAgent({
+        name: "t",
+        adapter: mockAdapter(),
+        persistKey: `${KEY}_reopened`,
+        session: { id: sessionId, store },
+        memory: false,
+        tools: [],
+      });
+      for (let i = 0; i < 5; i += 1) await agent.chat(`question ${i}`);
+      await agent.compact({ force: true });
+      const unavailable = store.read(sessionId).filter((e) => e.type === "compaction/planner-unavailable");
+      expect(unavailable).toHaveLength(1);
+    } finally {
+      delete process.env.SIFT_NATIVE;
+    }
+  });
+
+  it("retries the journal event when the first append fails", async () => {
+    process.env.SIFT_NATIVE = "0";
+    try {
+      const sessionId = `${KEY}_retry`;
+      const store = new InMemorySessionEventStore();
+      const agent = await createChatAgent({
+        name: "t",
+        adapter: mockAdapter(),
+        persistKey: `${KEY}_retry`,
+        session: { id: sessionId, store },
+        memory: false,
+        tools: [],
+      });
+      // Seed a short history (stays within budget, so no auto-compaction notes yet).
+      await agent.chat("seed one");
+      await agent.chat("seed two");
+      const append = store.append.bind(store);
+      store.append = () => { throw new Error("journal locked"); };
+      const failed = await agent.compact({ force: true });
+      expect(failed.ran).toBe(false);
+      expect(store.read(sessionId).filter((e) => e.type === "compaction/planner-unavailable")).toHaveLength(0);
+      store.append = append;
+      await agent.compact({ force: true });
+      expect(store.read(sessionId).filter((e) => e.type === "compaction/planner-unavailable")).toHaveLength(1);
+    } finally {
+      delete process.env.SIFT_NATIVE;
+    }
+  });
+
+  it("rejects a malformed planner-unavailable journal event", () => {
+    const kernel = new SessionKernel({ sessionId: `${KEY}_schema`, store: new InMemorySessionEventStore() });
+    expect(() => kernel.append({
+      type: "compaction/planner-unavailable",
+      data: { reason: "bogus" } as never,
+      correlationId: "x",
+    })).toThrow(SessionInvariantError);
+    expect(() => kernel.append({
+      type: "compaction/planner-unavailable",
+      data: { reason: "native-missing", detail: "d".repeat(201) },
+      correlationId: "x",
+    })).toThrow(SessionInvariantError);
   });
 });

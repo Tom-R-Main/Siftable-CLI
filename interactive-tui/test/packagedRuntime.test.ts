@@ -11,7 +11,11 @@ import {
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 
-import {installStagedRuntime} from "../scripts/build-packaged-runtime.mjs";
+import {
+  installStagedRuntime,
+  nativeLibraryTargetFromProbe,
+  stageNativeEngineLibraries,
+} from "../scripts/build-packaged-runtime.mjs";
 
 const roots: string[] = [];
 
@@ -56,4 +60,65 @@ describe("packaged runtime installation", () => {
     expect(readFileSync(join(runtime, "marker.txt"), "utf8")).toBe("preserve me\n");
     expect(readdirSync(root)).toEqual(["runtime"]);
   });
+});
+
+describe("nativeLibraryTargetFromProbe", () => {
+  it("maps each native library format to its platform-arch key", () => {
+    const cases: Array<[string, string, string]> = [
+      ["Mach-O 64-bit dynamically linked shared library arm64", "libthread_engine.dylib", "darwin-arm64"],
+      ["Mach-O 64-bit dynamically linked shared library x86_64", "libthread_engine.dylib", "darwin-x64"],
+      ["ELF 64-bit LSB shared object, x86-64, version 1 (SYSV)", "libthread_engine.so", "linux-x64"],
+      ["ELF 64-bit LSB shared object, ARM aarch64, version 1 (SYSV)", "libthread_engine.so", "linux-arm64"],
+      ["PE32+ executable (DLL) (console) x86-64, for MS Windows", "libthread_engine.dll", "win32-x64"],
+      ["PE32+ executable (DLL) (console) Aarch64, for MS Windows", "libthread_engine.dll", "win32-arm64"],
+    ];
+    for (const [probe, filename, expected] of cases) {
+      expect(nativeLibraryTargetFromProbe(probe, filename), filename).toBe(expected);
+    }
+  });
+
+  it("rejects format/suffix mismatches and unidentifiable probes", () => {
+    expect(() => nativeLibraryTargetFromProbe("ELF 64-bit LSB shared object, x86-64", "libthread_engine.dylib")).toThrow();
+    expect(() => nativeLibraryTargetFromProbe("ASCII text", "libthread_engine.so")).toThrow();
+    expect(() => nativeLibraryTargetFromProbe("ELF 64-bit LSB shared object, i386", "libthread_engine.so")).toThrow();
+    expect(() => nativeLibraryTargetFromProbe("Mach-O 64-bit shared library arm64", "libthread_engine.bin")).toThrow();
+  });
+});
+
+describe("stageNativeEngineLibraries", () => {
+  it("fails when no thread_engine libraries exist", () => {
+    const root = temporaryRoot();
+    const nativeDir = join(root, "native");
+    const staged = join(root, "staged");
+    mkdirSync(nativeDir);
+    mkdirSync(staged);
+    writeFileSync(join(nativeDir, "unrelated.txt"), "not a library\n");
+
+    expect(() => stageNativeEngineLibraries(nativeDir, staged)).toThrow(/libthread_engine/u);
+    expect(readdirSync(staged)).toEqual([]);
+  });
+
+  // Requires a real library on disk so file(1) can identify it; skipped where
+  // the host natives were never built (e.g. a clean checkout without zig).
+  it.skipIf(!existsSync(join(__dirname, "..", "native", "libthread_engine.dylib"))
+    && !existsSync(join(__dirname, "..", "native", "libthread_engine.so")))(
+    "stages built libraries under platform-arch-keyed names", () => {
+      const root = temporaryRoot();
+      const staged = join(root, "staged");
+      mkdirSync(staged);
+
+      stageNativeEngineLibraries(join(__dirname, "..", "native"), staged);
+
+      const stagedNames = readdirSync(staged);
+      expect(stagedNames.length).toBeGreaterThan(0);
+      for (const name of stagedNames) {
+        expect(name).toMatch(/^libthread_engine\.(?:darwin|linux|win32)-(?:arm64|x64)\.(?:dylib|so|dll)$/u);
+      }
+      // The host platform's own key is always staged when the host lib exists.
+      const hostSuffix = process.platform === "darwin" ? "dylib" : process.platform === "win32" ? "dll" : "so";
+      if (existsSync(join(__dirname, "..", "native", `libthread_engine.${hostSuffix}`))) {
+        expect(stagedNames).toContain(`libthread_engine.${process.platform}-${process.arch}.${hostSuffix}`);
+      }
+    },
+  );
 });

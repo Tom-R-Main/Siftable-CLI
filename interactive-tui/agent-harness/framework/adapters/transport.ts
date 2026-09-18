@@ -38,6 +38,15 @@ export class ProviderIncompleteError extends Error {
   }
 }
 
+/** The provider stopped making progress. The generation outcome is unknown, so this is never replayed. */
+export class ProviderStallError extends Error {
+  readonly retryable = false;
+  constructor(readonly provider: string, readonly phase: "headers" | "body", readonly elapsedMs: number) {
+    super(`${provider} API stalled: no ${phase === "headers" ? "response headers" : "response data"} for ${elapsedMs}ms`);
+    this.name = "ProviderStallError";
+  }
+}
+
 export function reasoningOnlyTruncation(error: unknown): error is ProviderIncompleteError {
   return error instanceof ProviderIncompleteError && error.finishReason === "length" && !error.visibleOutput;
 }
@@ -87,16 +96,35 @@ export function providerTransport(config: Partial<AdapterConfig>, options: ChatO
   let terminalError: ProviderRequestError | undefined;
   const receipts: ProviderReceipt[] = [];
   const signal = options?.signal;
+  const provider = config.name ?? "Compatible API";
   const maxAttempts = bounded(config.retry?.maxAttempts, 3, 1, 5);
   const baseDelayMs = bounded(config.retry?.baseDelayMs, 500, 0, 60_000);
   const maxDelayMs = bounded(config.retry?.maxDelayMs, 30_000, 0, 300_000);
+  const headersMs = bounded(config.timeouts?.headersMs, 120_000, 0, 600_000);
+  const idleMs = bounded(config.timeouts?.idleMs, 60_000, 0, 600_000);
+  const random = config.randomImpl ?? Math.random;
+  // The request signal composes the caller's cancellation with the stall
+  // watchdogs. Caller aborts forward their own reason so cancellation stays
+  // authoritative; a stall aborts with a ProviderStallError while the caller
+  // signal stays quiet, which is what classifies the receipt as failed rather
+  // than cancelled. Composed by hand: the packaged CLI runs under Node and
+  // must not depend on AbortSignal.any.
+  const internal = new AbortController();
+  const forwardAbort = () => internal.abort(signal?.reason ?? new Error("Request cancelled"));
+  if (signal?.aborted) forwardAbort(); else signal?.addEventListener("abort", forwardAbort, { once: true });
+  const stall = (phase: "headers" | "body", elapsedMs: number): ProviderStallError => {
+    const error = new ProviderStallError(provider, phase, elapsedMs);
+    if (!internal.signal.aborted) internal.abort(error);
+    return error;
+  };
 
   function finish(data: unknown = latestData, outcome: ProviderReceipt["outcome"] = "completed") {
     if (settled) return;
     settled = true;
+    signal?.removeEventListener("abort", forwardAbort);
     const body = record(data);
     const receipt: ProviderReceipt = {
-      requestId, provider: config.name ?? "Compatible API", requestedModel: config.model ?? "unknown",
+      requestId, provider, requestedModel: config.model ?? "unknown",
       attempts, mode: lastResponse?.headers?.get("content-type")?.includes("text/event-stream") ? "streaming" : "buffered",
       outcome, ...(lastResponse ? { status: lastResponse.status } : {}),
       ...(typeof body.model === "string" ? { servedModel: body.model } : {}),
@@ -122,25 +150,38 @@ export function providerTransport(config: Partial<AdapterConfig>, options: ChatO
       try {
         while (true) {
           signal?.throwIfAborted();
-          emit({ type: "provider.attempt", requestId, attempt: attempts + 1, provider: config.name ?? "Compatible API", requestedModel: config.model ?? "unknown", oneShot: options?.oneShot === true, mode: stream ? "streaming" : "buffered" });
+          emit({ type: "provider.attempt", requestId, attempt: attempts + 1, provider, requestedModel: config.model ?? "unknown", oneShot: options?.oneShot === true, mode: stream ? "streaming" : "buffered" });
           signal?.throwIfAborted();
           attempts += 1;
-          // Only explicit HTTP rejection is retried. Network failures and interrupted
-          // successful streams have unknown generation outcomes and are never replayed.
+          // Only explicit HTTP rejection is retried. Network failures, stalls and
+          // interrupted successful streams have unknown generation outcomes and are
+          // never replayed: missing headers do not prove generation never started —
+          // a buffered or proxied provider may already be generating, and a retry
+          // would risk duplicate side effects.
           lastResponse = undefined;
-          lastResponse = await (config.fetchImpl ?? fetch)(url, { ...init, signal, redirect: "error" });
+          const headerTimer = headersMs > 0 ? setTimeout(() => stall("headers", headersMs), headersMs) : undefined;
+          try {
+            lastResponse = await (config.fetchImpl ?? fetch)(url, { ...init, signal: internal.signal, redirect: "error" });
+          } finally {
+            clearTimeout(headerTimer);
+          }
           signal?.throwIfAborted();
+          internal.signal.throwIfAborted();
           terminalError = terminalGatewayError(lastResponse);
           if (terminalError) {
             await lastResponse.body?.cancel().catch(() => {});
             signal?.throwIfAborted();
             throw terminalError;
           }
-          if (lastResponse.status !== 429 && ![500, 502, 503, 504, 529].includes(lastResponse.status)) return lastResponse;
-          if (attempts >= maxAttempts) return lastResponse;
+          const retryable = lastResponse.status === 429 || [500, 502, 503, 504, 529].includes(lastResponse.status);
+          if (!retryable || attempts >= maxAttempts) return (lastResponse = withIdleWatchdog(lastResponse, idleMs, (elapsed) => stall("body", elapsed)));
           const headerDelay = retryAfterMs(lastResponse.headers?.get("retry-after"));
-          const delayMs = Math.max(headerDelay ?? 0, Math.min(maxDelayMs, baseDelayMs * 2 ** (attempts - 1)));
-          if (delayMs > maxDelayMs) return lastResponse;
+          // Jitter applies to the local backoff only; the server's Retry-After is a
+          // floor applied afterwards and can never be shortened by it.
+          const local = Math.min(maxDelayMs, baseDelayMs * 2 ** (attempts - 1));
+          const jittered = local === 0 ? 0 : Math.round(local / 2 + random() * (local / 2));
+          const delayMs = Math.max(headerDelay ?? 0, jittered);
+          if (delayMs > maxDelayMs) return (lastResponse = withIdleWatchdog(lastResponse, idleMs, (elapsed) => stall("body", elapsed)));
           await lastResponse.body?.cancel();
           emit({ type: "provider.retry", requestId, attempt: attempts, status: lastResponse.status, delayMs });
           await cancellableDelay(delayMs, signal);
@@ -152,6 +193,41 @@ export function providerTransport(config: Partial<AdapterConfig>, options: ChatO
       }
     },
   };
+}
+
+/**
+ * Idle watchdog over a response body. Pull-based so the timer runs only while a
+ * read is pending and is always cleared when that read settles; a stall cancels
+ * the upstream reader so the pending read rejects with the stall reason. Wraps
+ * every consumer uniformly: SSE framing, buffered `.json()`, and SDKs handed
+ * `transport.fetch` all see the same behavior.
+ */
+function withIdleWatchdog(response: Response, idleMs: number, onStall: (elapsedMs: number) => ProviderStallError): Response {
+  if (!response.body || idleMs <= 0) return response;
+  const reader = response.body.getReader();
+  let stalled: ProviderStallError | undefined;
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const timer = setTimeout(() => {
+        stalled = onStall(idleMs);
+        // Cancelling settles the pending read (as done, not rejected); the
+        // `stalled` flag turns that into the stall error below.
+        void reader.cancel(stalled).catch(() => {});
+      }, idleMs);
+      try {
+        const { done, value } = await reader.read();
+        if (stalled) controller.error(stalled);
+        else if (done) controller.close();
+        else controller.enqueue(value);
+      } catch (error) {
+        controller.error(stalled ?? error);
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+    cancel(reason) { return reader.cancel(reason).catch(() => {}); },
+  });
+  return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
 }
 
 function bounded(value: number | undefined, fallback: number, minimum: number, maximum: number): number {

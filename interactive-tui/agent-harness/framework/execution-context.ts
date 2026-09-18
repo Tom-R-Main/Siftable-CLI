@@ -13,6 +13,8 @@ export interface ToolExecutionContext {
   /** Original host cancellation signal, retained by explicitly long-lived jobs. */
   readonly lifetimeSignal?: AbortSignal;
   readonly approval?: Readonly<{ policy: 'ask' | 'deny' | 'allow'; scopeId: string }>;
+  /** Set by ToolRegistry.execute from the tool definition; handlers cannot widen it. */
+  readonly toolApproval?: 'required' | 'always';
   readonly onOutput?: (output: { stream: 'stdout' | 'stderr'; text: string }) => void;
 }
 

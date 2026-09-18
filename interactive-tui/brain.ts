@@ -134,6 +134,17 @@ function noninteractivePromptSuffix(): string {
   return noninteractivePromptBlock(policy);
 }
 
+/**
+ * Headless approval policy as a trusted execution binding. Drives the model's
+ * tool set (approval-gated tools are hidden under `deny`) and the registry's
+ * execution guard. Interactive sessions leave it unset: approvals prompt.
+ */
+function noninteractiveApproval(): {policy: 'allow' | 'deny'; scopeId: string} | undefined {
+  const policy = process.env.SIFT_AGENT_NONINTERACTIVE;
+  if (policy !== 'allow' && policy !== 'deny') return undefined;
+  return {policy, scopeId: sessionJournalIdForConversation(agentSessionKey())};
+}
+
 const LEAN_PROMPT =
   '# Role\n' +
   'You are the Siftable assistant in the user\'s terminal, a coding partner that works in the open. Identify yourself as the Siftable assistant, not a generic terminal copilot. ' +
@@ -207,6 +218,8 @@ interface AgentHarnessModule {
     modelResult?: typeof projectShellResult;
     /** Concurrency class for the harness tool scheduler; omitted = exclusive. */
     executionMode?: (args: Record<string, unknown>) => 'exclusive' | 'parallel-safe';
+    /** Approval the tool's effect requires; hidden/refused under a denying policy. */
+    approval?: 'required' | 'always';
   }) => unknown;
   ok: (data: unknown, message?: string) => unknown;
   err: (error: string) => unknown;
@@ -584,6 +597,7 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
 
   const runTerminalCommand = of.defineTool({
     name: 'run_terminal_command',
+    approval: 'required',
     modelResult: projectShellResult,
     description:
       "Run a shell command in the current sift interactive workdir after explicit user approval. For persistent directory changes, use change_directory or a plain `cd <path>` command; compound shell `cd` only affects that subprocess.",
@@ -624,6 +638,7 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
 
   const startProcessJob = of.defineTool({
     name: 'start_process_job',
+    approval: 'required',
     description: 'Start a session-owned background job after command approval. Keep the service in the foreground (do not append &). Returns a job ID, not a readiness guarantee. Jobs survive tool calls, but stop on cancellation, lifetime expiry, or host/session shutdown. They cannot be recovered after a host restart.',
     inputSchema: {type: 'object', properties: {
       command: {type: 'string'}, cwd: {type: 'string'},
@@ -985,6 +1000,7 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
 
   const writeFile = of.defineTool({
     name: 'write_file',
+    approval: 'required',
     description:
       "Create or overwrite a UTF-8 text file on the user's machine. Requires interactive user approval and is restricted to the current workspace. Writes are atomic (temp file + rename). Read an existing file before overwriting it; stale observations are refused.",
     inputSchema: {
@@ -1034,6 +1050,7 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
 
   const editFile = of.defineTool({
     name: 'edit_file',
+    approval: 'required',
     description:
       "Replace an exact, unique string in a file in place. Requires interactive user approval and is restricted to the current workspace. The `old` text must appear exactly once; reads the file first and refuses ambiguous matches.",
     inputSchema: {
@@ -1274,6 +1291,7 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
 
   const mergeBranchTool = of.defineTool({
     name: 'merge_branch',
+    approval: 'always',
     description:
       'Land a ready child branch onto the base via squash-merge (mergeMaster lane E). REQUIRES interactive ' +
       'user approval — every land prompts. Re-runs the gate, squash-merges in the parent worktree, and ' +
@@ -1543,7 +1561,10 @@ export async function getAgent(): Promise<AgentHarnessAgent> {
         providers: process.env.SIFT_LOCAL_ONLY === '1' || !(process.env.SIFT_PAT || process.env.EXF_PAT) ? [] : ['siftable'],
         adapterConfig: { ...(currentBaseUrl ? {baseUrl: currentBaseUrl} : {}),
           ...(process.env.SIFT_AGENT_MAX_OUTPUT_TOKENS ? {maxOutputTokens: Number(process.env.SIFT_AGENT_MAX_OUTPUT_TOKENS)} : {}) },
-        executionContext: () => ({ workspaceRoot: getWorkspaceRoot() || getSessionCwd(), sessionCwd: getSessionCwd() }),
+        executionContext: () => {
+          const approval = noninteractiveApproval();
+          return { workspaceRoot: getWorkspaceRoot() || getSessionCwd(), sessionCwd: getSessionCwd(), ...(approval ? {approval} : {}) };
+        },
         tools: buildLocalTools(of),
         memory: false,
         maxToolRounds: Number(process.env.SIFT_AGENT_MAX_ROUNDS || 24),

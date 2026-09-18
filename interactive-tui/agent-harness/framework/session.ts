@@ -1,4 +1,5 @@
 import type {CandidateVerificationReceipt} from '../../candidateVerification';
+import type {CompactionPlanFailure} from '../../threadEngine';
 /**
  * Event-sourced session kernel for the Siftable agent harness.
  *
@@ -117,6 +118,16 @@ export interface SessionEventDataMap {
   "model/request-pruned": {reason: "preemptive" | "http-413"; beforeBytes: number; afterBytes: number; ceilingBytes: number; prunedCalls: number};
   /** A reasoning-only response hit the output cap and the same request is retried (CLI-045). */
   "model/incomplete-retry": {finishReason: string; attempt: number};
+  /**
+   * The compaction planner could not produce a plan — observable degradation,
+   * journaled at most once per session. `reason` is a bounded vocabulary owned
+   * by the thread-engine bridge; `detail` is a bounded code (e.g. a native
+   * status), never a raw loader error or path.
+   */
+  "compaction/planner-unavailable": {
+    reason: CompactionPlanFailure;
+    detail?: string;
+  };
   "model/request-prepared": ModelRequestSnapshot;
   "model/auxiliary-request-prepared": ModelRequestSnapshot & {purpose: "compaction"; input: ChatMessage[]; inputSha256: string};
   "model/provider-event": { event: Exclude<AdapterEvent, {type: "provider.text.delta"}> };
@@ -2426,6 +2437,7 @@ const EVENT_TYPES: ReadonlySet<string> = new Set<SessionEventType>([
   "settlement/user-directed",
   "model/request-pruned",
   "model/incomplete-retry",
+  "compaction/planner-unavailable",
   "model/request-prepared",
   "model/auxiliary-request-prepared",
   "model/provider-event",
@@ -2500,6 +2512,20 @@ function validateEventData(event: SessionEvent): void {
       const data = event.data;
       assertNonEmptyString(data.finishReason, "incomplete-retry finishReason");
       if (!Number.isSafeInteger(data.attempt) || data.attempt < 1) throw new SessionInvariantError("incomplete-retry attempt must be a positive integer");
+      break;
+    }
+    case "compaction/planner-unavailable": {
+      const data = event.data;
+      if (
+        data.reason !== "native-disabled"
+        && data.reason !== "native-missing"
+        && data.reason !== "native-load-failed"
+        && data.reason !== "planner-failed"
+      ) throw new SessionInvariantError("invalid planner-unavailable reason");
+      assertOptionalString(data.detail, "planner-unavailable detail");
+      if (data.detail !== undefined && data.detail.length > 200) {
+        throw new SessionInvariantError("planner-unavailable detail must be bounded");
+      }
       break;
     }
     case "settlement/user-directed": {

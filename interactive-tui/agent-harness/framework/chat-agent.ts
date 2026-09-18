@@ -52,6 +52,7 @@ import {
   estimateHistoryTokens,
   planCompaction,
   toPlanMessages,
+  type CompactionPlanFailure,
 } from "./compaction.js";
 import { appendTurn, loadHistory, persistEnabled, rolloutPathForThread } from "./rollout.js";
 import type { ConnectedProvider } from "./context.js";
@@ -257,6 +258,7 @@ export async function createChatAgent(
         ...(config.adapterConfig?.baseUrl ? {baseUrl: config.adapterConfig.baseUrl} : {}),
         ...(config.adapterConfig?.maxOutputTokens ? {maxOutputTokens: config.adapterConfig.maxOutputTokens} : {}),
         ...(config.adapterConfig?.retry ? {retry: {...config.adapterConfig.retry}} : {}),
+        ...(config.adapterConfig?.timeouts ? {timeouts: {...config.adapterConfig.timeouts}} : {}),
       },
     });
   } catch (error) {
@@ -333,6 +335,8 @@ class ChatAgentImpl implements ChatAgent {
   private rolloutPath?: string;
   private writeLegacyRollout = true;
   private seeded = false;
+  private plannerUnavailableNoted = false;
+  private contextWindowFallbackNoted = false;
 
   constructor(internals: ChatAgentInternals) {
     this.name = internals.name;
@@ -570,11 +574,17 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     if (!compactionEnabled()) return unchanged("compaction is disabled (SIFT_CONTEXT_COMPACTION=0)");
     if (history.length === 0) return unchanged("no conversation to compact yet");
 
-    const plan = planCompaction(toPlanMessages(history), {
-      ...buildCompactionConfig(this.model),
+    const config = buildCompactionConfig(this.model);
+    if (config.contextWindowSource === "fallback") this.noteContextWindowFallback();
+    const outcome = planCompaction(toPlanMessages(history), {
+      ...config,
       force,
     });
-    if (!plan) return unchanged("native thread engine unavailable — rebuild with scripts/build-native.sh");
+    if (outcome.ok === false) {
+      this.notePlannerUnavailable(outcome.reason, outcome.detail);
+      return unchanged(`compaction planner unavailable (${outcome.reason})`);
+    }
+    const plan = outcome.plan;
     if (!plan.needsCompaction) return unchanged("already within the context budget");
 
     let summaryText: string | null = null;
@@ -632,6 +642,47 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
       prunedMessages: plan.prune.length,
       summarized: summaryText != null && summarizeEnd > 0,
     };
+  }
+
+  /**
+   * Record planner degradation once per session. The journal event is the
+   * durable signal (it survives the packaged runtime's missing native
+   * library); stderr reaches the interactive user. Emitted pre-turn or between
+   * turns only, so it carries correlation context but no turn/step ids.
+   */
+  private notePlannerUnavailable(reason: CompactionPlanFailure, detail?: string): void {
+    if (this.plannerUnavailableNoted) return;
+    // Journal-derived state: a reopened session replays a prior event from the
+    // store, so a second agent on the same session stays silent too.
+    if (this.session.getEvents().some((event) => event.type === "compaction/planner-unavailable")) {
+      this.plannerUnavailableNoted = true;
+      return;
+    }
+    console.warn(`Compaction planner unavailable (${reason}) — context compaction is degraded this session`);
+    try {
+      this.session.append({
+        type: "compaction/planner-unavailable",
+        data: detail === undefined ? { reason } : { reason, detail },
+        correlationId: randomUUID(),
+      });
+    } catch {
+      // Journal unavailable — leave the flag unset so a later turn retries
+      // instead of suppressing the only durable signal forever.
+      return;
+    }
+    this.plannerUnavailableNoted = true;
+  }
+
+  /**
+   * Warn once per session when compaction budgets against the conservative
+   * fallback window because the model is unknown — stderr only (a resolved
+   * window is config, not degradation), but loud enough that a stale table
+   * entry is visible rather than silently under-budgeting.
+   */
+  private noteContextWindowFallback(): void {
+    if (this.contextWindowFallbackNoted) return;
+    this.contextWindowFallbackNoted = true;
+    console.warn(`Context window unknown for model ${JSON.stringify(this.model)} — compaction is using a conservative fallback; set SIFT_CONTEXT_WINDOW to override`);
   }
 
   private async acquireTurn(signal?: AbortSignal): Promise<() => void> {
@@ -1255,7 +1306,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
             ...suppliedExecution,
             ...(suppliedExecution.approval ? {approval: Object.freeze({...suppliedExecution.approval})} : {}),
           });
-          const requestRegistry = snapshotToolRegistry(this.registry);
+          const requestRegistry = snapshotToolRegistry(this.registry, executionSnapshot?.approval?.policy);
           const requestMessages = this.currentHistory();
           const toolSnapshot = this.modelToolSnapshot(requestRegistry);
           this.recordModelRequest(
@@ -2370,9 +2421,15 @@ function abortedTurnReason(signal: AbortSignal): string {
 }
 
 /** Bind the exact advertised definitions through one model request and its effects. */
-function snapshotToolRegistry(source: ToolRegistry): ToolRegistry {
+/**
+ * Per-request tool set. Under a denying approval policy, approval-gated tools
+ * are omitted so the model never sees them; the journaled request envelope and
+ * the adapter both read this snapshot, so the omission is durable evidence.
+ */
+function snapshotToolRegistry(source: ToolRegistry, policy?: "ask" | "deny" | "allow"): ToolRegistry {
   const snapshot = new ToolRegistry();
   for (const tool of source.getAll()) {
+    if (tool.approval && policy === "deny") continue;
     snapshot.register(Object.freeze({
       ...tool,
       inputSchema: snapshotJson(tool.inputSchema) as typeof tool.inputSchema,

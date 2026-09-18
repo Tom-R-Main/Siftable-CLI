@@ -60,6 +60,17 @@ export interface ToolDefinition<
    */
   executionMode?: (args: Record<string, unknown>) => "exclusive" | "parallel-safe";
 
+  /**
+   * Interactive approval this tool's effect requires. Host-declared, never
+   * model-supplied.
+   * - "required": needs user approval; hidden from the model and refused at
+   *   execution when the session approval policy is "deny".
+   * - "always": as "required", and additionally never satisfied by a
+   *   session-wide bypass or an "always allow" grant — the user is asked
+   *   every time.
+   */
+  approval?: "required" | "always";
+
   /** Optional tags for grouping/filtering (e.g. "productivity", "education") */
   tags?: string[];
 

@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import {tmpdir} from 'node:os';
-import {basename, dirname, isAbsolute, join, relative, resolve} from 'node:path';
+import {basename, dirname, extname, isAbsolute, join, relative, resolve} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import solidPlugin from '@opentui/solid/bun-plugin';
@@ -240,10 +240,53 @@ function copyRuntimeAssets(inputs, runtimeRoot) {
     cpSync(join(TUI_ROOT, directory), join(runtimeRoot, directory), {recursive: true});
   }
 
-  // Do not copy host-built Zig libraries or cell-render into this universal
-  // artifact. The bundled engines deliberately take their TypeScript/PATH
-  // fallbacks when no correctly keyed platform binary is present.
+  // Other Zig libraries and cell-render stay out of this universal artifact
+  // for now; only the thread engine is staged (see stageNativeEngineLibraries).
   copyDependencyLicenses(inputs, runtimeRoot);
+}
+
+/** Native engines staged into the universal runtime. Keep scoped. */
+const NATIVE_ENGINE_STAGING = Object.freeze(['thread_engine']);
+
+/**
+ * Map a native library's `file(1)` probe output to its <platform>-<arch> key.
+ * The probe (not the filename) is authoritative: a .so could be any linux arch.
+ */
+export function nativeLibraryTargetFromProbe(probe, filename) {
+  const suffix = extname(filename).slice(1);
+  const osBySuffix = suffix === 'dylib' ? 'darwin' : suffix === 'so' ? 'linux' : suffix === 'dll' ? 'win32' : null;
+  const osByFormat = probe.includes('Mach-O') ? 'darwin' : probe.includes('ELF') ? 'linux' : /PE32/u.test(probe) ? 'win32' : null;
+  if (osBySuffix === null || osByFormat === null || osBySuffix !== osByFormat) {
+    fail(`cannot identify native library format for ${filename} (probe: ${probe})`);
+  }
+  const arch = /aarch64|arm64/iu.test(probe) ? 'arm64' : /x86_64|x86-64/iu.test(probe) ? 'x64' : null;
+  if (arch === null) {
+    fail(`cannot identify native library architecture for ${filename} (probe: ${probe})`);
+  }
+  return `${osByFormat}-${arch}`;
+}
+
+/**
+ * Stage host- and cross-built thread-engine libraries into the runtime under
+ * platform-arch-keyed names (libthread_engine.<platform>-<arch>.<suffix>) that
+ * the bundled loader resolves. Missing libraries fail the build: shipping a
+ * native-free runtime silently disables compaction for every packaged user.
+ */
+export function stageNativeEngineLibraries(nativeRoot, stagedRoot) {
+  let staged = 0;
+  if (existsSync(nativeRoot)) {
+    for (const entry of readdirSync(nativeRoot)) {
+      const match = /^lib(.+)\.(dylib|so|dll)$/u.exec(entry);
+      if (match === null || !NATIVE_ENGINE_STAGING.includes(match[1])) continue;
+      const source = join(nativeRoot, entry);
+      const target = nativeLibraryTargetFromProbe(run('file', [source]).trim(), entry);
+      cpSync(source, join(stagedRoot, `lib${match[1]}.${target}.${match[2]}`));
+      staged += 1;
+    }
+  }
+  if (staged === 0) {
+    fail('no libthread_engine libraries found; run npm run native:build --workspace @siftable/cli (or npm run native:release) before packaging');
+  }
 }
 
 async function buildBundle(runtimeRoot) {
@@ -334,6 +377,7 @@ async function main() {
     const bundle = await buildBundle(stagedRoot);
     vendorPlatformPackages(tempRoot, stagedRoot);
     copyRuntimeAssets(bundle.inputs, stagedRoot);
+    stageNativeEngineLibraries(join(TUI_ROOT, 'native'), stagedRoot);
     writeFileSync(join(stagedRoot, 'bunfig.toml'), 'telemetry = false\n\n[install]\nauto = "disable"\n');
 
     const files = filesUnder(stagedRoot)

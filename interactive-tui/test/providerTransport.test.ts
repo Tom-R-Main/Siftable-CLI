@@ -3,7 +3,7 @@ import { createChatCompletionsAdapter, createOpenAIAdapter, createOpenRouterAdap
 import { createGeminiAdapter } from "../agent-harness/framework/adapters/gemini";
 import { createAnthropicAdapter } from "../agent-harness/framework/adapters/anthropic";
 import { createXAIAdapter } from "../agent-harness/framework/adapters/xai";
-import { compatibleBaseUrl, ProviderHttpError, ProviderIncompleteError, ProviderRequestError, retryAfterMs } from "../agent-harness/framework/adapters/transport";
+import { compatibleBaseUrl, ProviderHttpError, ProviderIncompleteError, ProviderRequestError, ProviderStallError, retryAfterMs } from "../agent-harness/framework/adapters/transport";
 import type { AdapterEvent, ChatMessage } from "../agent-harness/framework/adapters/types";
 import { ToolRegistry } from "../agent-harness/framework/registry";
 
@@ -193,6 +193,32 @@ describe("provider transport reliability", () => {
     await expect(client.chat(messages, registry)).rejects.toThrow("429");
     expect(calls).toBe(1);
     expect(events.some(event => event.type === "provider.retry")).toBe(false);
+  });
+
+  it("watches a declined-wait error body for stalls instead of hanging", async () => {
+    const events: AdapterEvent[] = [];
+    let calls = 0, cancelled = false;
+    const client = createXAIAdapter({
+      apiKey: "secret-never-log",
+      fetchImpl: (async () => {
+        calls++;
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) { controller.enqueue(new TextEncoder().encode('{"error":')); },
+          cancel() { cancelled = true; },
+        }), {
+          status: 429, headers: { "retry-after": "3600" },
+        });
+      }) as typeof fetch,
+      onEvent: event => events.push(event),
+      retry: { baseDelayMs: 0, maxDelayMs: 20 },
+      timeouts: { idleMs: 20 },
+    });
+    const error = await client.chat(messages, registry, { stream: false }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ProviderStallError);
+    expect(error).toMatchObject({ phase: "body" });
+    expect(calls).toBe(1);
+    expect(cancelled).toBe(true);
+    expect(events.filter(event => event.type === "provider.retry")).toHaveLength(0);
   });
 
   it("cancels a pending backoff without another HTTP request", async () => {
@@ -385,5 +411,100 @@ describe("provider transport reliability", () => {
     expect(events).toHaveLength(0);
     expect(perCall).toHaveLength(2);
     for (const url of ["https://user:secret@example.com/v1", "https://example.com/v1?key=secret", "file:///secret"]) expect(() => compatibleBaseUrl(url)).toThrow();
+  });
+
+  // A fetch that never answers but honors abort the way the real one does.
+  const hanging = (onCall?: () => void): typeof fetch => ((_url: unknown, init?: RequestInit) => new Promise((_, reject) => {
+    onCall?.();
+    init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+  })) as typeof fetch;
+  // A body that emits the given chunks then never closes; reports upstream cancellation.
+  const openEnded = (chunks: string[], contentType: string, onCancel: () => void, gapMs = 0) => new Response(new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const encoder = new TextEncoder();
+      for (const chunk of chunks) {
+        if (gapMs) await new Promise(resolve => setTimeout(resolve, gapMs));
+        controller.enqueue(encoder.encode(chunk));
+      }
+    },
+    cancel() { onCancel(); },
+  }), { headers: { "content-type": contentType } });
+
+  for (const stream of [true, false]) it(`fails a ${stream ? "streaming" : "buffered"} request whose headers never arrive, without retrying`, async () => {
+    const events: AdapterEvent[] = [];
+    let calls = 0;
+    const client = adapter(hanging(() => { calls++; }), events, { timeouts: { headersMs: 20 } });
+    const error = await client.chat(messages, registry, { stream }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ProviderStallError);
+    expect(error).toMatchObject({ phase: "headers", elapsedMs: 20, retryable: false });
+    expect(calls).toBe(1);
+    expect(events.filter(event => event.type === "provider.retry")).toHaveLength(0);
+    expect(events.at(-1)).toMatchObject({ type: "provider.response", receipt: { outcome: "failed", attempts: 1 } });
+  });
+
+  it("fails a streaming body that stops mid-generation and cancels the upstream reader", async () => {
+    const events: AdapterEvent[] = [];
+    let cancelled = false;
+    const client = adapter((async () => openEnded([`data: ${JSON.stringify({ choices: [{ delta: { content: "hi" } }] })}\r\n\r\n`], "text/event-stream", () => { cancelled = true; })) as typeof fetch, events, { timeouts: { idleMs: 20 } });
+    const error = await client.chat(messages, registry, { stream: true }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ProviderStallError);
+    expect(error).toMatchObject({ phase: "body", elapsedMs: 20 });
+    expect(events.find(event => event.type === "provider.text.delta")).toMatchObject({ delta: "hi" });
+    expect(events.at(-1)).toMatchObject({ type: "provider.response", receipt: { outcome: "failed", mode: "streaming" } });
+    expect(cancelled).toBe(true);
+  });
+
+  it("fails a buffered body that stops mid-transfer", async () => {
+    const events: AdapterEvent[] = [];
+    let cancelled = false;
+    const client = adapter((async () => openEnded(['{"id":'], "application/json", () => { cancelled = true; })) as typeof fetch, events, { timeouts: { idleMs: 20 } });
+    const error = await client.chat(messages, registry, { stream: false }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ProviderStallError);
+    expect(error).toMatchObject({ phase: "body" });
+    expect(events.at(-1)).toMatchObject({ type: "provider.response", receipt: { outcome: "failed", mode: "buffered" } });
+    expect(cancelled).toBe(true);
+  });
+
+  it("treats keepalive comments as progress so slow generations are not mistaken for stalls", async () => {
+    const events: AdapterEvent[] = [];
+    const chunks = [": keepalive\n\n", ": keepalive\n\n", ": keepalive\n\n", ": keepalive\n\n",
+      `data: ${JSON.stringify({ id: "r", choices: [{ delta: { content: "slow answer" }, finish_reason: "stop" }] })}\r\n\r\ndata: [DONE]\r\n\r\n`];
+    const client = adapter((async () => new Response(new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const encoder = new TextEncoder();
+        for (const chunk of chunks) { await new Promise(resolve => setTimeout(resolve, 10)); controller.enqueue(encoder.encode(chunk)); }
+        controller.close();
+      },
+    }), { headers: { "content-type": "text/event-stream" } })) as typeof fetch, events, { timeouts: { idleMs: 35 } });
+    const result = await client.chat(messages, registry, { stream: true });
+    expect(result.text).toBe("slow answer");
+    expect(events.at(-1)).toMatchObject({ type: "provider.response", receipt: { outcome: "completed" } });
+  });
+
+  it("clears both watchdogs after a completed request", async () => {
+    const events: AdapterEvent[] = [];
+    const client = adapter((async () => json(completion())) as typeof fetch, events, { timeouts: { headersMs: 20, idleMs: 20 } });
+    const result = await client.chat(messages, registry, { stream: false });
+    expect(result.text).toBe("hello");
+    const settled = events.length;
+    await new Promise(resolve => setTimeout(resolve, 60));
+    expect(events).toHaveLength(settled);
+    expect(events.at(-1)).toMatchObject({ type: "provider.response", receipt: { outcome: "completed" } });
+  });
+
+  it("jitters local backoff within [half, full] and never below the Retry-After floor", async () => {
+    const run = async (extra: Record<string, unknown>, retryAfter?: string) => {
+      const events: AdapterEvent[] = [];
+      let calls = 0;
+      const client = adapter((async () => ++calls === 1 ? json({}, 429, retryAfter ? { "retry-after": retryAfter } : {}) : json(completion())) as typeof fetch, events, { retry: { baseDelayMs: 20, maxDelayMs: 1000 }, ...extra });
+      await client.chat(messages, registry, { stream: false });
+      expect(calls).toBe(2);
+      return (events.find(event => event.type === "provider.retry") as { delayMs: number }).delayMs;
+    };
+    expect(await run({ randomImpl: () => 0 })).toBe(10);
+    expect(await run({ randomImpl: () => 0.999 })).toBe(20);
+    expect(await run({ randomImpl: () => 0.5 })).toBe(15);
+    // Server minimum wins over any jitter outcome.
+    expect(await run({ randomImpl: () => 0 }, "0.05")).toBe(50);
   });
 });

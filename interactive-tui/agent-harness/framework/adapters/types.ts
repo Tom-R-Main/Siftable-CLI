@@ -96,6 +96,14 @@ export interface AdapterRetryPolicy {
   maxDelayMs?: number;
 }
 
+/** Stall detection. A stall is never retried: the generation outcome is unknown. */
+export interface AdapterTimeoutPolicy {
+  /** Max wait from dispatch to response headers. Default 120_000; bounded to 600_000; 0 disables. */
+  headersMs?: number;
+  /** Max gap between body chunks, streaming or buffered. Default 60_000; bounded to 600_000; 0 disables. */
+  idleMs?: number;
+}
+
 /** Explicit, JSON-safe continuation state owned by the session journal. */
 export interface AdapterSessionState {
   /** Stable adapter protocol key, such as `openai.responses`. */
@@ -259,6 +267,9 @@ export interface AdapterConfig {
   /** Explicit output budget; omit to retain provider defaults. Integer 1–131072. */
   maxOutputTokens?: number;
   retry?: AdapterRetryPolicy;
+  timeouts?: AdapterTimeoutPolicy;
+  /** Uniform [0, 1) source for retry jitter; injectable for deterministic tests. */
+  randomImpl?: () => number;
   /** Default observer, including auxiliary calls. A per-call observer overrides it. */
   onEvent?: (event: AdapterEvent) => void;
   /** Display name (e.g. "Gemini", "OpenAI") */

@@ -762,6 +762,8 @@ export function createOpenRouterAdapter(config?: Partial<AdapterConfig>): AIAdap
     provider: !config?.baseUrl || compatibleBaseUrl(config.baseUrl) === "https://openrouter.ai/api/v1" ? openRouterProviderPriceCeiling(model) : undefined,
     maxOutputTokens: config?.maxOutputTokens,
     retry: config?.retry,
+    timeouts: config?.timeouts,
+    randomImpl: config?.randomImpl,
     onEvent: config?.onEvent,
     fetchImpl: config?.fetchImpl,
   });

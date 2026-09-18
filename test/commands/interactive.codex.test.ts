@@ -15,6 +15,7 @@ import {
   type InteractiveCommandContext,
 } from '../../interactive-tui/commands';
 import type {ControlTransport} from '../../interactive-tui/controlClient';
+import {resolveContextWindow} from '../../interactive-tui/modelLimits';
 import * as prefs from '../../interactive-tui/prefs';
 
 beforeEach(() => {
@@ -319,6 +320,32 @@ describe('model catalog + reasoning effort', () => {
       if (choice.defaultEffort) {
         expect(choice.reasoningEfforts).toContain(choice.defaultEffort);
       }
+    }
+  });
+
+  it('description context claims never exceed the resolved compaction window', () => {
+    // Prose like "1M context" is not authoritative — but it is user-facing, so
+    // a claim the shared limits table cannot honor is a defect either way:
+    // fix the table or fix the description. This asserts resolved >= claimed.
+    const claim = /(\d+(?:\.\d+)?)\s*([kKmM])\s*-?\s*context/i;
+    const mismatches: string[] = [];
+    for (const choice of INTERACTIVE_MODEL_CHOICES) {
+      const match = claim.exec(choice.description);
+      if (!match) continue;
+      const claimed = Number(match[1]) * (match[2]!.toLowerCase() === 'm' ? 1_000_000 : 1_000);
+      const resolution = resolveContextWindow(choice.model);
+      if (resolution.window < claimed) {
+        mismatches.push(`${choice.id} claims "${match[0]}" but resolves to ${resolution.window} (${resolution.source})`);
+      }
+    }
+    expect(mismatches).toEqual([]);
+  });
+
+  it('every catalogued model resolves a positive finite context window', () => {
+    for (const choice of INTERACTIVE_MODEL_CHOICES) {
+      const resolution = resolveContextWindow(choice.model);
+      expect(Number.isFinite(resolution.window)).toBe(true);
+      expect(resolution.window).toBeGreaterThan(0);
     }
   });
 

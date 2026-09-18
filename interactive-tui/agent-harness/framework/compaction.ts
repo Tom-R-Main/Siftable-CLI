@@ -7,9 +7,9 @@
  * into the planner's plain-text view, building the transcript handed to the
  * summarizer model, and the pure history rewrite that executes the plan.
  *
- * Native-only: when the Zig library is unavailable, planCompaction() returns
- * null and the caller skips compaction (degrading to today's no-compaction
- * behaviour). Codex is handled a layer up — the brain routes the `codex`
+ * Native-only: when the Zig library is unavailable, planCompaction() reports a
+ * structured failure and the caller journals the degradation (compaction is
+ * skipped). Codex is handled a layer up — the brain routes the `codex`
  * provider to its app-server sidecar and never constructs a ChatAgent, so this
  * code only ever runs for the Siftable agent-harness adapters.
  */
@@ -20,8 +20,16 @@ import {
   planCompaction,
   type CompactionConfig,
   type CompactionPlan,
+  type CompactionPlanFailure,
+  type CompactionPlanOutcome,
   type PlanMessage,
 } from "../../threadEngine";
+import {
+  CONTEXT_WINDOW_OVERRIDE_MAX,
+  parseContextWindowOverride,
+  resolveContextWindow,
+  type ContextWindowSource,
+} from "../../modelLimits";
 
 const PRUNE_PLACEHOLDER = "[earlier tool output cleared to free context]";
 
@@ -43,27 +51,24 @@ export function compactionEnabled(): boolean {
   return process.env.SIFT_CONTEXT_COMPACTION !== "0";
 }
 
-// Approximate provider context windows (tokens). Substring-matched against the
-// model id; SIFT_CONTEXT_WINDOW overrides. Conservative where a family varies.
-const MODEL_CONTEXT_WINDOWS: Array<[RegExp, number]> = [
-  [/gemini/i, 1_000_000],
-  [/claude/i, 200_000],
-  [/deepseek/i, 128_000],
-  [/gpt-?5|^gpt|o\d|codex/i, 256_000],
-];
-
-function contextWindowFor(modelId?: string): number {
-  const env = Number(process.env.SIFT_CONTEXT_WINDOW);
-  if (env > 0) return env;
-  if (modelId) {
-    for (const [re, w] of MODEL_CONTEXT_WINDOWS) if (re.test(modelId)) return w;
-  }
-  return 200_000;
-}
+// Context windows come from the shared modelLimits table (exact per-variant
+// entries, then family estimates, then a conservative fallback). The caller
+// sees `contextWindowSource` so a fallback answer stays observable rather than
+// masquerading as a model-specific one.
+let invalidOverrideWarned = false;
 
 /** Budget config; window is resolved per-model (SIFT_CONTEXT_WINDOW overrides). */
-export function buildCompactionConfig(modelId?: string): CompactionConfig {
-  const contextWindow = contextWindowFor(modelId);
+export function buildCompactionConfig(modelId?: string): CompactionConfig & { contextWindowSource: ContextWindowSource } {
+  const rawOverride = process.env.SIFT_CONTEXT_WINDOW;
+  const override = parseContextWindowOverride(rawOverride);
+  if (rawOverride !== undefined && rawOverride !== "" && override === null && !invalidOverrideWarned) {
+    invalidOverrideWarned = true;
+    console.warn(`Ignoring invalid SIFT_CONTEXT_WINDOW (${JSON.stringify(rawOverride)}) — expected a positive integer of ${CONTEXT_WINDOW_OVERRIDE_MAX} or less`);
+  }
+  const resolution = override !== null
+    ? { window: override, source: "override" as const }
+    : resolveContextWindow(modelId);
+  const contextWindow = resolution.window;
   // Reserve covers max output tokens + residual token-estimate drift. The Phase 4
   // punctuation-surcharge calibration eliminated the dangerous code under-count
   // (validated vs DeepSeek's real tokenizer: code went -13% -> ~0%), so the 32k
@@ -73,6 +78,7 @@ export function buildCompactionConfig(modelId?: string): CompactionConfig {
   const preserveRecentTokens = Math.min(8_000, Math.max(2_000, Math.floor(usable * 0.25)));
   return {
     contextWindow,
+    contextWindowSource: resolution.source,
     reserved,
     tailTurns: 2,
     preserveRecentTokens,
@@ -140,5 +146,5 @@ export function applyCompactionPlan(
   return next;
 }
 
-export type { CompactionPlan, CompactionConfig };
+export type { CompactionPlan, CompactionConfig, CompactionPlanOutcome, CompactionPlanFailure };
 export { planCompaction };

@@ -121,6 +121,11 @@ export class ToolRegistry {
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Tool execution cancelled', executionOutcome: 'failed' };
     }
+    // A denying session never dispatches an approval-gated tool. The model
+    // does not see these tools either; this is the execution-side guard.
+    if (tool.approval && context?.approval?.policy === "deny") {
+      return { success: false, error: `Tool "${name}" requires user approval, which this session does not permit`, executionOutcome: "failed" };
+    }
     const start = Date.now();
     let admitted = false;
     try {
@@ -130,7 +135,7 @@ export class ToolRegistry {
         return tool.handler(params, currentExecutionContext() ?? context);
       };
       const result = context
-        ? await withExecutionContext(context, invoke)
+        ? await withExecutionContext({ ...context, toolApproval: tool.approval }, invoke)
         : await invoke();
       const duration = Date.now() - start;
       // Returning from a handler does not prove its declared result survived

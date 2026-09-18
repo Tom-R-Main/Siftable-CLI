@@ -6,7 +6,7 @@ import { parseHeadlessOptions } from '../headless';
 import {SessionKernel, type SessionEvent} from '../agent-harness/framework/session';
 
 type Mode = 'source' | 'cli-source' | 'cli-packaged';
-type ProviderBody = {model: string; stream?: boolean; messages: Array<{role: string; content?: unknown}>};
+type ProviderBody = {model: string; stream?: boolean; messages: Array<{role: string; content?: unknown}>; tools?: Array<{function: {name: string}}>};
 const packageRoot = process.env.SIFT_TEST_CLI_PACKAGE_ROOT
   ? resolve(process.env.SIFT_TEST_CLI_PACKAGE_ROOT)
   : resolve(import.meta.dir, '../..');
@@ -21,7 +21,7 @@ function toolMessage(name: string, args: Record<string, unknown>, id: string) {
 
 async function fixture(
   respond: (body: ProviderBody, index: number) => Response | Promise<Response>,
-  check: (input: {root: string; bodies: ProviderBody[]; run: (options?: {mode?: Mode; args?: string[]; onStdout?: (text: string) => void; onStart?: (sendSignal: (signal: NodeJS.Signals) => void) => void; onControl?: (control: {write: (text: string) => void; end: () => void}) => void}) => Promise<{stdout: string; stderr: string; exit: number}>}) => Promise<void>,
+  check: (input: {root: string; bodies: ProviderBody[]; run: (options?: {mode?: Mode; args?: string[]; env?: Record<string, string>; onStdout?: (text: string) => void; onStart?: (sendSignal: (signal: NodeJS.Signals) => void) => void; onControl?: (control: {write: (text: string) => void; end: () => void}) => void}) => Promise<{stdout: string; stderr: string; exit: number}>}) => Promise<void>,
 ) {
   const root = await mkdtemp(join(tmpdir(), 'sift-headless-test-'));
   const bodies: ProviderBody[] = [];
@@ -31,7 +31,7 @@ async function fixture(
     return respond(body, bodies.length);
   }});
   try {
-    await check({root, bodies, run: async ({mode = 'source', args = [], onStdout, onStart, onControl} = {}) => {
+    await check({root, bodies, run: async ({mode = 'source', args = [], env: extraEnv = {}, onStdout, onStart, onControl} = {}) => {
       const node = process.env.SIFT_TEST_NODE || Bun.which('node');
       if (mode !== 'source' && !node) throw new Error('Node is required for public CLI parity tests.');
       const entry = mode === 'source'
@@ -46,6 +46,7 @@ async function fixture(
           META_API_KEY: 'fixture-key', SIFT_CONFIG_DIR: join(root, 'config'), EXF_CONFIG_DIR: join(root, 'legacy-config'),
           SIFT_INTERACTIVE_RUNTIME: mode === 'cli-packaged' ? 'packaged' : 'source',
           SIFT_SESSION_EVENT_ROOT: join(root, 'events'), SIFT_CONTEXT_COMPACTION: '0', SIFT_EXPLORER_MODE: 'off',
+          ...extraEnv,
         },
         stdin: onControl ? 'pipe' : 'ignore', stdout: 'pipe', stderr: 'pipe',
       });
@@ -234,6 +235,26 @@ describe('production headless brain', () => {
         expect(receipt.data).toMatchObject({stdout: 'stdout-marker', stderr: 'stderr-marker', exitCode: 1});
       });
     }, 15_000);
+
+    modeTest(`${mode}: staged native engine compacts resumed history`, async () => {
+      let turn = 0;
+      await fixture(body => {
+        turn += 1;
+        return completion(body, {role: 'assistant', content: `${'answer '.repeat(60)}${turn}`}, `turn-${turn}`);
+      }, async ({root, run}) => {
+        // Each invocation appends a completed turn to the same resumed session.
+        for (let index = 0; index < 4; index += 1) requireSuccess(await run({mode, args: ['--approval', 'allow']}));
+        // A window too small for the resumed history forces the pre-turn
+        // compaction pass; the packaged runtime must load its staged native
+        // engine rather than degrade silently.
+        const result = await run({mode, args: ['--approval', 'allow'], env: {SIFT_CONTEXT_COMPACTION: '1', SIFT_CONTEXT_WINDOW: '800'}});
+        requireSuccess(result);
+        const journalNames = (await readdir(join(root, 'events'))).filter(name => name.endsWith('.jsonl'));
+        const journal = jsonl(await readFile(join(root, 'events', journalNames[0]!), 'utf8'));
+        expect(journal.filter(event => event.type === 'compaction/planner-unavailable')).toHaveLength(0);
+        expect(journal.some(event => event.type === 'history/replaced' && event.data?.reason === 'compaction_applied')).toBe(true);
+      });
+    }, 30_000);
 
     modeTest(`${mode}: streamed text arrives before completion and prints exactly once`, async () => {
       let firstOutput!: () => void;
@@ -439,6 +460,20 @@ describe('production headless brain', () => {
         expect(result.stdout.trim().split('\n')).toHaveLength(1);
       });
     }, 15_000);
+
+    modeTest(`${mode}: denied approval hides mutating tools from the model`, async () => {
+      const gated = ['run_terminal_command', 'start_process_job', 'write_file', 'edit_file', 'merge_branch'];
+      const toolNames = (body: ProviderBody) => (body.tools ?? []).map(tool => tool.function.name);
+      await fixture(body => completion(body, {role: 'assistant', content: 'Read only.'}), async ({run, bodies}) => {
+        requireSuccess(await run({mode, args: ['--approval', 'deny']}));
+        expect(bodies).toHaveLength(1);
+        const denied = toolNames(bodies[0]!);
+        expect(denied.length).toBeGreaterThan(0);
+        expect(denied.filter(name => gated.includes(name))).toEqual([]);
+        requireSuccess(await run({mode, args: ['--approval', 'allow']}));
+        expect(toolNames(bodies[1]!)).toEqual(expect.arrayContaining(['write_file', 'edit_file', 'run_terminal_command']));
+      });
+    }, 30_000);
   }
 
   for (const args of [

@@ -290,8 +290,14 @@ function verifyPackagedInteractiveRuntime(files, shipped, problems) {
   if (unexpectedNodeModules.length) {
     problems.push(`interactive-tui/node_modules\n    dependency tree leaked into package (${unexpectedNodeModules.length} files)`);
   }
+  // The packaged runtime is universal but deliberately stages per-platform
+  // thread-engine libraries under platform-arch-keyed names
+  // (libthread_engine.<platform>-<arch>.<suffix>); the loader prefers the
+  // keyed name matching the current host. Only those exact names are allowed —
+  // every other host binary stays out of the universal package.
+  const keyedThreadEngine = /^interactive-tui\/runtime\/libthread_engine\.(?:darwin-(?:arm64|x64)\.dylib|linux-(?:arm64|x64)\.so|win32-(?:arm64|x64)\.dll)$/u;
   const hostArtifacts = files.filter((file) => (
-    /^interactive-tui\/runtime\/lib.*\.(?:dylib|so|dll)$/u.test(file)
+    (/^interactive-tui\/runtime\/lib.*\.(?:dylib|so|dll)$/u.test(file) && !keyedThreadEngine.test(file))
     || file === 'interactive-tui/runtime/native/cell-render'
     || /^interactive-tui\/native\/lib.*\.(?:dylib|so|dll)$/u.test(file)
     || file === 'interactive-tui/native/cell-render'

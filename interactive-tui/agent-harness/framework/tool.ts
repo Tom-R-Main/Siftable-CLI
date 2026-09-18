@@ -166,6 +166,12 @@ export function defineTool<
     );
   }
 
+  if (definition.approval !== undefined && definition.approval !== "required" && definition.approval !== "always") {
+    throw new Error(
+      `Tool "${definition.name}" approval must be "required" or "always" (or be omitted).`,
+    );
+  }
+
   return definition;
 }
 

@@ -18,10 +18,13 @@
  *
  * Safety invariant: if no UI is listening, `requestApproval` DENIES — an action
  * never proceeds without an explicit interactive approval. Once the user picks
- * "bypass", that invariant is intentionally lifted for the rest of the session.
+ * "bypass", that invariant is intentionally lifted for the rest of the session —
+ * except for requests with `allowBypass: false`, which keep prompting; tools
+ * declared `approval: "always"` are pinned that way by the registry.
  */
 import { randomUUID } from "node:crypto";
 import { assertExecutionActive, currentExecutionContext, type ToolExecutionContext } from './agent-harness/framework/execution-context';
+import { CommandGrants, tokenizeCommand } from './commandPolicy';
 
 export type ApprovalDecision = "deny" | "allow" | "always" | "bypass";
 
@@ -58,6 +61,8 @@ let listener: Listener | null = null;
 let cancellationListener: CancellationListener | null = null;
 let bypassing = false;
 const bypassScopes = new Set<string>();
+/** Session command-prefix grants recorded by "always allow" decisions. */
+export const commandGrants = new CommandGrants();
 const pending = new Map<string, PendingApproval>();
 
 function notifyCancellation(id: string): void {
@@ -90,7 +95,7 @@ export function isBypassing(): boolean {
  */
 export function requestApproval(spec: ConfirmSpec, signal?: AbortSignal): Promise<ApprovalDecision> {
   if (signal?.aborted) return Promise.resolve("deny");
-  if (spec.authorityScope ? bypassScopes.has(spec.authorityScope) : bypassing) return Promise.resolve("allow");
+  if (spec.allowBypass !== false && (spec.authorityScope ? bypassScopes.has(spec.authorityScope) : bypassing)) return Promise.resolve("allow");
   const activeListener = listener;
   if (!activeListener) return Promise.resolve("deny");
   const id = randomUUID();
@@ -158,6 +163,7 @@ export function pendingConfirmCount(): number {
 export function resetBypass(): void {
   bypassing = false;
   bypassScopes.clear();
+  commandGrants.clear();
 }
 
 // ── Boolean shims — the agent-harness write tools only care allow-vs-deny ────
@@ -166,11 +172,31 @@ export function resetBypass(): void {
 export async function requestConfirm(spec: ConfirmSpec, context: ToolExecutionContext | undefined = currentExecutionContext()): Promise<boolean> {
   try { assertExecutionActive(context); } catch { return false; }
   if (context?.approval?.policy === 'deny') return false;
-  if (context?.approval?.policy === 'allow') return true;
-  const decision = await requestApproval({ ...spec, authorityScope: context?.approval?.scopeId ?? context?.sessionId ?? spec.authorityScope }, context?.signal);
+  // Tools declared `approval: "always"` are pinned non-bypassable: compute the
+  // flag before the headless-allow shortcut so a noninteractive allow policy
+  // can never auto-approve a required prompt.
+  const always = context?.toolApproval === 'always';
+  if (context?.approval?.policy === 'allow' && !always) return true;
+  // An explicit host-authored scope wins over the session's, so a tool can pin
+  // its own scope (e.g. a vault) that a session-wide bypass never covers,
+  // regardless of the spec their handler passes.
+  const authorityScope = spec.authorityScope ?? context?.approval?.scopeId ?? context?.sessionId;
+  // "Always allow" for a command is a token-prefix grant on its argv. Only a
+  // single simple command qualifies; compound, redirected or expanding
+  // commands tokenize to null, are never granted, and prompt every time.
+  const argv = spec.kind === 'command' ? tokenizeCommand(spec.path) : null;
+  const grantable = !always && argv !== null && authorityScope !== undefined;
+  if (grantable && commandGrants.matches(authorityScope, argv)) return true;
+  const decision = await requestApproval({
+    ...spec,
+    ...(always ? { allowAlways: false, allowBypass: false } : spec.kind === 'command' && !grantable ? { allowAlways: false } : {}),
+    authorityScope,
+  }, context?.signal);
   try { assertExecutionActive(context); } catch { return false; }
+  if (decision === 'always' && grantable) commandGrants.grant(authorityScope, argv);
   return decision !== 'deny';
 }
+
 
 /** Boolean view of `resolveApproval` (true → allow, false → deny). */
 export function resolveConfirm(id: string, approved: boolean): void {
