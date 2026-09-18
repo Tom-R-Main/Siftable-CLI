@@ -18,6 +18,8 @@ export interface SiftPrefs {
   model?: { id: string; effort?: string };
   /** Last-applied Explorer settings (mode/model/budget). */
   explorer?: { mode: string; modelId: string; budget: string };
+  /** Model-picker favorites, as catalog ids, in the order they were starred. */
+  favorites?: string[];
 }
 
 let cache: SiftPrefs | null = null;

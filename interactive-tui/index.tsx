@@ -54,6 +54,7 @@ import {
   explorerModelChoices,
   modeUsesScoutModel,
   ensureExplorerProviderKey,
+  autoloadProviderKeysFromKeychain,
   restoreSavedModel,
   explorerSettingsSummary,
   runInteractiveCommand,
@@ -61,6 +62,10 @@ import {
   workItemEvidence,
   createHandoffWorkItem,
   INTERACTIVE_MODEL_CHOICES,
+  favoriteModelIds,
+  pickerLabelWidth,
+  pickerModelChoices,
+  toggleFavoriteModel,
   type CommandMessage,
   type ExplorerSettings,
 } from "./commands";
@@ -1114,14 +1119,15 @@ function App() {
     setCrewPicker(null);
     // Open on the currently active model when we can match it.
     const cur = model();
-    const found = INTERACTIVE_MODEL_CHOICES.findIndex((c) => c.model === cur || c.id === cur);
+    const list = pickerModelChoices();
+    const found = list.findIndex((c) => c.model === cur || c.id === cur);
     setPicker({ stage: "model", modelIdx: Math.max(0, found), effortIdx: 0 });
   }
 
   function pickerEnterModel() {
     const p = picker();
     if (!p) return;
-    const choice = INTERACTIVE_MODEL_CHOICES[p.modelIdx];
+    const choice = pickerModelChoices()[p.modelIdx];
     const efforts = choice.reasoningEfforts ?? [];
     if (!efforts.length) {
       void confirmPicker(choice, undefined);
@@ -1495,18 +1501,35 @@ function App() {
           return;
         }
         if (pk.stage === "model") {
+          const list = pickerModelChoices();
           if (key.name === "up") setPicker({ ...pk, modelIdx: Math.max(0, pk.modelIdx - 1) });
           else if (key.name === "down")
-            setPicker({ ...pk, modelIdx: Math.min(INTERACTIVE_MODEL_CHOICES.length - 1, pk.modelIdx + 1) });
+            setPicker({ ...pk, modelIdx: Math.min(list.length - 1, pk.modelIdx + 1) });
+          else if (key.sequence === "*") {
+            const choice = list[pk.modelIdx];
+            if (choice) {
+              const { added } = toggleFavoriteModel(choice.id);
+              playSound(added ? "toggleOn" : "toggleOff");
+              const next = pickerModelChoices();
+              setPicker({ ...pk, modelIdx: Math.max(0, next.findIndex((c) => c.id === choice.id)) });
+              push({
+                role: "system",
+                text: `${added ? "★" : "☆"} ${choice.label} ${added ? "added to" : "removed from"} favorites.`,
+              });
+            }
+          }
           else if (isEnter) pickerEnterModel();
           return;
         }
         // effort stage
-        const efforts = INTERACTIVE_MODEL_CHOICES[pk.modelIdx].reasoningEfforts ?? [];
+        const efforts = pickerModelChoices()[pk.modelIdx]?.reasoningEfforts ?? [];
         if (key.name === "left") setPicker({ ...pk, effortIdx: Math.max(0, pk.effortIdx - 1) });
         else if (key.name === "right")
           setPicker({ ...pk, effortIdx: Math.min(efforts.length - 1, pk.effortIdx + 1) });
-        else if (isEnter) void confirmPicker(INTERACTIVE_MODEL_CHOICES[pk.modelIdx], efforts[pk.effortIdx]);
+        else if (isEnter) {
+          const choice = pickerModelChoices()[pk.modelIdx];
+          if (choice) void confirmPicker(choice, efforts[pk.effortIdx]);
+        }
         return;
       }
 
@@ -1967,6 +1990,9 @@ function App() {
       const applied = applyExplorerSettings(prefs.explorer as ExplorerSettings);
       if (applied.ok) setExplorerSettings(prefs.explorer as ExplorerSettings);
     }
+    // Pick up provider keys remembered in the system keychain so a pasted
+    // `/key` survives restarts with no repaste and no prompts.
+    void autoloadProviderKeysFromKeychain();
     void restoreSavedModel(commandCtx()).then(() => void refreshState());
     void refreshState();
     void workRunController.recoverWorkRuns()
@@ -2221,8 +2247,8 @@ function App() {
 
       <Show when={picker()}>
         {(p) => {
-          const choice = () => INTERACTIVE_MODEL_CHOICES[p().modelIdx];
-          const efforts = () => choice().reasoningEfforts ?? [];
+          const choice = () => pickerModelChoices()[p().modelIdx];
+          const efforts = () => choice()?.reasoningEfforts ?? [];
           return (
             <box
               flexDirection="column"
@@ -2235,25 +2261,30 @@ function App() {
             >
               <text fg={theme.accentStrong} selectable={false}>
                 {p().stage === "model"
-                  ? "Select model    ↑/↓ navigate · Enter → reasoning · Esc cancel"
+                  ? "Select model    ↑/↓ navigate · Enter → reasoning · * favorite · Esc cancel"
                   : "Reasoning effort    ←/→ adjust · Enter confirm · Esc back"}
               </text>
-              <For each={INTERACTIVE_MODEL_CHOICES}>
-                {(c, i) => (
-                  <box
-                    width="100%"
-                    height={1}
-                    backgroundColor={i() === p().modelIdx ? theme.border : theme.bgMuted}
-                    flexDirection="row"
-                  >
-                    <text fg={i() === p().modelIdx ? theme.accentStrong : theme.muted} selectable={false}>
-                      {(i() === p().modelIdx ? "› " : "  ") +
-                        c.label.padEnd(26) +
-                        c.description +
-                        (c.model === model() || c.id === model() ? "  · current" : "")}
-                    </text>
-                  </box>
-                )}
+              <For each={pickerModelChoices()}>
+                {(c, i) => {
+                  const width = pickerLabelWidth();
+                  const starred = favoriteModelIds().includes(c.id);
+                  return (
+                    <box
+                      width="100%"
+                      height={1}
+                      backgroundColor={i() === p().modelIdx ? theme.border : theme.bgMuted}
+                      flexDirection="row"
+                    >
+                      <text fg={i() === p().modelIdx ? theme.accentStrong : theme.muted} selectable={false}>
+                        {(i() === p().modelIdx ? "› " : "  ") +
+                          (starred ? "★ " : "  ") +
+                          c.label.padEnd(width) +
+                          c.description +
+                          (c.model === model() || c.id === model() ? "  · current" : "")}
+                      </text>
+                    </box>
+                  );
+                }}
               </For>
               <Show when={p().stage === "effort"}>
                 <box flexDirection="row" paddingTop={1}>

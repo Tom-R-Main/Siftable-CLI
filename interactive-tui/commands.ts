@@ -8,6 +8,8 @@ import {SiftClient} from "@siftable/mcp-server/dist/exfClient.js";
 import {doneFallbackText, eventTextDelta, type CompactionReport, type ControlTransport, type RunningAgent} from "./controlClient";
 import {collectDailyReviewContext, collectGitRecapSummary, collectLocalGitSummary, type DailyReviewContext} from "../dist/lib/daily-review-context.js";
 import {loadPrefs, savePrefs} from "./prefs";
+import {retireBrainAgents} from "./brain";
+import {forgetProviderKey, recallProviderKey, rememberProviderKey} from "./providerKeychain";
 import {listCollabSessions, type CollabBranchSnapshot, type CollabSessionSnapshot} from "./collabEngine";
 import {runSiftCrew} from "./crewAdapter";
 import {
@@ -566,6 +568,39 @@ export function explorerModelChoices(): InteractiveModelChoice[] {
   return INTERACTIVE_MODEL_CHOICES.filter((choice) => choice.provider !== "codex");
 }
 
+/** Catalog ids the user starred in the model picker (persisted prefs). */
+export function favoriteModelIds(): string[] {
+  const raw = loadPrefs().favorites;
+  return Array.isArray(raw) ? raw.filter((id): id is string => typeof id === "string") : [];
+}
+
+/** Toggle a catalog id in favorites; returns the new list and what happened. */
+export function toggleFavoriteModel(id: string): { favorites: string[]; added: boolean } {
+  const current = favoriteModelIds();
+  const added = !current.includes(id);
+  const favorites = added ? [...current, id] : current.filter((entry) => entry !== id);
+  savePrefs({ favorites });
+  return { favorites, added };
+}
+
+/**
+ * Picker order: starred models first (catalog order), then everything else.
+ * The picker indexes into this array, so every model-stage lookup must use
+ * it instead of INTERACTIVE_MODEL_CHOICES directly.
+ */
+export function pickerModelChoices(): InteractiveModelChoice[] {
+  const favorites = new Set(favoriteModelIds());
+  const starred = INTERACTIVE_MODEL_CHOICES.filter((choice) => favorites.has(choice.id));
+  if (starred.length === 0) return INTERACTIVE_MODEL_CHOICES;
+  const rest = INTERACTIVE_MODEL_CHOICES.filter((choice) => !favorites.has(choice.id));
+  return [...starred, ...rest];
+}
+
+/** Label column width for picker rows: longest label plus breathing room. */
+export function pickerLabelWidth(): number {
+  return Math.max(...INTERACTIVE_MODEL_CHOICES.map((choice) => choice.label.length)) + 4;
+}
+
 export function explorerSettingsSummary(settings: ExplorerSettings): string {
   const model = explorerModelChoices().find((choice) => choice.id === settings.modelId);
   // Only surface the scout model when the mode actually uses it — otherwise it
@@ -701,6 +736,38 @@ function providerKeyEnv(provider: string): string {
 function choiceKeyEnv(choice: InteractiveModelChoice): string | null {
   if (choice.provider === "codex") return null;
   return choice.requiredEnv ?? providerKeyEnv(choice.provider);
+}
+
+/**
+ * Fill unset provider key env vars from the system keychain. Silent and
+ * best-effort: runs at startup and before model selection so a remembered
+ * `/key` survives restarts with no repaste and no prompts. Never throws,
+ * never surfaces values.
+ */
+export function autoloadProviderKeysFromKeychain(): string[] {
+  const loaded: string[] = [];
+  const envVars = new Set<string>(["MORPH_API_KEY"]);
+  for (const choice of INTERACTIVE_MODEL_CHOICES) {
+    const envVar = choiceKeyEnv(choice);
+    if (envVar) envVars.add(envVar);
+  }
+  for (const envVar of envVars) {
+    if (process.env[envVar]) continue;
+    // Aggregate startup budget: a locked or crawling keychain hangs every
+    // recall, so stop at the first slow call instead of stalling startup.
+    const started = Date.now();
+    try {
+      const secret = recallProviderKey(envVar);
+      if (secret) {
+        process.env[envVar] = secret;
+        loaded.push(envVar);
+      }
+    } catch {
+      /* locked keychain, missing backend — stay session-scoped */
+    }
+    if (Date.now() - started >= 1500) break;
+  }
+  return loaded;
 }
 
 /**
@@ -856,6 +923,10 @@ export async function applyModelChoice(
   // First-party providers need their own key in-env. Gate selection with a
   // clear hint instead of letting the first turn fail with a raw adapter error.
   const envVar = choiceKeyEnv(choice);
+  if (envVar && !process.env[envVar]) {
+    // A key remembered via `/key` on a previous launch unlocks silently here.
+    autoloadProviderKeysFromKeychain();
+  }
   if (envVar && !process.env[envVar]) {
     const hydrated = await hydrateProviderKeyFromVault(ctx, choice.provider, envVar);
     if (hydrated.ok) {
@@ -2419,8 +2490,8 @@ export const interactiveCommands: InteractiveCommand[] = [
   },
   {
     name: "key",
-    description: "add a model provider key",
-    usage: "<provider> <key>",
+    description: "add a model provider key (remembered in the system keychain)",
+    usage: "<provider> <key> | forget <provider> | vault <provider>",
     run: async (ctx, args) => {
       if (args[0] === "vault") {
         const provider = args[1];
@@ -2436,18 +2507,57 @@ export const interactiveCommands: InteractiveCommand[] = [
         ctx.push({role: "system", text: "usage: /key <provider> <key>  (e.g. /key openrouter sk-...)"});
         return;
       }
+      if (args[0] === "forget") {
+        const provider = args[1];
+        if (!provider) {
+          ctx.push({role: "system", text: "usage: /key forget <provider>"});
+          return;
+        }
+        const envVar = providerKeyEnv(provider);
+        delete process.env[envVar];
+        try {
+          forgetProviderKey(envVar);
+        } catch (err) {
+          // A refused deletion leaves the key stored (and autoload would
+          // restore it), so report failure instead of a false success.
+          ctx.push({role: "system", text: `/key forget failed: ${err instanceof Error ? err.message : String(err)}`});
+          return;
+        }
+        // Retire cached agents so no live session keeps using the old key;
+        // the next turn rebuilds against the environment and fails closed.
+        if (isBrainProvider(provider)) retireBrainAgents();
+        ctx.push({role: "system", text: `forgot ${provider} key for this session and the system keychain.`});
+        return;
+      }
       try {
         const provider = args[0];
         const secret = args.slice(1).join(" ");
+        const envVar = providerKeyEnv(provider);
         if (isBrainProvider(provider)) {
+          // Configure first: only persist a key the brain accepted, so a
+          // rejected key never lingers in the keychain after a failure.
           await ctx.client.config({provider, apiKey: secret});
-          ctx.push({role: "system", text: `stored ${provider} API key for this session. Model selection unchanged.`});
+          let rememberedSuffix = "";
+          try {
+            rememberProviderKey(envVar, secret);
+            rememberedSuffix = " Remembered in the system keychain for next time.";
+          } catch {
+            /* keychain unavailable — session-only, same as before */
+          }
+          ctx.push({role: "system", text: `stored ${provider} API key for this session. Model selection unchanged.${rememberedSuffix}`});
         } else {
           // Search-only providers (e.g. morph for warp-grep) aren't served by the
           // brain — set the env var directly instead of switching the brain to an
           // unknown provider.
-          process.env[providerKeyEnv(provider)] = secret;
-          ctx.push({role: "system", text: `stored ${provider} key as ${providerKeyEnv(provider)} for this session.`});
+          process.env[envVar] = secret;
+          let rememberedSuffix = "";
+          try {
+            rememberProviderKey(envVar, secret);
+            rememberedSuffix = " Remembered in the system keychain for next time.";
+          } catch {
+            /* keychain unavailable — session-only, same as before */
+          }
+          ctx.push({role: "system", text: `stored ${provider} key as ${envVar} for this session.${rememberedSuffix}`});
         }
       } catch (err) {
         ctx.push({role: "system", text: `/key failed: ${err instanceof Error ? err.message : String(err)}`});

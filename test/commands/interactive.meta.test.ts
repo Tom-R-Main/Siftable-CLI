@@ -1,6 +1,7 @@
 import {findModelChoice, modelSuggestions, restoreSavedModel, runInteractiveCommand, type InteractiveCommandContext} from '../../interactive-tui/commands';
 import {getBrainModel, setBrainModel} from '../../interactive-tui/brain';
 import * as prefs from '../../interactive-tui/prefs';
+import * as providerKeychain from '../../interactive-tui/providerKeychain';
 import {resolveAdapter} from '../../interactive-tui/agent-harness/framework/chat-agent-resolve';
 import {ToolRegistry} from '../../interactive-tui/agent-harness/framework/registry';
 
@@ -14,6 +15,11 @@ const originalOpenRouterKey = process.env.OPENROUTER_API_KEY;
 beforeEach(() => {
   jest.spyOn(prefs, 'loadPrefs').mockReturnValue({});
   jest.spyOn(prefs, 'savePrefs').mockImplementation(() => undefined);
+  // Keychain access stays hermetic: the spies keep remembered-key tests off
+  // the developer's real keychain (recall would otherwise find stored keys).
+  jest.spyOn(providerKeychain, 'recallProviderKey').mockReturnValue(null);
+  jest.spyOn(providerKeychain, 'rememberProviderKey').mockImplementation(() => undefined);
+  jest.spyOn(providerKeychain, 'forgetProviderKey').mockImplementation(() => undefined);
 });
 
 afterEach(() => {

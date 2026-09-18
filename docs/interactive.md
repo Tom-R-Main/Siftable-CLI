@@ -52,7 +52,7 @@ Type `/` to open the command menu (↑/↓ to choose, Enter/Tab to fill). Hidden
 |---------|---------|--------------|
 | `/model [id] [effort]` | `models` | Open the model picker, or select a model (and optional reasoning effort) directly |
 | `/codex [login\|on\|use\|off\|logout\|status]` | | Control the Codex (ChatGPT) engine; default subcommand is `status` |
-| `/key <provider> <key>` | | Store a provider API key for the current session; Vault plaintext hydration is retired |
+| `/key <provider> <key>` | | Store a provider API key for the session and remember it in the OS keychain so the next launch picks it up silently (`/key forget <provider>` removes it) |
 | `/login` | | Siftable device-code login from inside the TUI |
 | `/explorer` | `explore` | Open the repo Explorer picker (context-gathering backend) |
 
@@ -99,9 +99,9 @@ Git-native parent/child sessions, each in its own worktree.
 
 ## Models & engines
 
-The model picker (`/model`) is a two-stage overlay: choose a **model** (↑/↓), then a **reasoning effort** (←/→). Your choice persists to `~/.siftable/prefs.json` and is restored on the next launch.
+The model picker (`/model`) is a two-stage overlay: choose a **model** (↑/↓), then a **reasoning effort** (←/→). Press `*` on a model to star it as a favorite — starred models float to the top with a `★` marker. Your choice and favorites persist to `~/.siftable/prefs.json` and are restored on the next launch.
 
-**Muse Spark 1.3 Contributor** is available through the direct Meta adapter: `/model muse` (or `/model meta/muse-spark-1.3-contributor`). It requires `META_API_KEY`; `/key meta <key>` sets the key for this session. The selection is restored on the next launch.
+**Muse Spark 1.3 Contributor** is available through the direct Meta adapter: `/model muse` (or `/model meta/muse-spark-1.3-contributor`). It requires `META_API_KEY`; `/key meta <key>` sets the key and remembers it in the system keychain for the next launch. The selection is restored on the next launch.
 
 New installations start with **GPT-5.6 Sol through Codex**. A saved model selection takes precedence on subsequent launches, including a personal Muse selection.
 
@@ -115,7 +115,7 @@ The catalog includes:
 **Engine routing:**
 
 - **Codex** (`provider = codex`) drives the OpenAI `codex app-server` sidecar over JSON-RPC on stdio. Siftable does **not** own the OAuth — Codex manages ChatGPT sign-in; `/codex login` runs a device-code flow. Turns run in a `workspace-write` sandbox confined to the repo root with on-request approvals routed through the confirmation gate. Override the binary with `CODEX_BIN`.
-- **All other providers** (OpenRouter, Anthropic, Gemini, OpenAI, Meta) route through the bundled Siftable agent harness, which reads `<PROVIDER>_API_KEY` from the environment. `/key <provider> <key>` sets it for the session. Vault plaintext hydration is retired; capability-broker execution replaces that workflow.
+- **All other providers** (OpenRouter, Anthropic, Gemini, OpenAI, Meta) route through the bundled Siftable agent harness, which reads `<PROVIDER>_API_KEY` from the environment. `/key <provider> <key>` sets it for the session and remembers it in the OS keychain (macOS Keychain, Linux Secret Service); startup and model selection autoload remembered keys silently. Vault plaintext hydration is retired; capability-broker execution replaces that workflow.
 
 First-party provider keys: `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, or `<PROVIDER>_API_KEY` generically.
 
@@ -162,7 +162,7 @@ Overlays capture the keyboard first, so bindings are mode-specific.
 Standard readline editing (`←/→`, `Ctrl+A/E`, `Home/End`, `Ctrl+U/K/W`, word motions) works in the composer.
 
 **Slash menu:** `↑/↓` choose · `Enter`/`Tab` fill.
-**Model picker:** model stage `↑/↓` + `Enter`; effort stage `←/→` + `Enter`; `Esc` back.
+**Model picker:** model stage `↑/↓` + `Enter`, `*` favorite; effort stage `←/→` + `Enter`; `Esc` back.
 **Theme picker:** `↑/←` `↓/→` preview · `Enter` save · `Esc` revert.
 **Diagram viewer:** arrows or `h/j/k/l` pan · `PgUp/PgDn` page · `Home/0` `End/$` jump · `Esc`/`q` close.
 **Approval gate:** `y`/`Enter` allow once · `a` always · `b` bypass-all · `n`/`Esc` deny.
