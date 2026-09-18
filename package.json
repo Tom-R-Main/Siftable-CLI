@@ -240,7 +240,7 @@
     "@oclif/core": "^4",
     "@oclif/plugin-help": "^6",
     "@siftable/tabular-import": "^0.2.0",
-    "@siftable/mcp-server": "^1.5.0",
+    "@siftable/mcp-server": "^1.5.1",
     "yaml": "^2.8.2"
   },
   "devDependencies": {
