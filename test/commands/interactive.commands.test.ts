@@ -1,3 +1,5 @@
+jest.mock('../../interactive-tui/prefs', () => ({loadPrefs: jest.fn(() => ({})), savePrefs: jest.fn(() => true)}));
+
 import {
   applyModelChoice,
   applyExplorerSettings,
@@ -85,6 +87,8 @@ describe('interactive command registry', () => {
   });
 
   it('applies explorer settings to runtime environment without touching the main model', () => {
+    const previousApiKey = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
     const previousExplorer = process.env.SIFT_EXPLORER;
     const previousScout = process.env.SIFT_EXPLORER_SCOUT;
     const previousFanout = process.env.SIFT_EXPLORER_FANOUT;
@@ -115,6 +119,7 @@ describe('interactive command registry', () => {
       expect(process.env.SIFT_EXPLORER_BUDGET).toBe('cheap');
       expect(process.env.SIFT_EXPLORER_THOROUGHNESS).toBe('quick');
     } finally {
+      restoreEnv('OPENROUTER_API_KEY', previousApiKey);
       restoreEnv('SIFT_EXPLORER', previousExplorer);
       restoreEnv('SIFT_EXPLORER_SCOUT', previousScout);
       restoreEnv('SIFT_EXPLORER_FANOUT', previousFanout);
@@ -128,9 +133,10 @@ describe('interactive command registry', () => {
   });
 
   it('toggles warp-grep mode via SIFT_EXPLORER_WARPGREP and resets it for other modes', () => {
-    const keys = ['SIFT_EXPLORER', 'SIFT_EXPLORER_SCOUT', 'SIFT_EXPLORER_FANOUT', 'SIFT_EXPLORER_WARPGREP'];
+    const keys = ['OPENROUTER_API_KEY', 'SIFT_EXPLORER', 'SIFT_EXPLORER_SCOUT', 'SIFT_EXPLORER_FANOUT', 'SIFT_EXPLORER_WARPGREP'];
     const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
     try {
+      process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
       const warp = applyExplorerSettings({
         mode: 'warpgrep',
         modelId: DEFAULT_EXPLORER_SETTINGS.modelId,
@@ -612,5 +618,32 @@ describe('daily review context library', () => {
     ]);
     expect(context.localGit.skipped).toBe(true);
     expect((context.sources.workItems as any).workItems).toHaveLength(2);
+  });
+});
+
+
+describe('Explorer credential restoration', () => {
+  const keys = ['OPENROUTER_API_KEY', 'SIFT_EXPLORER', 'SIFT_EXPLORER_SCOUT', 'SIFT_EXPLORER_FANOUT', 'SIFT_EXPLORER_WARPGREP', 'SIFT_EXPLORER_PROVIDER', 'SIFT_EXPLORER_MODEL', 'SIFT_EXPLORER_SCOUT_PROVIDER', 'SIFT_EXPLORER_SCOUT_MODEL', 'SIFT_EXPLORER_BUDGET', 'SIFT_EXPLORER_THOROUGHNESS'];
+  let prior: Array<string | undefined>;
+  beforeEach(() => { prior = keys.map((key) => process.env[key]); delete process.env.OPENROUTER_API_KEY; });
+  afterEach(() => keys.forEach((key, index) => restoreEnv(key, prior[index])));
+
+  it.each(['off', 'auto', 'deterministic', 'warpgrep'] as const)('does not require the inactive scout credential for %s', (mode) => {
+    expect(applyExplorerSettings({...DEFAULT_EXPLORER_SETTINGS, mode}).ok).toBe(true);
+    expect(process.env.SIFT_EXPLORER_FANOUT).toBe('0');
+  });
+
+  it('retains intended restored fanout settings and reports unavailable credentials', () => {
+    const settings = {...DEFAULT_EXPLORER_SETTINGS, mode: 'fanout' as const};
+    expect(applyExplorerSettings(settings).ok).toBe(false);
+    const restored = applyExplorerSettings(settings, {allowUnavailableModel: true});
+    expect(restored.ok).toBe(true);
+    expect(restored.message).toContain('active model');
+    expect(process.env.SIFT_EXPLORER_FANOUT).toBe('1');
+    expect(process.env.SIFT_EXPLORER_PROVIDER).toBe('openrouter');
+  });
+
+  it('excludes the apply-only Morph model from scout selection', () => {
+    expect(explorerModelChoices().some((choice) => choice.model === 'morph/morph-v3-large')).toBe(false);
   });
 });

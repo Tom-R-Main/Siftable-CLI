@@ -27,7 +27,7 @@ export interface SseEvent {
   content?: string;
   text?: string;
   toolCall?: { name: string; args?: Record<string, unknown>; detail?: string; callId?: string };
-  toolResult?: { name: string; success?: boolean; executionOutcome?: "succeeded" | "failed" | "unknown"; output?: string; explorerActivity?: unknown; callId?: string };
+  toolResult?: { name: string; success?: boolean; executionOutcome?: "succeeded" | "failed" | "unknown"; output?: string; outputFormat?: "text"; explorerActivity?: unknown; callId?: string };
   message?: { content?: string };
   result?: { content?: string; text?: string } | unknown;
   error?: string;

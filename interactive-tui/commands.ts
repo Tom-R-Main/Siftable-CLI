@@ -209,6 +209,17 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     defaultEffort: "medium",
   },
   {
+    id: "codex/gpt-6-astra",
+    provider: "codex",
+    model: "gpt-6-astra",
+    label: "GPT-6 Astra",
+    description: "ChatGPT/Codex account · complex agentic work",
+    aliases: ["astra", "gpt-6", "gpt-6-astra"],
+    auth: "codex",
+    reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    defaultEffort: "low",
+  },
+  {
     id: "codex/gpt-5.6-terra",
     provider: "codex",
     model: "gpt-5.6-terra",
@@ -265,6 +276,37 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     keyHint: "/key anthropic <key>",
     reasoningEfforts: CLAUDE_EFFORTS,
     defaultEffort: "high",
+  },
+  {
+    // Meta documents max reasoning for the standard tier only:
+    // https://dev.meta.ai/docs/reasoning
+    id: "meta/muse-spark-1.3",
+    provider: "meta",
+    model: "muse-spark-1.3",
+    label: "Muse Spark 1.3",
+    description: "direct Meta API · standard tier",
+    aliases: ["muse", "spark", "muse-spark", "muse-spark-1.3", "meta"],
+    auth: "api-key",
+    requiredEnv: "META_API_KEY",
+    keyHint: "/key meta <key>",
+    reasoningEfforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
+  },
+  {
+    id: "meta/muse-spark-1.3-contributor",
+    provider: "meta",
+    model: "muse-spark-1.3-contributor",
+    label: "Muse Spark 1.3 Contributor",
+    description: "direct Meta API · contributor tier",
+    aliases: [
+      "muse-contributor",
+      "spark-contributor",
+      "muse-spark-1.3-contributor",
+      "meta/muse-spark-1.3-contributor",
+    ],
+    auth: "api-key",
+    requiredEnv: "META_API_KEY",
+    keyHint: "/key meta <key>",
+    reasoningEfforts: ["minimal", "low", "medium", "high", "xhigh"],
   },
   {
     id: "openrouter/x-ai/grok-4.6",
@@ -505,17 +547,6 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     reasoningEfforts: GPT5_EFFORTS,
     defaultEffort: "low",
   },
-  {
-    id: "meta/muse-spark-1.3-contributor",
-    provider: "meta",
-    model: "muse-spark-1.3-contributor",
-    label: "Muse Spark 1.3 Contributor",
-    description: "direct Meta API",
-    aliases: ["muse", "muse-spark", "muse-spark-1.3", "muse-spark-1.3-contributor"],
-    auth: "api-key",
-    requiredEnv: "META_API_KEY",
-    keyHint: "/key meta <key>",
-  },
   // ── Specialized (not general chat brains) ──
   {
     id: "openrouter/morph/morph-v3-large",
@@ -565,7 +596,7 @@ export const DEFAULT_EXPLORER_SETTINGS: ExplorerSettings = {
 };
 
 export function explorerModelChoices(): InteractiveModelChoice[] {
-  return INTERACTIVE_MODEL_CHOICES.filter((choice) => choice.provider !== "codex");
+  return INTERACTIVE_MODEL_CHOICES.filter((choice) => choice.provider !== "codex" && choice.model !== "morph/morph-v3-large");
 }
 
 /** Catalog ids the user starred in the model picker (persisted prefs). */
@@ -575,12 +606,12 @@ export function favoriteModelIds(): string[] {
 }
 
 /** Toggle a catalog id in favorites; returns the new list and what happened. */
-export function toggleFavoriteModel(id: string): { favorites: string[]; added: boolean } {
+export function toggleFavoriteModel(id: string): { favorites: string[]; added: boolean; saved: boolean } {
   const current = favoriteModelIds();
   const added = !current.includes(id);
   const favorites = added ? [...current, id] : current.filter((entry) => entry !== id);
-  savePrefs({ favorites });
-  return { favorites, added };
+  const saved = savePrefs({ favorites });
+  return { favorites: saved ? favorites : current, added, saved };
 }
 
 /**
@@ -810,11 +841,16 @@ export async function ensureExplorerProviderKey(ctx: InteractiveCommandContext):
   return null;
 }
 
-export function applyExplorerSettings(settings: ExplorerSettings): {ok: boolean; message: string} {
+export function applyExplorerSettings(
+  settings: ExplorerSettings,
+  options: {allowUnavailableModel?: boolean} = {},
+): {ok: boolean; message: string} {
   const model = explorerModelChoices().find((choice) => choice.id === settings.modelId);
   if (!model) return {ok: false, message: `Explorer model not found: ${settings.modelId}`};
-  const keyMessage = missingKeyMessage(model);
-  if (keyMessage) return {ok: false, message: keyMessage};
+  const keyMessage = modeUsesScoutModel(settings.mode)
+    ? missingKeyMessage({...model, requiredEnv: choiceKeyEnv(model) ?? undefined})
+    : null;
+  if (keyMessage && !options.allowUnavailableModel) return {ok: false, message: keyMessage};
 
   process.env.SIFT_EXPLORER_BUDGET = settings.budget;
   process.env.SIFT_EXPLORER_THOROUGHNESS = settings.budget === "cheap" ? "quick" : settings.budget === "deep" ? "deep" : "medium";
@@ -852,8 +888,10 @@ export function applyExplorerSettings(settings: ExplorerSettings): {ok: boolean;
     process.env.SIFT_EXPLORER_FANOUT = "0";
   }
 
-  savePrefs({explorer: {mode: settings.mode, modelId: settings.modelId, budget: settings.budget}});
-  return {ok: true, message: `Explorer -> ${explorerSettingsSummary(settings)}`};
+  if (!options.allowUnavailableModel) savePrefs({explorer: {mode: settings.mode, modelId: settings.modelId, budget: settings.budget}});
+  return {ok: true, message: keyMessage
+    ? `Explorer: ${keyMessage} Scouts will use the active model when its provider is available.`
+    : `Explorer -> ${explorerSettingsSummary(settings)}`};
 }
 
 /** Persist the selected brain model so it survives a restart. */
@@ -2435,7 +2473,7 @@ export const interactiveCommands: InteractiveCommand[] = [
     usage: "[id] [effort]",
     run: async (ctx, args) => {
       // Allow a trailing effort token: `/model gpt-5.4-mini high`.
-      const KNOWN_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+      const KNOWN_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
       let effort: string | undefined;
       let parts = [...args];
       if (parts.length >= 2 && KNOWN_EFFORTS.has(parts[parts.length - 1].toLowerCase())) {
@@ -2452,6 +2490,14 @@ export const interactiveCommands: InteractiveCommand[] = [
             `Known models:\n${lines.join("\n")}\n` +
             `Or type one directly: /model <id> [effort].`,
         });
+        return;
+      }
+      const choice = resolveModelChoice(id);
+      if (effort && choice && !choice.reasoningEfforts?.includes(effort)) {
+        const supported = choice.reasoningEfforts?.length
+          ? `Supported efforts: ${choice.reasoningEfforts.join(", ")}.`
+          : "This model does not offer configurable reasoning effort.";
+        ctx.push({ role: "system", text: `${choice.label} does not support reasoning effort "${effort}". ${supported}` });
         return;
       }
       await selectModel(ctx, id, effort);

@@ -32,3 +32,7 @@ declare module "bun:ffi" {
     close(): void;
   };
 }
+
+declare module "bun" {
+  export function stringWidth(text: string): number;
+}

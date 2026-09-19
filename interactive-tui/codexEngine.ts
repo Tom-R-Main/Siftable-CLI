@@ -805,7 +805,7 @@ export function mapCodexNotification(
         toolResult: {
           name,
           success,
-          ...(output ? { output } : {}),
+          ...(output ? { output, ...(item.type === 'commandExecution' ? { outputFormat: 'text' as const } : {}) } : {}),
           ...(callId ? { callId } : {}),
         },
       };
@@ -867,8 +867,8 @@ export async function ensureThread(c: CodexClient, model?: string): Promise<stri
  * back as {error} so the TUI renders a degraded state). The thread is reused
  * across calls so the conversation keeps context within the session.
  */
-/** Reasoning efforts Codex accepts on a turn. GPT-5.6 adds `max`; `none`/`minimal` map to omitting it. */
-const CODEX_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+/** Catalogued Codex efforts; Astra also supports ultra. */
+const CODEX_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 
 export function isCodexReasoningEffort(effort: string | undefined): effort is string {
   return typeof effort === 'string' && CODEX_EFFORTS.has(effort);

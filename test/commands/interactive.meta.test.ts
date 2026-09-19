@@ -14,7 +14,7 @@ const originalOpenRouterKey = process.env.OPENROUTER_API_KEY;
 
 beforeEach(() => {
   jest.spyOn(prefs, 'loadPrefs').mockReturnValue({});
-  jest.spyOn(prefs, 'savePrefs').mockImplementation(() => undefined);
+  jest.spyOn(prefs, 'savePrefs').mockReturnValue(true);
   // Keychain access stays hermetic: the spies keep remembered-key tests off
   // the developer's real keychain (recall would otherwise find stored keys).
   jest.spyOn(providerKeychain, 'recallProviderKey').mockReturnValue(null);
@@ -41,7 +41,7 @@ function context() {
 
 describe('direct Meta Muse model selection', () => {
   it('exposes the exact model and aliases in the picker', () => {
-    for (const alias of [id, model, 'meta', 'muse', 'muse-spark', 'muse-spark-1.3']) {
+    for (const alias of [id, model, 'muse-contributor', 'spark-contributor']) {
       expect(findModelChoice(alias)).toMatchObject({id, provider: 'meta', model, requiredEnv: 'META_API_KEY'});
     }
     expect(modelSuggestions('muse')).toContainEqual(expect.objectContaining({id, label: 'Muse Spark 1.3 Contributor'}));
@@ -50,7 +50,7 @@ describe('direct Meta Muse model selection', () => {
   it('selects and persists the Meta route with its own key', async () => {
     process.env.META_API_KEY = 'fixture-meta-key';
     const {ctx, config} = context();
-    await runInteractiveCommand(ctx, '/model muse');
+    await runInteractiveCommand(ctx, '/model muse-contributor');
     expect(config).toHaveBeenCalledWith({provider: 'meta', model, effort: ''});
     expect(prefs.savePrefs).toHaveBeenCalledWith({model: {id}});
   });
@@ -81,7 +81,7 @@ describe('direct Meta Muse model selection', () => {
       setBrainModel(initial);
       try {
         if (provider === 'meta') {
-          await runInteractiveCommand(ctx, '/model muse');
+          await runInteractiveCommand(ctx, '/model muse-contributor');
           expect(config).not.toHaveBeenCalled();
         }
         await runInteractiveCommand(ctx, `/key ${provider} fixture-provider-key`);
@@ -89,7 +89,7 @@ describe('direct Meta Muse model selection', () => {
         expect(process.env[`${provider.toUpperCase()}_API_KEY`]).toBe('fixture-provider-key');
         expect(JSON.stringify(push.mock.calls)).not.toContain('fixture-provider-key');
         if (provider === 'meta') {
-          await runInteractiveCommand(ctx, '/model muse');
+          await runInteractiveCommand(ctx, '/model muse-contributor');
           expect(getBrainModel()).toEqual({provider: 'meta', model, effort: undefined});
         }
       } finally {
@@ -126,7 +126,7 @@ describe('direct Meta Muse model selection', () => {
       config.mockImplementation(async input => setBrainModel(input));
       setBrainModel({provider: 'codex', model: 'gpt-5.6-sol', effort: 'xhigh'});
       try {
-        if (selection === 'command') await runInteractiveCommand(ctx, '/model muse');
+        if (selection === 'command') await runInteractiveCommand(ctx, '/model muse-contributor');
         else {
           jest.mocked(prefs.loadPrefs).mockReturnValueOnce({model: {id}});
           await restoreSavedModel(ctx);

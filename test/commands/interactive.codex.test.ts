@@ -20,7 +20,7 @@ import * as prefs from '../../interactive-tui/prefs';
 
 beforeEach(() => {
   jest.spyOn(prefs, 'loadPrefs').mockReturnValue({});
-  jest.spyOn(prefs, 'savePrefs').mockImplementation(() => undefined);
+  jest.spyOn(prefs, 'savePrefs').mockReturnValue(true);
 });
 
 afterEach(() => {
@@ -70,7 +70,7 @@ describe('mapCodexNotification (Codex app-server → BrainEvent)', () => {
     });
     expect(completed).toEqual({
       type: 'tool_result',
-      toolResult: {name: 'shell', success: true, output: 'no errors\n', callId: '1'},
+      toolResult: {name: 'shell', success: true, output: 'no errors\n', outputFormat: 'text', callId: '1'},
     });
   });
 
@@ -370,6 +370,36 @@ describe('model catalog + reasoning effort', () => {
     });
   });
 
+  it('routes standard and Contributor Muse to distinct Meta model IDs', async () => {
+    const config = jest.fn(async (input: {provider?: string; model?: string; effort?: string}) => ({
+      provider: input.provider ?? 'meta',
+      model: input.model ?? 'x',
+      effort: input.effort,
+    }));
+    const {ctx, messages} = buildCtx({config});
+
+    expect(findModelChoice('spark')).toMatchObject({
+      provider: 'meta',
+      model: 'muse-spark-1.3',
+    });
+    expect(findModelChoice('muse')?.id).toBe('meta/muse-spark-1.3');
+    expect(findModelChoice('muse-contributor')?.id).toBe('meta/muse-spark-1.3-contributor');
+    expect(findModelChoice('meta/muse-spark-1.3-contributor')?.label).toBe('Muse Spark 1.3 Contributor');
+    expect(findModelChoice('muse')?.reasoningEfforts).toContain('max');
+    expect(findModelChoice('muse-contributor')?.reasoningEfforts).not.toContain('max');
+
+    process.env.META_API_KEY = 'test-meta-key';
+    try {
+      await runInteractiveCommand(ctx, '/model spark max');
+      await runInteractiveCommand(ctx, '/model muse-contributor high');
+    } finally {
+      delete process.env.META_API_KEY;
+    }
+    expect(config).toHaveBeenCalledWith({provider: 'meta', model: 'muse-spark-1.3', effort: 'max'});
+    expect(config).toHaveBeenCalledWith({provider: 'meta', model: 'muse-spark-1.3-contributor', effort: 'high'});
+    expect(messages.at(-1)?.text).toContain('meta/muse-spark-1.3-contributor');
+  });
+
   it('catalogues GPT-5.6 Sol, Terra, and Luna through Codex with max reasoning', async () => {
     const config = jest.fn(async (input: {provider?: string; model?: string; effort?: string}) => ({
       provider: input.provider ?? 'codex',
@@ -397,6 +427,11 @@ describe('model catalog + reasoning effort', () => {
       expect(findModelChoice(alias)?.defaultEffort).toBe('medium');
     }
     expect(isCodexReasoningEffort('max')).toBe(true);
+    expect(findModelChoice('astra')).toMatchObject({provider: 'codex', model: 'gpt-6-astra'});
+    expect(findModelChoice('astra')?.reasoningEfforts).toContain('ultra');
+    expect(isCodexReasoningEffort('ultra')).toBe(true);
+    await runInteractiveCommand(ctx, '/model astra ultra');
+    expect(config).toHaveBeenCalledWith({provider: 'codex', model: 'gpt-6-astra', effort: 'ultra'});
 
     await runInteractiveCommand(ctx, '/model gpt-5.6-terra max');
     expect(config).toHaveBeenCalledWith({provider: 'codex', model: 'gpt-5.6-terra', effort: 'max'});
@@ -492,6 +527,21 @@ describe('model catalog + reasoning effort', () => {
     await runInteractiveCommand(ctx, '/model kimi');
     expect(config).toHaveBeenCalledWith({provider: 'openrouter', model: 'moonshotai/kimi-k3', effort: 'max'});
     expect(messages.at(-1)?.text).toContain('openrouter/moonshotai/kimi-k3');
+  });
+
+  it.each([
+    ['/model sol ultra', 'GPT-5.6 Sol', 'Supported efforts: low, medium, high, xhigh, max.'],
+    ['/model codex/gpt-5.6-terra ultra', 'GPT-5.6 Terra', 'Supported efforts: low, medium, high, xhigh, max.'],
+    ['/model muse-contributor max', 'Muse Spark 1.3 Contributor', 'Supported efforts: minimal, low, medium, high, xhigh.'],
+    ['/model morph high', 'Morph v3 Large', 'This model does not offer configurable reasoning effort.'],
+  ])('rejects an effort outside the selected catalog model: %s', async (command, label, guidance) => {
+    const config = jest.fn(async () => ({provider: 'codex', model: 'gpt-5.6-sol'}));
+    const {ctx, messages} = buildCtx({config});
+    await runInteractiveCommand(ctx, command);
+    expect(config).not.toHaveBeenCalled();
+    expect(prefs.savePrefs).not.toHaveBeenCalled();
+    expect(messages.at(-1)?.text).toContain(`${label} does not support reasoning effort`);
+    expect(messages.at(-1)?.text).toContain(guidance);
   });
 
   it('forwards the chosen reasoning effort to config and reports it', async () => {

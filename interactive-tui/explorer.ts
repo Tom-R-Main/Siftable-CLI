@@ -474,13 +474,13 @@ const MAX_RETRIEVAL_CONTEXT_CHARS = 8_000;
 // Per-role budget acts as a *ceiling* only. The effective scout budget is
 // min(role, profile) (see runRepoExplorerFanoutBranch), so these must sit at or
 // above the deepest profile or they silently starve it — which is exactly what
-// the old 4-call / 6s / 8k values did to "deep" (12 calls / 20s / 18k). Keep
+// shorter role limits did to "deep" (12 calls / 60s / 18k). Keep
 // this higher than any profile so the profile is the real knob.
 const DEFAULT_ROLE_BUDGET = {
   maxToolCalls: 16,
   maxSearches: 12,
   maxFilesRead: 8,
-  maxElapsedMs: 24_000,
+  maxElapsedMs: 60_000,
   maxReturnedChars: 18_000,
 };
 
@@ -847,7 +847,7 @@ function repoExplorerActivityEvidenceQuality(report: ExplorerReport): ExplorerCo
 }
 
 export function classifyExplorerPrompt(text: string): ExplorerMode {
-  const trimmed = text.trim();
+  const trimmed = chatInputText(text).trim();
   if (!trimmed || resolveExplorerRuntimeMode() === 'off') return 'skipped';
   const hasCodeHint = CODE_HINT_RE.test(trimmed) || PATH_HINT_RE.test(trimmed);
   if (!hasCodeHint) return 'skipped';
@@ -928,8 +928,11 @@ export function assignRepoExplorerScoutRoles(input: ExplorerChatInput, report: E
 }
 
 export function chatInputText(input: ExplorerChatInput): string {
-  if (typeof input === 'string') return input;
-  return input.map((part) => part.type === 'text' ? part.text : '').filter(Boolean).join('\n');
+  const text = typeof input === 'string' ? input
+    : input.map((part) => part.type === 'text' ? part.text : '').filter(Boolean).join('\n');
+  // Routing and retrieval use the request, not the generated repository paths
+  // appended by skill preflight. The original input still reaches the model.
+  return text.replace(/\n\n<skill_preflight_context>\n[\s\S]*\n<\/skill_preflight_context>\s*$/, '');
 }
 
 export function compileExplorerQueries(text: string, maxQueries = 5): string[] {

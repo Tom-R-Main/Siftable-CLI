@@ -203,6 +203,7 @@ describe('LocalControlClient (in-process transport)', () => {
       const previousExplorer = process.env.SIFT_EXPLORER;
       const previousScout = process.env.SIFT_EXPLORER_SCOUT;
       const previousFanout = process.env.SIFT_EXPLORER_FANOUT;
+      const previousOpenRouterKey = process.env.OPENROUTER_API_KEY;
       await mkdir(join(root, 'src'), {recursive: true});
       await writeFile(join(root, 'package.json'), '{"name":"headless-explorer-fixture"}\n', 'utf8');
       await writeFile(join(root, 'src', 'fsEngine.ts'), 'export const marker = "local search";\n', 'utf8');
@@ -260,6 +261,9 @@ describe('LocalControlClient (in-process transport)', () => {
       };
       process.env.SIFT_USER_CWD = root;
       process.env.SIFT_EXPLORER_SCOUT = '1';
+      // The injected harness never dispatches HTTP, but the real routing seam
+      // still requires a credential before starting a scout.
+      process.env.OPENROUTER_API_KEY = 'local-transport-test-placeholder';
       delete process.env.SIFT_EXPLORER_FANOUT;
       setBrainModel({provider: 'openrouter', model: 'headless-smoke'});
 
@@ -316,6 +320,8 @@ describe('LocalControlClient (in-process transport)', () => {
         else process.env.SIFT_EXPLORER_SCOUT = previousScout;
         if (previousFanout === undefined) delete process.env.SIFT_EXPLORER_FANOUT;
         else process.env.SIFT_EXPLORER_FANOUT = previousFanout;
+        if (previousOpenRouterKey === undefined) delete process.env.OPENROUTER_API_KEY;
+        else process.env.OPENROUTER_API_KEY = previousOpenRouterKey;
         delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
         await rm(root, {recursive: true, force: true});
       }

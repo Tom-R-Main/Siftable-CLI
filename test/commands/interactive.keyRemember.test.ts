@@ -11,7 +11,7 @@ const savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
   jest.spyOn(prefs, 'loadPrefs').mockReturnValue({});
-  jest.spyOn(prefs, 'savePrefs').mockImplementation(() => undefined);
+  jest.spyOn(prefs, 'savePrefs').mockReturnValue(true);
   for (const name of ENV_VARS) {
     savedEnv[name] = process.env[name];
     delete process.env[name];
@@ -116,6 +116,6 @@ describe('/model recall wiring', () => {
     const { ctx, config } = context();
     await runInteractiveCommand(ctx, '/model muse');
     expect(process.env.META_API_KEY).toBe('remembered-meta');
-    expect(config).toHaveBeenCalledWith({ provider: 'meta', model: 'muse-spark-1.3-contributor', effort: '' });
+    expect(config).toHaveBeenCalledWith({ provider: 'meta', model: 'muse-spark-1.3', effort: '' });
   });
 });

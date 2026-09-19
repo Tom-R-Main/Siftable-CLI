@@ -22,7 +22,9 @@ import {
 } from '../../interactive-tui/explorer';
 import {
   agentHarnessAsk,
+  getBrainModel,
   setBrainModel,
+  resolveExplorerScoutRoute,
   splitPastedBlobs,
   deterministicExplorerQuery,
   type BrainEvent,
@@ -31,8 +33,15 @@ import {resetCollabEngineForTests, snapshotCollabSession} from '../../interactiv
 
 describe('interactive repo explorer preflight', () => {
   let root: string;
+  let previousOpenRouterKey: string | undefined;
+  let previousAnthropicKey: string | undefined;
 
   beforeEach(async () => {
+    // Mock-harness fixtures still declare the provider credentials they exercise.
+    previousOpenRouterKey = process.env.OPENROUTER_API_KEY;
+    previousAnthropicKey = process.env.ANTHROPIC_API_KEY;
+    process.env.OPENROUTER_API_KEY = 'test-sentinel';
+    process.env.ANTHROPIC_API_KEY = 'test-sentinel';
     clearRepoExplorerCache();
     resetCollabEngineForTests();
     root = await mkdtemp(join(tmpdir(), 'sift-explorer-'));
@@ -75,6 +84,10 @@ describe('interactive repo explorer preflight', () => {
   });
 
   afterEach(async () => {
+    if (previousOpenRouterKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = previousOpenRouterKey;
+    if (previousAnthropicKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = previousAnthropicKey;
     clearRepoExplorerCache();
     resetCollabEngineForTests();
     await rm(root, {recursive: true, force: true});
@@ -82,6 +95,17 @@ describe('interactive repo explorer preflight', () => {
 
   it('skips ordinary non-code prompts', () => {
     expect(classifyExplorerPrompt('what are my tasks today?')).toBe('skipped');
+  });
+
+  it('does not mistake generated skill context for a request to explore code', async () => {
+    const request = 'what work lanes have I been working on recently?';
+    const decorated = `${request}\n\n<skill_preflight_context>\nrepo_map: packages/exf-cli/interactive-tui/brain.ts\ncode review and UI tests\n</skill_preflight_context>`;
+    expect(chatInputText(decorated)).toBe(request);
+    expect(classifyExplorerPrompt(decorated)).toBe('skipped');
+    const report = await buildExplorerReport(decorated, {root});
+    expect(report.mode).toBe('skipped');
+    expect(chatInputText([{type: 'text', text: decorated}])).toBe(request);
+    expect(classifyExplorerPrompt(`debug brain.ts${decorated.slice(request.length)}`)).toBe('targeted');
   });
 
   it('classifies broad codebase investigations', () => {
@@ -1313,6 +1337,174 @@ describe('interactive repo explorer preflight', () => {
     }
   });
 
+  it.each(['single', 'fanout'])('uses terminal scout reports and rejects invalid schemas in %s mode', async (mode) => {
+    const keys = ['SIFT_USER_CWD', 'SIFT_EXPLORER', 'SIFT_EXPLORER_SCOUT', 'SIFT_EXPLORER_FANOUT',
+      'SIFT_EXPLORER_WARPGREP', 'SIFT_EXPLORER_PROVIDER', 'SIFT_EXPLORER_MODEL',
+      'SIFT_EXPLORER_SCOUT_PROVIDER', 'SIFT_EXPLORER_SCOUT_MODEL'] as const;
+    const saved = keys.map(key => process.env[key]);
+    const previousModel = getBrainModel();
+    const harness = (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
+    await writeFile(join(root, 'src', 'terminalTarget.ts'), 'export const terminalTarget = true;\n');
+    let reportMode = 'terminal';
+    (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
+      createChatAgent: async (config: Record<string, unknown>) => ({
+        chat: async function* () {
+          if (String(config.name).startsWith('siftable-repo-explorer-')) {
+            expect(String(config.prompt)).toContain('confidence must be a number from 0 to 1');
+            const finalReport = JSON.stringify({confidence: reportMode === 'invalid' ? 'high' : 2,
+              missingLikelyFiles: [], recommendedReads: [{path: 'src/terminalTarget.ts', reason: 'final evidence'}], warnings: []});
+            yield {type: 'text', text: JSON.stringify({confidence: 0, missingLikelyFiles: [], recommendedReads: [], warnings: ['pre-tool guess']})};
+            yield {type: 'tool_call', toolCall: {name: 'read_file', args: {path: 'src/brain.ts'}}};
+            yield {type: 'tool_result', toolResult: {name: 'read_file', success: true}};
+            yield {type: 'text', text: reportMode === 'stream' ? finalReport : 'I inspected the file.'};
+            yield {type: 'done', result: {content: reportMode === 'stream' ? '' : finalReport}};
+            return;
+          }
+          yield {type: 'text', text: 'ok'};
+          yield {type: 'done', result: {text: 'ok'}};
+        },
+      }),
+      defineTool: (def: unknown) => def,
+      ok: (data: unknown, message?: string) => ({success: true, data, message}),
+      err: (error: string) => ({success: false, error}),
+    };
+    for (const key of keys) delete process.env[key];
+    process.env.SIFT_USER_CWD = root;
+    process.env.SIFT_EXPLORER = 'fast-context';
+    process.env.SIFT_EXPLORER_SCOUT = '1';
+    process.env.SIFT_EXPLORER_FANOUT = mode === 'fanout' ? '1' : '0';
+    process.env.SIFT_EXPLORER_WARPGREP = '0';
+    setBrainModel({provider: 'openrouter', model: 'test-model'});
+    try {
+      for (reportMode of ['terminal', 'stream', 'invalid']) {
+        const events: BrainEvent[] = [];
+        await agentHarnessAsk('scour this repo and explain how local search works', event => events.push(event));
+        const toolName = mode === 'fanout' ? 'repo_explorer_fanout' : 'repo_explorer_scout';
+        const result = events.find(event => event.toolResult?.name === toolName)?.toolResult;
+        if (reportMode === 'invalid') {
+          expect(result?.success).toBe(false);
+          if (mode === 'fanout') expect(result?.output).toContain('4 failed branch');
+          else expect(result?.output).toContain('invalid report schema');
+        } else {
+          // Out-of-range numeric confidence is valid and clamped, not a schema failure.
+          expect(result?.success).toBe(true);
+          if (mode === 'fanout') expect(result?.output).toContain('0 failed branch');
+          const activity = events.find(event => event.toolResult?.name === 'repo_explorer')?.toolResult?.explorerActivity;
+          expect(activity).toMatchObject({rawReport: expect.stringContaining('src/terminalTarget.ts')});
+          expect(activity).toMatchObject({rawReport: expect.not.stringContaining('pre-tool guess')});
+        }
+      }
+    } finally {
+      keys.forEach((key, index) => { if (saved[index] === undefined) delete process.env[key]; else process.env[key] = saved[index]; });
+      setBrainModel(previousModel);
+      if (harness === undefined) delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
+      else (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = harness;
+    }
+  });
+
+  it.each([
+    { openrouterKey: false, metaKey: true, expected: 'meta' },
+    { openrouterKey: true, metaKey: true, expected: 'openrouter' },
+    { openrouterKey: false, metaKey: false, expected: 'none' },
+  ])('routes concurrent scouts with credential availability $expected', async ({ openrouterKey, metaKey, expected }) => {
+    const keys = ['SIFT_USER_CWD', 'SIFT_EXPLORER', 'SIFT_EXPLORER_FANOUT', 'SIFT_EXPLORER_SCOUT',
+      'SIFT_EXPLORER_WARPGREP', 'SIFT_EXPLORER_PROVIDER', 'SIFT_EXPLORER_MODEL',
+      'SIFT_EXPLORER_SCOUT_PROVIDER', 'SIFT_EXPLORER_SCOUT_MODEL', 'OPENROUTER_API_KEY', 'META_API_KEY'] as const;
+    const saved = keys.map(key => process.env[key]);
+    const previousModel = getBrainModel();
+    const harness = (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
+    const configured: Array<{provider: unknown; model: unknown}> = [];
+    let release!: () => void;
+    const allStarted = new Promise<void>(resolve => { release = resolve; });
+    let active = 0;
+    let peak = 0;
+    (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
+      createChatAgent: async (config: Record<string, unknown>) => ({
+        chat: async function* () {
+          if (String(config.name).startsWith('siftable-repo-explorer-fanout-')) {
+            configured.push({provider: config.provider, model: config.model});
+            active += 1;
+            peak = Math.max(peak, active);
+            if (active === 4) release();
+            await allStarted;
+            active -= 1;
+            yield {type: 'text', text: JSON.stringify({confidence: 0.8, missingLikelyFiles: [],
+              recommendedReads: [{path: 'src/brain.ts', reason: 'runtime'}], warnings: []})};
+            yield {type: 'done', result: {content: ''}};
+            return;
+          }
+          yield {type: 'text', text: 'main answer'};
+          yield {type: 'done', result: {content: 'main answer'}};
+        },
+      }),
+      defineTool: (def: unknown) => def,
+      ok: (data: unknown) => ({success: true, data}),
+      err: (error: string) => ({success: false, error}),
+    };
+    try {
+      Object.assign(process.env, { SIFT_USER_CWD: root, SIFT_EXPLORER: 'fast-context',
+        SIFT_EXPLORER_FANOUT: '1', SIFT_EXPLORER_SCOUT: '0', SIFT_EXPLORER_WARPGREP: '0',
+        SIFT_EXPLORER_PROVIDER: 'openrouter', SIFT_EXPLORER_MODEL: 'google/gemini-3.1-flash-lite' });
+      if (openrouterKey) process.env.OPENROUTER_API_KEY = 'test-sentinel';
+      else delete process.env.OPENROUTER_API_KEY;
+      if (metaKey) process.env.META_API_KEY = 'test-sentinel';
+      else delete process.env.META_API_KEY;
+      setBrainModel({provider: 'meta', model: 'muse-spark-1.3-contributor'});
+      const events: BrainEvent[] = [];
+      await agentHarnessAsk('scour this repo and explain how local search works', event => events.push(event));
+      const result = events.find(event => event.toolResult?.name === 'repo_explorer_fanout')?.toolResult;
+      expect(process.env.SIFT_EXPLORER_PROVIDER).toBe('openrouter');
+      expect(process.env.SIFT_EXPLORER_MODEL).toBe('google/gemini-3.1-flash-lite');
+      if (expected === 'none') {
+        expect(configured).toHaveLength(0);
+        expect(result?.success).toBe(false);
+        expect(result?.output).toContain('no authenticated active model');
+      } else {
+        expect(peak).toBe(4);
+        expect(configured).toHaveLength(4);
+        expect(configured.every(route => route.provider === expected)).toBe(true);
+        expect(configured.every(route => route.model === (expected === 'meta'
+          ? 'muse-spark-1.3-contributor' : 'google/gemini-3.1-flash-lite'))).toBe(true);
+        expect(result?.success).toBe(true);
+        if (expected === 'meta') expect(result?.output).toContain('using active model meta/muse-spark-1.3-contributor');
+        else expect(result?.output).not.toContain('using active model');
+      }
+    } finally {
+      release();
+      keys.forEach((key, index) => { if (saved[index] === undefined) delete process.env[key]; else process.env[key] = saved[index]; });
+      setBrainModel(previousModel);
+      if (harness === undefined) delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
+      else (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = harness;
+    }
+  });
+
+  it('rejects an implicit Codex scout route when OpenRouter has no credential', () => {
+    const keys = ['SIFT_EXPLORER_PROVIDER', 'SIFT_EXPLORER_MODEL', 'SIFT_EXPLORER_SCOUT_PROVIDER', 'SIFT_EXPLORER_SCOUT_MODEL', 'OPENROUTER_API_KEY'];
+    const saved = keys.map(key => process.env[key]);
+    const previousModel = getBrainModel();
+    try {
+      keys.forEach(key => { delete process.env[key]; });
+      setBrainModel({provider: 'codex', model: 'gpt-6-astra'});
+      expect(() => resolveExplorerScoutRoute()).toThrow('OPENROUTER_API_KEY');
+    } finally {
+      keys.forEach((key, index) => { if (saved[index] === undefined) delete process.env[key]; else process.env[key] = saved[index]; });
+      setBrainModel(previousModel);
+    }
+  });
+
+  it('does not mix a modern provider with an unrelated legacy scout model', () => {
+    const keys = ['SIFT_EXPLORER_PROVIDER', 'SIFT_EXPLORER_MODEL', 'SIFT_EXPLORER_SCOUT_MODEL'];
+    const saved = keys.map(key => process.env[key]);
+    try {
+      process.env.SIFT_EXPLORER_PROVIDER = 'meta';
+      delete process.env.SIFT_EXPLORER_MODEL;
+      process.env.SIFT_EXPLORER_SCOUT_MODEL = 'google/gemini-3.1-flash-lite';
+      expect(() => resolveExplorerScoutRoute()).toThrow('configured together');
+    } finally {
+      keys.forEach((key, index) => { if (saved[index] === undefined) delete process.env[key]; else process.env[key] = saved[index]; });
+    }
+  });
+
   it('runs one-wave fanout, tolerates branch failure, and tracks fanout file usage', async () => {
     let capturedMainInput: unknown;
     const previousCwd = process.env.SIFT_USER_CWD;
@@ -1431,6 +1623,46 @@ describe('interactive repo explorer preflight', () => {
       else process.env.SIFT_EXPLORER_FANOUT = previousFanout;
       delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
       errorSpy.mockRestore();
+    }
+  });
+
+  it('reports all failed scouts as a failed fanout while allowing the main answer', async () => {
+    const keys = ['SIFT_USER_CWD', 'SIFT_EXPLORER', 'SIFT_EXPLORER_FANOUT', 'SIFT_EXPLORER_WARPGREP'] as const;
+    const previousModel = getBrainModel();
+    const previousHarness = (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
+    const previous = keys.map((key) => process.env[key]);
+    (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
+      createChatAgent: async (config: Record<string, unknown>) => ({
+        chat: async function* () {
+          if (String(config.name).startsWith('siftable-repo-explorer-fanout-')) throw new Error('scout provider unavailable');
+          yield {type: 'text', text: 'answer from fallback evidence'};
+          yield {type: 'done', result: {text: 'answer from fallback evidence'}};
+        },
+      }),
+      defineTool: (def: unknown) => def,
+      ok: (data: unknown) => ({success: true, data}),
+      err: (error: string) => ({success: false, error}),
+    };
+    process.env.SIFT_USER_CWD = root;
+    process.env.SIFT_EXPLORER = 'deterministic';
+    process.env.SIFT_EXPLORER_FANOUT = '1';
+    process.env.SIFT_EXPLORER_WARPGREP = '0';
+    setBrainModel({provider: 'openrouter', model: 'test-model'});
+    try {
+      const events: BrainEvent[] = [];
+      const answer = await agentHarnessAsk('explain this repo architecture', (event) => events.push(event));
+      expect(answer.text).toContain('answer from fallback evidence');
+      const fanout = events.find((event) => event.toolResult?.name === 'repo_explorer_fanout')?.toolResult;
+      expect(fanout?.success).toBe(false);
+      expect(fanout?.output).toContain('4 failed branch(es)');
+    } finally {
+      keys.forEach((key, index) => {
+        if (previous[index] === undefined) delete process.env[key];
+        else process.env[key] = previous[index];
+      });
+      if (previousHarness === undefined) delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
+      else (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = previousHarness;
+      setBrainModel(previousModel);
     }
   });
 

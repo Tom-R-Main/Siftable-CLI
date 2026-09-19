@@ -99,9 +99,9 @@ Git-native parent/child sessions, each in its own worktree.
 
 ## Models & engines
 
-The model picker (`/model`) is a two-stage overlay: choose a **model** (↑/↓), then a **reasoning effort** (←/→). Press `*` on a model to star it as a favorite — starred models float to the top with a `★` marker. Your choice and favorites persist to `~/.siftable/prefs.json` and are restored on the next launch.
+The model picker (`/model`) is a two-stage overlay: choose a **model** (↑/↓), then a **reasoning effort** (←/→). Press `f` or `*` on a model to star it as a favorite — starred models float to the top with a `★` marker. Rows adapt to terminal width and height, preserving a gap between model names and descriptions. Your choice and favorites persist to `~/.siftable/prefs.json` and are restored on the next launch. Older `model-favorites.json` favorites are restored only when shared preferences have no favorites list; the next save writes them into `prefs.json`.
 
-**Muse Spark 1.3 Contributor** is available through the direct Meta adapter: `/model muse` (or `/model meta/muse-spark-1.3-contributor`). It requires `META_API_KEY`; `/key meta <key>` sets the key and remembers it in the system keychain for the next launch. The selection is restored on the next launch.
+**Muse Spark 1.3** and **Muse Spark 1.3 Contributor** are available through the direct Meta adapter: `/model muse` selects the standard tier; `/model muse-contributor` selects Contributor. It requires `META_API_KEY`; `/key meta <key>` sets the key and remembers it in the system keychain for the next launch. The selection is restored on the next launch.
 
 New installations start with **GPT-5.6 Sol through Codex**. A saved model selection takes precedence on subsequent launches, including a personal Muse selection.
 
@@ -109,6 +109,9 @@ The catalog includes:
 
 - **GPT-5.6 Sol, Terra, and Luna** — run through your ChatGPT plan via the Codex engine (see below). `/codex login` and `/codex on` select Sol by default. Efforts: low/medium/high/xhigh/max.
 - **Claude Opus 5** — two routes: **Door A** via OpenRouter (`openrouter/anthropic/claude-opus-5`), and **Door B** direct to the Anthropic API (`anthropic/claude-opus-5`, needs `ANTHROPIC_API_KEY`; alias `claude-api`). Adaptive-thinking efforts: low/medium/high/xhigh/max.
+- **Muse Spark 1.3** — direct to the Meta API (`meta/muse-spark-1.3`, needs `META_API_KEY`; aliases `spark`, `muse`). Efforts: minimal/low/medium/high/xhigh/max.
+- **Muse Spark 1.3 Contributor** — separate Meta tier (`meta/muse-spark-1.3-contributor`; aliases `spark-contributor`, `muse-contributor`). Efforts: minimal/low/medium/high/xhigh.
+- **GPT-6 Astra** — through the Codex engine (`codex/gpt-6-astra`; alias `astra`). Efforts include ultra.
 - **Claude Haiku 4.5**, **Gemini 3.x Flash / Flash-Lite**, **GPT-5.4 mini / nano** — available via OpenRouter or first-party keys; the Flash/Haiku/mini/nano models are used as Explorer scouts.
 - **Morph v3 Large** — apply-only (fast edit application); not a conversational brain.
 
@@ -117,11 +120,15 @@ The catalog includes:
 - **Codex** (`provider = codex`) drives the OpenAI `codex app-server` sidecar over JSON-RPC on stdio. Siftable does **not** own the OAuth — Codex manages ChatGPT sign-in; `/codex login` runs a device-code flow. Turns run in a `workspace-write` sandbox confined to the repo root with on-request approvals routed through the confirmation gate. Override the binary with `CODEX_BIN`.
 - **All other providers** (OpenRouter, Anthropic, Gemini, OpenAI, Meta) route through the bundled Siftable agent harness, which reads `<PROVIDER>_API_KEY` from the environment. `/key <provider> <key>` sets it for the session and remembers it in the OS keychain (macOS Keychain, Linux Secret Service); startup and model selection autoload remembered keys silently. Vault plaintext hydration is retired; capability-broker execution replaces that workflow.
 
-First-party provider keys: `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, or `<PROVIDER>_API_KEY` generically.
+First-party provider keys: `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `META_API_KEY`, or `<PROVIDER>_API_KEY` generically.
 
 ## Repo Explorer
 
 `/explorer` configures how the copilot gathers repository context before a turn. Modes: `auto`, `off`, `deterministic`, `scout`, `fanout`, `warpgrep`. You can pick a scout model and a budget (`cheap`/`normal`/`deep`). `warpgrep` uses Morph and currently needs `MORPH_API_KEY` in the process environment; Vault plaintext hydration is retired. Settings persist to `prefs.json` and are exported to the brain as `SIFT_EXPLORER_*` environment variables.
+
+Scouts have a separate saved model. If that provider's key is missing, they use the authenticated active model for that turn and report the fallback; the saved choice stays unchanged. If neither provider is available, Explorer reports the missing credential without launching failing branches. Remembered keys load before settings restore. `off`, `auto`, and `deterministic` do not require a scout key.
+
+Parallel scouts use low reasoning and bounded reports. Each branch has a complete read-and-report deadline of 8 seconds (`cheap`), 20 seconds (`normal`), or 60 seconds (`deep`); branches run concurrently. Escape cancels them.
 
 ## Skills
 
@@ -162,7 +169,7 @@ Overlays capture the keyboard first, so bindings are mode-specific.
 Standard readline editing (`←/→`, `Ctrl+A/E`, `Home/End`, `Ctrl+U/K/W`, word motions) works in the composer.
 
 **Slash menu:** `↑/↓` choose · `Enter`/`Tab` fill.
-**Model picker:** model stage `↑/↓` + `Enter`, `*` favorite; effort stage `←/→` + `Enter`; `Esc` back.
+**Model picker:** model stage `↑/↓` + `Enter`, `f` / `*` favorite; effort stage `←/→` + `Enter`; `Esc` back.
 **Theme picker:** `↑/←` `↓/→` preview · `Enter` save · `Esc` revert.
 **Diagram viewer:** arrows or `h/j/k/l` pan · `PgUp/PgDn` page · `Home/0` `End/$` jump · `Esc`/`q` close.
 **Approval gate:** `y`/`Enter` allow once · `a` always · `b` bypass-all · `n`/`Esc` deny.
@@ -196,7 +203,7 @@ All under `~/.siftable/` unless noted:
 
 | Path | Contents |
 |------|----------|
-| `~/.siftable/prefs.json` | Saved model + reasoning effort, Explorer settings |
+| `~/.siftable/prefs.json` | Saved model + reasoning effort, favorites, Explorer settings |
 | `~/.siftable/appearance.json` | Selected theme scheme |
 | `~/.siftable/sounds.json` | Sound on/off |
 | `~/.siftable/threads/<hash>.jsonl` | Per-workspace conversation rollout (when compaction is on) |

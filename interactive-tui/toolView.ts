@@ -262,6 +262,148 @@ export function clipOutput(raw: string): string {
   return shown.join("\n") + `\n… +${lines.length - OUTPUT_MAX_LINES} more lines`;
 }
 
+/** A display-only projection. The caller must retain the original tool result. */
+export interface ToolOutputSummaryOptions {
+  /** Unwrapped command output must not be interpreted as a tool envelope. */
+  format?: "text";
+  /** Usable terminal columns, excluding the transcript gutter. */
+  width?: number;
+  args?: Record<string, unknown>;
+}
+
+function outputRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function outputText(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+/** Strip terminal controls; conservatively budget non-ASCII glyphs as two cells. */
+function boundedOutputLines(text: string, width: number): string {
+  const clean = text.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "").trim();
+  if (!clean) return "";
+  const source = clean.split("\n");
+  const shown = source.slice(0, 3).map((line) => {
+    let used = 0;
+    let result = "";
+    for (const glyph of line.replace(/\t/g, "  ")) {
+      const cells = /\p{Mark}/u.test(glyph) ? 0 : glyph.codePointAt(0)! > 127 ? 2 : 1;
+      if (used + cells > width - 2) return result + "…";
+      result += glyph;
+      used += cells;
+      // Combining characters also have a finite processing/display budget.
+      if (result.length >= OUTPUT_MAX_BYTES) return result + "…";
+    }
+    return result;
+  });
+  if (source.length > 3) {
+    const marker = `… +${source.length - 3} more lines`;
+    shown.push(marker.length + 1 <= width ? marker : "…");
+  }
+  return shown.join("\n");
+}
+
+/**
+ * OpenCode-style semantic Read/Grep/Skill labels with Codex-style bounded rows.
+ * Never serialize unknown result fields or skill/file bodies into the preview.
+ */
+export function summarizeToolOutput(
+  name: string,
+  raw: string,
+  options: ToolOutputSummaryOptions = {},
+): string {
+  const width = Number.isFinite(options.width) ? Math.max(4, Math.floor(options.width!)) : 100;
+  const render = (lines: string[]) => boundedOutputLines(lines.filter(Boolean).join("\n"), width);
+  if (!raw.trim()) return "";
+  if (options.format === "text") return boundedOutputLines(raw, width);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // Incomplete serialized payloads are not useful human-facing previews.
+    if (/^\s*\{/.test(raw) && /"(?:success|data|error|message)"\s*:/.test(raw)) return render([/truncat(?:ed|ion)/i.test(raw)
+      ? "Structured output truncated (preview unavailable)"
+      : "Structured output received (preview unavailable)"]);
+    return boundedOutputLines(raw, width);
+  }
+  if (typeof parsed === "string") return boundedOutputLines(parsed, width);
+  const envelope = outputRecord(parsed);
+  const data = outputRecord(envelope.data ?? parsed);
+  const error = outputText(envelope.error) || outputText(data.error)
+    || outputText(outputRecord(envelope.error).message);
+  if (envelope.success === false || data.success === false || error) {
+    return render([`Failed: ${error || outputText(envelope.message) || "tool reported failure"}`]);
+  }
+  const args = options.args ?? {};
+  if (name === "skill" || name === "load_skill") {
+    return render([`Loaded skill: ${outputText(data.name) || outputText(args.name) || "requested skill"}`]);
+  }
+  if (/search|find_local_files|grep/.test(name) && Array.isArray(data.matches)) {
+    const matches = Array.isArray(data.matches) ? data.matches : [];
+    const stats = outputRecord(data.stats);
+    const scan = outputRecord(stats.scan);
+    const presentation = outputRecord(stats.presentation);
+    const count = typeof stats.matches === "number" ? stats.matches : matches.length;
+    const searched = typeof stats.searchedFiles === "number" ? ` in ${stats.searchedFiles} files` : "";
+    const partial = scan.status === "partial" || stats.capped === true;
+    const reasons = Array.isArray(scan.reasons) ? scan.reasons.filter((item) => typeof item === "string") : [];
+    const status = [partial ? "partial search" : "", stats.capped === true ? "capped" : "",
+      presentation.clipped === true || stats.truncated === true ? "results clipped" : "",
+      ...reasons].filter(Boolean).join(" · ");
+    return render([
+      `${count} matches${searched}${status ? ` · ${status}` : ""}`,
+      ...matches.slice(0, 3).map((match) => {
+        const item = outputRecord(match);
+        return `${outputText(item.path) || outputText(match)}${typeof item.line === "number" ? `:${item.line}` : ""}`;
+      }),
+    ]);
+  }
+  if (/read.*file|file.*read/.test(name)) {
+    const files = Array.isArray(data.files) ? data.files : [data];
+    const failures = files.filter((file) => Boolean(outputRecord(file).error)).length;
+    const outcome = failures ? `${files.length - failures} files read · ${failures} failed` : `${files.length} file${files.length === 1 ? "" : "s"} read`;
+    const truncated = data.truncated === true || files.some((file) => outputRecord(file).truncated === true);
+    return render([`${truncated ? "Partial read · truncated · " : ""}${outcome}`, ...[...files].sort((a, b) => Number(Boolean(outputRecord(b).error)) - Number(Boolean(outputRecord(a).error))).map((file) => {
+      const item = outputRecord(file);
+      const path = outputText(item.path) || outputText(args.path) || outputText(args.file);
+      const descriptors = Array.isArray(args.files) ? args.files : [];
+      const requested = outputRecord(descriptors.find((entry) => outputRecord(entry).path === path));
+      const start = item.startLine ?? requested.startLine ?? args.startLine;
+      const end = item.endLine ?? requested.endLine ?? args.endLine;
+      const failure = outputText(item.error);
+      return `${path}${typeof start === "number" ? `:${start}${typeof end === "number" ? `-${end}` : ""}` : ""}${failure ? ` · Failed: ${failure}` : ""}`;
+    })]);
+  }
+  for (const key of ["tasks", "workItems", "work_items", "items"]) {
+    if (!Array.isArray(data[key])) continue;
+    const items = data[key] as unknown[];
+    const label = key === "tasks" ? "tasks" : "items";
+    const total = typeof data.total === "number" ? ` of ${data.total}` : "";
+    return render([`${items.length}${total} ${label} returned`, ...items.map((entry) => {
+      const item = outputRecord(entry);
+      const title = outputText(item.title) || outputText(item.name);
+      const status = outputText(item.status);
+      return title ? `${title}${status ? ` · ${status}` : ""}` : "Untitled item";
+    })]);
+  }
+  // Shell envelopes carry useful plain stdout/stderr, not structured metadata.
+  const stdout = outputText(data.stdout);
+  const stderr = outputText(data.stderr);
+  const exitCode = data.exitCode ?? data.exit_code;
+  if (stdout || stderr || typeof exitCode === "number") {
+    return render([typeof exitCode === "number" ? `Exit ${exitCode}` : "", stderr, stdout]);
+  }
+  const collection = Array.isArray(parsed) ? parsed : Array.isArray(envelope.data) ? envelope.data : null;
+  if (collection) return render([`${collection.length} results returned`]);
+  return render([outputText(envelope.message) || outputText(data.message)
+    || (envelope.success === true ? "Completed" : "Structured result received")]);
+}
+
 /** Indent each line with a subtle gutter so output nests visually under its call. */
 export function gutterIndent(s: string): string {
   return s

@@ -63,12 +63,11 @@ import {
   createHandoffWorkItem,
   INTERACTIVE_MODEL_CHOICES,
   favoriteModelIds,
-  pickerLabelWidth,
-  pickerModelChoices,
   toggleFavoriteModel,
   type CommandMessage,
   type ExplorerSettings,
 } from "./commands";
+import { orderModelChoices, modelPickerRow, modelPickerWindow } from "./modelPicker";
 import { copyTextToClipboard, readClipboardContent } from "./clipboard";
 import { isExplicitCopyChord } from "./keybindings";
 import { play as playSound, initSounds, setSoundsEnabled, soundsEnabled, disposeSounds } from "./audio";
@@ -92,7 +91,7 @@ import {
   formatExplorerActivityLine,
   isExplorerToolName,
   toolCallLabel,
-  clipOutput,
+  summarizeToolOutput,
   gutterIndent,
 } from "./toolView";
 import { ToolRowTracker } from "./toolRowTracker";
@@ -182,6 +181,7 @@ type Msg = {
   text: string;
   streaming?: boolean;
   out?: string;
+  toolArgs?: Record<string, unknown>;
   explorer?: boolean;
 };
 type PasteTextAttachment = { type: "text"; id: number; label: string; text: string; analysis: PasteAnalysis };
@@ -294,6 +294,9 @@ function App() {
   // Most recent rendered diagram (full natural size) + the pannable viewer overlay.
   const [lastDiagram, setLastDiagram] = createSignal<string | null>(null);
   const [viewer, setViewer] = createSignal<{ lines: string[]; w: number; h: number; x: number; y: number } | null>(null);
+  const [modelFavorites, setModelFavorites] = createSignal(favoriteModelIds());
+  const [modelFavoriteError, setModelFavoriteError] = createSignal("");
+  const modelChoices = createMemo(() => orderModelChoices(INTERACTIVE_MODEL_CHOICES, modelFavorites()));
   // Interactive model picker: stage "model" (↑/↓) → stage "effort" (←/→).
   const [picker, setPicker] = createSignal<
     { stage: "model" | "effort"; modelIdx: number; effortIdx: number } | null
@@ -881,7 +884,7 @@ function App() {
               ? explorerToolCallText(e.toolCall.name, e.toolCall.detail)
               : `⚙ ${e.toolCall.name}${label ? `  ${label}` : ""}`;
             toolRows.register(e.toolCall.name, e.toolCall.callId, messages.length);
-            push({ role: "tool", text });
+            push({ role: "tool", text, toolArgs: e.toolCall.args });
             // The "sift" sound, once per turn, when work starts churning.
             if (firstTool) {
               firstTool = false;
@@ -905,7 +908,10 @@ function App() {
                 }
               } else {
                 setMessages(toolIdx, "text", (t) => t.replace(/^(⚙|◇)/, unknown ? "?" : ok ? "✓" : "✗"));
-                const preview = clipOutput(e.toolResult?.output ?? "");
+                const preview = summarizeToolOutput(name, e.toolResult?.output ?? "", {
+                  width: Math.max(4, terminal().width - 10), args: messages[toolIdx].toolArgs,
+                  format: e.toolResult?.outputFormat,
+                });
                 if (preview) setMessages(toolIdx, "out", preview);
               }
             }
@@ -1118,16 +1124,16 @@ function App() {
     setExplorerPicker(null);
     setCrewPicker(null);
     // Open on the currently active model when we can match it.
+    setModelFavoriteError("");
     const cur = model();
-    const list = pickerModelChoices();
-    const found = list.findIndex((c) => c.model === cur || c.id === cur);
+    const found = modelChoices().findIndex((c) => c.model === cur || c.id === cur);
     setPicker({ stage: "model", modelIdx: Math.max(0, found), effortIdx: 0 });
   }
 
   function pickerEnterModel() {
     const p = picker();
     if (!p) return;
-    const choice = pickerModelChoices()[p.modelIdx];
+    const choice = modelChoices()[p.modelIdx];
     const efforts = choice.reasoningEfforts ?? [];
     if (!efforts.length) {
       void confirmPicker(choice, undefined);
@@ -1501,33 +1507,30 @@ function App() {
           return;
         }
         if (pk.stage === "model") {
-          const list = pickerModelChoices();
           if (key.name === "up") setPicker({ ...pk, modelIdx: Math.max(0, pk.modelIdx - 1) });
           else if (key.name === "down")
-            setPicker({ ...pk, modelIdx: Math.min(list.length - 1, pk.modelIdx + 1) });
-          else if (key.sequence === "*") {
-            const choice = list[pk.modelIdx];
-            if (choice) {
-              const { added } = toggleFavoriteModel(choice.id);
-              playSound(added ? "toggleOn" : "toggleOff");
-              const next = pickerModelChoices();
-              setPicker({ ...pk, modelIdx: Math.max(0, next.findIndex((c) => c.id === choice.id)) });
-              push({
-                role: "system",
-                text: `${added ? "★" : "☆"} ${choice.label} ${added ? "added to" : "removed from"} favorites.`,
-              });
-            }
+            setPicker({ ...pk, modelIdx: Math.min(modelChoices().length - 1, pk.modelIdx + 1) });
+          else if (key.name === "f" || key.sequence === "*") {
+            const selected = modelChoices()[pk.modelIdx];
+            if (!selected) return;
+            const next = toggleFavoriteModel(selected.id);
+            if (next.saved) {
+              setModelFavorites(next.favorites);
+              setPicker({ ...pk, modelIdx: modelChoices().findIndex((choice) => choice.id === selected.id) });
+              playSound(next.added ? "toggleOn" : "toggleOff");
+              setModelFavoriteError("");
+            } else setModelFavoriteError("Could not save favorites. Check ~/.siftable permissions.");
           }
           else if (isEnter) pickerEnterModel();
           return;
         }
         // effort stage
-        const efforts = pickerModelChoices()[pk.modelIdx]?.reasoningEfforts ?? [];
+        const efforts = modelChoices()[pk.modelIdx]?.reasoningEfforts ?? [];
         if (key.name === "left") setPicker({ ...pk, effortIdx: Math.max(0, pk.effortIdx - 1) });
         else if (key.name === "right")
           setPicker({ ...pk, effortIdx: Math.min(efforts.length - 1, pk.effortIdx + 1) });
         else if (isEnter) {
-          const choice = pickerModelChoices()[pk.modelIdx];
+          const choice = modelChoices()[pk.modelIdx];
           if (choice) void confirmPicker(choice, efforts[pk.effortIdx]);
         }
         return;
@@ -1982,17 +1985,14 @@ function App() {
     // Restore the saved sound preference (off by default); loads the kit if on.
     void initSounds();
     onCleanup(() => disposeSounds());
-    // Restore durable preferences (~/.siftable/prefs.json): Explorer settings
-    // synchronously, then the saved brain model quietly (codex is skipped — it's
-    // the default and signs in interactively).
+    // Load remembered credentials before applying either saved model selection.
+    autoloadProviderKeysFromKeychain();
     const prefs = loadPrefs();
     if (prefs.explorer) {
-      const applied = applyExplorerSettings(prefs.explorer as ExplorerSettings);
+      const applied = applyExplorerSettings(prefs.explorer as ExplorerSettings, {allowUnavailableModel: true});
       if (applied.ok) setExplorerSettings(prefs.explorer as ExplorerSettings);
+      if (!applied.ok || applied.message.startsWith("Explorer:")) push({role: "system", text: applied.message});
     }
-    // Pick up provider keys remembered in the system keychain so a pasted
-    // `/key` survives restarts with no repaste and no prompts.
-    void autoloadProviderKeysFromKeychain();
     void restoreSavedModel(commandCtx()).then(() => void refreshState());
     void refreshState();
     void workRunController.recoverWorkRuns()
@@ -2031,7 +2031,7 @@ function App() {
       ? `${agents().length} agent(s): ${agents()
           .map((a) => `${a.assignedAlias ?? a.agentType}·${a.state}`)
           .join("  ")}`
-      : "no local agents";
+      : "";
 
   // Child-session segment — distinct from the backend agent label above.
   const childBarLabel = () => formatChildBarLine(childBar());
@@ -2109,10 +2109,12 @@ function App() {
           <text fg={theme.signal} selectable={false}>◇ </text>
           <text fg={theme.accentStrong} selectable={false}>siftable</text>
         </box>
+        <Show when={agents().length > 0}>
         <box flexDirection="row" alignItems="center">
           <text fg={busy() ? theme.warn : theme.ok} selectable={false}>{busy() ? spinner() + " " : "● "}</text>
           <text fg={theme.muted} selectable={false}>{agentLabel()}</text>
         </box>
+        </Show>
         <Show when={childBar().length}>
           <box flexDirection="row" alignItems="center">
             <text fg={theme.signal} selectable={false}>⌥ </text>
@@ -2247,8 +2249,8 @@ function App() {
 
       <Show when={picker()}>
         {(p) => {
-          const choice = () => pickerModelChoices()[p().modelIdx];
-          const efforts = () => choice()?.reasoningEfforts ?? [];
+          const choice = () => modelChoices()[p().modelIdx];
+          const efforts = () => choice().reasoningEfforts ?? [];
           return (
             <box
               flexDirection="column"
@@ -2261,30 +2263,25 @@ function App() {
             >
               <text fg={theme.accentStrong} selectable={false}>
                 {p().stage === "model"
-                  ? "Select model    ↑/↓ navigate · Enter → reasoning · * favorite · Esc cancel"
+                  ? "Select model    ↑/↓ navigate · f/* favorite · Enter select · Esc cancel"
                   : "Reasoning effort    ←/→ adjust · Enter confirm · Esc back"}
               </text>
-              <For each={pickerModelChoices()}>
-                {(c, i) => {
-                  const width = pickerLabelWidth();
-                  const starred = favoriteModelIds().includes(c.id);
-                  return (
-                    <box
-                      width="100%"
-                      height={1}
-                      backgroundColor={i() === p().modelIdx ? theme.border : theme.bgMuted}
-                      flexDirection="row"
-                    >
-                      <text fg={i() === p().modelIdx ? theme.accentStrong : theme.muted} selectable={false}>
-                        {(i() === p().modelIdx ? "› " : "  ") +
-                          (starred ? "★ " : "  ") +
-                          c.label.padEnd(width) +
-                          c.description +
-                          (c.model === model() || c.id === model() ? "  · current" : "")}
-                      </text>
-                    </box>
-                  );
-                }}
+              <Show when={modelFavoriteError()}><text fg={theme.muted}>{modelFavoriteError()}</text></Show>
+              <text fg={theme.muted} selectable={false}>{`${p().modelIdx + 1}/${modelChoices().length} models · ★ favorites first`}</text>
+              <For each={modelPickerWindow(modelChoices(), p().modelIdx, terminal().height)}>
+                {({ choice: c, index }) => (
+                  <box
+                    width="100%"
+                    height={1}
+                    backgroundColor={index === p().modelIdx ? theme.border : theme.bgMuted}
+                    flexDirection="row"
+                  >
+                    <text fg={index === p().modelIdx ? theme.accentStrong : theme.muted} selectable={false}>
+                      {modelPickerRow(c, modelChoices(), terminal().width - 4, index === p().modelIdx,
+                        modelFavorites().includes(c.id), c.model === model() || c.id === model())}
+                    </text>
+                  </box>
+                )}
               </For>
               <Show when={p().stage === "effort"}>
                 <box flexDirection="row" paddingTop={1}>
