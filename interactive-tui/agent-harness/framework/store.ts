@@ -45,7 +45,8 @@ const DATA_DIR = join(storeDirectory, "..", "..", ".data");
 // This Store API is intentionally synchronous. Keep contention fail-fast so a
 // wedged peer cannot freeze an interactive or HTTP event loop for many seconds.
 // A genuinely non-blocking wait requires an async Store contract.
-const LOCK_WAIT_TIMEOUT_MS = 500;
+const LOCK_OWNER_WAIT_TIMEOUT_MS = 500;
+const LOCK_ACQUIRE_TIMEOUT_MS = 2_000;
 const LOCK_POLL_INTERVAL_MS = 10;
 const LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
 
@@ -592,7 +593,9 @@ function acquireExclusiveLock(lockPath: string, storeName: string): StoreLock {
     throw new StorePersistenceError(`could not create lock claim for store ${storeName}`, { cause: error });
   }
 
-  const deadline = Date.now() + LOCK_WAIT_TIMEOUT_MS;
+  const acquisitionDeadline = Date.now() + LOCK_ACQUIRE_TIMEOUT_MS;
+  let ownerDeadline = Date.now() + LOCK_OWNER_WAIT_TIMEOUT_MS;
+  let observedOwner: StoreLockOwner | undefined;
   try {
     for (;;) {
       try {
@@ -603,11 +606,29 @@ function acquireExclusiveLock(lockPath: string, storeName: string): StoreLock {
         if (!isNodeError(error) || error.code !== "EEXIST") throw error;
       }
 
+      if (Date.now() >= acquisitionDeadline) {
+        throw new StorePersistenceError(`timed out waiting to update store ${storeName}`);
+      }
+
       const existing = readLockOwner(lockPath);
       if (existing === undefined) continue;
 
+      // Bound stalls, not healthy queue turnover. A fixed deadline from the
+      // first collision can expire while several short-lived writers are
+      // successfully handing the lock forward under constrained CI CPUs.
+      // Preserve the timeout for one unchanged owner, but give a newly
+      // observed owner its own bounded window.
+      if (
+        observedOwner === undefined ||
+        observedOwner.pid !== existing.pid ||
+        observedOwner.token !== existing.token
+      ) {
+        observedOwner = existing;
+        ownerDeadline = Date.now() + LOCK_OWNER_WAIT_TIMEOUT_MS;
+      }
+
       if (isProcessAlive(existing.pid)) {
-        if (Date.now() >= deadline) {
+        if (Date.now() >= ownerDeadline) {
           throw new StorePersistenceError(
             `timed out waiting for another process to update store ${storeName}`,
           );
@@ -621,7 +642,7 @@ function acquireExclusiveLock(lockPath: string, storeName: string): StoreLock {
       // other's newly acquired lock.
       const reclaimGate = tryAcquireReclaimGate(lockPath, claimPath, storeName);
       if (reclaimGate === undefined) {
-        if (Date.now() >= deadline) {
+        if (Date.now() >= ownerDeadline) {
           throw new StorePersistenceError(`timed out recovering the stale lock for store ${storeName}`);
         }
         Atomics.wait(LOCK_SLEEP, 0, 0, LOCK_POLL_INTERVAL_MS);

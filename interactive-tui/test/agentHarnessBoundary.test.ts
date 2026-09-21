@@ -632,6 +632,136 @@ describe("Siftable agent-harness durability boundary", () => {
     }
   });
 
+  it("refreshes the lock wait window when a different live owner takes over", async () => {
+    const name = uniqueStoreName();
+    const barrierRoot = mkdtempSync(join(tmpdir(), "siftable-store-turnover-"));
+    const ready = join(barrierRoot, "ready");
+    const lockPath = join(storeDataDirectory, `${name}.json.lock`);
+    const childSource = `
+      import { linkSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+      import { basename, dirname, join } from "node:path";
+      const [lockPath, ready] = process.argv.slice(1);
+      const sleeper = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+      const publish = (token) => {
+        const claim = lockPath + "." + process.pid + "." + token + ".claim";
+        writeFileSync(claim, JSON.stringify({ pid: process.pid, token }) + "\\n", { mode: 0o600 });
+        linkSync(claim, lockPath);
+        return claim;
+      };
+      const first = publish("11111111-1111-4111-8111-111111111111");
+      writeFileSync(ready, "", { mode: 0o600 });
+      const directory = dirname(lockPath);
+      const lockName = basename(lockPath);
+      while (!readdirSync(directory).some((entry) => (
+        entry.startsWith(lockName + ".") &&
+        entry.endsWith(".claim") &&
+        join(directory, entry) !== first
+      ))) Atomics.wait(sleeper, 0, 0, 1);
+      Atomics.wait(sleeper, 0, 0, 350);
+      const second = lockPath + "." + process.pid + ".22222222-2222-4222-8222-222222222222.claim";
+      const handoff = second + ".handoff";
+      writeFileSync(second, JSON.stringify({
+        pid: process.pid,
+        token: "22222222-2222-4222-8222-222222222222",
+      }) + "\\n", { mode: 0o600 });
+      linkSync(second, handoff);
+      renameSync(handoff, lockPath);
+      rmSync(first, { force: true });
+      Atomics.wait(sleeper, 0, 0, 350);
+      rmSync(lockPath, { force: true });
+      rmSync(second, { force: true });
+    `;
+    const child = spawn(process.execPath, ["--eval", childSource, lockPath, ready], {
+      cwd: join(testDirectory, "..", "..", "..", ".."),
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    const childExit = waitForChild(child);
+
+    try {
+      createStore(name);
+      await waitForPaths([ready]);
+      const started = performance.now();
+      createStore(name).set("contender", 2);
+      const elapsed = performance.now() - started;
+
+      expect(elapsed).toBeGreaterThanOrEqual(600);
+      expect(elapsed).toBeLessThan(1_500);
+      expect((await childExit).code).toBe(0);
+      expect(createStore<number>(name).get("contender")).toBe(2);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await childExit;
+      removeStoreArtifacts(name);
+      rmSync(barrierRoot, {recursive: true, force: true});
+    }
+  });
+
+  it("keeps the cumulative lock wait bounded during sustained owner turnover", async () => {
+    const name = uniqueStoreName();
+    const barrierRoot = mkdtempSync(join(tmpdir(), "siftable-store-turnover-bound-"));
+    const ready = join(barrierRoot, "ready");
+    const lockPath = join(storeDataDirectory, `${name}.json.lock`);
+    const childSource = `
+      import { randomUUID } from "node:crypto";
+      import { linkSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+      import { basename, dirname, join } from "node:path";
+      const [lockPath, ready] = process.argv.slice(1);
+      const sleeper = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+      const publish = () => {
+        const token = randomUUID();
+        const claim = lockPath + "." + process.pid + "." + token + ".claim";
+        writeFileSync(claim, JSON.stringify({ pid: process.pid, token }) + "\\n", { mode: 0o600 });
+        return claim;
+      };
+      let current = publish();
+      linkSync(current, lockPath);
+      writeFileSync(ready, "", { mode: 0o600 });
+      const directory = dirname(lockPath);
+      const lockName = basename(lockPath);
+      while (!readdirSync(directory).some((entry) => (
+        entry.startsWith(lockName + ".") &&
+        entry.endsWith(".claim") &&
+        join(directory, entry) !== current
+      ))) Atomics.wait(sleeper, 0, 0, 1);
+
+      for (let index = 0; index < 20; index += 1) {
+        Atomics.wait(sleeper, 0, 0, 150);
+        const next = publish();
+        const handoff = next + ".handoff";
+        linkSync(next, handoff);
+        renameSync(handoff, lockPath);
+        rmSync(current, { force: true });
+        current = next;
+      }
+      rmSync(lockPath, { force: true });
+      rmSync(current, { force: true });
+    `;
+    const child = spawn(process.execPath, ["--eval", childSource, lockPath, ready], {
+      cwd: join(testDirectory, "..", "..", "..", ".."),
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    const childExit = waitForChild(child);
+
+    try {
+      createStore(name);
+      await waitForPaths([ready]);
+      const started = performance.now();
+      expect(() => createStore(name).set("contender", 2)).toThrow(
+        /timed out waiting to update store/,
+      );
+      const elapsed = performance.now() - started;
+
+      expect(elapsed).toBeGreaterThanOrEqual(1_800);
+      expect(elapsed).toBeLessThan(2_500);
+      expect((await childExit).code).toBe(0);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await childExit;
+      removeStoreArtifacts(name);
+      rmSync(barrierRoot, {recursive: true, force: true});
+    }
+  });
+
   it("advances stale store recovery generations without replacing prior gates", () => {
     const name = uniqueStoreName();
     const store = createStore<number>(name);
