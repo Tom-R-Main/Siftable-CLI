@@ -197,6 +197,10 @@ interface ActiveTurn {
   controller: AbortController;
   cancelReason?: 'client' | 'deadline' | 'shutdown';
   done: Promise<void>;
+  /** Provider request ids the engine reported starting (provider.attempt). */
+  attempted: Set<string>;
+  /** Closed by shutdown after a timeout; late engine output is dropped. */
+  abandoned?: boolean;
 }
 
 interface ApprovalRecord { turnId?: string; state: 'pending' | 'resolved'; decision?: ApprovalDecision; source?: 'client' | 'cancelled' | 'process_exit'; allowAlways: boolean; allowBypass: boolean }
@@ -247,7 +251,7 @@ export function interpretEngineResult(kind: SessionEngine['kind'], result: Brain
  * usage makes the turn partial). Codex reports usage only through app-server
  * token-usage notifications; with none, usage is unavailable (null), not zero.
  */
-export function turnUsageOf(kind: SessionEngine['kind'], result: BrainAskResult): {usage: UsageTotals | null; complete: boolean} {
+export function turnUsageOf(kind: SessionEngine['kind'], result: BrainAskResult, attempted: ReadonlySet<string> = new Set()): {usage: UsageTotals | null; complete: boolean} {
   if (kind === 'codex') {
     const reported = result.engineUsage;
     // Only a normally completed turn has seen all of its usage notifications;
@@ -257,6 +261,10 @@ export function turnUsageOf(kind: SessionEngine['kind'], result: BrainAskResult)
   }
   const usage = zeroUsage();
   let complete = true;
+  // A request that started but has no receipt (typically cut off by a cancel)
+  // has unknown usage, so the turn's figures are only a lower bound.
+  const receipted = new Set((result.providerReceipts ?? []).map(receipt => receipt.requestId));
+  for (const requestId of attempted) if (!receipted.has(requestId)) complete = false;
   for (const receipt of result.providerReceipts ?? []) {
     usage.requests += 1;
     if (!receipt.usage) { complete = false; continue; }
@@ -517,7 +525,7 @@ export class SessionServer {
     }
     const turnId = randomUUID();
     const controller = new AbortController();
-    const turn: ActiveTurn = {turnId, controller, done: Promise.resolve()};
+    const turn: ActiveTurn = {turnId, controller, done: Promise.resolve(), attempted: new Set()};
     this.active = turn;
     this.turns += 1;
     // Log turn.started first: the response flushes (fsyncs) every queued event
@@ -532,6 +540,9 @@ export class SessionServer {
     let result: BrainAskResult;
     try {
       result = await this.options.engine.ask(input, event => {
+        if (turn.abandoned) return;
+        const providerEvent = event.type === 'provider' ? event.providerEvent as {type?: string; requestId?: unknown} | undefined : undefined;
+        if (providerEvent?.type === 'provider.attempt' && typeof providerEvent.requestId === 'string') turn.attempted.add(providerEvent.requestId);
         this.emit({...event, turnId: turn.turnId});
       }, turn.controller.signal);
     } catch (error) {
@@ -539,11 +550,13 @@ export class SessionServer {
     } finally {
       clearTimeout(timer);
     }
+    // Shutdown already closed this turn and the log; drop the late result.
+    if (turn.abandoned) return;
     // The tool loop has returned. Anything still pending belongs to it and
     // can no longer be acted on; revoke before the terminal event.
     this.options.gates.rejectAllConfirms();
     this.options.gates.rejectAllQuestions();
-    const {usage: turnUsage, complete} = turnUsageOf(this.options.engine.kind, result);
+    const {usage: turnUsage, complete} = turnUsageOf(this.options.engine.kind, result, turn.attempted);
     if (turnUsage) for (const key of Object.keys(turnUsage) as Array<keyof UsageTotals>) this.usage[key] += turnUsage[key];
     if (!complete) this.usageComplete = false;
     this.lastTurnUsage = turnUsage;
@@ -649,7 +662,20 @@ export class SessionServer {
       const turn = this.active;
       if (turn) {
         this.requestCancel('shutdown');
-        if (await within(turn.done) === 'timeout') problems.push(`the active turn did not stop within ${bound} ms`);
+        if (await within(turn.done) === 'timeout') {
+          problems.push(`the active turn did not stop within ${bound} ms`);
+          // Close the turn exactly once, durably, before the log closes; its
+          // usage is unknown. Anything the engine returns later is dropped.
+          turn.abandoned = true;
+          this.options.gates.rejectAllConfirms();
+          this.options.gates.rejectAllQuestions();
+          this.lastTurnUsage = null;
+          this.usageComplete = false;
+          this.emit({type: 'usage', turnId: turn.turnId, turn: null, cumulative: {...this.usage}, complete: false});
+          this.emit({type: 'turn.stop_unconfirmed', turnId: turn.turnId, status: 'interrupted', confirmed: false, reason: 'shutdown_timeout'});
+          this.flush();
+          this.active = undefined;
+        }
       }
       const {gates} = this.options;
       gates.rejectAllConfirms();

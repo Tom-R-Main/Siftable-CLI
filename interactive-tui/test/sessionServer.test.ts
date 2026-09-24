@@ -72,6 +72,14 @@ function scriptedEngine(trace: string[]): SessionEngine {
         trace.push(`answer:${JSON.stringify(outcome)}`);
         return {text: 'answer' in outcome ? `chose ${outcome.answer}` : `no answer ${outcome.reason}`, status: 'completed', providerReceipts: receipts};
       }
+      if (input === 'hang-mid-request') {
+        onEvent({type: 'provider', providerEvent: {type: 'provider.attempt', requestId: 'rq-cut', attempt: 1, provider: 'fixture',
+          requestedModel: 'fixture', oneShot: false, mode: 'streaming'}});
+        await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), {once: true}));
+        trace.push('loop-stopped');
+        // The cancelled request never produced a receipt.
+        return {text: '', status: 'interrupted', jobCleanup: 'confirmed', providerReceipts: []};
+      }
       if (input === 'hang-cleanup-fails') {
         await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), {once: true}));
         trace.push('loop-stopped');
@@ -659,5 +667,45 @@ describe('session server protocol', () => {
     expect(closed).toMatchObject({type: 'session.closed'});
     expect(String(closed.error)).toContain('did not stop within 50 ms');
     expect(String(closed.error)).toContain('did not close within 50 ms');
+  });
+
+  test('a harness turn cancelled mid-request reports usage as incomplete', async () => {
+    const h = await harness();
+    await h.send({type: 'initialize', protocolVersion: 1});
+    const turn = await h.send({type: 'prompt', input: 'hang-mid-request'});
+    await h.waitFor(line => line.type === 'provider');
+    await h.send({type: 'cancel'});
+    await h.waitFor(line => line.turnId === turn.turnId && line.type === 'turn.stopped');
+    expect(h.events().find(event => event.type === 'usage' && event.turnId === turn.turnId)).toMatchObject({complete: false});
+    expect((await h.send({type: 'usage'})).usage).toMatchObject({complete: false});
+    await h.send({type: 'shutdown'});
+  });
+
+  test('shutdown that times out on a turn closes it once, durably, and drops the engine\'s late result', async () => {
+    let lateReturned = false;
+    const late: SessionEngine = {kind: 'harness', close: async () => {},
+      ask: (_input, onEvent) => new Promise(resolve => setTimeout(() => {
+        onEvent({type: 'token', content: 'late'});
+        lateReturned = true;
+        resolve({text: 'late', status: 'completed', jobCleanup: 'confirmed', providerReceipts: []});
+      }, 200))};
+    const h = await harness({engineOverride: late, shutdownBoundMs: 50});
+    await h.send({type: 'initialize', protocolVersion: 1});
+    const turn = await h.send({type: 'prompt', input: 'anything'});
+    const response = await h.send({type: 'shutdown'});
+    expect(response).toMatchObject({ok: true, exitCode: 1});
+    const terminals = h.events().filter(event => event.turnId === turn.turnId && String(event.type).startsWith('turn.') && event.type !== 'turn.started');
+    expect(terminals).toEqual([expect.objectContaining({type: 'turn.stop_unconfirmed', confirmed: false, reason: 'shutdown_timeout'})]);
+    const types = h.events().map(event => event.type);
+    expect(types.indexOf('turn.stop_unconfirmed')).toBeLessThan(types.indexOf('session.closed'));
+    const linesAtClose = h.lines.length;
+    const deadline = Date.now() + 2_000;
+    while (!lateReturned && Date.now() < deadline) await new Promise(r => setTimeout(r, 5));
+    await new Promise(r => setTimeout(r, 20));
+    expect(lateReturned).toBe(true);
+    expect(h.lines).toHaveLength(linesAtClose);
+    // The durable log ends with the terminal event and session.closed, nothing after.
+    const logged = (await readFile(h.log.path, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    expect(logged.slice(-2).map(event => event.type)).toEqual(['turn.stop_unconfirmed', 'session.closed']);
   });
 });

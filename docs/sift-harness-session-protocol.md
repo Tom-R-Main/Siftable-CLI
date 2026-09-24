@@ -62,7 +62,10 @@ directly: `session/prompt` to `prompt`, `session/cancel` to `cancel`,
   and the engine close a 30-second backstop each. If anything does not finish
   in time, the shutdown still responds, `session.closed` carries an `error`
   naming what did not finish, the exit code is 1, and late results are
-  discarded.
+  discarded. An active turn that did not stop in time is first closed once,
+  durably: `usage {turn: null, complete: false}`, then `turn.stop_unconfirmed`
+  with `reason: shutdown_timeout`. Anything its engine returns afterwards is
+  dropped and never reaches the log or stdout.
 
 ## Commands (client to server)
 
@@ -115,7 +118,7 @@ could lose.
 | `usage` | `turn` and `cumulative` totals: requests, input, output, cached input, and total tokens, plus `complete`. `turn` is null when the engine reported no usage for the turn; that is "unavailable", not zero. `complete` becomes false for the rest of the session once any turn's usage was unavailable or partial, and `cumulative` is then a lower bound. `cumulative` spans every process that has served the session. It precedes the turn's terminal event. |
 | `turn.completed`, `turn.failed`, `turn.limit_reached`, `turn.interrupted` | Terminal event of a turn that was not cancelled. Same fields as the one-shot `run.*` event. |
 | `turn.stopped` | Terminal event of a cancelled turn whose engine proved it ended: `confirmed: true`, `reason` (`client`, `deadline`, `shutdown`), `jobCleanup` when known. |
-| `turn.stop_unconfirmed` | Terminal event of a turn whose end could not be proven: `confirmed: false`. With `reason` `client`, `deadline`, or `shutdown`, the live engine did not confirm within its bound, and later prompts return `stop_unconfirmed` until the session is shut down and resumed. With `reason: process_exit` and `recovered: true`, the process that ran the turn died; see Replay and recovery. |
+| `turn.stop_unconfirmed` | Terminal event of a turn whose end could not be proven: `confirmed: false`. With `reason: shutdown_timeout`, shutdown gave up waiting for the turn. With `reason` `client`, `deadline`, or `shutdown`, the live engine did not confirm within its bound, and later prompts return `stop_unconfirmed` until the session is shut down and resumed. With `reason: process_exit` and `recovered: true`, the process that ran the turn died; see Replay and recovery. |
 | `session.closed` | The last event of a process: `reason`, cumulative `usage`, `turns`. |
 
 Each turn ends with exactly one terminal event. When a turn is cancelled,
@@ -185,7 +188,10 @@ app-server's `TurnStatus` (codex-cli 0.156.1: `completed`, `interrupted`,
 
 A Codex result with no status is never a success.
 
-Usage is also read per engine. The harness sums its provider receipts. Codex
+Usage is also read per engine. The harness sums its provider receipts. If a
+provider request started (`provider.attempt`) but has no receipt, which
+typically happens when a cancel cuts it off, the turn's usage is a lower bound
+and `complete` becomes false. Codex
 sums the per-response `last` breakdowns from app-server's
 `thread/tokenUsage/updated` notifications, counting only those whose `turnId`
 equals this turn's. Notifications that arrive before the `turn/start`
