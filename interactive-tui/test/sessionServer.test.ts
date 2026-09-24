@@ -31,6 +31,7 @@ function codexEngine(trace: string[]): SessionEngine {
         return {text: 'hi'};
       }
       if (input === 'codex error') return {text: '', error: 'codex turn failed'};
+      if (input === 'codex usage') return {text: 'hi', engineUsage: {requests: 2, inputTokens: 30, outputTokens: 5, cachedInputTokens: 10, totalTokens: 35}};
       await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), {once: true}));
       trace.push('loop-stopped');
       return {text: 'partial', status: 'interrupted', stopConfirmed: input === 'codex hang confirmed'};
@@ -129,7 +130,7 @@ describe('session server protocol', () => {
     const h = await harness();
     const init = await h.send({type: 'initialize', protocolVersion: 1});
     expect(init).toMatchObject({ok: true, protocolVersion: 1, session: 'fixture-session', lastSeq: 0, resumed: false,
-      capabilities: {prompt: {followUp: true, concurrentTurns: 1}, questions: true, cancel: {confirmedStop: true}, replay: {durable: true}, usage: true}});
+      capabilities: {prompt: {followUp: true, concurrentTurns: 1}, questions: true, cancel: {confirmedStop: true}, replay: {durable: true}, usage: {source: 'provider_receipts', mayBeUnavailable: false}}});
     const first = await h.send({type: 'prompt', input: 'say one'});
     expect(first.ok).toBe(true);
     await h.waitFor(line => line.type === 'turn.completed' && line.turnId === first.turnId);
@@ -139,7 +140,7 @@ describe('session server protocol', () => {
     const completed = h.events().filter(event => event.type === 'turn.completed');
     expect(completed.map(event => event.text)).toEqual(['one', 'two']);
     const usage = await h.send({type: 'usage'});
-    expect(usage.usage).toEqual({session: {requests: 2, inputTokens: 20, outputTokens: 8, cachedInputTokens: 4, totalTokens: 28},
+    expect(usage.usage).toEqual({complete: true, session: {requests: 2, inputTokens: 20, outputTokens: 8, cachedInputTokens: 4, totalTokens: 28},
       lastTurn: {requests: 1, inputTokens: 10, outputTokens: 4, cachedInputTokens: 2, totalTokens: 14}, turns: 2});
     const usageEvents = h.events().filter(event => event.type === 'usage');
     expect(usageEvents).toHaveLength(2);
@@ -272,7 +273,7 @@ describe('session server protocol', () => {
     const init = await second.send({type: 'initialize', protocolVersion: 1});
     expect(init).toMatchObject({resumed: true, lastSeq: firstEvents.at(-1)!.seq});
     // Cumulative usage and the turn count survive the restart.
-    expect((await second.send({type: 'usage'})).usage).toEqual({turns: 1,
+    expect((await second.send({type: 'usage'})).usage).toEqual({turns: 1, complete: true,
       session: {requests: 1, inputTokens: 10, outputTokens: 4, cachedInputTokens: 2, totalTokens: 14},
       lastTurn: {requests: 1, inputTokens: 10, outputTokens: 4, cachedInputTokens: 2, totalTokens: 14}});
     const replay = await second.send({type: 'replay', after: cursor});
@@ -288,7 +289,7 @@ describe('session server protocol', () => {
     await second.send({type: 'shutdown'});
   });
 
-  test('a second process cannot serve a leased session; a crashed turn is closed once on resume', async () => {
+  test('a second process cannot serve a leased session; a crashed turn is closed once, unconfirmed, on resume', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sift-session-server-'));
     roots.push(root);
     const leaseStore = (dir: string) => new JsonlSessionEventStore({rootDir: dir});
@@ -302,7 +303,13 @@ describe('session server protocol', () => {
     const {appendFileSync} = await import('node:fs');
     appendFileSync(log.path, '{"schemaVersion":1,"seq":3');
     const resumed = await harness({root, session: 'crashed'});
-    expect(resumed.events()).toEqual([expect.objectContaining({type: 'turn.stopped', turnId: 't1', seq: 3, recovered: true, reason: 'process_exit'})]);
+    // A dead process proves nothing about its tool loop: never confirmed.
+    expect(resumed.events()).toEqual([expect.objectContaining({type: 'turn.stop_unconfirmed', turnId: 't1', seq: 3, recovered: true,
+      reason: 'process_exit', confirmed: false})]);
+    // Its loop cannot continue here, so the resumed session still takes turns.
+    await resumed.send({type: 'initialize', protocolVersion: 1});
+    await resumed.send({type: 'prompt', input: 'say resumed'});
+    await resumed.waitFor(line => line.type === 'turn.completed' && line.text === 'resumed');
     await resumed.send({type: 'shutdown'});
     const again = await harness({root, session: 'crashed'});
     expect(again.events()).toHaveLength(0);
@@ -394,5 +401,41 @@ describe('session server protocol', () => {
     // One tool loop per session: no new turn beside one that may still run.
     expect(await unconfirmed.send({type: 'prompt', input: 'codex ok'})).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
     await unconfirmed.send({type: 'shutdown'});
+  });
+
+  test('a newly created wire log syncs its directory before any event is sent', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sift-session-server-'));
+    roots.push(root);
+    const synced: string[] = [];
+    const leaseStore = (dir: string) => new JsonlSessionEventStore({rootDir: dir});
+    const log = new WireEventLog({rootDir: root, session: 'dir-sync', leaseStore, syncDirectory: dir => synced.push(dir)});
+    expect(synced).toEqual([join(root, 'wire')]);
+    const written: string[] = [];
+    const server = new SessionServer({session: 'dir-sync', provider: 'fixture', model: 'fixture', cwd: root, deadlineMs: 5_000,
+      engine: scriptedEngine([]), gates: {...confirmGate, ...questionGate}, log, write: line => { written.push(`${synced.length}:${line}`); }});
+    await server.handleLine(JSON.stringify({id: 1, type: 'initialize', protocolVersion: 1}));
+    await server.handleLine(JSON.stringify({id: 2, type: 'prompt', input: 'say durable'}));
+    await server.shutdown('client');
+    expect(written.filter(line => line.includes('"seq"')).every(line => line.startsWith('1:'))).toBe(true);
+    // Reopening an existing log creates no directory entry, so no directory sync.
+    const reopened = new WireEventLog({rootDir: root, session: 'dir-sync', leaseStore, syncDirectory: dir => synced.push(dir)});
+    expect(synced).toHaveLength(1);
+    reopened.close();
+  });
+
+  test('Codex sessions advertise no questions and report usage only when app-server supplied it', async () => {
+    const h = await harness({engine: 'codex'});
+    const init = await h.send({type: 'initialize', protocolVersion: 1});
+    expect(init.capabilities).toMatchObject({questions: false, usage: {source: 'codex_token_usage_notifications', mayBeUnavailable: true}});
+    await h.send({type: 'prompt', input: 'codex usage'});
+    expect(await h.waitFor(line => line.type === 'usage')).toMatchObject({turn: {requests: 2, inputTokens: 30, totalTokens: 35}, complete: true});
+    await h.waitFor(line => line.type === 'turn.completed');
+    await h.send({type: 'prompt', input: 'codex ok'});
+    await h.waitFor(line => line.type === 'turn.completed' && h.events().filter(event => event.type === 'turn.completed').length === 2);
+    const unavailable = h.events().filter(event => event.type === 'usage')[1]!;
+    expect(unavailable).toMatchObject({turn: null, complete: false, cumulative: {requests: 2, totalTokens: 35}});
+    expect((await h.send({type: 'usage'})).usage).toEqual({turns: 2, complete: false, lastTurn: null,
+      session: {requests: 2, inputTokens: 30, outputTokens: 5, cachedInputTokens: 10, totalTokens: 35}});
+    await h.send({type: 'shutdown'});
   });
 });

@@ -67,13 +67,13 @@ Responses are not events. They have no `seq` and are not replayed.
 
 | type | fields | response |
 | --- | --- | --- |
-| `initialize` | `protocolVersion: 1` | `session`, `lastSeq`, `resumed`, `busy`, `agent`, `capabilities` |
+| `initialize` | `protocolVersion: 1` | `session`, `lastSeq`, `resumed`, `busy`, `agent`, `capabilities` (engine-specific: `questions` is false for Codex; `usage.source` names where usage comes from) |
 | `prompt` | `input` (string, 1..262144 chars) | `turnId` |
 | `approval.respond` | `requestId`, `decision` (`deny` \| `allow` \| `always` \| `bypass`) | `status: applied` or `already_resolved` (with the original decision and source) |
 | `question.answer` | `requestId`, and `answer` (string) or `decline: true` | `status: applied` or `already_resolved` |
 | `cancel` | optional `turnId` | `status: stopping`, `already_stopping`, or `no_active_turn` |
 | `replay` | `after` (cursor, default 0), `limit` (1..10000, default 1000) | `events`, `through`, `lastSeq`, `more` |
-| `usage` | | `usage: {session, lastTurn, turns}` |
+| `usage` | | `usage: {session, complete, lastTurn, turns}`; `lastTurn` is null before any turn or when the engine reported no usage |
 | `shutdown` | | `status: closed`, `exitCode` |
 
 Every command except `initialize` and `shutdown` requires a prior
@@ -103,10 +103,10 @@ could lose.
 | `question.request` | `requestId`, `question`, optional `options`. Raised by the `ask_user` tool. |
 | `question.resolved` | `requestId`, `outcome` (`answered`, `declined`, `cancelled`). |
 | `status` with `status: stopping` | A cancel, deadline, or shutdown began stopping the turn. |
-| `usage` | `turn` and `cumulative` totals: requests, input, output, cached input, and total tokens. `cumulative` spans every process that has served the session. It precedes the turn's terminal event. |
+| `usage` | `turn` and `cumulative` totals: requests, input, output, cached input, and total tokens, plus `complete`. `turn` is null when the engine reported no usage for the turn; that is "unavailable", not zero. `complete` becomes false for the rest of the session once any turn's usage was unavailable or partial, and `cumulative` is then a lower bound. `cumulative` spans every process that has served the session. It precedes the turn's terminal event. |
 | `turn.completed`, `turn.failed`, `turn.limit_reached`, `turn.interrupted` | Terminal event of a turn that was not cancelled. Same fields as the one-shot `run.*` event. |
-| `turn.stopped` | Terminal event of a cancelled turn whose engine proved it ended: `confirmed: true`, `reason` (`client`, `deadline`, `shutdown`, `process_exit`), `jobCleanup` when known. |
-| `turn.stop_unconfirmed` | Terminal event of a cancelled turn whose engine could not prove it ended within its bound: `confirmed: false`, same fields. Later prompts return `stop_unconfirmed`; shut down and resume the session. |
+| `turn.stopped` | Terminal event of a cancelled turn whose engine proved it ended: `confirmed: true`, `reason` (`client`, `deadline`, `shutdown`), `jobCleanup` when known. |
+| `turn.stop_unconfirmed` | Terminal event of a turn whose end could not be proven: `confirmed: false`. With `reason` `client`, `deadline`, or `shutdown`, the live engine did not confirm within its bound, and later prompts return `stop_unconfirmed` until the session is shut down and resumed. With `reason: process_exit` and `recovered: true`, the process that ran the turn died; see Replay and recovery. |
 | `session.closed` | The last event of a process: `reason`, cumulative `usage`, `turns`. |
 
 Each turn ends with exactly one terminal event. When a turn is cancelled,
@@ -119,7 +119,12 @@ first, the turn ends with `turn.stop_unconfirmed` instead.
 
 Results are read per engine. The harness always reports a status. Codex
 reports none when a turn completes, so a Codex result with no error is
-`turn.completed`. Pending approvals and questions
+`turn.completed`.
+
+Usage is also read per engine. The harness sums its provider receipts. Codex
+sums the per-response `last` breakdowns from app-server's
+`thread/tokenUsage/updated` notifications. A Codex turn that received none
+reports `turn: null`. Pending approvals and questions
 from that turn are revoked first, and their `*.resolved` events come before
 `turn.stopped`.
 
@@ -135,7 +140,9 @@ pending.
 ## Replay and recovery
 
 The wire log is `<session-event-root>/wire/<sha256(session)>.wire.jsonl`, with
-file mode 0600, next to the harness session journal
+file mode 0600. When the log file is created, the file and its directory are
+fsynced before any event is sent, so the new directory entry is durable too.
+Directories the store creates are fsynced by the store. The log sits next to the harness session journal
 (`~/.siftable/session-events/v1` or `SIFT_SESSION_EVENT_ROOT`). A final
 fragment with no newline, left by a crash during an append, is truncated when
 the log is opened. Every event is fsynced before it is sent (see Events), so
@@ -147,13 +154,17 @@ To reconnect, start a new process with the same `--session`, send
 count are rebuilt from the log, so `usage` continues across restarts. The replay is taken
 synchronously, so a live event can never fall between the replayed page and
 the stream. If the previous process died during a turn, the new process closes
-that turn once with `turn.stopped {reason: "process_exit", recovered: true}`.
-The harness journal separately recovers the interrupted model turn.
+that turn once with `turn.stop_unconfirmed {reason: "process_exit",
+recovered: true, confirmed: false}`. Nothing proves how the dead turn ended,
+and processes it started may still be running. Its tool loop cannot continue
+in the new process, so the resumed session accepts new turns. The harness
+journal separately recovers the interrupted model turn.
 
 ## Not covered yet
 
 - Image input in `prompt` (text only).
-- Codex-provider turns do not raise `question.request`. Codex approvals use
-  the same gate and do round-trip.
+- Codex-provider turns do not raise `question.request`, and `initialize`
+  reports `questions: false` for them. Codex approvals use the same gate and
+  do round-trip.
 - Replay keeps the session's events in memory. A very long session grows
   memory in proportion to its event count.

@@ -64,6 +64,11 @@ export interface UsageTotals {
 
 // ── Durable wire log ─────────────────────────────────────────────────────────
 
+function fsyncDirectory(dir: string): void {
+  const fd = openSync(dir, constants.O_RDONLY);
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+}
+
 interface LeaseStore { acquireLease(sessionId: string): {release(): void} }
 
 /**
@@ -81,30 +86,40 @@ export class WireEventLog {
   private lease: {release(): void} | undefined;
   private synced = 0;
 
-  constructor(private readonly options: {rootDir: string; session: string; leaseStore: (rootDir: string) => LeaseStore}) {
+  constructor(private readonly options: {rootDir: string; session: string; leaseStore: (rootDir: string) => LeaseStore;
+    /** Test seam; defaults to fsyncing the directory. */
+    syncDirectory?: (dir: string) => void}) {
     const dir = join(options.rootDir, 'wire');
     const store = options.leaseStore(dir);
     const digest = createHash('sha256').update(options.session, 'utf8').digest('hex');
     this.path = join(dir, `${digest}.wire.jsonl`);
     this.lease = store.acquireLease(`wire:${options.session}`);
     try {
-      this.load();
+      const existed = this.load();
       const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
       this.fd = openSync(this.path, constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | noFollow, 0o600);
       if ((fstatSync(this.fd).mode & 0o077) !== 0) throw new Error('Wire event log must not be group or world accessible');
+      if (!existed) {
+        // Persist the new directory entry before any event can be sent: an
+        // fsync of the file alone does not make its name durable. The store
+        // above already fsynced any directories it created.
+        fsyncSync(this.fd);
+        (options.syncDirectory ?? fsyncDirectory)(dir);
+      }
     } catch (error) {
       this.close();
       throw error;
     }
   }
 
-  private load(): void {
+  /** Returns false when there is no log file yet. */
+  private load(): boolean {
     let raw: string;
     try {
       if (lstatSync(this.path).isSymbolicLink()) throw new Error('Wire event log must not be a symbolic link');
       raw = readFileSync(this.path, 'utf8');
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
       throw error;
     }
     const committed = raw.lastIndexOf('\n') + 1;
@@ -122,6 +137,7 @@ export class WireEventLog {
       this.events.push(event);
     }
     this.synced = this.events.length;
+    return true;
   }
 
   get lastSeq(): number {
@@ -212,6 +228,29 @@ export function interpretEngineResult(kind: SessionEngine['kind'], result: Brain
   return {status, stopConfirmed: result.stopConfirmed !== false};
 }
 
+/**
+ * One turn's usage. The harness counts provider receipts (a receipt without
+ * usage makes the turn partial). Codex reports usage only through app-server
+ * token-usage notifications; with none, usage is unavailable (null), not zero.
+ */
+export function turnUsageOf(kind: SessionEngine['kind'], result: BrainAskResult): {usage: UsageTotals | null; complete: boolean} {
+  if (kind === 'codex') {
+    const reported = result.engineUsage;
+    return reported ? {usage: {...zeroUsage(), ...reported}, complete: true} : {usage: null, complete: false};
+  }
+  const usage = zeroUsage();
+  let complete = true;
+  for (const receipt of result.providerReceipts ?? []) {
+    usage.requests += 1;
+    if (!receipt.usage) { complete = false; continue; }
+    usage.inputTokens += receipt.usage.inputTokens ?? 0;
+    usage.outputTokens += receipt.usage.outputTokens ?? 0;
+    usage.cachedInputTokens += receipt.usage.cachedInputTokens ?? 0;
+    usage.totalTokens += receipt.usage.totalTokens ?? ((receipt.usage.inputTokens ?? 0) + (receipt.usage.outputTokens ?? 0));
+  }
+  return {usage, complete};
+}
+
 function zeroUsage(): UsageTotals {
   return {requests: 0, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0};
 }
@@ -223,7 +262,10 @@ export class SessionServer {
   private readonly approvals = new Map<string, ApprovalRecord>();
   private readonly questions = new Map<string, QuestionRecord>();
   private readonly usage = zeroUsage();
-  private lastTurnUsage: UsageTotals | undefined;
+  /** null: no turn yet, or the engine reported no usage for the last turn. */
+  private lastTurnUsage: UsageTotals | null = null;
+  /** False once any turn's usage was unavailable or partial; `cumulative` is then a lower bound. */
+  private usageComplete = true;
   private turns = 0;
   /** A cancelled turn whose engine never confirmed it stopped; no new turn may start. */
   private unconfirmedStop: string | undefined;
@@ -305,16 +347,20 @@ export class SessionServer {
         this.turns += 1;
       } else if (event.type === 'usage') {
         const session = event.cumulative as Partial<UsageTotals> | undefined;
-        const turn = event.turn as Partial<UsageTotals> | undefined;
+        const turn = event.turn as Partial<UsageTotals> | null | undefined;
         for (const key of Object.keys(this.usage) as Array<keyof UsageTotals>) {
           const value = session?.[key];
           if (Number.isSafeInteger(value) && (value as number) >= 0) this.usage[key] = value as number;
         }
-        if (turn) this.lastTurnUsage = {...zeroUsage(), ...Object.fromEntries(Object.entries(turn).filter(([, value]) => Number.isSafeInteger(value)))};
+        this.lastTurnUsage = turn ? {...zeroUsage(), ...Object.fromEntries(Object.entries(turn).filter(([, value]) => Number.isSafeInteger(value)))} : null;
+        if (event.complete === false) this.usageComplete = false;
       } else if (typeof event.type === 'string' && event.type.startsWith('turn.') && event.turnId === open) open = undefined;
     }
     if (open) {
-      this.emit({type: 'turn.stopped', turnId: open, status: 'interrupted', confirmed: true, reason: 'process_exit', recovered: true});
+      // The process that ran this turn died; nothing proves its tool loop or
+      // the processes it started ended cleanly. Its loop cannot continue in
+      // this process, so new turns are allowed, but the stop is unconfirmed.
+      this.emit({type: 'turn.stop_unconfirmed', turnId: open, status: 'interrupted', confirmed: false, reason: 'process_exit', recovered: true});
       this.flush();
     }
   }
@@ -375,7 +421,7 @@ export class SessionServer {
       case 'question.answer': return this.questionAnswer(id, command);
       case 'cancel': return this.cancel(id, command);
       case 'replay': return this.replay(id, command);
-      case 'usage': return this.respond(id, {usage: {session: {...this.usage}, lastTurn: this.lastTurnUsage ?? null, turns: this.turns}});
+      case 'usage': return this.respond(id, {usage: {session: {...this.usage}, complete: this.usageComplete, lastTurn: this.lastTurnUsage, turns: this.turns}});
       default: return this.fail(id, 'unknown_command', `Unknown command type: ${command.type.slice(0, 64)}`);
     }
   }
@@ -395,10 +441,11 @@ export class SessionServer {
       capabilities: {
         prompt: {followUp: true, concurrentTurns: 1, input: ['text']},
         approvals: {decisions: [...DECISIONS], idempotentResponses: true},
-        questions: true,
+        // Only the Sift harness exposes ask_user; Codex turns never ask.
+        questions: this.options.engine.kind === 'harness',
         cancel: {confirmedStop: true},
         replay: {durable: true, maxPage: MAX_REPLAY_PAGE},
-        usage: true,
+        usage: {source: this.options.engine.kind === 'harness' ? 'provider_receipts' : 'codex_token_usage_notifications', mayBeUnavailable: this.options.engine.kind === 'codex'},
         limits: {maxCommandBytes: MAX_COMMAND_BYTES, turnDeadlineMs: this.options.deadlineMs},
       },
     });
@@ -439,18 +486,13 @@ export class SessionServer {
     // can no longer be acted on; revoke before the terminal event.
     this.options.gates.rejectAllConfirms();
     this.options.gates.rejectAllQuestions();
-    const turnUsage = zeroUsage();
-    for (const receipt of result.providerReceipts ?? []) {
-      turnUsage.requests += 1;
-      turnUsage.inputTokens += receipt.usage?.inputTokens ?? 0;
-      turnUsage.outputTokens += receipt.usage?.outputTokens ?? 0;
-      turnUsage.cachedInputTokens += receipt.usage?.cachedInputTokens ?? 0;
-      turnUsage.totalTokens += receipt.usage?.totalTokens ?? ((receipt.usage?.inputTokens ?? 0) + (receipt.usage?.outputTokens ?? 0));
-    }
-    for (const key of Object.keys(turnUsage) as Array<keyof UsageTotals>) this.usage[key] += turnUsage[key];
+    const {usage: turnUsage, complete} = turnUsageOf(this.options.engine.kind, result);
+    if (turnUsage) for (const key of Object.keys(turnUsage) as Array<keyof UsageTotals>) this.usage[key] += turnUsage[key];
+    if (!complete) this.usageComplete = false;
     this.lastTurnUsage = turnUsage;
     // `session` is the envelope's session id, so the running total is `cumulative`.
-    this.emit({type: 'usage', turnId: turn.turnId, turn: turnUsage, cumulative: {...this.usage}});
+    // `turn: null` means the engine reported no usage for this turn, not zero.
+    this.emit({type: 'usage', turnId: turn.turnId, turn: turnUsage, cumulative: {...this.usage}, complete: this.usageComplete});
     const {status, stopConfirmed} = interpretEngineResult(this.options.engine.kind, result);
     if (turn.cancelReason) {
       const detail = {turnId: turn.turnId, status: 'interrupted', reason: turn.cancelReason,
