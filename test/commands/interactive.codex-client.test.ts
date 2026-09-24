@@ -381,6 +381,21 @@ describe('codexAsk cancellation (AGENT-RUNTIME-31)', () => {
       engineUsage: { requests: 2, inputTokens: 30, outputTokens: 5, cachedInputTokens: 2, totalTokens: 35 } });
   });
 
+  it('ignores a completion for another turn on the same thread while stopping', async () => {
+    const proc = await injected();
+    const controller = new AbortController();
+    const { result, isSettled } = await startTurn(proc, controller.signal);
+    controller.abort();
+    proc.reply(await waitForSent(proc, 'turn/interrupt'), {});
+    // A late completion of an earlier turn, and one with no turn id, prove nothing.
+    proc.notify('turn/completed', { threadId: 'thread-stop', turn: { id: 'turn-earlier', status: 'completed' } });
+    proc.notify('turn/completed', { threadId: 'thread-stop', turnId: 'turn-stop' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(isSettled()).toBe(false);
+    proc.notify('turn/completed', { threadId: 'thread-stop', turn: { id: 'turn-stop', status: 'interrupted' } });
+    await expect(result).resolves.toEqual({ text: '', status: 'interrupted', stopConfirmed: true });
+  });
+
   it('reports an unconfirmed stop when app-server never confirms within the bound', async () => {
     const proc = await injected();
     const controller = new AbortController();

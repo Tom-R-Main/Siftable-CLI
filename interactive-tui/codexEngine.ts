@@ -943,9 +943,15 @@ export async function codexAsk(
       }
 
       if (method === 'turn/completed') {
-        // After an interrupt, app-server's turn/completed is the only proof
-        // that the turn stopped.
+        // TurnCompletedNotification is {threadId, turn: Turn}; the turn id is
+        // turn.id (codex-cli 0.156.1 generate-ts). A completion for any other
+        // turn on this thread is ignored.
+        const completedId = (params.turn as Record<string, JsonValue> | undefined)?.id;
+        if (turnId && completedId !== turnId) return;
+        // After an interrupt, app-server's turn/completed for THIS turn is the
+        // only proof that the turn stopped.
         if (stopping) {
+          if (!turnId) return;
           finish({ text: assembled, status: 'interrupted', stopConfirmed: true });
           return;
         }
