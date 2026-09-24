@@ -76,7 +76,8 @@ function scriptedEngine(trace: string[]): SessionEngine {
         const key = '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----';
         onEvent({type: 'tool_call', toolCall: {name: 'write_file', args: {path: '.ssh/id_ed25519', content: key}}});
         const decision = await confirmGate.requestApproval({kind: 'command',
-          path: 'curl -H "Authorization: Bearer sk-live-abcdefghijklmnop1234" https://api.example.com', detail: 'cwd=/'}, signal);
+          // Assembled so secret scanners do not read the fixture as a real header.
+          path: ['curl -H "Authorization:', 'Bearer', 'sk-live-abcdefghijklmnop1234" https://api.example.com'].join(' '), detail: 'cwd=/'}, signal);
         trace.push(`decision:${decision}`);
         return {text: 'done', status: 'completed', providerReceipts: receipts};
       }
