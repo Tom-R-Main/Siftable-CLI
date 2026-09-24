@@ -365,6 +365,22 @@ describe('codexAsk cancellation (AGENT-RUNTIME-31)', () => {
     await expect(result).resolves.toEqual({ text: '', status: 'interrupted', stopConfirmed: true });
   });
 
+  it('sums per-response token usage notifications into engineUsage', async () => {
+    const proc = await injected();
+    const result = codexAsk('continue', () => {});
+    proc.reply(await waitForSent(proc, 'thread/start'), { thread: { id: 'thread-usage' } });
+    proc.reply(await waitForSent(proc, 'turn/start'), { turn: { id: 'turn-usage' } });
+    const breakdown = (input: number, output: number) => ({ totalTokens: input + output, inputTokens: input, cachedInputTokens: 1,
+      cacheWriteInputTokens: 0, outputTokens: output, reasoningOutputTokens: 0 });
+    for (const last of [breakdown(10, 2), breakdown(20, 3)]) {
+      proc.notify('thread/tokenUsage/updated', { threadId: 'thread-usage', turnId: 'turn-usage',
+        tokenUsage: { total: breakdown(99, 99), last, modelContextWindow: null } });
+    }
+    proc.notify('turn/completed', { threadId: 'thread-usage', turn: { id: 'turn-usage', status: 'completed' } });
+    await expect(result).resolves.toEqual({ text: '',
+      engineUsage: { requests: 2, inputTokens: 30, outputTokens: 5, cachedInputTokens: 2, totalTokens: 35 } });
+  });
+
   it('reports an unconfirmed stop when app-server never confirms within the bound', async () => {
     const proc = await injected();
     const controller = new AbortController();

@@ -123,6 +123,8 @@ export interface BrainAskResult {
   jobCleanup?: 'confirmed' | 'unknown';
   /** Set by engines that stop asynchronously (Codex): true only once the provider confirmed the turn ended. */
   stopConfirmed?: boolean;
+  /** Token usage an engine reports without provider receipts (Codex app-server notifications). */
+  engineUsage?: { requests: number; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number };
 }
 
 export type ChatInputPart =

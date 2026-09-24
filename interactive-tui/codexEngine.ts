@@ -901,6 +901,8 @@ export async function codexAsk(
 
   let assembled = '';
   let turnId: string | undefined;
+  // Sum of the per-response `last` breakdowns from thread/tokenUsage/updated.
+  let engineUsage: NonNullable<BrainAskResult['engineUsage']> | undefined;
   const stopTimeoutMs = opts.stopTimeoutMs ?? 10_000;
 
   return new Promise<BrainAskResult>((resolve) => {
@@ -915,13 +917,30 @@ export async function codexAsk(
       off();
       offDisconnect();
       if (opts.signal) opts.signal.removeEventListener('abort', onAbort);
-      resolve(result);
+      resolve(engineUsage ? { ...result, engineUsage } : result);
     };
 
     const off = c.onNotification((method, params) => {
       // Scope to this thread/turn (single turn at a time, but stay strict).
       if (params.threadId && params.threadId !== tid) return;
       if (turnId && params.turnId && params.turnId !== turnId) return;
+
+      if (method === 'thread/tokenUsage/updated') {
+        const last = (params.tokenUsage as Record<string, JsonValue> | undefined)?.last as Record<string, JsonValue> | undefined;
+        const count = (key: string) => {
+          const value = last?.[key];
+          return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+        };
+        if (last && typeof last === 'object') {
+          engineUsage ??= { requests: 0, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0 };
+          engineUsage.requests += 1;
+          engineUsage.inputTokens += count('inputTokens');
+          engineUsage.outputTokens += count('outputTokens');
+          engineUsage.cachedInputTokens += count('cachedInputTokens');
+          engineUsage.totalTokens += count('totalTokens');
+        }
+        return;
+      }
 
       if (method === 'turn/completed') {
         // After an interrupt, app-server's turn/completed is the only proof
