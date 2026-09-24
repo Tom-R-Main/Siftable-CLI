@@ -2703,6 +2703,31 @@ function raceAbort(work: Promise<unknown>, signal: AbortSignal): Promise<'done' 
   });
 }
 
+type PreTurnOutcome<T> = {value: T} | {result: BrainAskResult};
+
+/**
+ * Await one piece of pre-turn work (anything between prompt acceptance and the
+ * start of a model loop) under cancellation. On cancel, stop waiting at once;
+ * the stop is confirmed only if that work settles within the pre-turn bound,
+ * since no model turn has started. Rejections of `work` propagate as before.
+ */
+async function awaitPreTurn<T>(work: Promise<T>, signal: AbortSignal | undefined, stage: string): Promise<PreTurnOutcome<T>> {
+  if (!signal) return {value: await work};
+  if (await raceAbort(work, signal) === 'done') {
+    const value = await work;
+    return signal.aborted ? {result: preTurnStop(stage, true)} : {value};
+  }
+  void work.catch(() => undefined);
+  return {result: preTurnStop(stage, await settlesWithin(work, preTurnStopBoundMs))};
+}
+
+function preTurnStop(stage: string, confirmed: boolean): BrainAskResult {
+  return confirmed
+    ? {text: '', status: 'interrupted', stopConfirmed: true, error: `Turn cancelled during ${stage}`}
+    : {text: '', status: 'interrupted', stopConfirmed: false,
+      error: `Turn cancelled during ${stage}; it did not stop within ${preTurnStopBoundMs} ms`};
+}
+
 /** True when work settles within ms; false when the bound passes first. */
 function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -2847,21 +2872,14 @@ async function agentHarnessAskTurn(
       }
     })()
     : undefined;
-  if (preflight && signal) {
-    const outcome = await raceAbort(preflight, signal);
-    if (outcome === 'aborted') {
-      // No model turn was started. The stop is proven only once the
-      // preflight's own work has ended, within the stop bound.
-      const ended = await settlesWithin(preflight, preTurnStopBoundMs);
-      return ended
-        ? {text: '', status: 'interrupted', stopConfirmed: true, error: 'Turn cancelled during explorer preparation'}
-        : {text: '', status: 'interrupted', stopConfirmed: false,
-          error: `Turn cancelled during explorer preparation; the explorer did not stop within ${preTurnStopBoundMs} ms`};
-    }
-  } else if (preflight) await preflight;
+  if (preflight) {
+    // The preflight catches its own failures, so it never rejects.
+    const settled = await awaitPreTurn(preflight, signal, 'explorer preparation');
+    if ('result' in settled) return settled.result;
+  }
 
   // Cancelled before or right after a preflight that has ended: no model turn started.
-  if (signal?.aborted) return {text: '', status: 'interrupted', stopConfirmed: true, error: 'Turn cancelled during explorer preparation'};
+  if (signal?.aborted) return preTurnStop('explorer preparation', true);
 
   // Codex engine: when the active provider is `codex`, drive the OpenAI
   // `codex app-server` sidecar (ChatGPT-subscription auth) instead of the
@@ -2869,7 +2887,9 @@ async function agentHarnessAskTurn(
   // (codexEngine type-imports this module).
   if (currentProvider === CODEX_PROVIDER) {
     if (options?.completionVerification) return {text: '', status: 'failed', error: 'Configured completion verification requires the local Sift harness.'};
-    const { codexAsk } = await import('./codexEngine');
+    const loaded = await awaitPreTurn(import('./codexEngine'), signal, 'Codex engine load');
+    if ('result' in loaded) return loaded.result;
+    const { codexAsk } = loaded.value;
     // Pass the model only when it isn't the harness default, so a fresh
     // /codex switch lets app-server pick its own default model.
     const model = currentModel && currentModel !== DEFAULT_AGENT_HARNESS_MODEL ? currentModel : undefined;
@@ -2882,7 +2902,11 @@ async function agentHarnessAskTurn(
 
   let agent: Awaited<ReturnType<typeof getAgent>>;
   try {
-    agent = await getAgent();
+    // Agent construction and the durable session-mailbox drain run before
+    // the model loop, so they obey the same pre-turn cancellation rule.
+    const built = await awaitPreTurn(getAgent(), signal, 'agent setup');
+    if ('result' in built) return built.result;
+    agent = built.value;
   } catch (err) {
     return {
       text: '',

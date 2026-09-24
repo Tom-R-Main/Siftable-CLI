@@ -21,7 +21,10 @@ import {
   __setCodexClientForTests,
   type CodexSpawnFn,
 } from '../../interactive-tui/codexEngine';
-import {closeBrain, setBrainModel, getBrainModel, agentHarnessAsk, __setExplorerReportBuilderForTests, __setPreTurnStopBoundForTests} from '../../interactive-tui/brain';
+import {closeBrain, setBrainModel, getBrainModel, agentHarnessAsk, __setExplorerReportBuilderForTests, __setPreTurnStopBoundForTests,
+  __resetBrainAgentsForTests, setAgentConversationKey} from '../../interactive-tui/brain';
+import {enqueueSessionInstruction} from '../../interactive-tui/sessionMailbox';
+import * as bundledHarness from '../../interactive-tui/agent-harness';
 import {SessionServer, WireEventLog} from '../../interactive-tui/sessionServer';
 import {JsonlSessionEventStore} from '../../interactive-tui/agent-harness/framework/session';
 import * as confirmGateModule from '../../interactive-tui/confirmGate';
@@ -722,6 +725,112 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
       .toMatchObject({type: 'turn.stopped', confirmed: true, jobCleanup: 'confirmed'});
     expect(s.terminals()).toHaveLength(1);
     await s.server.shutdown('client');
+  });
+
+  describe('agent setup and the session mailbox drain', () => {
+    const saved: Record<string, string | undefined> = {};
+    let key = '';
+    beforeEach(() => {
+      for (const name of ['SIFT_SESSION_MAILBOX_ROOT', 'SIFT_SESSION_EVENT_ROOT']) saved[name] = process.env[name];
+      process.env.SIFT_SESSION_MAILBOX_ROOT = join(root, 'mailbox');
+      process.env.SIFT_SESSION_EVENT_ROOT = join(root, 'events');
+      key = `preturn-${Math.random().toString(36).slice(2)}`;
+      chatCalls = 0;
+      setAgentConversationKey(key);
+      setBrainModel({provider: 'meta', model: 'fixture'});
+    });
+    afterEach(() => {
+      delete (globalThis as any).__SIFT_AGENT_HARNESS__;
+      __resetBrainAgentsForTests();
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[name]; else process.env[name] = value;
+      }
+    });
+
+    /** The real tool helpers, with a scripted agent and no durable journal. */
+    function harnessWithoutJournal() {
+      const {JsonlSessionEventStore: _journal, ...rest} = bundledHarness as Record<string, unknown>;
+      return rest;
+    }
+    /** A minimal harness agent whose chat answers 'ok' at once. */
+    let chatCalls = 0;
+    function fakeAgent(ingest?: () => Promise<boolean>) {
+      return {
+        async *chat() { chatCalls += 1; yield {type: 'done', result: {text: 'ok', content: 'ok'}}; },
+        ...(ingest ? {ingestExternalMessage: ingest} : {}),
+        async close() {},
+      };
+    }
+    /** Resolves `release` some ms after the turn's signal would abort. */
+    function later<T>() {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>(done => { resolve = done; });
+      return {promise, resolve};
+    }
+
+    async function cancelDuringSetup(s: ReturnType<typeof session>, stalled: () => boolean) {
+      await s.send({type: 'initialize', protocolVersion: 1});
+      const turn = await s.send({type: 'prompt', input: 'say hello'});
+      const deadline = Date.now() + 2_000;
+      while (!stalled() && Date.now() < deadline) await new Promise(r => setTimeout(r, 5));
+      expect(stalled()).toBe(true);
+      const started = Date.now();
+      await s.send({type: 'cancel'});
+      const terminal = await s.waitFor(line => line.turnId === turn.turnId && String(line.type).startsWith('turn.stop'));
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(s.terminals()).toHaveLength(1);
+      // Let any late settlement run: the cancelled turn must never reach the model loop.
+      await new Promise(r => setTimeout(r, 100));
+      expect(chatCalls).toBe(0);
+      return terminal;
+    }
+
+    it('a cancel during a stalled getAgent() is confirmed once construction settles; the next prompt runs', async () => {
+      __setPreTurnStopBoundForTests(1_000);
+      const built = later<unknown>();
+      let constructing = false;
+      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: () => { constructing = true; return built.promise; }};
+      const s = session('harness');
+      const cancel = cancelDuringSetup(s, () => constructing);
+      setTimeout(() => built.resolve(fakeAgent()), 50);
+      expect(await cancel).toMatchObject({type: 'turn.stopped', confirmed: true});
+      const next = await s.send({type: 'prompt', input: 'say hello again'});
+      expect(await s.waitFor(line => line.turnId === next.turnId && line.type === 'turn.completed')).toMatchObject({text: 'ok'});
+      await s.server.shutdown('client');
+    });
+
+    it('a getAgent() that never settles is unconfirmed within the bound', async () => {
+      __setPreTurnStopBoundForTests(60);
+      let constructing = false;
+      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: () => { constructing = true; return new Promise(() => {}); }};
+      const s = session('harness');
+      expect(await cancelDuringSetup(s, () => constructing)).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
+      expect(await s.send({type: 'prompt', input: 'say hello'})).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
+      await s.server.shutdown('client');
+    });
+
+    it('a cancel during a stalled mailbox drain is confirmed once the drain settles', async () => {
+      __setPreTurnStopBoundForTests(1_000);
+      enqueueSessionInstruction(key, 'queued instruction');
+      const ingested = later<boolean>();
+      let draining = false;
+      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: async () => fakeAgent(() => { draining = true; return ingested.promise; })};
+      const s = session('harness');
+      const cancel = cancelDuringSetup(s, () => draining);
+      setTimeout(() => ingested.resolve(true), 50);
+      expect(await cancel).toMatchObject({type: 'turn.stopped', confirmed: true});
+      await s.server.shutdown('client');
+    });
+
+    it('a mailbox drain that never settles is unconfirmed within the bound', async () => {
+      __setPreTurnStopBoundForTests(60);
+      enqueueSessionInstruction(key, 'queued instruction');
+      let draining = false;
+      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: async () => fakeAgent(() => { draining = true; return new Promise(() => {}); })};
+      const s = session('harness');
+      expect(await cancelDuringSetup(s, () => draining)).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
+      await s.server.shutdown('client');
+    });
   });
 
   it('harness: a stuck explorer cannot hold a cancel past the bound', async () => {

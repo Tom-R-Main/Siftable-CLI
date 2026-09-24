@@ -135,6 +135,12 @@ seconds), no model turn was started and the stop is confirmed (`turn.stopped`),
 so follow-up prompts are accepted. Otherwise the turn ends with
 `turn.stop_unconfirmed`.
 
+The same rule covers every other wait between prompt acceptance and the start
+of the model loop: harness agent construction and the durable session-mailbox
+drain (`getAgent()`), and loading the Codex engine. Each is raced against the
+cancel. The stop is confirmed only if that work settles within the bound, and
+a cancelled turn never enters the model loop.
+
 Cancellation is bounded during Codex setup too: spawn and `initialize`,
 `account/read`, and `thread/start`. If a cancel arrives before `turn/start`
 is sent, no turn exists. The app-server child is drained (SIGTERM, then
