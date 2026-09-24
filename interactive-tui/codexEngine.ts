@@ -944,26 +944,16 @@ export async function codexAsk(
 
       if (method === 'turn/completed') {
         // TurnCompletedNotification is {threadId, turn: Turn}; the turn id is
-        // turn.id (codex-cli 0.156.1 generate-ts). A completion for any other
-        // turn on this thread is ignored.
+        // turn.id (codex-cli 0.156.1 generate-ts). Only a completion whose id
+        // equals this turn's settles it. Before the turn/start ACK supplies
+        // the id, completions are held and judged when the ACK arrives.
         const completedId = (params.turn as Record<string, JsonValue> | undefined)?.id;
-        if (turnId && completedId !== turnId) return;
-        // After an interrupt, app-server's turn/completed for THIS turn is the
-        // only proof that the turn stopped.
-        if (stopping) {
-          if (!turnId) return;
-          finish({ text: assembled, status: 'interrupted', stopConfirmed: true });
+        if (typeof completedId !== 'string') return;
+        if (!turnId) {
+          earlyCompletions.set(completedId, params);
           return;
         }
-        const turn = params.turn as Record<string, JsonValue> | undefined;
-        const status = turn && typeof turn.status === 'string' ? turn.status : 'completed';
-        onEvent({ type: 'done', message: { content: assembled } });
-        if (status === 'failed') {
-          const err = (turn?.error as { message?: string } | undefined)?.message;
-          finish({ text: assembled, error: err || 'codex turn failed' });
-        } else {
-          finish({ text: assembled });
-        }
+        if (completedId === turnId) completeTurn(params);
         return;
       }
 
@@ -972,6 +962,34 @@ export async function codexAsk(
       if (event.type === 'token' && typeof event.content === 'string') assembled += event.content;
       onEvent(event);
     });
+
+    const earlyCompletions = new Map<string, Record<string, JsonValue>>();
+    const completeTurn = (params: Record<string, JsonValue>) => {
+      // After an interrupt, app-server's turn/completed for THIS turn is the
+      // only proof that the turn stopped.
+      if (stopping) {
+        finish({ text: assembled, status: 'interrupted', stopConfirmed: true });
+        return;
+      }
+      const turn = params.turn as Record<string, JsonValue> | undefined;
+      const error = (turn?.error as { message?: string } | null | undefined)?.message;
+      onEvent({ type: 'done', message: { content: assembled } });
+      // TurnStatus (codex-cli 0.156.1): completed | interrupted | failed | inProgress.
+      switch (turn?.status) {
+        case 'completed':
+          finish({ text: assembled, status: 'completed' });
+          return;
+        case 'interrupted':
+          finish({ text: assembled, status: 'interrupted', error: error || 'Codex turn was interrupted' });
+          return;
+        case 'failed':
+          finish({ text: assembled, status: 'failed', error: error || 'codex turn failed' });
+          return;
+        default:
+          // inProgress or an unknown value on a completion is a protocol fault.
+          finish({ text: assembled, status: 'failed', error: `Codex reported turn/completed with status ${String(turn?.status)}` });
+      }
+    };
 
     offDisconnect = c.onDisconnect((err) => {
       // A disconnect is not evidence that the turn stopped.
@@ -1017,10 +1035,18 @@ export async function codexAsk(
       .then((ack) => {
         const turn = ack.turn as Record<string, JsonValue> | undefined;
         if (turn && typeof turn.id === 'string') turnId = turn.id;
-        if (stopping && !settled) {
-          if (turnId) interrupt();
-          else finish({ text: assembled, status: 'interrupted', stopConfirmed: false, error: 'Codex turn/start returned no turn id to interrupt' });
+        if (settled) return;
+        if (!turnId) {
+          // Without an id no completion can ever be matched to this turn.
+          finish(stopping
+            ? { text: assembled, status: 'interrupted', stopConfirmed: false, error: 'Codex turn/start returned no turn id to interrupt' }
+            : { text: assembled, status: 'failed', error: 'Codex turn/start returned no turn id' });
+          return;
         }
+        const early = earlyCompletions.get(turnId);
+        earlyCompletions.clear();
+        if (stopping) interrupt();
+        if (early) completeTurn(early);
       })
       .catch((err) => {
         const error = err instanceof Error ? err.message : String(err);

@@ -377,7 +377,7 @@ describe('codexAsk cancellation (AGENT-RUNTIME-31)', () => {
         tokenUsage: { total: breakdown(99, 99), last, modelContextWindow: null } });
     }
     proc.notify('turn/completed', { threadId: 'thread-usage', turn: { id: 'turn-usage', status: 'completed' } });
-    await expect(result).resolves.toEqual({ text: '',
+    await expect(result).resolves.toEqual({ text: '', status: 'completed',
       engineUsage: { requests: 2, inputTokens: 30, outputTokens: 5, cachedInputTokens: 2, totalTokens: 35 } });
   });
 
@@ -395,6 +395,53 @@ describe('codexAsk cancellation (AGENT-RUNTIME-31)', () => {
     proc.notify('turn/completed', { threadId: 'thread-stop', turn: { id: 'turn-stop', status: 'interrupted' } });
     await expect(result).resolves.toEqual({ text: '', status: 'interrupted', stopConfirmed: true });
   });
+
+  it('holds completions that arrive before the turn/start ACK and settles only on a matching id', async () => {
+    const proc = await injected();
+    let settled = false;
+    const result = codexAsk('continue', () => {});
+    void result.then(() => { settled = true; });
+    proc.reply(await waitForSent(proc, 'thread/start'), { thread: { id: 'thread-early' } });
+    const turnStartId = await waitForSent(proc, 'turn/start');
+    // A late completion of an earlier turn arrives before our ACK.
+    proc.notify('turn/completed', { threadId: 'thread-early', turn: { id: 'turn-previous', status: 'completed' } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    proc.reply(turnStartId, { turn: { id: 'turn-new' } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+    // Our own completion racing ahead of the ACK is honoured once the ACK names it.
+    proc.notify('turn/completed', { threadId: 'thread-early', turn: { id: 'turn-new', status: 'completed' } });
+    await expect(result).resolves.toEqual({ text: '', status: 'completed' });
+  });
+
+  it('settles a completion that arrived before its ACK once the ACK names it', async () => {
+    const proc = await injected();
+    const result = codexAsk('continue', () => {});
+    proc.reply(await waitForSent(proc, 'thread/start'), { thread: { id: 'thread-race' } });
+    const turnStartId = await waitForSent(proc, 'turn/start');
+    proc.notify('turn/completed', { threadId: 'thread-race', turn: { id: 'turn-race', status: 'completed' } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    proc.reply(turnStartId, { turn: { id: 'turn-race' } });
+    await expect(result).resolves.toEqual({ text: '', status: 'completed' });
+  });
+
+  for (const [status, expected] of [
+    ['completed', { status: 'completed' }],
+    ['interrupted', { status: 'interrupted', error: 'Codex turn was interrupted' }],
+    ['failed', { status: 'failed', error: 'model overloaded' }],
+    ['inProgress', { status: 'failed', error: 'Codex reported turn/completed with status inProgress' }],
+  ] as const) {
+    it(`maps a ${status} turn/completed explicitly`, async () => {
+      const proc = await injected();
+      const result = codexAsk('continue', () => {});
+      proc.reply(await waitForSent(proc, 'thread/start'), { thread: { id: 'thread-status' } });
+      proc.reply(await waitForSent(proc, 'turn/start'), { turn: { id: 'turn-status' } });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      proc.notify('turn/completed', { threadId: 'thread-status', turn: { id: 'turn-status', status,
+        error: status === 'failed' ? { message: 'model overloaded' } : null } });
+      await expect(result).resolves.toEqual({ text: '', ...expected });
+    });
+  }
 
   it('reports an unconfirmed stop when app-server never confirms within the bound', async () => {
     const proc = await injected();

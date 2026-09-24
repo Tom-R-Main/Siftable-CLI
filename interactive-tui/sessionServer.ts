@@ -220,8 +220,15 @@ type TurnStatus = 'completed' | 'failed' | 'interrupted' | 'limit_reached';
 /** Read one engine's result into a turn status and whether a stop is proven. */
 export function interpretEngineResult(kind: SessionEngine['kind'], result: BrainAskResult): {status: TurnStatus; stopConfirmed: boolean} {
   if (kind === 'codex') {
-    const status: TurnStatus = result.status === 'interrupted' ? 'interrupted' : result.status === 'failed' || result.error ? 'failed'
-      : result.status === 'limit_reached' ? 'limit_reached' : 'completed';
+    // codexAsk maps app-server's TurnStatus onto these explicitly. A result
+    // with no status (its pre-turn failures) never counts as completed.
+    let status: TurnStatus;
+    switch (result.status) {
+      case 'completed': status = result.error ? 'failed' : 'completed'; break;
+      case 'interrupted': status = 'interrupted'; break;
+      case 'limit_reached': status = 'limit_reached'; break;
+      default: status = 'failed';
+    }
     return {status, stopConfirmed: result.stopConfirmed === true};
   }
   const status: TurnStatus = result.status === 'limit_reached' ? 'limit_reached' : result.status === 'interrupted' ? 'interrupted'

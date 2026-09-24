@@ -123,9 +123,20 @@ on `turn.id` (`TurnCompletedNotification` is `{threadId, turn}` in codex-cli
 is not enough. If Codex does not confirm within 10 seconds, or disconnects
 first, the turn ends with `turn.stop_unconfirmed` instead.
 
-Results are read per engine. The harness always reports a status. Codex
-reports none when a turn completes, so a Codex result with no error is
-`turn.completed`.
+Results are read per engine. The harness always reports a status. For Codex,
+a turn settles only on a `turn/completed` whose `turn.id` equals the id from
+the `turn/start` acknowledgement. Completions that arrive before the
+acknowledgement are held, and any whose id does not match are discarded.
+app-server's `TurnStatus` (codex-cli 0.156.1: `completed`, `interrupted`,
+`failed`, `inProgress`) maps explicitly:
+
+- `completed` gives `turn.completed`.
+- `interrupted` (not requested by this client) gives `turn.interrupted`.
+- `failed` gives `turn.failed`.
+- `inProgress`, or any unknown value, on a completion is a protocol fault and
+  gives `turn.failed`.
+
+A Codex result with no status is never a success.
 
 Usage is also read per engine. The harness sums its provider receipts. Codex
 sums the per-response `last` breakdowns from app-server's

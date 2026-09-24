@@ -28,16 +28,19 @@ function codexEngine(trace: string[]): SessionEngine {
       if (input === 'codex ok') {
         onEvent({type: 'token', content: 'hi'});
         onEvent({type: 'done', message: {content: 'hi'}});
-        return {text: 'hi'};
+        return {text: 'hi', status: 'completed'};
       }
-      if (input === 'codex error') return {text: '', error: 'codex turn failed'};
+      if (input === 'codex error') return {text: '', status: 'failed', error: 'codex turn failed'};
+      if (input === 'codex server interrupted') return {text: 'part', status: 'interrupted', error: 'Codex turn was interrupted',
+        engineUsage: {requests: 1, inputTokens: 3, outputTokens: 1, cachedInputTokens: 0, totalTokens: 4}};
+      if (input === 'codex statusless') return {text: 'hi'};
       if (input === 'codex usage then unconfirmed') {
         await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), {once: true}));
         trace.push('loop-stopped');
         return {text: '', status: 'interrupted', stopConfirmed: false, error: 'Codex did not confirm the turn stopped within 10000 ms',
           engineUsage: {requests: 1, inputTokens: 7, outputTokens: 1, cachedInputTokens: 0, totalTokens: 8}};
       }
-      if (input === 'codex usage') return {text: 'hi', engineUsage: {requests: 2, inputTokens: 30, outputTokens: 5, cachedInputTokens: 10, totalTokens: 35}};
+      if (input === 'codex usage') return {text: 'hi', status: 'completed', engineUsage: {requests: 2, inputTokens: 30, outputTokens: 5, cachedInputTokens: 10, totalTokens: 35}};
       await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), {once: true}));
       trace.push('loop-stopped');
       return {text: 'partial', status: 'interrupted', stopConfirmed: input === 'codex hang confirmed'};
@@ -581,6 +584,19 @@ describe('session server protocol', () => {
     await h.waitFor(line => line.type === 'turn.stop_unconfirmed');
     expect(h.events().filter(event => event.type === 'usage')[1]).toMatchObject({turn: {requests: 1, totalTokens: 8}, complete: false});
     expect((await h.send({type: 'usage'})).usage).toMatchObject({complete: false, session: {requests: 3, totalTokens: 43}});
+    await h.send({type: 'shutdown'});
+  });
+
+  test('a Codex turn app-server interrupted is turn.interrupted with partial usage; statusless is never success', async () => {
+    const h = await harness({engine: 'codex'});
+    await h.send({type: 'initialize', protocolVersion: 1});
+    const turn = await h.send({type: 'prompt', input: 'codex server interrupted'});
+    const terminal = await h.waitFor(line => line.turnId === turn.turnId && String(line.type).startsWith('turn.') && line.type !== 'turn.started');
+    expect(terminal).toMatchObject({type: 'turn.interrupted', status: 'interrupted'});
+    expect(h.events().find(event => event.type === 'usage')).toMatchObject({turn: {requests: 1}, complete: false});
+    const bare = await h.send({type: 'prompt', input: 'codex statusless'});
+    expect(await h.waitFor(line => line.turnId === bare.turnId && String(line.type).startsWith('turn.') && line.type !== 'turn.started'))
+      .toMatchObject({type: 'turn.failed'});
     await h.send({type: 'shutdown'});
   });
 });
