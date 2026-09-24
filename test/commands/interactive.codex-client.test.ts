@@ -19,11 +19,12 @@ import {
   getCodexAccount,
   __resetCodexThreadsForTests,
   __setCodexClientForTests,
+  __setCodexSpawnForTests,
   type CodexSpawnFn,
 } from '../../interactive-tui/codexEngine';
 import {closeBrain, setBrainModel, getBrainModel, agentHarnessAsk, __setExplorerReportBuilderForTests, __setPreTurnStopBoundForTests,
   __resetBrainAgentsForTests, setAgentConversationKey, __setProcessJobsForTests} from '../../interactive-tui/brain';
-import {enqueueSessionInstruction} from '../../interactive-tui/sessionMailbox';
+import {enqueueSessionInstruction, sessionJournalIdForConversation} from '../../interactive-tui/sessionMailbox';
 import * as bundledHarness from '../../interactive-tui/agent-harness';
 import {SessionServer, WireEventLog} from '../../interactive-tui/sessionServer';
 import {JsonlSessionEventStore} from '../../interactive-tui/agent-harness/framework/session';
@@ -580,6 +581,38 @@ describe('codexAsk cancellation during app-server setup (AGENT-RUNTIME-31)', () 
     });
   }
 
+  it('a cancelled setup never spawns a replacement app-server after the drain', async () => {
+    const spawned: FakeCodexProc[] = [];
+    __setCodexSpawnForTests(() => { const proc = new FakeCodexProc(); spawned.push(proc); return proc as unknown as ReturnType<CodexSpawnFn>; });
+    try {
+      // A client whose handshake completes only after the cancel and the drain.
+      let resolveReady!: () => void;
+      const ready = new Promise<void>(resolve => { resolveReady = resolve; });
+      const lateClient = {
+        ensureReady: () => ready,
+        close: async () => {},
+        shutdown: () => {},
+        hasLiveChild: () => false,
+        setApprover: () => {},
+        request: async () => ({}),
+        onNotification: () => () => {},
+        onDisconnect: () => () => {},
+      };
+      __setCodexClientForTests(lateClient as unknown as CodexClient, { type: 'chatgpt', email: 'test@example.com' });
+      const controller = new AbortController();
+      const result = codexAsk('continue', () => {}, { signal: controller.signal, stopTimeoutMs: 500 });
+      await new Promise(r => setTimeout(r, 10));
+      controller.abort();
+      setTimeout(resolveReady, 30);
+      const outcome = await result;
+      await new Promise(r => setTimeout(r, 100));
+      expect(spawned).toHaveLength(0);
+      expect(outcome).toMatchObject({ status: 'interrupted', stopConfirmed: true });
+    } finally {
+      __setCodexSpawnForTests(null);
+    }
+  });
+
   it('session: cancel during a stalled initialize ends in exactly one terminal stop, and shutdown completes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sift-codex-setup-'));
     try {
@@ -869,6 +902,22 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
       expect(closed).toHaveLength(1);
       expect(closed[0].error).toContain('Process jobs did not close within 60 ms');
       expect(closed[0].error).toContain('Agent session did not close within 60 ms');
+    });
+
+    it('shutdown keeps the journal lease while a timed-out mailbox drain can still write', async () => {
+      __setPreTurnStopBoundForTests(60);
+      enqueueSessionInstruction(key, 'queued instruction');
+      let draining = false;
+      // Real journal store this time, so the lease is actually taken.
+      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...bundledHarness, createChatAgent: async () => fakeAgent(() => { draining = true; return new Promise(() => {}); })};
+      const s = session('harness', () => closeBrain());
+      expect(await cancelDuringSetup(s, () => draining)).toMatchObject({type: 'turn.stop_unconfirmed'});
+      const response = await s.send({type: 'shutdown'});
+      expect(response).toMatchObject({exitCode: 1});
+      expect(s.lines.find(line => line.type === 'session.closed')?.error).toContain('session journal lease retained');
+      // Another process must not be able to take the journal the drain may still append to.
+      const store = new (bundledHarness as any).JsonlSessionEventStore({rootDir: process.env.SIFT_SESSION_EVENT_ROOT});
+      expect(() => store.acquireLease(sessionJournalIdForConversation(key))).toThrow();
     });
 
     it('a mailbox drain that never settles is unconfirmed within the bound', async () => {

@@ -197,6 +197,11 @@ export class CodexClient {
     this.spawnProc = spawnProc;
   }
 
+  /** True while any app-server child this client spawned has not closed. */
+  hasLiveChild(): boolean {
+    return this.ownedProcs.size > 0;
+  }
+
   /** Install the approval handler (wired to the confirm gate by getClient). */
   setApprover(fn: Approver): void {
     this.approver = fn;
@@ -539,7 +544,7 @@ function approvalPolicyNow(): 'never' | 'on-request' {
 async function getClient(): Promise<CodexClient | null> {
   if (closingCodex) return null;
   if (!client) {
-    client = new CodexClient();
+    client = new CodexClient(spawnOverride ?? undefined);
     // Route codex's approval requests through the shared 4-way confirm gate.
     client.setApprover((req, signal) =>
       requestApproval({
@@ -589,6 +594,12 @@ export function shutdownCodex(): void {
 /** Test seam: drop all cached per-context threads without touching the client. */
 export function __resetCodexThreadsForTests(): void {
   threads.clear();
+}
+
+let spawnOverride: CodexSpawnFn | null = null;
+/** Test seam: the spawn function used when getClient() has to create a client. */
+export function __setCodexSpawnForTests(spawn: CodexSpawnFn | null): void {
+  spawnOverride = spawn;
 }
 
 /** Test seam: install a ready injected client and authenticated account. */
@@ -883,9 +894,13 @@ export function isCodexReasoningEffort(effort: string | undefined): effort is st
 async function abortCodexSetup(setup: Promise<unknown>, stopTimeoutMs: number): Promise<BrainAskResult> {
   void setup.catch(() => undefined);
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const drained = closeCodex().then(() => true, () => false);
+  // Confirmed only when the child is drained, the setup call itself has
+  // settled (so it cannot start anything later), and no app-server is alive.
+  const stopped = closeCodex()
+    .then(() => setup.then(() => undefined, () => undefined))
+    .then(() => !client || !client.hasLiveChild(), () => false);
   const bound = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), stopTimeoutMs); });
-  const confirmed = await Promise.race([drained, bound]);
+  const confirmed = await Promise.race([stopped, bound]);
   clearTimeout(timer);
   return confirmed
     ? { text: '', status: 'interrupted', stopConfirmed: true }
@@ -924,13 +939,20 @@ export async function codexAsk(
   // Setup (spawn + initialize, account/read, thread/start) can stall inside
   // app-server. Race it against cancellation so a cancel is always bounded.
   type Setup = { ok: true; c: CodexClient; tid: string } | { ok: false; result: BrainAskResult };
+  // Each step re-checks cancellation first: after a cancel, setup must never
+  // reach getClient() (which could spawn a replacement app-server once the
+  // drain lifts its closing guard) or send any further request.
+  const cancelled: Setup = { ok: false, result: { text: '', status: 'interrupted', stopConfirmed: true } };
   const setup = (async (): Promise<Setup> => {
+    if (opts.signal?.aborted) return cancelled;
     const c = await getClient();
+    if (opts.signal?.aborted) return cancelled;
     if (!c) {
       return { ok: false, result: { text: '', status: 'failed',
         error: 'Codex CLI not found. Install it (https://developers.openai.com/codex), then retry.' } };
     }
     const account = await getCodexAccount();
+    if (opts.signal?.aborted) return cancelled;
     if (!account) return { ok: false, result: { text: '', status: 'failed', error: 'Not signed in to Codex. Run /codex login.' } };
     try {
       return { ok: true, c, tid: await ensureThread(c, opts.model) };
@@ -946,6 +968,7 @@ export async function codexAsk(
   const first = await Promise.race([setup, setupAborted]);
   opts.signal?.removeEventListener('abort', onSetupAbort);
   if (first === 'aborted') return abortCodexSetup(setup, stopTimeoutMs);
+  if (opts.signal?.aborted) return abortCodexSetup(setup, stopTimeoutMs);
   // Discriminate by property: the TUI tsconfig is not strict, so `ok` does not narrow.
   if ('result' in first) return first.result;
   const { c, tid } = first;

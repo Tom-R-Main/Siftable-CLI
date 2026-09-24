@@ -3031,26 +3031,35 @@ export async function closeBrain(): Promise<void> {
   // (an agent still being built, a stalled mailbox drain) or a hung job
   // manager must not hold shutdown open. A timeout is a failure; the late
   // result is discarded.
-  const bounded = (work: Promise<unknown> | undefined, what: string) => work === undefined ? undefined
+  // Work that can still append to a session journal after its timeout.
+  let journalWriterUnsettled = false;
+  const bounded = (work: Promise<unknown> | undefined, what: string, writesJournal = false) => work === undefined ? undefined
     : new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`${what} did not close within ${preTurnStopBoundMs} ms`)), preTurnStopBoundMs);
+      const timer = setTimeout(() => {
+        if (writesJournal) journalWriterUnsettled = true;
+        reject(new Error(`${what} did not close within ${preTurnStopBoundMs} ms`));
+      }, preTurnStopBoundMs);
       work.then((value) => { clearTimeout(timer); resolve(value); }, (error) => { clearTimeout(timer); reject(error); });
     });
   const settled = await Promise.allSettled([
     bounded(processJobs?.close(), 'Process jobs'),
     bounded(codexClose, 'Codex engine'),
-    ...cached.map((pending) => bounded((async () => (await pending).close?.())(), 'Agent session')),
-    ...[...agentRetirements.values()].map((retirement) => bounded(retirement, 'Agent retirement')),
-    ...[...mailboxDrains.values()].map((drain) => bounded(drain, 'Session mailbox drain')),
+    ...cached.map((pending) => bounded((async () => (await pending).close?.())(), 'Agent session', true)),
+    ...[...agentRetirements.values()].map((retirement) => bounded(retirement, 'Agent retirement', true)),
+    ...[...mailboxDrains.values()].map((drain) => bounded(drain, 'Session mailbox drain', true)),
   ]);
   // A failed bounded cleanup is not release of process ownership. Preserve the
   // manager so another shutdown attempt can reconcile and retry its jobs.
   if (settled[0].status === 'fulfilled') processJobs = undefined;
   processJobsClosing = false;
-  releaseAllSessionJournalLeases();
+  // Never hand a journal to another process while work that can still append
+  // to it is running. The lease stays held; the process-exit cleanup releases
+  // it once this process (and that work) is gone.
+  if (!journalWriterUnsettled) releaseAllSessionJournalLeases();
   const failures = settled.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
   if (failures.length) {
     const reasons = failures.map(result => result.reason instanceof Error ? result.reason.message : String(result.reason));
+    if (journalWriterUnsettled) reasons.push('session journal lease retained until the process exits');
     throw new AggregateError(failures.map(result => result.reason), `One or more agent sessions failed to close: ${reasons.join('; ')}`);
   }
 }
