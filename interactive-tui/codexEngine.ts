@@ -893,6 +893,25 @@ async function abortCodexSetup(setup: Promise<unknown>, stopTimeoutMs: number): 
       error: `Cancelled during Codex setup; app-server was not confirmed closed within ${stopTimeoutMs} ms` };
 }
 
+/**
+ * The turn a notification belongs to, per the codex-cli 0.156.1 app-server
+ * schema (generate-ts): turn/started and turn/completed carry `turn: Turn`
+ * (`turn.id`); every other turn-scoped notification carries `turnId`. A
+ * turn-bearing notification without a usable id returns null (never matches);
+ * thread-scoped ones (no turn field, or `turnId: null` as on hooks and goals)
+ * return undefined.
+ */
+export function notificationTurnId(method: string, params: Record<string, JsonValue>): string | null | undefined {
+  if (method === 'turn/started' || method === 'turn/completed') {
+    const id = (params.turn as Record<string, JsonValue> | undefined)?.id;
+    return typeof id === 'string' ? id : null;
+  }
+  if (typeof params.turnId === 'string') return params.turnId;
+  // Usage is always turn-scoped in the schema; one without a turn id is unattributable.
+  if (method === 'thread/tokenUsage/updated') return null;
+  return undefined;
+}
+
 export async function codexAsk(
   input: ChatInput,
   onEvent: (event: BrainEvent) => void,
@@ -952,42 +971,37 @@ export async function codexAsk(
     };
 
     const off = c.onNotification((method, params) => {
-      // Scope to this thread/turn (single turn at a time, but stay strict).
+      // Scope to this thread (single turn at a time, but stay strict).
       if (params.threadId && params.threadId !== tid) return;
-      if (turnId && params.turnId && params.turnId !== turnId) return;
+      const scopedId = notificationTurnId(method, params);
+      // Thread-scoped notifications (no turn id, or turnId: null) pass through.
+      if (scopedId === undefined) return dispatch(method, params);
+      // Before the turn/start ACK names this turn, a turn-scoped notification
+      // may belong to the previous turn on the thread: hold it, in order, and
+      // judge it once the id is known.
+      if (!turnId) {
+        earlyNotifications.push({ method, params });
+        return;
+      }
+      if (scopedId === turnId) dispatch(method, params);
+    });
 
+    const earlyNotifications: Array<{ method: string; params: Record<string, JsonValue> }> = [];
+    const dispatch = (method: string, params: Record<string, JsonValue>) => {
+      if (settled) return;
       if (method === 'thread/tokenUsage/updated') {
-        // ThreadTokenUsageUpdatedNotification carries turnId. Count only this
-        // turn's; before the ACK names the turn, hold them for judging then.
-        if (typeof params.turnId !== 'string') return;
-        if (!turnId) earlyUsage.push(params);
-        else if (params.turnId === turnId) countUsage(params);
+        countUsage(params);
         return;
       }
-
       if (method === 'turn/completed') {
-        // TurnCompletedNotification is {threadId, turn: Turn}; the turn id is
-        // turn.id (codex-cli 0.156.1 generate-ts). Only a completion whose id
-        // equals this turn's settles it. Before the turn/start ACK supplies
-        // the id, completions are held and judged when the ACK arrives.
-        const completedId = (params.turn as Record<string, JsonValue> | undefined)?.id;
-        if (typeof completedId !== 'string') return;
-        if (!turnId) {
-          earlyCompletions.set(completedId, params);
-          return;
-        }
-        if (completedId === turnId) completeTurn(params);
+        completeTurn(params);
         return;
       }
-
       const event = mapCodexNotification(method, params);
       if (!event) return;
       if (event.type === 'token' && typeof event.content === 'string') assembled += event.content;
       onEvent(event);
-    });
-
-    const earlyCompletions = new Map<string, Record<string, JsonValue>>();
-    const earlyUsage: Array<Record<string, JsonValue>> = [];
+    };
     const countUsage = (params: Record<string, JsonValue>) => {
       const last = (params.tokenUsage as Record<string, JsonValue> | undefined)?.last as Record<string, JsonValue> | undefined;
       if (!last || typeof last !== 'object') return;
@@ -1085,11 +1099,11 @@ export async function codexAsk(
             : { text: assembled, status: 'failed', error: 'Codex turn/start returned no turn id' });
           return;
         }
-        const early = earlyCompletions.get(turnId);
-        earlyCompletions.clear();
-        for (const usage of earlyUsage.splice(0)) if (usage.turnId === turnId) countUsage(usage);
         if (stopping) interrupt();
-        if (early) completeTurn(early);
+        // Replay this turn's held notifications in arrival order; drop the rest.
+        for (const held of earlyNotifications.splice(0)) {
+          if (notificationTurnId(held.method, held.params) === turnId) dispatch(held.method, held.params);
+        }
       })
       .catch((err) => {
         const error = err instanceof Error ? err.message : String(err);

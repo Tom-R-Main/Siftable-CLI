@@ -136,9 +136,16 @@ the client's bounded grace (about 2 s) and reports a failed close as
 `session.closed` with an error and exit code 1.
 
 Results are read per engine. The harness always reports a status. For Codex,
-a turn settles only on a `turn/completed` whose `turn.id` equals the id from
-the `turn/start` acknowledgement. Completions that arrive before the
-acknowledgement are held, and any whose id does not match are discarded.
+every turn-scoped app-server notification is filtered by turn. Per the
+codex-cli 0.156.1 schema, `turn/started` and `turn/completed` carry `turn.id`,
+and every other turn-scoped notification carries `turnId`: message, reasoning,
+and plan deltas; item started and completed; command, file-change, and MCP
+tool events; usage; errors. Notifications that arrive before the `turn/start`
+acknowledgement are held. On the acknowledgement, those for the acknowledged
+turn are replayed in their original order and the rest are dropped. After it,
+a notification for any other turn is ignored. Thread-scoped notifications
+(no turn field, or `turnId: null` as on hooks and goals) pass through. A turn
+settles only on a `turn/completed` whose `turn.id` equals the acknowledged id.
 app-server's `TurnStatus` (codex-cli 0.156.1: `completed`, `interrupted`,
 `failed`, `inProgress`) maps explicitly:
 

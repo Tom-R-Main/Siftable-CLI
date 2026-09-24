@@ -485,6 +485,29 @@ describe('codexAsk cancellation (AGENT-RUNTIME-31)', () => {
       engineUsage: { requests: 2, inputTokens: 12, outputTokens: 0, cachedInputTokens: 0, totalTokens: 12 } });
   });
 
+  it('holds turn-scoped events until the ACK and replays only this turn\'s, in order', async () => {
+    const proc = await injected();
+    const events: Array<Record<string, unknown>> = [];
+    const result = codexAsk('continue', (event) => events.push(event));
+    proc.reply(await waitForSent(proc, 'thread/start'), { thread: { id: 'thread-ev' } });
+    const turnStartId = await waitForSent(proc, 'turn/start');
+    // Before the ACK: the previous turn's late delta and item, then this turn's own early delta.
+    proc.notify('item/agentMessage/delta', { threadId: 'thread-ev', turnId: 'turn-old', itemId: 'i0', delta: 'STALE ' });
+    proc.notify('item/started', { threadId: 'thread-ev', turnId: 'turn-old', item: { type: 'commandExecution', id: 'c0', command: 'rm -rf old' } });
+    proc.notify('item/agentMessage/delta', { threadId: 'thread-ev', turnId: 'turn-ev', itemId: 'i1', delta: 'Hello ' });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(events).toEqual([]);
+    proc.reply(turnStartId, { turn: { id: 'turn-ev' } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // After the ACK: another turn's delta is ignored; ours streams.
+    proc.notify('item/agentMessage/delta', { threadId: 'thread-ev', turnId: 'turn-old', itemId: 'i0', delta: 'LATE ' });
+    proc.notify('item/agentMessage/delta', { threadId: 'thread-ev', turnId: 'turn-ev', itemId: 'i1', delta: 'world' });
+    proc.notify('turn/completed', { threadId: 'thread-ev', turn: { id: 'turn-ev', status: 'completed' } });
+    await expect(result).resolves.toEqual({ text: 'Hello world', status: 'completed' });
+    expect(events.filter((event) => event.type === 'token').map((event) => event.content)).toEqual(['Hello ', 'world']);
+    expect(JSON.stringify(events)).not.toContain('rm -rf old');
+  });
+
   it('reports an unconfirmed stop when app-server never confirms within the bound', async () => {
     const proc = await injected();
     const controller = new AbortController();
