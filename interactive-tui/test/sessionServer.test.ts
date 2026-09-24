@@ -43,6 +43,7 @@ function codexEngine(trace: string[]): SessionEngine {
       if (input === 'codex usage') return {text: 'hi', status: 'completed', engineUsage: {requests: 2, inputTokens: 30, outputTokens: 5, cachedInputTokens: 10, totalTokens: 35}};
       await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), {once: true}));
       trace.push('loop-stopped');
+      if (input === 'codex hang cleanup unknown') return {text: '', status: 'interrupted', stopConfirmed: true, jobCleanup: 'unknown'};
       return {text: 'partial', status: 'interrupted', stopConfirmed: input === 'codex hang confirmed'};
     },
     async close() { trace.push('closed'); },
@@ -597,6 +598,18 @@ describe('session server protocol', () => {
     const bare = await h.send({type: 'prompt', input: 'codex statusless'});
     expect(await h.waitFor(line => line.turnId === bare.turnId && String(line.type).startsWith('turn.') && line.type !== 'turn.started'))
       .toMatchObject({type: 'turn.failed'});
+    await h.send({type: 'shutdown'});
+  });
+
+  test('a Codex stop with unknown process-job cleanup is unconfirmed', async () => {
+    const h = await harness({engine: 'codex'});
+    await h.send({type: 'initialize', protocolVersion: 1});
+    const turn = await h.send({type: 'prompt', input: 'codex hang cleanup unknown'});
+    await h.waitFor(line => line.type === 'turn.started');
+    await h.send({type: 'cancel'});
+    expect(await h.waitFor(line => line.turnId === turn.turnId && String(line.type).startsWith('turn.stop')))
+      .toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
+    expect(await h.send({type: 'prompt', input: 'codex ok'})).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
     await h.send({type: 'shutdown'});
   });
 });

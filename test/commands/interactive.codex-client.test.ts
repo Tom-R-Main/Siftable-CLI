@@ -22,7 +22,7 @@ import {
   type CodexSpawnFn,
 } from '../../interactive-tui/codexEngine';
 import {closeBrain, setBrainModel, getBrainModel, agentHarnessAsk, __setExplorerReportBuilderForTests, __setPreTurnStopBoundForTests,
-  __resetBrainAgentsForTests, setAgentConversationKey} from '../../interactive-tui/brain';
+  __resetBrainAgentsForTests, setAgentConversationKey, __setProcessJobsForTests} from '../../interactive-tui/brain';
 import {enqueueSessionInstruction} from '../../interactive-tui/sessionMailbox';
 import * as bundledHarness from '../../interactive-tui/agent-harness';
 import {SessionServer, WireEventLog} from '../../interactive-tui/sessionServer';
@@ -740,6 +740,7 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
       setBrainModel({provider: 'meta', model: 'fixture'});
     });
     afterEach(() => {
+      __setProcessJobsForTests(undefined);
       delete (globalThis as any).__SIFT_AGENT_HARNESS__;
       __resetBrainAgentsForTests();
       for (const [name, value] of Object.entries(saved)) {
@@ -820,6 +821,36 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
       setTimeout(() => ingested.resolve(true), 50);
       expect(await cancel).toMatchObject({type: 'turn.stopped', confirmed: true});
       await s.server.shutdown('client');
+    });
+
+    it('a process-job cleanup that never settles is unconfirmed within the bound, and shutdown completes', async () => {
+      __setPreTurnStopBoundForTests(60);
+      let stopCalls = 0;
+      __setProcessJobsForTests({stopSession: () => { stopCalls += 1; return new Promise(() => {}); }, close: async () => {}} as never);
+      let inLoop = false;
+      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: async () => ({
+        async *chat(_input: unknown, options: {signal?: AbortSignal}) {
+          inLoop = true;
+          await new Promise(resolve => options.signal?.addEventListener('abort', resolve, {once: true}));
+          throw new DOMException('Turn cancelled', 'AbortError');
+        },
+        async close() {},
+      })};
+      const s = session('harness');
+      await s.send({type: 'initialize', protocolVersion: 1});
+      const turn = await s.send({type: 'prompt', input: 'say hello'});
+      const deadline = Date.now() + 2_000;
+      while (!inLoop && Date.now() < deadline) await new Promise(r => setTimeout(r, 5));
+      const started = Date.now();
+      await s.send({type: 'cancel'});
+      const terminal = await s.waitFor(line => line.turnId === turn.turnId && String(line.type).startsWith('turn.stop'));
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false, jobCleanup: 'unknown'});
+      expect(s.terminals()).toHaveLength(1);
+      expect(stopCalls).toBe(1);
+      expect(await s.send({type: 'prompt', input: 'say hello'})).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
+      expect(await s.server.shutdown('client')).toBe(0);
+      expect(s.lines.at(-1)).toMatchObject({type: 'session.closed'});
     });
 
     it('a mailbox drain that never settles is unconfirmed within the bound', async () => {

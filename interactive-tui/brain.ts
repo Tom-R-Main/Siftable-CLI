@@ -2682,6 +2682,11 @@ let preTurnStopBoundMs = 10_000;
 // Null means the live `buildExplorerReport` import, resolved at call time.
 let explorerReportBuilder: typeof buildExplorerReport | null = null;
 
+/** Test seam (AGENT-RUNTIME-31): substitute the session's process-job manager. */
+export function __setProcessJobsForTests(manager: ProcessJobManager | undefined): void {
+  processJobs = manager;
+}
+
 /** Test seams (AGENT-RUNTIME-31): a stalled explorer and a short stop bound. */
 export function __setExplorerReportBuilderForTests(builder: typeof buildExplorerReport | null): void {
   explorerReportBuilder = builder;
@@ -2756,8 +2761,17 @@ export async function agentHarnessAsk(
   if (signal?.aborted) {
     try {
       // Includes jobs from older turns; other sessions retain their ownership.
-      await processJobs?.stopSession(sessionId);
-      result = {...result, status: 'interrupted', jobCleanup: 'confirmed'};
+      // Bounded like every other stop wait: a hung cleanup leaves ownership
+      // unknown rather than holding the stop (and shutdown) open.
+      const cleanup = Promise.resolve(processJobs?.stopSession(sessionId));
+      if (await settlesWithin(cleanup, preTurnStopBoundMs)) {
+        await cleanup;
+        result = {...result, status: 'interrupted', jobCleanup: 'confirmed'};
+      } else {
+        void cleanup.catch(() => undefined);
+        result = {...result, status: 'interrupted', jobCleanup: 'unknown', stopConfirmed: false,
+          error: `${result.error ? `${result.error}; ` : ''}Process job cleanup did not finish within ${preTurnStopBoundMs} ms; process ownership retained, retry session shutdown`};
+      }
     } catch (error) {
       result = {...result, status: 'interrupted', jobCleanup: 'unknown',
         error: `${result.error ? `${result.error}; ` : ''}${agentHarnessErrorMessage(error)}; process ownership retained, retry session shutdown`};

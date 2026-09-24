@@ -229,7 +229,8 @@ export function interpretEngineResult(kind: SessionEngine['kind'], result: Brain
       case 'limit_reached': status = 'limit_reached'; break;
       default: status = 'failed';
     }
-    return {status, stopConfirmed: result.stopConfirmed === true};
+    // Session process jobs are shared with the harness; unknown cleanup means they may still run.
+    return {status, stopConfirmed: result.stopConfirmed === true && result.jobCleanup !== 'unknown'};
   }
   const status: TurnStatus = result.status === 'limit_reached' ? 'limit_reached' : result.status === 'interrupted' ? 'interrupted'
     : result.error ? 'failed' : result.status || 'failed';

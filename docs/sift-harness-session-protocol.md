@@ -141,6 +141,12 @@ drain (`getAgent()`), and loading the Codex engine. Each is raced against the
 cancel. The stop is confirmed only if that work settles within the bound, and
 a cancelled turn never enters the model loop.
 
+After any cancel, on either engine, the session's process jobs are stopped,
+and that cleanup is bounded too. If it does not finish within the stop bound,
+the session stops waiting and reports `jobCleanup: unknown`. The turn then
+ends with `turn.stop_unconfirmed` and later prompts are refused, because jobs
+may still be running. The late cleanup result is discarded.
+
 Cancellation is bounded during Codex setup too: spawn and `initialize`,
 `account/read`, and `thread/start`. If a cancel arrives before `turn/start`
 is sent, no turn exists. The app-server child is drained (SIGTERM, then
