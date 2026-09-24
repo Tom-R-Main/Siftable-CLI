@@ -123,6 +123,15 @@ on `turn.id` (`TurnCompletedNotification` is `{threadId, turn}` in codex-cli
 is not enough. If Codex does not confirm within 10 seconds, or disconnects
 first, the turn ends with `turn.stop_unconfirmed` instead.
 
+Cancellation is bounded during Codex setup too: spawn and `initialize`,
+`account/read`, and `thread/start`. If a cancel arrives before `turn/start`
+is sent, no turn exists. The app-server child is drained (SIGTERM, then
+SIGKILL), which also rejects its pending requests. The stop is confirmed only
+if the child is confirmed closed within the same 10-second bound; otherwise
+the turn ends with `turn.stop_unconfirmed`. Shutdown drains the child with
+the client's bounded grace (about 2 s) and reports a failed close as
+`session.closed` with an error and exit code 1.
+
 Results are read per engine. The harness always reports a status. For Codex,
 a turn settles only on a `turn/completed` whose `turn.id` equals the id from
 the `turn/start` acknowledgement. Completions that arrive before the

@@ -22,6 +22,10 @@ import {
   type CodexSpawnFn,
 } from '../../interactive-tui/codexEngine';
 import {closeBrain, setBrainModel, getBrainModel} from '../../interactive-tui/brain';
+import {SessionServer, WireEventLog} from '../../interactive-tui/sessionServer';
+import {JsonlSessionEventStore} from '../../interactive-tui/agent-harness/framework/session';
+import * as confirmGateModule from '../../interactive-tui/confirmGate';
+import * as questionGateModule from '../../interactive-tui/questionGate';
 import {getSessionCwd, setSessionCwd} from '../../interactive-tui/navigation';
 import {
   isBypassing,
@@ -453,6 +457,94 @@ describe('codexAsk cancellation (AGENT-RUNTIME-31)', () => {
     expect(outcome).toMatchObject({ status: 'interrupted', stopConfirmed: false });
     expect(outcome.error).toContain('did not confirm');
   });
+});
+
+describe('codexAsk cancellation during app-server setup (AGENT-RUNTIME-31)', () => {
+  /** A fake whose kill() either ends the child (exit + close) or is ignored. */
+  function fakeProc(diesOnKill: boolean): FakeCodexProc {
+    const proc = new FakeCodexProc();
+    const kill = proc.kill.bind(proc);
+    proc.kill = (signal?: NodeJS.Signals | number) => {
+      kill(signal);
+      if (diesOnKill) setImmediate(() => { proc.emit('exit', null, 'SIGTERM'); proc.emit('close'); });
+      return true;
+    };
+    return proc;
+  }
+  async function install(proc: FakeCodexProc, stage: 'initialize' | 'thread/start'): Promise<void> {
+    const client = new CodexClient(proc.asSpawnFn());
+    __setCodexClientForTests(client, { type: 'chatgpt', email: 'test@example.com' });
+    if (stage === 'thread/start') {
+      const ready = client.ensureReady();
+      await completeHandshake(proc);
+      await ready;
+    }
+  }
+
+  afterEach(() => {
+    shutdownCodex();
+    __setCodexClientForTests(null);
+  });
+
+  for (const stage of ['initialize', 'thread/start'] as const) {
+    it(`a cancel while app-server stalls at ${stage} is bounded and confirmed once the child is gone`, async () => {
+      const proc = fakeProc(true);
+      await install(proc, stage);
+      const controller = new AbortController();
+      const result = codexAsk('continue', () => {}, { signal: controller.signal, stopTimeoutMs: 2_000 });
+      await waitForSent(proc, stage);
+      const started = Date.now();
+      controller.abort();
+      await expect(result).resolves.toEqual({ text: '', status: 'interrupted', stopConfirmed: true });
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(proc.killed).toBe(true);
+      expect(proc.sent.some((m) => m.method === 'turn/start')).toBe(false);
+    });
+
+    it(`a cancel while app-server stalls at ${stage} and ignores kill is unconfirmed within the bound`, async () => {
+      const proc = fakeProc(false);
+      await install(proc, stage);
+      const controller = new AbortController();
+      const result = codexAsk('continue', () => {}, { signal: controller.signal, stopTimeoutMs: 60 });
+      await waitForSent(proc, stage);
+      const started = Date.now();
+      controller.abort();
+      const outcome = await result;
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(outcome).toMatchObject({ status: 'interrupted', stopConfirmed: false });
+      expect(outcome.error).toContain('Codex setup');
+    });
+  }
+
+  it('session: cancel during a stalled initialize ends in exactly one terminal stop, and shutdown completes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sift-codex-setup-'));
+    try {
+      const proc = fakeProc(false);
+      await install(proc, 'initialize');
+      const lines: Array<Record<string, any>> = [];
+      const log = new WireEventLog({rootDir: root, session: 'codex-setup', leaseStore: dir => new JsonlSessionEventStore({rootDir: dir})});
+      const server = new SessionServer({session: 'codex-setup', provider: 'codex', model: 'gpt', cwd: root, deadlineMs: 60_000, log,
+        write: line => { lines.push(JSON.parse(line)); }, gates: {...confirmGateModule, ...questionGateModule},
+        engine: {kind: 'codex', ask: (input, onEvent, signal) => codexAsk(input, onEvent, {signal, stopTimeoutMs: 60}), close: () => closeCodex()}});
+      await server.handleLine(JSON.stringify({id: 1, type: 'initialize', protocolVersion: 1}));
+      await server.handleLine(JSON.stringify({id: 2, type: 'prompt', input: 'hello'}));
+      await waitForSent(proc, 'initialize');
+      const started = Date.now();
+      await server.handleLine(JSON.stringify({id: 3, type: 'cancel'}));
+      const deadline = Date.now() + 2_000;
+      while (!lines.some(line => String(line.type).startsWith('turn.stop')) && Date.now() < deadline) await new Promise(r => setTimeout(r, 5));
+      expect(Date.now() - started).toBeLessThan(1_000);
+      const terminals = lines.filter(line => String(line.type).startsWith('turn.') && line.type !== 'turn.started');
+      expect(terminals).toHaveLength(1);
+      expect(terminals[0]).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false, reason: 'client'});
+      // Shutdown drains the stubborn child within closeCodex's bounded grace.
+      const exitCode = await server.shutdown('client');
+      expect(exitCode).toBe(1);
+      expect(lines.at(-1)).toMatchObject({type: 'session.closed'});
+    } finally {
+      await rm(root, {recursive: true, force: true});
+    }
+  }, 15_000);
 });
 
 describe('CodexClient server→client approvals', () => {

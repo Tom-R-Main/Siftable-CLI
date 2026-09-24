@@ -874,36 +874,67 @@ export function isCodexReasoningEffort(effort: string | undefined): effort is st
   return typeof effort === 'string' && CODEX_EFFORTS.has(effort);
 }
 
+/**
+ * Cancelled while app-server was still being set up. No turn/start was sent,
+ * so no turn can be running, but the stalled child may still hold requests.
+ * Drain it: the stop is confirmed only if the child is confirmed gone within
+ * the bound. Pending setup requests are rejected by the drain.
+ */
+async function abortCodexSetup(setup: Promise<unknown>, stopTimeoutMs: number): Promise<BrainAskResult> {
+  void setup.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const drained = closeCodex().then(() => true, () => false);
+  const bound = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), stopTimeoutMs); });
+  const confirmed = await Promise.race([drained, bound]);
+  clearTimeout(timer);
+  return confirmed
+    ? { text: '', status: 'interrupted', stopConfirmed: true }
+    : { text: '', status: 'interrupted', stopConfirmed: false,
+      error: `Cancelled during Codex setup; app-server was not confirmed closed within ${stopTimeoutMs} ms` };
+}
+
 export async function codexAsk(
   input: ChatInput,
   onEvent: (event: BrainEvent) => void,
   opts: { signal?: AbortSignal; model?: string; effort?: string; stopTimeoutMs?: number } = {},
 ): Promise<BrainAskResult> {
-  const c = await getClient();
-  if (!c) {
-    return {
-      text: '',
-      error: 'Codex CLI not found. Install it (https://developers.openai.com/codex), then retry.',
-    };
-  }
+  const stopTimeoutMs = opts.stopTimeoutMs ?? 10_000;
+  // No turn exists yet, so a pre-aborted call has nothing to stop.
+  if (opts.signal?.aborted) return { text: '', status: 'interrupted', stopConfirmed: true };
 
-  const account = await getCodexAccount();
-  if (!account) {
-    return { text: '', error: 'Not signed in to Codex. Run /codex login.' };
-  }
-
-  let tid: string;
-  try {
-    tid = await ensureThread(c, opts.model);
-  } catch (err) {
-    return { text: '', error: err instanceof Error ? err.message : String(err) };
-  }
+  // Setup (spawn + initialize, account/read, thread/start) can stall inside
+  // app-server. Race it against cancellation so a cancel is always bounded.
+  type Setup = { ok: true; c: CodexClient; tid: string } | { ok: false; result: BrainAskResult };
+  const setup = (async (): Promise<Setup> => {
+    const c = await getClient();
+    if (!c) {
+      return { ok: false, result: { text: '', status: 'failed',
+        error: 'Codex CLI not found. Install it (https://developers.openai.com/codex), then retry.' } };
+    }
+    const account = await getCodexAccount();
+    if (!account) return { ok: false, result: { text: '', status: 'failed', error: 'Not signed in to Codex. Run /codex login.' } };
+    try {
+      return { ok: true, c, tid: await ensureThread(c, opts.model) };
+    } catch (err) {
+      return { ok: false, result: { text: '', status: 'failed', error: err instanceof Error ? err.message : String(err) } };
+    }
+  })();
+  let onSetupAbort = () => {};
+  const setupAborted = new Promise<'aborted'>((resolve) => {
+    onSetupAbort = () => resolve('aborted');
+    opts.signal?.addEventListener('abort', onSetupAbort, { once: true });
+  });
+  const first = await Promise.race([setup, setupAborted]);
+  opts.signal?.removeEventListener('abort', onSetupAbort);
+  if (first === 'aborted') return abortCodexSetup(setup, stopTimeoutMs);
+  // Discriminate by property: the TUI tsconfig is not strict, so `ok` does not narrow.
+  if ('result' in first) return first.result;
+  const { c, tid } = first;
 
   let assembled = '';
   let turnId: string | undefined;
   // Sum of the per-response `last` breakdowns from thread/tokenUsage/updated.
   let engineUsage: NonNullable<BrainAskResult['engineUsage']> | undefined;
-  const stopTimeoutMs = opts.stopTimeoutMs ?? 10_000;
 
   return new Promise<BrainAskResult>((resolve) => {
     let settled = false;
