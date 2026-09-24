@@ -447,6 +447,44 @@ describe('codexAsk cancellation (AGENT-RUNTIME-31)', () => {
     });
   }
 
+  for (const status of ['inProgress', 'bogus', undefined]) {
+    it(`a matching completion with status ${String(status)} while stopping does not confirm the stop`, async () => {
+      const proc = await injected();
+      const controller = new AbortController();
+      const { result } = await startTurn(proc, controller.signal);
+      controller.abort();
+      proc.reply(await waitForSent(proc, 'turn/interrupt'), {});
+      proc.notify('turn/completed', { threadId: 'thread-stop', turn: { id: 'turn-stop', ...(status ? { status } : {}) } });
+      const outcome = await result;
+      expect(outcome).toMatchObject({ status: 'interrupted', stopConfirmed: false });
+      expect(outcome.error).toContain('while stopping');
+    });
+  }
+
+  it('counts only this turn\'s usage, including notifications held until the ACK', async () => {
+    const proc = await injected();
+    const result = codexAsk('continue', () => {});
+    proc.reply(await waitForSent(proc, 'thread/start'), { thread: { id: 'thread-u' } });
+    const turnStartId = await waitForSent(proc, 'turn/start');
+    const usage = (turnId: string | undefined, input: number) => ({ threadId: 'thread-u', ...(turnId ? { turnId } : {}),
+      tokenUsage: { total: { totalTokens: 0, inputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 },
+        last: { totalTokens: input, inputTokens: input, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 },
+        modelContextWindow: null } });
+    // Before the ACK: a late notification from the previous turn, and one for ours.
+    proc.notify('thread/tokenUsage/updated', usage('turn-previous', 1000));
+    proc.notify('thread/tokenUsage/updated', usage('turn-u', 5));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    proc.reply(turnStartId, { turn: { id: 'turn-u' } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // After the ACK: another turn's, one without a turn id, and ours.
+    proc.notify('thread/tokenUsage/updated', usage('turn-previous', 1000));
+    proc.notify('thread/tokenUsage/updated', usage(undefined, 1000));
+    proc.notify('thread/tokenUsage/updated', usage('turn-u', 7));
+    proc.notify('turn/completed', { threadId: 'thread-u', turn: { id: 'turn-u', status: 'completed' } });
+    await expect(result).resolves.toEqual({ text: '', status: 'completed',
+      engineUsage: { requests: 2, inputTokens: 12, outputTokens: 0, cachedInputTokens: 0, totalTokens: 12 } });
+  });
+
   it('reports an unconfirmed stop when app-server never confirms within the bound', async () => {
     const proc = await injected();
     const controller = new AbortController();

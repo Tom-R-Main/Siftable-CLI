@@ -119,7 +119,10 @@ failed or its outcome is unknown, jobs may still be running, so the turn ends
 with `turn.stop_unconfirmed` and later prompts return `stop_unconfirmed`. For Codex, it means app-server sent
 `turn/completed` for the interrupted turn after `turn/interrupt`. The match is
 on `turn.id` (`TurnCompletedNotification` is `{threadId, turn}` in codex-cli
-0.156.1), and a completion for any other turn is ignored. The interrupt acknowledgement alone
+0.156.1), and a completion for any other turn is ignored. The completion must
+also carry a terminal status (`completed`, `interrupted`, or `failed`).
+`inProgress`, a missing status, or an unknown value during a stop gives
+`turn.stop_unconfirmed`. The interrupt acknowledgement alone
 is not enough. If Codex does not confirm within 10 seconds, or disconnects
 first, the turn ends with `turn.stop_unconfirmed` instead.
 
@@ -149,7 +152,10 @@ A Codex result with no status is never a success.
 
 Usage is also read per engine. The harness sums its provider receipts. Codex
 sums the per-response `last` breakdowns from app-server's
-`thread/tokenUsage/updated` notifications. A Codex turn that received none
+`thread/tokenUsage/updated` notifications, counting only those whose `turnId`
+equals this turn's. Notifications that arrive before the `turn/start`
+acknowledgement are held and judged once the acknowledgement names the turn.
+Notifications without a `turnId` are ignored. A Codex turn that received none
 reports `turn: null`. Codex usage counts as `complete` only when the turn
 completed normally. For an interrupted, failed, or disconnected turn, the
 reported figures are a lower bound and `complete` becomes false. Pending approvals and questions

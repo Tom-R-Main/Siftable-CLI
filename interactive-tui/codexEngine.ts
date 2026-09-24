@@ -957,19 +957,11 @@ export async function codexAsk(
       if (turnId && params.turnId && params.turnId !== turnId) return;
 
       if (method === 'thread/tokenUsage/updated') {
-        const last = (params.tokenUsage as Record<string, JsonValue> | undefined)?.last as Record<string, JsonValue> | undefined;
-        const count = (key: string) => {
-          const value = last?.[key];
-          return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
-        };
-        if (last && typeof last === 'object') {
-          engineUsage ??= { requests: 0, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0 };
-          engineUsage.requests += 1;
-          engineUsage.inputTokens += count('inputTokens');
-          engineUsage.outputTokens += count('outputTokens');
-          engineUsage.cachedInputTokens += count('cachedInputTokens');
-          engineUsage.totalTokens += count('totalTokens');
-        }
+        // ThreadTokenUsageUpdatedNotification carries turnId. Count only this
+        // turn's; before the ACK names the turn, hold them for judging then.
+        if (typeof params.turnId !== 'string') return;
+        if (!turnId) earlyUsage.push(params);
+        else if (params.turnId === turnId) countUsage(params);
         return;
       }
 
@@ -995,14 +987,33 @@ export async function codexAsk(
     });
 
     const earlyCompletions = new Map<string, Record<string, JsonValue>>();
+    const earlyUsage: Array<Record<string, JsonValue>> = [];
+    const countUsage = (params: Record<string, JsonValue>) => {
+      const last = (params.tokenUsage as Record<string, JsonValue> | undefined)?.last as Record<string, JsonValue> | undefined;
+      if (!last || typeof last !== 'object') return;
+      const count = (key: string) => {
+        const value = last[key];
+        return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+      };
+      engineUsage ??= { requests: 0, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0 };
+      engineUsage.requests += 1;
+      engineUsage.inputTokens += count('inputTokens');
+      engineUsage.outputTokens += count('outputTokens');
+      engineUsage.cachedInputTokens += count('cachedInputTokens');
+      engineUsage.totalTokens += count('totalTokens');
+    };
+    const TERMINAL_TURN_STATUSES = new Set(['completed', 'interrupted', 'failed']);
     const completeTurn = (params: Record<string, JsonValue>) => {
+      const turn = params.turn as Record<string, JsonValue> | undefined;
       // After an interrupt, app-server's turn/completed for THIS turn is the
-      // only proof that the turn stopped.
+      // only proof that the turn stopped, and only with a terminal status.
       if (stopping) {
-        finish({ text: assembled, status: 'interrupted', stopConfirmed: true });
+        finish(typeof turn?.status === 'string' && TERMINAL_TURN_STATUSES.has(turn.status)
+          ? { text: assembled, status: 'interrupted', stopConfirmed: true }
+          : { text: assembled, status: 'interrupted', stopConfirmed: false,
+            error: `Codex reported turn/completed with status ${String(turn?.status)} while stopping` });
         return;
       }
-      const turn = params.turn as Record<string, JsonValue> | undefined;
       const error = (turn?.error as { message?: string } | null | undefined)?.message;
       onEvent({ type: 'done', message: { content: assembled } });
       // TurnStatus (codex-cli 0.156.1): completed | interrupted | failed | inProgress.
@@ -1076,6 +1087,7 @@ export async function codexAsk(
         }
         const early = earlyCompletions.get(turnId);
         earlyCompletions.clear();
+        for (const usage of earlyUsage.splice(0)) if (usage.turnId === turnId) countUsage(usage);
         if (stopping) interrupt();
         if (early) completeTurn(early);
       })
