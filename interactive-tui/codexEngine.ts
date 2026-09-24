@@ -562,7 +562,13 @@ async function getClient(): Promise<CodexClient | null> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (/ENOENT|not found|spawn/i.test(message)) installState = 'missing';
-    if (!closingCodex) client = null;
+    if (!closingCodex) {
+      // A failed handshake SIGTERMs its child, which may ignore it. Keep
+      // ownership until the child is confirmed closed, so shutdown and stop
+      // confirmation still drain it (SIGTERM, SIGKILL, then fail).
+      if (client.hasLiveChild()) failedClients.add(client);
+      client = null;
+    }
     return null;
   }
 }
@@ -575,7 +581,14 @@ export function getCodexInstallState(): CodexInstallState {
 export async function closeCodex(): Promise<void> {
   closingCodex = true;
   const owned = client;
-  await owned?.close();
+  // Drain the live client and every failed-handshake client still owning a child.
+  const failed = [...failedClients];
+  const results = await Promise.allSettled([owned?.close(), ...failed.map((stale) => stale.close())]);
+  failed.forEach((stale, index) => {
+    if (results[index + 1].status === 'fulfilled' || !stale.hasLiveChild()) failedClients.delete(stale);
+  });
+  const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failures.length) throw failures.length === 1 ? failures[0].reason : new AggregateError(failures.map((f) => f.reason), 'codex app-server did not close after shutdown; process ownership retained');
   if (client === owned) client = null;
   threads.clear();
   accountCache = null;
@@ -586,6 +599,7 @@ export async function closeCodex(): Promise<void> {
 
 export function shutdownCodex(): void {
   client?.shutdown();
+  for (const stale of failedClients) void stale.close().catch(() => undefined);
   client = null;
   threads.clear();
   accountCache = null;
@@ -594,6 +608,14 @@ export function shutdownCodex(): void {
 /** Test seam: drop all cached per-context threads without touching the client. */
 export function __resetCodexThreadsForTests(): void {
   threads.clear();
+}
+
+/** Clients whose handshake failed but whose child has not confirmed closing. */
+const failedClients = new Set<CodexClient>();
+
+/** True while any app-server child this module spawned is not confirmed closed. */
+export function codexChildAlive(): boolean {
+  return Boolean(client?.hasLiveChild()) || [...failedClients].some((stale) => stale.hasLiveChild());
 }
 
 let spawnOverride: CodexSpawnFn | null = null;
@@ -609,6 +631,7 @@ export function __setCodexClientForTests(
 ): void {
   closingCodex = false;
   client = nextClient;
+  failedClients.clear();
   threads.clear();
   accountCache = nextClient ? { account, ts: Date.now() } : null;
 }
@@ -898,7 +921,7 @@ async function abortCodexSetup(setup: Promise<unknown>, stopTimeoutMs: number): 
   // settled (so it cannot start anything later), and no app-server is alive.
   const stopped = closeCodex()
     .then(() => setup.then(() => undefined, () => undefined))
-    .then(() => !client || !client.hasLiveChild(), () => false);
+    .then(() => !codexChildAlive(), () => false);
   const bound = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), stopTimeoutMs); });
   const confirmed = await Promise.race([stopped, bound]);
   clearTimeout(timer);

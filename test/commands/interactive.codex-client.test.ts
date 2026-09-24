@@ -581,6 +581,36 @@ describe('codexAsk cancellation during app-server setup (AGENT-RUNTIME-31)', () 
     });
   }
 
+  for (const diesOnKill of [true, false]) {
+    it(`a child whose initialize is rejected and that ignores SIGTERM is still drained at shutdown (${diesOnKill ? 'dies on SIGKILL' : 'never dies'})`, async () => {
+      const proc = new FakeCodexProc();
+      const signals: Array<string | number | undefined> = [];
+      proc.kill = (signal?: NodeJS.Signals | number) => {
+        signals.push(signal);
+        if (signal === 'SIGKILL' && diesOnKill) setImmediate(() => { proc.emit('exit', null, 'SIGKILL'); proc.emit('close'); });
+        return true;
+      };
+      __setCodexClientForTests(null);
+      __setCodexSpawnForTests(() => proc as unknown as ReturnType<CodexSpawnFn>);
+      try {
+        const account = getCodexAccount(true);
+        proc.replyError(await waitForSent(proc, 'initialize'), 'unsupported client');
+        await expect(account).resolves.toBeNull();
+        expect(signals).toEqual(['SIGTERM']);
+        // Shutdown must either kill the child or report failure; never succeed with it alive.
+        const closing = closeCodex();
+        if (diesOnKill) {
+          await expect(closing).resolves.toBeUndefined();
+          expect(signals).toContain('SIGKILL');
+        } else {
+          await expect(closing).rejects.toThrow(/did not close/);
+        }
+      } finally {
+        __setCodexSpawnForTests(null);
+      }
+    });
+  }
+
   it('a cancelled setup never spawns a replacement app-server after the drain', async () => {
     const spawned: FakeCodexProc[] = [];
     __setCodexSpawnForTests(() => { const proc = new FakeCodexProc(); spawned.push(proc); return proc as unknown as ReturnType<CodexSpawnFn>; });
