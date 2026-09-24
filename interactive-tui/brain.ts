@@ -36,6 +36,7 @@ import {
   writeText,
 } from './fsEngine';
 import { requestConfirm } from './confirmGate';
+import { hasQuestionListener, requestAnswer } from './questionGate';
 import { assertExecutionActive, currentExecutionContext, withExecutionContext, type ToolExecutionContext } from './agent-harness/framework/execution-context';
 import { projectShellResult, runSupervisedShell } from './shellExecution';
 import {projectSearchResult, searchToolFailure, searchToolResult} from './searchToolResult';
@@ -1484,6 +1485,28 @@ function buildLocalTools(of: AgentHarnessModule): unknown[] {
   // A1 write surface: only when a workspace root is set. Each call is still
   // confirm-gated and Zig-jailed; registration just exposes the tools.
   if (writableRootAvailable) tools.push(writeFile, editFile);
+  // Session mode (AGENT-RUNTIME-31) registers a question listener before the
+  // agent is built. Hosts with no one to answer never expose the tool.
+  if (hasQuestionListener()) tools.push(of.defineTool({
+    name: 'ask_user',
+    description:
+      'Ask the connected user one short question and wait for the answer. Use only when a decision genuinely needs the user; do not ask for approval of tool calls (those prompt automatically).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'The question, in one or two sentences' },
+        options: { type: 'array', items: { type: 'string' }, description: 'Optional suggested answers' },
+      },
+      required: ['question'],
+    },
+    handler: async (params) => {
+      const question = typeof params.question === 'string' ? params.question.trim() : '';
+      if (!question) return of.err('question is required');
+      const options = Array.isArray(params.options) ? params.options.filter((option): option is string => typeof option === 'string').slice(0, 16) : undefined;
+      const outcome = await requestAnswer({ question, ...(options?.length ? { options } : {}) }, currentExecutionContext()?.signal);
+      return 'answer' in outcome ? of.ok({ answer: outcome.answer }, outcome.answer) : of.err(`No answer: ${outcome.reason}`);
+    },
+  }));
   return tools.map((value) => {
     const tool = value as { handler: (params: Record<string, unknown>, context?: ToolExecutionContext) => Promise<unknown>; [key: string]: unknown };
     const handler = tool.handler;
