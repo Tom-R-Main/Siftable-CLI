@@ -562,19 +562,23 @@ async function getClient(): Promise<CodexClient | null> {
       }, signal),
     );
   }
+  // Concurrent callers share one handshake. Operate on the instance this call
+  // awaited, never on the module slot, which another waiter may have cleared.
+  const pending = client;
   try {
-    await client.ensureReady();
+    await pending.ensureReady();
     installState = 'ok';
-    return client;
+    return client === pending ? pending : null;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (/ENOENT|not found|spawn/i.test(message)) installState = 'missing';
     if (!closingCodex) {
       // A failed handshake SIGTERMs its child, which may ignore it. Keep
       // ownership until the child is confirmed closed, so shutdown and stop
-      // confirmation still drain it (SIGTERM, SIGKILL, then fail).
-      if (client.hasLiveChild()) failedClients.add(client);
-      client = null;
+      // confirmation still drain it (SIGTERM, SIGKILL, then fail). The set
+      // holds each client once, however many callers shared the handshake.
+      if (pending.hasLiveChild()) failedClients.add(pending);
+      if (client === pending) client = null;
     }
     return null;
   }
@@ -619,6 +623,11 @@ export function __resetCodexThreadsForTests(): void {
 
 /** Clients whose handshake failed but whose child has not confirmed closing. */
 const failedClients = new Set<CodexClient>();
+
+/** Test seam: how many failed-handshake clients are still tracked. */
+export function __failedCodexClientCountForTests(): number {
+  return failedClients.size;
+}
 
 /** True while any app-server child this module spawned is not confirmed closed. */
 export function codexChildAlive(): boolean {

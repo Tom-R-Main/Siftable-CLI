@@ -21,6 +21,7 @@ import {
   __setCodexClientForTests,
   __setCodexSpawnForTests,
   killCodexChildrenOnExit,
+  __failedCodexClientCountForTests,
   type CodexSpawnFn,
 } from '../../interactive-tui/codexEngine';
 import {closeBrain, setBrainModel, getBrainModel, agentHarnessAsk, __setExplorerReportBuilderForTests, __setPreTurnStopBoundForTests,
@@ -611,6 +612,29 @@ describe('codexAsk cancellation during app-server setup (AGENT-RUNTIME-31)', () 
       }
     });
   }
+
+  it('concurrent callers of a failing handshake all get the unavailable result, and the child is tracked once', async () => {
+    const procs: FakeCodexProc[] = [];
+    __setCodexClientForTests(null);
+    __setCodexSpawnForTests(() => {
+      const proc = new FakeCodexProc();
+      proc.kill = () => true; // ignores SIGTERM, stays alive
+      procs.push(proc);
+      return proc as unknown as ReturnType<CodexSpawnFn>;
+    });
+    try {
+      const first = getCodexAccount(true);
+      const second = getCodexAccount(true);
+      while (!procs[0]) await new Promise((resolve) => setTimeout(resolve, 2));
+      procs[0].replyError(await waitForSent(procs[0], 'initialize'), 'unsupported client');
+      await expect(first).resolves.toBeNull();
+      await expect(second).resolves.toBeNull();
+      expect(procs).toHaveLength(1);
+      expect(__failedCodexClientCountForTests()).toBe(1);
+    } finally {
+      __setCodexSpawnForTests(null);
+    }
+  });
 
   it('the process exit handler SIGKILLs a failed-handshake child that ignored SIGTERM', async () => {
     const proc = new FakeCodexProc();
