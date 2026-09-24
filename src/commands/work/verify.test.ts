@@ -29,6 +29,25 @@ describe('work verify retirement boundary', () => {
     });
   });
 
+  it('prints the retirement notice and next steps in human-readable mode', async () => {
+    const verify = command(WorkVerify);
+    const warn = vi.fn();
+    const log = vi.fn();
+    (verify as any).parse = vi.fn().mockResolvedValue({args: {id: 'work-1'}, flags: {history: false}});
+    (verify as any).client = vi.fn();
+    (verify as any).jsonEnabled = () => false;
+    (verify as any).warn = warn;
+    (verify as any).log = log;
+
+    await verify.run();
+
+    expect(warn).toHaveBeenCalledWith('Hosted LLM work verification has been retired and no model was invoked.');
+    expect(log.mock.calls.map(([line]) => line)).toEqual([
+      'Submit immutable verification-command evidence with `sift work verification evidence`.',
+      'Historical runs: sift work verify work-1 --history',
+    ]);
+  });
+
   it('keeps historical verifier runs readable with --history', async () => {
     const verify = command(WorkVerify);
     const runs = [{createdAt: '2026-01-01T00:00:00.000Z', verdict: 'pass'}];
