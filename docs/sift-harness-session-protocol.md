@@ -126,6 +126,15 @@ also carry a terminal status (`completed`, `interrupted`, or `failed`).
 is not enough. If Codex does not confirm within 10 seconds, or disconnects
 first, the turn ends with `turn.stop_unconfirmed` instead.
 
+Cancellation is also bounded during pre-turn preparation. For either engine,
+a code-related prompt may first run the read-only repository explorer, before
+any model turn starts. The explorer receives the cancel signal and checks it
+between phases. A cancel stops waiting on it at once, and any events it emits
+later are dropped. If the explorer's work ends within the stop bound (10
+seconds), no model turn was started and the stop is confirmed (`turn.stopped`),
+so follow-up prompts are accepted. Otherwise the turn ends with
+`turn.stop_unconfirmed`.
+
 Cancellation is bounded during Codex setup too: spawn and `initialize`,
 `account/read`, and `thread/start`. If a cancel arrives before `turn/start`
 is sent, no turn exists. The app-server child is drained (SIGTERM, then

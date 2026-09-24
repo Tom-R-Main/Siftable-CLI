@@ -393,6 +393,8 @@ export interface ExplorerOptions {
   scout?: RepoExplorerScoutState;
   parallelScouts?: RepoExplorerFanoutReport;
   fanout?: RepoExplorerFanoutState;
+  /** Cancels the preflight between its phases; in-flight reads settle first. */
+  signal?: AbortSignal;
 }
 
 interface RepoExplorerCacheEntry {
@@ -1161,6 +1163,10 @@ export async function buildExplorerReport(
   metrics.queriesRun = queries.length;
   const fileScores = new Map<string, ExplorerFileFinding>();
   if (options.forceRefresh) clearRepoExplorerCache(root);
+  const checkAborted = () => {
+    if (options.signal?.aborted) throw new DOMException('Explorer cancelled', 'AbortError');
+  };
+  checkAborted();
   const workspace = await inspectLocalWorkspace(root).catch((err) => {
     diagnostics.errors.push(`inspect_local_workspace: ${err instanceof Error ? err.message : String(err)}`);
     return null;
@@ -1187,6 +1193,7 @@ export async function buildExplorerReport(
     }
   }
 
+  checkAborted();
   const pathQueries = queries.slice(0, Math.min(3, queries.length));
   const pathResults = await Promise.all(
     pathQueries.flatMap((query) =>
@@ -1213,6 +1220,7 @@ export async function buildExplorerReport(
     }
   }
 
+  checkAborted();
   const searchResults = await Promise.all(
     queries.flatMap((query) =>
       [

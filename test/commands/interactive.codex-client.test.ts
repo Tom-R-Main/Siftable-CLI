@@ -21,7 +21,7 @@ import {
   __setCodexClientForTests,
   type CodexSpawnFn,
 } from '../../interactive-tui/codexEngine';
-import {closeBrain, setBrainModel, getBrainModel} from '../../interactive-tui/brain';
+import {closeBrain, setBrainModel, getBrainModel, agentHarnessAsk, __setExplorerReportBuilderForTests, __setPreTurnStopBoundForTests} from '../../interactive-tui/brain';
 import {SessionServer, WireEventLog} from '../../interactive-tui/sessionServer';
 import {JsonlSessionEventStore} from '../../interactive-tui/agent-harness/framework/session';
 import * as confirmGateModule from '../../interactive-tui/confirmGate';
@@ -606,6 +606,140 @@ describe('codexAsk cancellation during app-server setup (AGENT-RUNTIME-31)', () 
       await rm(root, {recursive: true, force: true});
     }
   }, 15_000);
+});
+
+describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)', () => {
+  const CODE_PROMPT = 'Where is handleLine implemented in interactive-tui/sessionServer.ts?';
+  let root = '';
+  let previous: ReturnType<typeof getBrainModel>;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'sift-preflight-'));
+    previous = getBrainModel();
+  });
+  afterEach(async () => {
+    __setExplorerReportBuilderForTests(null);
+    __setPreTurnStopBoundForTests(null);
+    setBrainModel({provider: previous.provider, model: previous.model});
+    shutdownCodex();
+    __setCodexClientForTests(null);
+    await rm(root, {recursive: true, force: true});
+  });
+
+  function session(kind: 'codex' | 'harness') {
+    const lines: Array<Record<string, any>> = [];
+    const log = new WireEventLog({rootDir: root, session: `preflight-${kind}`, leaseStore: dir => new JsonlSessionEventStore({rootDir: dir})});
+    const server = new SessionServer({session: `preflight-${kind}`, provider: kind === 'codex' ? 'codex' : 'meta', model: 'fixture', cwd: root,
+      deadlineMs: 60_000, log, write: line => { lines.push(JSON.parse(line)); }, gates: {...confirmGateModule, ...questionGateModule},
+      engine: {kind, ask: (input, onEvent, signal) => agentHarnessAsk(input, onEvent, signal), close: async () => {}}});
+    let next = 0;
+    const waitFor = async (predicate: (line: Record<string, any>) => boolean, timeoutMs = 2_000) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const found = lines.find(predicate);
+        if (found) return found;
+        await new Promise(r => setTimeout(r, 5));
+      }
+      throw new Error(`timed out; saw ${JSON.stringify(lines.map(line => line.type))}`);
+    };
+    const send = async (command: Record<string, unknown>) => {
+      const id = ++next;
+      await server.handleLine(JSON.stringify({id, ...command}));
+      return waitFor(line => line.type === 'response' && line.id === id);
+    };
+    const terminals = () => lines.filter(line => String(line.type).startsWith('turn.') && line.type !== 'turn.started');
+    return {server, lines, send, waitFor, terminals};
+  }
+
+  /** An explorer that stalls until cancelled, then ends shortly after. */
+  const abortableExplorer = ((_input: unknown, options?: {signal?: AbortSignal}) => new Promise((_resolve, reject) => {
+    options?.signal?.addEventListener('abort', () => setTimeout(() => reject(new DOMException('Explorer cancelled', 'AbortError')), 20), {once: true});
+  })) as unknown as Parameters<typeof __setExplorerReportBuilderForTests>[0];
+  /** An explorer that never ends. */
+  const stuckExplorer = (() => new Promise(() => {})) as unknown as Parameters<typeof __setExplorerReportBuilderForTests>[0];
+
+  it('codex: a cancel during a stalled explorer is confirmed once it ends, and a follow-up prompt runs', async () => {
+    setBrainModel({provider: 'codex', model: 'gpt-5.6-sol'});
+    __setExplorerReportBuilderForTests(abortableExplorer);
+    __setPreTurnStopBoundForTests(1_000);
+    const proc = new FakeCodexProc();
+    const client = new CodexClient(proc.asSpawnFn());
+    const ready = client.ensureReady();
+    await completeHandshake(proc);
+    await ready;
+    __setCodexClientForTests(client, { type: 'chatgpt', email: 'test@example.com' });
+    const s = session('codex');
+    await s.send({type: 'initialize', protocolVersion: 1});
+    const turn = await s.send({type: 'prompt', input: CODE_PROMPT});
+    await s.waitFor(line => line.type === 'tool_call' && line.toolCall?.name === 'repo_explorer');
+    const started = Date.now();
+    await s.send({type: 'cancel'});
+    const terminal = await s.waitFor(line => line.turnId === turn.turnId && line.type === 'turn.stopped');
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(terminal).toMatchObject({confirmed: true, reason: 'client'});
+    expect(s.terminals()).toHaveLength(1);
+    expect(proc.sent.some(m => m.method === 'turn/start')).toBe(false);
+    // The stop was confirmed, so the session takes the next prompt, which reaches Codex.
+    const followUp = await s.send({type: 'prompt', input: 'say hello'});
+    expect(followUp).toMatchObject({ok: true});
+    proc.reply(await waitForSent(proc, 'thread/start'), { thread: { id: 'thread-follow' } });
+    proc.reply(await waitForSent(proc, 'turn/start'), { turn: { id: 'turn-follow' } });
+    await new Promise(r => setTimeout(r, 5));
+    proc.notify('item/agentMessage/delta', { threadId: 'thread-follow', turnId: 'turn-follow', itemId: 'i', delta: 'hello' });
+    proc.notify('turn/completed', { threadId: 'thread-follow', turn: { id: 'turn-follow', status: 'completed' } });
+    expect(await s.waitFor(line => line.turnId === followUp.turnId && line.type === 'turn.completed')).toMatchObject({text: 'hello'});
+    await s.server.shutdown('client');
+  });
+
+  it('codex: an explorer that never stops is unconfirmed within the bound and blocks new prompts', async () => {
+    setBrainModel({provider: 'codex', model: 'gpt-5.6-sol'});
+    __setExplorerReportBuilderForTests(stuckExplorer);
+    __setPreTurnStopBoundForTests(60);
+    const s = session('codex');
+    await s.send({type: 'initialize', protocolVersion: 1});
+    const turn = await s.send({type: 'prompt', input: CODE_PROMPT});
+    await s.waitFor(line => line.type === 'tool_call' && line.toolCall?.name === 'repo_explorer');
+    const started = Date.now();
+    await s.send({type: 'cancel'});
+    const terminal = await s.waitFor(line => line.turnId === turn.turnId && String(line.type).startsWith('turn.stop'));
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
+    expect(s.terminals()).toHaveLength(1);
+    expect(await s.send({type: 'prompt', input: 'say hello'})).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
+    await s.server.shutdown('client');
+  });
+
+  it('harness: the same rule applies before the tool loop starts', async () => {
+    setBrainModel({provider: 'meta', model: 'fixture'});
+    __setExplorerReportBuilderForTests(abortableExplorer);
+    __setPreTurnStopBoundForTests(1_000);
+    const s = session('harness');
+    await s.send({type: 'initialize', protocolVersion: 1});
+    const turn = await s.send({type: 'prompt', input: CODE_PROMPT});
+    await s.waitFor(line => line.type === 'tool_call' && line.toolCall?.name === 'repo_explorer');
+    await s.send({type: 'cancel'});
+    expect(await s.waitFor(line => line.turnId === turn.turnId && String(line.type).startsWith('turn.stop')))
+      .toMatchObject({type: 'turn.stopped', confirmed: true, jobCleanup: 'confirmed'});
+    expect(s.terminals()).toHaveLength(1);
+    await s.server.shutdown('client');
+  });
+
+  it('harness: a stuck explorer cannot hold a cancel past the bound', async () => {
+    setBrainModel({provider: 'meta', model: 'fixture'});
+    __setExplorerReportBuilderForTests(stuckExplorer);
+    __setPreTurnStopBoundForTests(60);
+    const s = session('harness');
+    await s.send({type: 'initialize', protocolVersion: 1});
+    const turn = await s.send({type: 'prompt', input: CODE_PROMPT});
+    await s.waitFor(line => line.type === 'tool_call' && line.toolCall?.name === 'repo_explorer');
+    const started = Date.now();
+    await s.send({type: 'cancel'});
+    expect(await s.waitFor(line => line.turnId === turn.turnId && String(line.type).startsWith('turn.stop')))
+      .toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(s.terminals()).toHaveLength(1);
+    await s.server.shutdown('client');
+  });
 });
 
 describe('CodexClient server→client approvals', () => {

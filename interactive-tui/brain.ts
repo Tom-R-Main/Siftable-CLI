@@ -2677,6 +2677,43 @@ function agentHarnessErrorMessage(error: unknown): string {
   return `${message}\n\nTool side effects may have occurred; verify state before retrying.`;
 }
 
+/** Bound on waiting for pre-turn preparation to end after a cancel. */
+let preTurnStopBoundMs = 10_000;
+// Null means the live `buildExplorerReport` import, resolved at call time.
+let explorerReportBuilder: typeof buildExplorerReport | null = null;
+
+/** Test seams (AGENT-RUNTIME-31): a stalled explorer and a short stop bound. */
+export function __setExplorerReportBuilderForTests(builder: typeof buildExplorerReport | null): void {
+  explorerReportBuilder = builder;
+}
+export function __setPreTurnStopBoundForTests(ms: number | null): void {
+  preTurnStopBoundMs = ms ?? 10_000;
+}
+
+/** Resolve 'done' when work settles, or 'aborted' as soon as the signal fires. */
+function raceAbort(work: Promise<unknown>, signal: AbortSignal): Promise<'done' | 'aborted'> {
+  if (signal.aborted) return Promise.resolve('aborted');
+  return new Promise((resolve) => {
+    const onAbort = () => resolve('aborted');
+    signal.addEventListener('abort', onAbort, {once: true});
+    work.then(() => 'done' as const, () => 'done' as const).then((value) => {
+      signal.removeEventListener('abort', onAbort);
+      resolve(value);
+    });
+  });
+}
+
+/** True when work settles within ms; false when the bound passes first. */
+function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), ms);
+    work.then(() => true, () => true).then((settled) => {
+      clearTimeout(timer);
+      resolve(settled);
+    });
+  });
+}
+
 export async function agentHarnessAsk(
   input: ChatInput,
   onEvent: (event: BrainEvent) => void,
@@ -2727,84 +2764,104 @@ async function agentHarnessAskTurn(
     console.error(formatRepoExplorerEffectiveness(explorerEffectiveness));
   };
 
-  if (!signal?.aborted && explorerRuntimeMode !== 'off' && classifyExplorerPrompt(chatInputText(input)) !== 'skipped') {
-    onEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer', detail: 'read-only preflight' } });
-    try {
-      const report = await buildExplorerReport(input);
-      throwIfExplorerAborted(signal);
-      if (report.mode !== 'skipped' && explorerWarpgrepEnabled()) {
-        onEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer_warpgrep', detail: 'Morph warp-grep code search' } });
-        const warpState = await runRepoExplorerWarpGrep(input, report, signal);
-        onEvent({
+  // Pre-turn preparation (AGENT-RUNTIME-31): the repository explorer runs
+  // before any model turn. It is raced against cancellation with a bound, so
+  // a cancel never waits on a stalled preflight, and its late events are
+  // dropped once the turn is cancelled.
+  const preflightEvent = (event: BrainEvent) => { if (!signal?.aborted) onEvent(event); };
+  const preflight = !signal?.aborted && explorerRuntimeMode !== 'off' && classifyExplorerPrompt(chatInputText(input)) !== 'skipped'
+    ? (async () => {
+      preflightEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer', detail: 'read-only preflight' } });
+      try {
+        const report = await (explorerReportBuilder ?? buildExplorerReport)(input, {signal});
+        throwIfExplorerAborted(signal);
+        if (report.mode !== 'skipped' && explorerWarpgrepEnabled()) {
+          preflightEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer_warpgrep', detail: 'Morph warp-grep code search' } });
+          const warpState = await runRepoExplorerWarpGrep(input, report, signal);
+          preflightEvent({
+            type: 'tool_result',
+            toolResult: {
+              name: 'repo_explorer_warpgrep',
+              success: !warpState.failed,
+              output: warpState.failed
+                ? `failed non-fatally: ${warpState.failureReason ?? 'unknown error'}`
+                : [`${report.modelScout?.recommendedReads.length ?? 0} warp-grep match(es); ${warpState.elapsedMs}ms`, formatExplorerQueryDistill(warpState.queryDistill)].filter(Boolean).join(' · '),
+            },
+          });
+        } else if (report.mode !== 'skipped' && explorerFanoutEnabled()) {
+          preflightEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer_fanout', detail: 'read-only parallel scouts' } });
+          const fanoutState = await runRepoExplorerFanout(input, report, signal);
+          preflightEvent({
+            type: 'tool_result',
+            toolResult: {
+              name: 'repo_explorer_fanout',
+              success: fanoutState.branchCount > 0 && fanoutState.failedBranches < fanoutState.branchCount,
+              output: fanoutState.failureReason ?? [`${fanoutState.branchCount} branch(es); ${fanoutState.suggestedFiles.length} suggested file(s); ${fanoutState.failedBranches} failed branch(es); ${fanoutState.elapsedMs}ms`, fanoutState.routeWarning, formatExplorerQueryDistill(fanoutState.queryDistill)].filter(Boolean).join('\n'),
+            },
+          });
+        } else if (report.mode !== 'skipped' && explorerScoutEnabled()) {
+          preflightEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer_scout', detail: 'read-only model scout' } });
+          const scoutState = await runRepoExplorerScout(input, report, signal);
+          preflightEvent({
+            type: 'tool_result',
+            toolResult: {
+              name: 'repo_explorer_scout',
+              success: !scoutState.failed,
+              output: scoutState.failed
+                ? `failed non-fatally: ${scoutState.failureReason ?? 'unknown error'}`
+                : [`${report.modelScout?.recommendedReads.length ?? 0} scout read(s); ${report.modelScout?.missingLikelyFiles.length ?? 0} missing file(s); ${scoutState.elapsedMs}ms`, formatExplorerQueryDistill(scoutState.queryDistill)].filter(Boolean).join(' · '),
+            },
+          });
+        }
+        let explorerActivity: unknown;
+        if (report.mode !== 'skipped') {
+          const reportText = explorerRuntimeMode === 'fast-context'
+            ? formatExplorerRetrievalContext(report)
+            : formatExplorerReport(report);
+          preparedInput = injectExplorerContext(input, reportText) as ChatInput;
+          explorerEffectiveness = createRepoExplorerEffectiveness(report);
+          explorerEffectivenessStartedAt = Date.now();
+          explorerActivity = createRepoExplorerActivityView(report, { rawReport: reportText });
+          if (debugExplorer) console.error(reportText);
+        }
+        preflightEvent({
           type: 'tool_result',
           toolResult: {
-            name: 'repo_explorer_warpgrep',
-            success: !warpState.failed,
-            output: warpState.failed
-              ? `failed non-fatally: ${warpState.failureReason ?? 'unknown error'}`
-              : [`${report.modelScout?.recommendedReads.length ?? 0} warp-grep match(es); ${warpState.elapsedMs}ms`, formatExplorerQueryDistill(warpState.queryDistill)].filter(Boolean).join(' · '),
+            name: 'repo_explorer',
+            success: true,
+            output: report.mode !== 'skipped'
+              ? `${report.mode}; ${report.metrics.queriesRun} querie(s); ${report.likelyFiles.length} likely file(s); ${report.metrics.filesSearched} file(s) searched; ${report.metrics.reportChars} char ${explorerRuntimeMode === 'fast-context' ? 'artifact' : 'report'}; ${report.metrics.elapsedMs}ms`
+              : 'skipped',
+            ...(explorerActivity ? { explorerActivity } : {}),
           },
         });
-      } else if (report.mode !== 'skipped' && explorerFanoutEnabled()) {
-        onEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer_fanout', detail: 'read-only parallel scouts' } });
-        const fanoutState = await runRepoExplorerFanout(input, report, signal);
-        onEvent({
+      } catch (err) {
+        preflightEvent({
           type: 'tool_result',
           toolResult: {
-            name: 'repo_explorer_fanout',
-            success: fanoutState.branchCount > 0 && fanoutState.failedBranches < fanoutState.branchCount,
-            output: fanoutState.failureReason ?? [`${fanoutState.branchCount} branch(es); ${fanoutState.suggestedFiles.length} suggested file(s); ${fanoutState.failedBranches} failed branch(es); ${fanoutState.elapsedMs}ms`, fanoutState.routeWarning, formatExplorerQueryDistill(fanoutState.queryDistill)].filter(Boolean).join('\n'),
-          },
-        });
-      } else if (report.mode !== 'skipped' && explorerScoutEnabled()) {
-        onEvent({ type: 'tool_call', toolCall: { name: 'repo_explorer_scout', detail: 'read-only model scout' } });
-        const scoutState = await runRepoExplorerScout(input, report, signal);
-        onEvent({
-          type: 'tool_result',
-          toolResult: {
-            name: 'repo_explorer_scout',
-            success: !scoutState.failed,
-            output: scoutState.failed
-              ? `failed non-fatally: ${scoutState.failureReason ?? 'unknown error'}`
-              : [`${report.modelScout?.recommendedReads.length ?? 0} scout read(s); ${report.modelScout?.missingLikelyFiles.length ?? 0} missing file(s); ${scoutState.elapsedMs}ms`, formatExplorerQueryDistill(scoutState.queryDistill)].filter(Boolean).join(' · '),
+            name: 'repo_explorer',
+            success: false,
+            output: err instanceof Error ? err.message : String(err),
           },
         });
       }
-      let explorerActivity: unknown;
-      if (report.mode !== 'skipped') {
-        const reportText = explorerRuntimeMode === 'fast-context'
-          ? formatExplorerRetrievalContext(report)
-          : formatExplorerReport(report);
-        preparedInput = injectExplorerContext(input, reportText) as ChatInput;
-        explorerEffectiveness = createRepoExplorerEffectiveness(report);
-        explorerEffectivenessStartedAt = Date.now();
-        explorerActivity = createRepoExplorerActivityView(report, { rawReport: reportText });
-        if (debugExplorer) console.error(reportText);
-      }
-      onEvent({
-        type: 'tool_result',
-        toolResult: {
-          name: 'repo_explorer',
-          success: true,
-          output: report.mode !== 'skipped'
-            ? `${report.mode}; ${report.metrics.queriesRun} querie(s); ${report.likelyFiles.length} likely file(s); ${report.metrics.filesSearched} file(s) searched; ${report.metrics.reportChars} char ${explorerRuntimeMode === 'fast-context' ? 'artifact' : 'report'}; ${report.metrics.elapsedMs}ms`
-            : 'skipped',
-          ...(explorerActivity ? { explorerActivity } : {}),
-        },
-      });
-    } catch (err) {
-      onEvent({
-        type: 'tool_result',
-        toolResult: {
-          name: 'repo_explorer',
-          success: false,
-          output: err instanceof Error ? err.message : String(err),
-        },
-      });
+    })()
+    : undefined;
+  if (preflight && signal) {
+    const outcome = await raceAbort(preflight, signal);
+    if (outcome === 'aborted') {
+      // No model turn was started. The stop is proven only once the
+      // preflight's own work has ended, within the stop bound.
+      const ended = await settlesWithin(preflight, preTurnStopBoundMs);
+      return ended
+        ? {text: '', status: 'interrupted', stopConfirmed: true, error: 'Turn cancelled during explorer preparation'}
+        : {text: '', status: 'interrupted', stopConfirmed: false,
+          error: `Turn cancelled during explorer preparation; the explorer did not stop within ${preTurnStopBoundMs} ms`};
     }
-  }
+  } else if (preflight) await preflight;
 
-  if (signal?.aborted) return {text: '', status: 'interrupted', error: 'Turn cancelled during explorer preparation'};
+  // Cancelled before or right after a preflight that has ended: no model turn started.
+  if (signal?.aborted) return {text: '', status: 'interrupted', stopConfirmed: true, error: 'Turn cancelled during explorer preparation'};
 
   // Codex engine: when the active provider is `codex`, drive the OpenAI
   // `codex app-server` sidecar (ChatGPT-subscription auth) instead of the
