@@ -20,6 +20,7 @@ import {
   __resetCodexThreadsForTests,
   __setCodexClientForTests,
   __setCodexSpawnForTests,
+  killCodexChildrenOnExit,
   type CodexSpawnFn,
 } from '../../interactive-tui/codexEngine';
 import {closeBrain, setBrainModel, getBrainModel, agentHarnessAsk, __setExplorerReportBuilderForTests, __setPreTurnStopBoundForTests,
@@ -610,6 +611,24 @@ describe('codexAsk cancellation during app-server setup (AGENT-RUNTIME-31)', () 
       }
     });
   }
+
+  it('the process exit handler SIGKILLs a failed-handshake child that ignored SIGTERM', async () => {
+    const proc = new FakeCodexProc();
+    const signals: Array<string | number | undefined> = [];
+    proc.kill = (signal?: NodeJS.Signals | number) => { signals.push(signal); return true; };
+    __setCodexClientForTests(null);
+    __setCodexSpawnForTests(() => proc as unknown as ReturnType<CodexSpawnFn>);
+    try {
+      const account = getCodexAccount(true);
+      proc.replyError(await waitForSent(proc, 'initialize'), 'unsupported client');
+      await expect(account).resolves.toBeNull();
+      expect(signals).toEqual(['SIGTERM']);
+      killCodexChildrenOnExit();
+      expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
+    } finally {
+      __setCodexSpawnForTests(null);
+    }
+  });
 
   it('a cancelled setup never spawns a replacement app-server after the drain', async () => {
     const spawned: FakeCodexProc[] = [];

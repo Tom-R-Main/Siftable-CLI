@@ -163,7 +163,8 @@ is sent, no turn exists. The app-server child is drained (SIGTERM, then
 SIGKILL), which also rejects its pending requests. A child whose `initialize` handshake failed stays owned until it is
 confirmed closed, even if it ignored the SIGTERM sent at the failure. Shutdown
 and stop confirmation drain it with the same SIGTERM, SIGKILL, then failure
-sequence, so they never report success while it is alive. The stop is confirmed only
+sequence, so they never report success while it is alive. If the process exits without a normal shutdown, its exit handler SIGKILLs
+every tracked Codex child that is still alive, synchronously. The stop is confirmed only
 if the child is confirmed closed within the same 10-second bound; otherwise
 the turn ends with `turn.stop_unconfirmed`. Shutdown drains the child with
 the client's bounded grace (about 2 s) and reports a failed close as

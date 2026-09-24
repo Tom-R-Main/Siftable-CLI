@@ -197,6 +197,13 @@ export class CodexClient {
     this.spawnProc = spawnProc;
   }
 
+  /** SIGKILL every owned child that has not closed; synchronous, for process exit. */
+  killLiveChildrenSync(): void {
+    for (const proc of this.ownedProcs) {
+      try { proc.kill('SIGKILL'); } catch { /* already gone */ }
+    }
+  }
+
   /** True while any app-server child this client spawned has not closed. */
   hasLiveChild(): boolean {
     return this.ownedProcs.size > 0;
@@ -637,7 +644,18 @@ export function __setCodexClientForTests(
 }
 
 // Best-effort cleanup so we never orphan an app-server process.
-process.once('exit', () => client?.shutdown());
+/**
+ * Process-exit cleanup. Exit handlers cannot await, so every tracked child
+ * that is still alive (the current client's and any failed-handshake
+ * client's, which may have ignored SIGTERM) is SIGKILLed synchronously.
+ */
+export function killCodexChildrenOnExit(): void {
+  client?.shutdown();
+  client?.killLiveChildrenSync();
+  for (const stale of failedClients) stale.killLiveChildrenSync();
+}
+
+process.once('exit', killCodexChildrenOnExit);
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.once(sig, () => {
     client?.shutdown();
