@@ -138,6 +138,7 @@ export async function runSessionMode(options: SessionModeOptions): Promise<numbe
     log, write,
     gates: {...approvals, ...questions},
     engine: {
+      kind: options.provider === 'codex' ? 'codex' : 'harness',
       ask: (input, onEvent, signal) => brain.agentHarnessAsk(input, onEvent, signal),
       close: () => brain.closeBrain(),
     },
@@ -146,7 +147,7 @@ export async function runSessionMode(options: SessionModeOptions): Promise<numbe
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
   try {
-    return await serveLines(server, process.stdin, write);
+    return await serveLines(server, process.stdin);
   } finally {
     process.removeListener('SIGINT', stop);
     process.removeListener('SIGTERM', stop);

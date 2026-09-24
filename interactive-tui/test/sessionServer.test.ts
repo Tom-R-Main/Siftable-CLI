@@ -17,9 +17,32 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, {recursive: true, force: true});
 });
 
+/**
+ * A Codex-shaped engine: codexAsk returns `{text}` with no status on success,
+ * and after an interrupt reports whether app-server confirmed the turn ended.
+ */
+function codexEngine(trace: string[]): SessionEngine {
+  return {
+    kind: 'codex',
+    async ask(input: string, onEvent: (event: BrainEvent) => void, signal: AbortSignal): Promise<BrainAskResult> {
+      if (input === 'codex ok') {
+        onEvent({type: 'token', content: 'hi'});
+        onEvent({type: 'done', message: {content: 'hi'}});
+        return {text: 'hi'};
+      }
+      if (input === 'codex error') return {text: '', error: 'codex turn failed'};
+      await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), {once: true}));
+      trace.push('loop-stopped');
+      return {text: 'partial', status: 'interrupted', stopConfirmed: input === 'codex hang confirmed'};
+    },
+    async close() { trace.push('closed'); },
+  };
+}
+
 /** A scripted engine: each prompt names a behavior; no provider, no network. */
 function scriptedEngine(trace: string[]): SessionEngine {
   return {
+    kind: 'harness',
     async ask(input: string, onEvent: (event: BrainEvent) => void, signal: AbortSignal): Promise<BrainAskResult> {
       const receipts = [{requestId: `r-${input}`, provider: 'fixture', requestedModel: 'fixture', attempts: 1, mode: 'buffered' as const,
         outcome: 'completed' as const, usage: {inputTokens: 10, outputTokens: 4, cachedInputTokens: 2}}];
@@ -52,21 +75,27 @@ function scriptedEngine(trace: string[]): SessionEngine {
   };
 }
 
-async function harness(options: {root?: string; session?: string; deadlineMs?: number; trace?: string[]} = {}) {
+async function harness(options: {root?: string; session?: string; deadlineMs?: number; trace?: string[]; engine?: 'harness' | 'codex'} = {}) {
   const root = options.root ?? await mkdtemp(join(tmpdir(), 'sift-session-server-'));
   if (!options.root) roots.push(root);
   const trace = options.trace ?? [];
   const lines: Line[] = [];
   const session = options.session ?? 'fixture-session';
   const log = new WireEventLog({rootDir: root, session, leaseStore: dir => new JsonlSessionEventStore({rootDir: dir})});
+  // Observe fsyncs: every event the client sees must already be durable.
+  let durable = log.lastSeq;
+  const violations: number[] = [];
+  const sync = log.sync.bind(log);
+  log.sync = () => { const through = log.lastSeq; sync(); durable = through; };
   const write = (line: string) => {
     expect(line.endsWith('\n')).toBe(true);
     const parsed = JSON.parse(line);
+    if (typeof parsed.seq === 'number' && parsed.seq > durable) violations.push(parsed.seq);
     if (parsed.type === 'turn.stopped' && !parsed.recovered) expect(trace).toContain('loop-stopped');
     lines.push(parsed);
   };
   const server = new SessionServer({session, provider: 'fixture', model: 'fixture', cwd: root, deadlineMs: options.deadlineMs ?? 5_000,
-    engine: scriptedEngine(trace), gates: {...confirmGate, ...questionGate}, log, write});
+    engine: options.engine === 'codex' ? codexEngine(trace) : scriptedEngine(trace), gates: {...confirmGate, ...questionGate}, log, write});
   let next = 0;
   const send = async (command: Record<string, unknown>) => {
     const id = `c${++next}`;
@@ -85,7 +114,7 @@ async function harness(options: {root?: string; session?: string; deadlineMs?: n
     }
     throw new Error(`timed out; saw ${JSON.stringify(lines.map(line => line.type))}`);
   };
-  return {root, server, lines, trace, send, events, waitFor, log};
+  return {root, server, lines, trace, send, events, waitFor, log, violations};
 }
 
 function assertMonotonic(events: WireEvent[]) {
@@ -114,6 +143,7 @@ describe('session server protocol', () => {
       lastTurn: {requests: 1, inputTokens: 10, outputTokens: 4, cachedInputTokens: 2, totalTokens: 14}, turns: 2});
     const usageEvents = h.events().filter(event => event.type === 'usage');
     expect(usageEvents).toHaveLength(2);
+    expect(usageEvents[1]).toMatchObject({session: 'fixture-session', cumulative: {requests: 2, totalTokens: 28}, turn: {requests: 1}});
     // Usage precedes the terminal event of its turn.
     expect(usageEvents[1]!.seq).toBeLessThan(completed[1]!.seq);
     assertMonotonic(h.events());
@@ -241,12 +271,19 @@ describe('session server protocol', () => {
     const second = await harness({root});
     const init = await second.send({type: 'initialize', protocolVersion: 1});
     expect(init).toMatchObject({resumed: true, lastSeq: firstEvents.at(-1)!.seq});
+    // Cumulative usage and the turn count survive the restart.
+    expect((await second.send({type: 'usage'})).usage).toEqual({turns: 1,
+      session: {requests: 1, inputTokens: 10, outputTokens: 4, cachedInputTokens: 2, totalTokens: 14},
+      lastTurn: {requests: 1, inputTokens: 10, outputTokens: 4, cachedInputTokens: 2, totalTokens: 14}});
     const replay = await second.send({type: 'replay', after: cursor});
     expect(replay).toMatchObject({ok: true, more: false, lastSeq: firstEvents.at(-1)!.seq});
     expect(replay.events).toEqual(firstEvents.filter(event => event.seq > cursor));
     await second.send({type: 'prompt', input: 'say continued'});
     const next = await second.waitFor(line => line.type === 'turn.started');
     expect(next.seq).toBe(firstEvents.at(-1)!.seq + 1);
+    expect(await second.waitFor(line => line.type === 'usage')).toMatchObject({session: 'fixture-session', cumulative: {requests: 2, totalTokens: 28}});
+    await second.waitFor(line => line.type === 'turn.completed');
+    expect((await second.send({type: 'usage'})).usage.turns).toBe(2);
     expect(await second.send({type: 'replay', after: 10_000})).toMatchObject({ok: false, error: {code: 'invalid_request'}});
     await second.send({type: 'shutdown'});
   });
@@ -298,17 +335,64 @@ describe('session server protocol', () => {
   test('the line reader rejects an oversized line, keeps serving, and shuts down on EOF', async () => {
     const h = await harness();
     const input = new PassThrough();
-    const written: string[] = [];
-    const served = serveLines(h.server, input, line => written.push(line));
+    const served = serveLines(h.server, input);
     input.write(`${'x'.repeat(1024 * 1024 + 10)}\n`);
     input.write(`${JSON.stringify({id: 1, type: 'initialize', protocolVersion: 1})}\r\n`);
     input.write(`${JSON.stringify({id: 2, type: 'prompt', input: 'say eof'})}\n`);
     await h.waitFor(line => line.type === 'turn.completed');
     input.end();
     expect(await served).toBe(0);
-    expect(written.map(line => JSON.parse(line).error?.code)).toEqual(['line_too_long']);
+    expect(h.lines.filter(line => line.type === 'response' && !line.ok).map(line => line.error.code)).toEqual(['line_too_long']);
     expect(h.lines.find(line => line.id === 1)).toMatchObject({ok: true});
     expect(h.events().at(-1)).toMatchObject({type: 'session.closed', reason: 'eof'});
     expect(input.listenerCount('data')).toBe(0);
+  });
+
+  test('no event reaches the client before an fsync covers its seq', async () => {
+    const h = await harness();
+    await h.send({type: 'initialize', protocolVersion: 1});
+    await h.send({type: 'prompt', input: 'write'});
+    const request = await h.waitFor(line => line.type === 'approval.request');
+    await h.send({type: 'approval.respond', requestId: request.requestId, decision: 'deny'});
+    await h.waitFor(line => line.type === 'turn.completed');
+    await h.send({type: 'prompt', input: 'say more'});
+    await h.waitFor(line => line.type === 'turn.completed' && line.text === 'more');
+    await h.send({type: 'shutdown'});
+    expect(h.events().length).toBeGreaterThan(8);
+    expect(h.violations).toEqual([]);
+  });
+
+  test('a completed Codex turn is turn.completed; a Codex error is turn.failed', async () => {
+    const h = await harness({engine: 'codex'});
+    await h.send({type: 'initialize', protocolVersion: 1});
+    const ok = await h.send({type: 'prompt', input: 'codex ok'});
+    expect(await h.waitFor(line => line.turnId === ok.turnId && String(line.type).startsWith('turn.') && line.type !== 'turn.started'))
+      .toMatchObject({type: 'turn.completed', status: 'completed', text: 'hi'});
+    const bad = await h.send({type: 'prompt', input: 'codex error'});
+    expect(await h.waitFor(line => line.turnId === bad.turnId && String(line.type).startsWith('turn.') && line.type !== 'turn.started'))
+      .toMatchObject({type: 'turn.failed', status: 'failed', error: 'codex turn failed'});
+    await h.send({type: 'shutdown'});
+  });
+
+  test('a Codex cancel is confirmed only when the engine proves the turn ended', async () => {
+    const confirmed = await harness({engine: 'codex'});
+    await confirmed.send({type: 'initialize', protocolVersion: 1});
+    await confirmed.send({type: 'prompt', input: 'codex hang confirmed'});
+    await confirmed.send({type: 'cancel'});
+    expect(await confirmed.waitFor(line => line.type === 'turn.stopped')).toMatchObject({confirmed: true, reason: 'client'});
+    await confirmed.send({type: 'prompt', input: 'codex ok'});
+    await confirmed.waitFor(line => line.type === 'turn.completed');
+    await confirmed.send({type: 'shutdown'});
+
+    const unconfirmed = await harness({engine: 'codex'});
+    await unconfirmed.send({type: 'initialize', protocolVersion: 1});
+    const turn = await unconfirmed.send({type: 'prompt', input: 'codex hang'});
+    await unconfirmed.send({type: 'cancel'});
+    const outcome = await unconfirmed.waitFor(line => line.turnId === turn.turnId && String(line.type).startsWith('turn.') && line.type !== 'turn.started');
+    expect(outcome).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false, reason: 'client'});
+    expect(unconfirmed.events().some(event => event.type === 'turn.stopped')).toBe(false);
+    // One tool loop per session: no new turn beside one that may still run.
+    expect(await unconfirmed.send({type: 'prompt', input: 'codex ok'})).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
+    await unconfirmed.send({type: 'shutdown'});
   });
 });

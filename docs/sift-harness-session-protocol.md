@@ -80,7 +80,7 @@ Every command except `initialize` and `shutdown` requires a prior
 `initialize`. After shutdown starts, other commands return `shutting_down`.
 
 Error codes: `parse_error`, `invalid_request`, `unsupported_version`,
-`not_initialized`, `unknown_command`, `turn_in_progress`, `unknown_request`,
+`not_initialized`, `unknown_command`, `turn_in_progress`, `stop_unconfirmed`, `unknown_request`,
 `decision_not_offered`, `shutting_down`, `line_too_long`.
 
 ## Events (server to client)
@@ -88,8 +88,11 @@ Error codes: `parse_error`, `invalid_request`, `unsupported_version`,
     {"schemaVersion":1,"seq":N,"session":"...","ts":"ISO-8601","type":"...","turnId":"...",...}
 
 `seq` starts at 1 for a new session and increases by one per event, including
-across process restarts of the same session. Each event is appended to the
-durable wire log before it is written to stdout.
+across process restarts of the same session. No event is written to stdout
+until an fsync of the wire log covers its `seq` (group commit: events emitted
+in the same event-loop tick share one fsync, and a response flushes every
+earlier event first). A client therefore never holds a `seq` that a restart
+could lose.
 
 | type | meaning |
 | --- | --- |
@@ -100,14 +103,23 @@ durable wire log before it is written to stdout.
 | `question.request` | `requestId`, `question`, optional `options`. Raised by the `ask_user` tool. |
 | `question.resolved` | `requestId`, `outcome` (`answered`, `declined`, `cancelled`). |
 | `status` with `status: stopping` | A cancel, deadline, or shutdown began stopping the turn. |
-| `usage` | `turn` and cumulative `session` totals: requests, input, output, cached input, and total tokens. It precedes the turn's terminal event. |
+| `usage` | `turn` and `cumulative` totals: requests, input, output, cached input, and total tokens. `cumulative` spans every process that has served the session. It precedes the turn's terminal event. |
 | `turn.completed`, `turn.failed`, `turn.limit_reached`, `turn.interrupted` | Terminal event of a turn that was not cancelled. Same fields as the one-shot `run.*` event. |
-| `turn.stopped` | Terminal event of a cancelled turn: `confirmed: true`, `reason` (`client`, `deadline`, `shutdown`, `process_exit`), `jobCleanup` when known. |
+| `turn.stopped` | Terminal event of a cancelled turn whose engine proved it ended: `confirmed: true`, `reason` (`client`, `deadline`, `shutdown`, `process_exit`), `jobCleanup` when known. |
+| `turn.stop_unconfirmed` | Terminal event of a cancelled turn whose engine could not prove it ended within its bound: `confirmed: false`, same fields. Later prompts return `stop_unconfirmed`; shut down and resume the session. |
 | `session.closed` | The last event of a process: `reason`, cumulative `usage`, `turns`. |
 
 Each turn ends with exactly one terminal event. When a turn is cancelled,
-`turn.stopped` is emitted only after the brain's tool loop has returned and
-the session's process jobs have been stopped. Pending approvals and questions
+`turn.stopped` is emitted only after the engine has proved the turn ended.
+For the Sift harness, that means its tool loop has returned and the session's
+process jobs have been stopped. For Codex, it means app-server sent
+`turn/completed` after `turn/interrupt`. The interrupt acknowledgement alone
+is not enough. If Codex does not confirm within 10 seconds, or disconnects
+first, the turn ends with `turn.stop_unconfirmed` instead.
+
+Results are read per engine. The harness always reports a status. Codex
+reports none when a turn completes, so a Codex result with no error is
+`turn.completed`. Pending approvals and questions
 from that turn are revoked first, and their `*.resolved` events come before
 `turn.stopped`.
 
@@ -126,11 +138,13 @@ The wire log is `<session-event-root>/wire/<sha256(session)>.wire.jsonl`, with
 file mode 0600, next to the harness session journal
 (`~/.siftable/session-events/v1` or `SIFT_SESSION_EVENT_ROOT`). A final
 fragment with no newline, left by a crash during an append, is truncated when
-the log is opened. The log is fsynced at turn boundaries and on close.
+the log is opened. Every event is fsynced before it is sent (see Events), so
+a crash can lose only events that no client has seen.
 
 To reconnect, start a new process with the same `--session`, send
 `initialize` (it reports `resumed` and `lastSeq`), then page through
-`replay {after: cursor}` until `more` is false. The replay is taken
+`replay {after: cursor}` until `more` is false. Cumulative usage and the turn
+count are rebuilt from the log, so `usage` continues across restarts. The replay is taken
 synchronously, so a live event can never fall between the replayed page and
 the stream. If the previous process died during a turn, the new process closes
 that turn once with `turn.stopped {reason: "process_exit", recovered: true}`.

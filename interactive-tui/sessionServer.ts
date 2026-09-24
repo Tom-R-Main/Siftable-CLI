@@ -6,7 +6,7 @@
  * Client lines are commands `{id, type, ...}` and receive exactly one
  * `{type: "response", id, ok, ...}` line. Server events carry the headless
  * envelope `{schemaVersion, seq, session, ts, type, ...}`, are appended to a
- * durable per-session wire log before they are written, and can be replayed
+ * per-session wire log and fsynced before they are written, and can be replayed
  * from a cursor, including by a later process that resumes the session.
  */
 import { createHash, randomUUID } from 'node:crypto';
@@ -29,8 +29,15 @@ const DECISIONS: readonly ApprovalDecision[] = ['deny', 'allow', 'always', 'bypa
 
 export type WireEvent = {schemaVersion: 1; seq: number; session: string; ts: string; type: string; [key: string]: unknown};
 
-/** The engine seam: production wraps brain.agentHarnessAsk; tests script it. */
+/**
+ * The engine seam: production wraps brain.agentHarnessAsk; tests script it.
+ * `kind` selects how results are read, because the engines report differently:
+ * the harness always sets `status` and returns only after its tool loop has
+ * unwound; Codex omits `status` on normal completion and stops asynchronously,
+ * reporting `stopConfirmed` after an interrupt.
+ */
 export interface SessionEngine {
+  readonly kind: 'harness' | 'codex';
   ask(input: string, onEvent: (event: BrainEvent) => void, signal: AbortSignal): Promise<BrainAskResult>;
   close(): Promise<void>;
 }
@@ -65,13 +72,14 @@ interface LeaseStore { acquireLease(sessionId: string): {release(): void} }
  * session journal's own store, so a second process cannot serve the same
  * session and a crashed owner's lease is recovered by the journal's protocol.
  * The newline after each event is its commit marker; a torn final fragment is
- * truncated on open. Events are fsynced at turn boundaries.
+ * truncated on open. The server fsyncs before it sends any event it appended.
  */
 export class WireEventLog {
   readonly path: string;
   private readonly events: WireEvent[] = [];
   private fd: number | undefined;
   private lease: {release(): void} | undefined;
+  private synced = 0;
 
   constructor(private readonly options: {rootDir: string; session: string; leaseStore: (rootDir: string) => LeaseStore}) {
     const dir = join(options.rootDir, 'wire');
@@ -113,6 +121,7 @@ export class WireEventLog {
       }
       this.events.push(event);
     }
+    this.synced = this.events.length;
   }
 
   get lastSeq(): number {
@@ -136,8 +145,16 @@ export class WireEventLog {
     return this.events.slice(cursor, cursor + limit);
   }
 
+  /** Highest seq known to be on disk. */
+  get durableSeq(): number {
+    return this.synced;
+  }
+
   sync(): void {
-    if (this.fd !== undefined) fsyncSync(this.fd);
+    if (this.fd === undefined || this.synced === this.events.length) return;
+    const through = this.events.length;
+    fsyncSync(this.fd);
+    this.synced = through;
   }
 
   close(): void {
@@ -155,7 +172,7 @@ export class WireEventLog {
 
 type CommandId = string | number;
 type ErrorCode = 'parse_error' | 'invalid_request' | 'unsupported_version' | 'not_initialized' | 'unknown_command'
-  | 'turn_in_progress' | 'unknown_request' | 'decision_not_offered' | 'shutting_down' | 'line_too_long';
+  | 'turn_in_progress' | 'stop_unconfirmed' | 'unknown_request' | 'decision_not_offered' | 'shutting_down' | 'line_too_long';
 
 interface ActiveTurn {
   turnId: string;
@@ -180,6 +197,21 @@ export interface SessionServerOptions {
   clock?: () => Date;
 }
 
+type TurnStatus = 'completed' | 'failed' | 'interrupted' | 'limit_reached';
+
+/** Read one engine's result into a turn status and whether a stop is proven. */
+export function interpretEngineResult(kind: SessionEngine['kind'], result: BrainAskResult): {status: TurnStatus; stopConfirmed: boolean} {
+  if (kind === 'codex') {
+    const status: TurnStatus = result.status === 'interrupted' ? 'interrupted' : result.status === 'failed' || result.error ? 'failed'
+      : result.status === 'limit_reached' ? 'limit_reached' : 'completed';
+    return {status, stopConfirmed: result.stopConfirmed === true};
+  }
+  const status: TurnStatus = result.status === 'limit_reached' ? 'limit_reached' : result.status === 'interrupted' ? 'interrupted'
+    : result.error ? 'failed' : result.status || 'failed';
+  // agentHarnessAsk resolves only after the loop returned and session jobs were stopped.
+  return {status, stopConfirmed: result.stopConfirmed !== false};
+}
+
 function zeroUsage(): UsageTotals {
   return {requests: 0, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0};
 }
@@ -193,6 +225,11 @@ export class SessionServer {
   private readonly usage = zeroUsage();
   private lastTurnUsage: UsageTotals | undefined;
   private turns = 0;
+  /** A cancelled turn whose engine never confirmed it stopped; no new turn may start. */
+  private unconfirmedStop: string | undefined;
+  /** Protocol lines waiting for the log to be durable through their seq. */
+  private outbound: string[] = [];
+  private flushScheduled = false;
   private readonly clock: () => Date;
   private markClosed!: (exitCode: number) => void;
   /** Resolves with the exit code once the session has shut down, whatever asked it to. */
@@ -205,7 +242,7 @@ export class SessionServer {
     gates.setConfirmCancellationListener(id => this.onApprovalCancelled(id));
     gates.setQuestionListener(request => this.onQuestionRequest(request));
     gates.setQuestionCancellationListener(id => this.onQuestionCancelled(id));
-    this.recoverOpenTurn();
+    this.restoreFromLog();
   }
 
   /** True while a turn's tool loop is running. */
@@ -213,32 +250,72 @@ export class SessionServer {
     return this.active !== undefined;
   }
 
+  /**
+   * Group commit: an event is appended to the log at once but written to the
+   * client only after an fsync covers it, so a client never holds a seq that
+   * a restart could lose. Events emitted in the same tick share one fsync;
+   * responses flush immediately so they never overtake earlier events.
+   */
   private emit(event: {type: string; [key: string]: unknown}): WireEvent {
     const envelope = {...event, schemaVersion: 1 as const, seq: this.options.log.lastSeq + 1,
       session: this.options.session, ts: this.clock().toISOString()} as WireEvent;
     this.options.log.append(envelope);
-    this.options.write(`${JSON.stringify(envelope)}\n`);
+    this.outbound.push(`${JSON.stringify(envelope)}\n`);
+    if (!this.flushScheduled) {
+      this.flushScheduled = true;
+      setImmediate(() => this.flush());
+    }
     return envelope;
   }
 
+  /** fsync the log through every queued event, then write the queue in order. */
+  flush(): void {
+    this.flushScheduled = false;
+    if (!this.outbound.length) return;
+    this.options.log.sync();
+    const lines = this.outbound;
+    this.outbound = [];
+    for (const line of lines) this.options.write(line);
+  }
+
   private respond(id: CommandId | null, body: Record<string, unknown>): void {
-    this.options.write(`${JSON.stringify({type: 'response', id, ok: true, ...body})}\n`);
+    this.outbound.push(`${JSON.stringify({type: 'response', id, ok: true, ...body})}\n`);
+    this.flush();
   }
 
   private fail(id: CommandId | null, code: ErrorCode, message: string): void {
-    this.options.write(`${JSON.stringify({type: 'response', id, ok: false, error: {code, message}})}\n`);
+    this.outbound.push(`${JSON.stringify({type: 'response', id, ok: false, error: {code, message}})}\n`);
+    this.flush();
   }
 
-  /** A previous process died mid-turn: its loop is gone, so close the turn once. */
-  private recoverOpenTurn(): void {
+  /** Reject a command line the reader could not frame. */
+  rejectLine(code: 'line_too_long', message: string): void {
+    this.fail(null, code, message);
+  }
+
+  /**
+   * Resume from the wire log: carry cumulative usage and the turn count
+   * forward, and close once a turn left open by a process that died.
+   */
+  private restoreFromLog(): void {
     let open: string | undefined;
     for (const event of this.options.log.after(0, Number.MAX_SAFE_INTEGER)) {
-      if (event.type === 'turn.started') open = String(event.turnId);
-      else if (typeof event.type === 'string' && event.type.startsWith('turn.') && event.type !== 'turn.started' && event.turnId === open) open = undefined;
+      if (event.type === 'turn.started') {
+        open = String(event.turnId);
+        this.turns += 1;
+      } else if (event.type === 'usage') {
+        const session = event.cumulative as Partial<UsageTotals> | undefined;
+        const turn = event.turn as Partial<UsageTotals> | undefined;
+        for (const key of Object.keys(this.usage) as Array<keyof UsageTotals>) {
+          const value = session?.[key];
+          if (Number.isSafeInteger(value) && (value as number) >= 0) this.usage[key] = value as number;
+        }
+        if (turn) this.lastTurnUsage = {...zeroUsage(), ...Object.fromEntries(Object.entries(turn).filter(([, value]) => Number.isSafeInteger(value)))};
+      } else if (typeof event.type === 'string' && event.type.startsWith('turn.') && event.turnId === open) open = undefined;
     }
     if (open) {
       this.emit({type: 'turn.stopped', turnId: open, status: 'interrupted', confirmed: true, reason: 'process_exit', recovered: true});
-      this.options.log.sync();
+      this.flush();
     }
   }
 
@@ -333,6 +410,9 @@ export class SessionServer {
       return this.fail(id, 'invalid_request', `input must be a nonempty string of at most ${MAX_PROMPT_CHARS} characters`);
     }
     if (this.active) return this.fail(id, 'turn_in_progress', `Turn ${this.active.turnId} is still running; cancel it or wait for its terminal event`);
+    if (this.unconfirmedStop) {
+      return this.fail(id, 'stop_unconfirmed', `Turn ${this.unconfirmedStop} was not confirmed stopped; shut down and resume the session`);
+    }
     const turnId = randomUUID();
     const controller = new AbortController();
     const turn: ActiveTurn = {turnId, controller, done: Promise.resolve()};
@@ -369,17 +449,25 @@ export class SessionServer {
     }
     for (const key of Object.keys(turnUsage) as Array<keyof UsageTotals>) this.usage[key] += turnUsage[key];
     this.lastTurnUsage = turnUsage;
-    this.emit({type: 'usage', turnId: turn.turnId, turn: turnUsage, session: {...this.usage}});
+    // `session` is the envelope's session id, so the running total is `cumulative`.
+    this.emit({type: 'usage', turnId: turn.turnId, turn: turnUsage, cumulative: {...this.usage}});
+    const {status, stopConfirmed} = interpretEngineResult(this.options.engine.kind, result);
     if (turn.cancelReason) {
-      this.emit({type: 'turn.stopped', turnId: turn.turnId, status: 'interrupted', confirmed: true, reason: turn.cancelReason,
+      const detail = {turnId: turn.turnId, status: 'interrupted', reason: turn.cancelReason,
         text: result.text, ...(result.progressText ? {progressText: result.progressText} : {}),
-        ...(result.jobCleanup ? {jobCleanup: result.jobCleanup} : {}), ...(result.error ? {error: result.error} : {})});
+        ...(result.jobCleanup ? {jobCleanup: result.jobCleanup} : {}), ...(result.error ? {error: result.error} : {})};
+      if (stopConfirmed) this.emit({type: 'turn.stopped', ...detail, confirmed: true});
+      else {
+        // The engine could not prove its turn ended. Say so, and refuse new
+        // turns so a second tool loop cannot start beside a running one.
+        this.unconfirmedStop = turn.turnId;
+        this.emit({type: 'turn.stop_unconfirmed', ...detail, confirmed: false});
+      }
     } else {
-      const status = result.status === 'limit_reached' ? 'limit_reached' : result.status === 'interrupted' ? 'interrupted'
-        : result.error ? 'failed' : result.status || 'failed';
-      this.emit({...result, type: `turn.${status}`, turnId: turn.turnId, status});
+      const {stopConfirmed: _omit, ...rest} = result;
+      this.emit({...rest, type: `turn.${status}`, turnId: turn.turnId, status});
     }
-    this.options.log.sync();
+    this.flush();
     this.active = undefined;
   }
 
@@ -471,6 +559,7 @@ export class SessionServer {
         error = `Session shutdown failed: ${failure instanceof Error ? failure.message : String(failure)}`;
       }
       this.emit({type: 'session.closed', reason, ...(error ? {error} : {}), usage: {...this.usage}, turns: this.turns});
+      this.flush();
       this.options.log.close();
       this.markClosed(exitCode);
       return exitCode;
@@ -484,11 +573,11 @@ export class SessionServer {
  * shuts the session down. An oversized line is rejected and skipped through
  * its newline. Resolves with the exit code once the session has closed.
  */
-export function serveLines(server: SessionServer, input: Readable, write: (line: string) => void): Promise<number> {
+export function serveLines(server: SessionServer, input: Readable): Promise<number> {
   let buffer = '';
   let discarding = false;
   let chain: Promise<unknown> = Promise.resolve();
-  const tooLong = () => write(`${JSON.stringify({type: 'response', id: null, ok: false, error: {code: 'line_too_long', message: `Command exceeds ${MAX_COMMAND_BYTES} bytes`}})}\n`);
+  const tooLong = () => server.rejectLine('line_too_long', `Command exceeds ${MAX_COMMAND_BYTES} bytes`);
   const enqueue = (line: string) => { chain = chain.then(() => server.handleLine(line)).catch(() => undefined); };
   const onData = (chunk: Buffer | string) => {
     buffer += chunk.toString();
