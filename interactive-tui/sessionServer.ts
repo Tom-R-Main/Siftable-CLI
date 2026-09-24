@@ -213,6 +213,8 @@ export interface SessionServerOptions {
   log: WireEventLog;
   write: (line: string) => void;
   clock?: () => Date;
+  /** Backstop for each shutdown wait (the active turn, engine close). Default 30 s. */
+  shutdownBoundMs?: number;
 }
 
 type TurnStatus = 'completed' | 'failed' | 'interrupted' | 'limit_reached';
@@ -449,7 +451,7 @@ export class SessionServer {
 
   /** Handle one client line. Resolves when the command's response is written. */
   async handleLine(line: string): Promise<void> {
-    if (!line.trim()) return;
+    if (!line.trim()) return this.fail(null, 'invalid_request', 'Command line is empty');
     let message: unknown;
     try { message = JSON.parse(line); } catch {
       return this.fail(null, 'parse_error', 'Command is not valid JSON');
@@ -518,8 +520,10 @@ export class SessionServer {
     const turn: ActiveTurn = {turnId, controller, done: Promise.resolve()};
     this.active = turn;
     this.turns += 1;
-    this.respond(id, {turnId});
+    // Log turn.started first: the response flushes (fsyncs) every queued event
+    // before it is written, so a client never holds a turn id replay lacks.
     this.emit({type: 'turn.started', turnId});
+    this.respond(id, {turnId});
     turn.done = this.runTurn(turn, input);
   }
 
@@ -635,10 +639,17 @@ export class SessionServer {
   /** Stop any active turn (awaiting its confirmed stop), close the engine, and seal the log. */
   shutdown(reason: 'client' | 'eof' | 'signal'): Promise<number> {
     this.shuttingDown ??= (async () => {
+      const bound = this.options.shutdownBoundMs ?? 30_000;
+      /** Resolve with the work's outcome, or 'timeout' once the bound passes; late results are dropped. */
+      const within = (work: Promise<unknown>) => new Promise<{ok: true} | {ok: false; error: unknown} | 'timeout'>((resolve) => {
+        const timer = setTimeout(() => resolve('timeout'), bound);
+        work.then(() => { clearTimeout(timer); resolve({ok: true}); }, (error) => { clearTimeout(timer); resolve({ok: false, error}); });
+      });
+      const problems: string[] = [];
       const turn = this.active;
       if (turn) {
         this.requestCancel('shutdown');
-        await turn.done;
+        if (await within(turn.done) === 'timeout') problems.push(`the active turn did not stop within ${bound} ms`);
       }
       const {gates} = this.options;
       gates.rejectAllConfirms();
@@ -647,12 +658,11 @@ export class SessionServer {
       gates.setConfirmCancellationListener(null);
       gates.setQuestionListener(null);
       gates.setQuestionCancellationListener(null);
-      let exitCode = 0;
-      let error: string | undefined;
-      try { await this.options.engine.close(); } catch (failure) {
-        exitCode = 1;
-        error = `Session shutdown failed: ${failure instanceof Error ? failure.message : String(failure)}`;
-      }
+      const closed = await within(this.options.engine.close());
+      if (closed === 'timeout') problems.push(`the engine did not close within ${bound} ms`);
+      else if ('error' in closed) problems.push(closed.error instanceof Error ? closed.error.message : String(closed.error));
+      const exitCode = problems.length ? 1 : 0;
+      const error = problems.length ? `Session shutdown failed: ${problems.join('; ')}` : undefined;
       this.emit({type: 'session.closed', reason, ...(error ? {error} : {}), usage: {...this.usage}, turns: this.turns});
       this.flush();
       this.options.log.close();

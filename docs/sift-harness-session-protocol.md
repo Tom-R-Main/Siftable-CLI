@@ -44,7 +44,8 @@ directly: `session/prompt` to `prompt`, `session/cancel` to `cancel`,
 - One JSON object per line in each direction, UTF-8. Input is framed on the
   newline byte and each whole line is decoded, so a character split across
   reads is never corrupted. Lines longer than 1 MiB (counted in bytes) are
-  rejected with `line_too_long` and skipped.
+  rejected with `line_too_long` and skipped. An empty or whitespace-only line
+  is malformed input and gets an `invalid_request` response with `id: null`.
 - stdout carries only protocol lines. Diagnostics go to stderr.
 - One process serves one session. The session holds at most one active turn,
   so there is one tool loop per session. The durable journal lease and a
@@ -55,7 +56,13 @@ directly: `session/prompt` to `prompt`, `session/cancel` to `cancel`,
 - Approvals prompt the client. No standing allow or deny policy applies.
 - EOF on stdin, SIGINT, SIGTERM, and `shutdown` all run the same shutdown:
   stop the active turn and wait for its confirmed stop, close the engine, then
-  emit `session.closed`.
+  emit `session.closed`. Every wait is bounded. The engine's close bounds each
+  part (process jobs, the Codex sidecar, agents still being built, mailbox
+  drains) by the 10-second stop bound, and the server gives the active turn
+  and the engine close a 30-second backstop each. If anything does not finish
+  in time, the shutdown still responds, `session.closed` carries an `error`
+  naming what did not finish, the exit code is 1, and late results are
+  discarded.
 
 ## Commands (client to server)
 
@@ -70,7 +77,7 @@ Responses are not events. They have no `seq` and are not replayed.
 | type | fields | response |
 | --- | --- | --- |
 | `initialize` | `protocolVersion: 1` | `session`, `lastSeq`, `resumed`, `busy`, `agent`, `capabilities` (engine-specific: `questions` is false for Codex; `usage.source` names where usage comes from) |
-| `prompt` | `input` (string, 1..262144 chars) | `turnId` |
+| `prompt` | `input` (string, 1..262144 chars) | `turnId`, written only after `turn.started` for that turn is durable and sent |
 | `approval.respond` | `requestId`, `decision` (`deny` \| `allow` \| `always` \| `bypass`) | `status: applied` or `already_resolved` (with the original decision and source) |
 | `question.answer` | `requestId`, and `answer` (string) or `decline: true` | `status: applied` or `already_resolved` |
 | `cancel` | optional `turnId` | `status: stopping`, `already_stopping`, or `no_active_turn` |

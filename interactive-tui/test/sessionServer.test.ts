@@ -93,7 +93,8 @@ function scriptedEngine(trace: string[]): SessionEngine {
   };
 }
 
-async function harness(options: {root?: string; session?: string; deadlineMs?: number; trace?: string[]; engine?: 'harness' | 'codex'} = {}) {
+async function harness(options: {root?: string; session?: string; deadlineMs?: number; trace?: string[]; engine?: 'harness' | 'codex';
+  engineOverride?: SessionEngine; shutdownBoundMs?: number} = {}) {
   const root = options.root ?? await mkdtemp(join(tmpdir(), 'sift-session-server-'));
   if (!options.root) roots.push(root);
   const trace = options.trace ?? [];
@@ -103,17 +104,21 @@ async function harness(options: {root?: string; session?: string; deadlineMs?: n
   // Observe fsyncs: every event the client sees must already be durable.
   let durable = log.lastSeq;
   const violations: number[] = [];
+  /** For each prompt response: the durable seq when it was written. */
+  const responseDurable = new Map<string, number>();
   const sync = log.sync.bind(log);
   log.sync = () => { const through = log.lastSeq; sync(); durable = through; };
   const write = (line: string) => {
     expect(line.endsWith('\n')).toBe(true);
     const parsed = JSON.parse(line);
     if (typeof parsed.seq === 'number' && parsed.seq > durable) violations.push(parsed.seq);
+    if (parsed.type === 'response' && typeof parsed.turnId === 'string') responseDurable.set(parsed.turnId, durable);
     if (parsed.type === 'turn.stopped' && !parsed.recovered) expect(trace).toContain('loop-stopped');
     lines.push(parsed);
   };
   const server = new SessionServer({session, provider: 'fixture', model: 'fixture', cwd: root, deadlineMs: options.deadlineMs ?? 5_000,
-    engine: options.engine === 'codex' ? codexEngine(trace) : scriptedEngine(trace), gates: {...confirmGate, ...questionGate}, log, write});
+    ...(options.shutdownBoundMs ? {shutdownBoundMs: options.shutdownBoundMs} : {}),
+    engine: options.engineOverride ?? (options.engine === 'codex' ? codexEngine(trace) : scriptedEngine(trace)), gates: {...confirmGate, ...questionGate}, log, write});
   let next = 0;
   const send = async (command: Record<string, unknown>) => {
     const id = `c${++next}`;
@@ -132,7 +137,7 @@ async function harness(options: {root?: string; session?: string; deadlineMs?: n
     }
     throw new Error(`timed out; saw ${JSON.stringify(lines.map(line => line.type))}`);
   };
-  return {root, server, lines, trace, send, events, waitFor, log, violations};
+  return {root, server, lines, trace, send, events, waitFor, log, violations, responseDurable};
 }
 
 function assertMonotonic(events: WireEvent[]) {
@@ -611,5 +616,48 @@ describe('session server protocol', () => {
       .toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
     expect(await h.send({type: 'prompt', input: 'codex ok'})).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
     await h.send({type: 'shutdown'});
+  });
+
+  test('turn.started is durable and sent before the prompt response that names its turn', async () => {
+    const h = await harness();
+    await h.send({type: 'initialize', protocolVersion: 1});
+    const response = await h.send({type: 'prompt', input: 'say ordered'});
+    const started = h.lines.find(line => line.type === 'turn.started' && line.turnId === response.turnId)!;
+    expect(started).toBeDefined();
+    expect(h.lines.indexOf(started)).toBeLessThan(h.lines.indexOf(response));
+    expect(h.responseDurable.get(response.turnId)).toBeGreaterThanOrEqual(started.seq);
+    await h.waitFor(line => line.type === 'turn.completed');
+    await h.send({type: 'shutdown'});
+  });
+
+  test('blank and whitespace-only lines are rejected like other malformed input', async () => {
+    const h = await harness();
+    await h.server.handleLine('');
+    await h.server.handleLine('   \t ');
+    expect(h.lines).toEqual([
+      expect.objectContaining({type: 'response', id: null, ok: false, error: expect.objectContaining({code: 'invalid_request'})}),
+      expect.objectContaining({type: 'response', id: null, ok: false, error: expect.objectContaining({code: 'invalid_request'})}),
+    ]);
+    const input = new PassThrough();
+    const served = serveLines(h.server, input);
+    input.write('\n\r\n');
+    input.end();
+    expect(await served).toBe(0);
+    expect(h.lines.filter(line => line.type === 'response' && line.error?.code === 'invalid_request')).toHaveLength(4);
+  });
+
+  test('shutdown is bounded when the active turn never stops and the engine never closes', async () => {
+    const stuck: SessionEngine = {kind: 'harness', ask: () => new Promise(() => {}), close: () => new Promise(() => {})};
+    const h = await harness({engineOverride: stuck, shutdownBoundMs: 50});
+    await h.send({type: 'initialize', protocolVersion: 1});
+    await h.send({type: 'prompt', input: 'anything'});
+    const started = Date.now();
+    const response = await h.send({type: 'shutdown'});
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(response).toMatchObject({ok: true, status: 'closed', exitCode: 1});
+    const closed = h.events().at(-1)!;
+    expect(closed).toMatchObject({type: 'session.closed'});
+    expect(String(closed.error)).toContain('did not stop within 50 ms');
+    expect(String(closed.error)).toContain('did not close within 50 ms');
   });
 });

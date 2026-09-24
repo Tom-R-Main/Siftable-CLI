@@ -629,12 +629,12 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
     await rm(root, {recursive: true, force: true});
   });
 
-  function session(kind: 'codex' | 'harness') {
+  function session(kind: 'codex' | 'harness', close: () => Promise<void> = async () => {}) {
     const lines: Array<Record<string, any>> = [];
     const log = new WireEventLog({rootDir: root, session: `preflight-${kind}`, leaseStore: dir => new JsonlSessionEventStore({rootDir: dir})});
     const server = new SessionServer({session: `preflight-${kind}`, provider: kind === 'codex' ? 'codex' : 'meta', model: 'fixture', cwd: root,
       deadlineMs: 60_000, log, write: line => { lines.push(JSON.parse(line)); }, gates: {...confirmGateModule, ...questionGateModule},
-      engine: {kind, ask: (input, onEvent, signal) => agentHarnessAsk(input, onEvent, signal), close: async () => {}}});
+      engine: {kind, ask: (input, onEvent, signal) => agentHarnessAsk(input, onEvent, signal), close}});
     let next = 0;
     const waitFor = async (predicate: (line: Record<string, any>) => boolean, timeoutMs = 2_000) => {
       const deadline = Date.now() + timeoutMs;
@@ -851,6 +851,24 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
       expect(await s.send({type: 'prompt', input: 'say hello'})).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
       expect(await s.server.shutdown('client')).toBe(0);
       expect(s.lines.at(-1)).toMatchObject({type: 'session.closed'});
+    });
+
+    it('shutdown after an unconfirmed stop is bounded despite stalled agent setup and a hung job close', async () => {
+      __setPreTurnStopBoundForTests(60);
+      __setProcessJobsForTests({stopSession: async () => {}, close: () => new Promise(() => {})} as never);
+      let constructing = false;
+      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: () => { constructing = true; return new Promise(() => {}); }};
+      const s = session('harness', () => closeBrain());
+      expect(await cancelDuringSetup(s, () => constructing)).toMatchObject({type: 'turn.stop_unconfirmed'});
+      const started = Date.now();
+      await s.server.handleLine(JSON.stringify({id: 'bye', type: 'shutdown'}));
+      const response = await s.waitFor(line => line.type === 'response' && line.id === 'bye');
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(response).toMatchObject({ok: true, status: 'closed', exitCode: 1});
+      const closed = s.lines.filter(line => line.type === 'session.closed');
+      expect(closed).toHaveLength(1);
+      expect(closed[0].error).toContain('Process jobs did not close within 60 ms');
+      expect(closed[0].error).toContain('Agent session did not close within 60 ms');
     });
 
     it('a mailbox drain that never settles is unconfirmed within the bound', async () => {
