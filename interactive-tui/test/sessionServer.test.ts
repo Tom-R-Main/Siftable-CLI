@@ -62,6 +62,13 @@ function scriptedEngine(trace: string[]): SessionEngine {
         trace.push(`answer:${JSON.stringify(outcome)}`);
         return {text: 'answer' in outcome ? `chose ${outcome.answer}` : `no answer ${outcome.reason}`, status: 'completed', providerReceipts: receipts};
       }
+      if (input === 'hang-cleanup-fails') {
+        await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), {once: true}));
+        trace.push('loop-stopped');
+        // agentHarnessAsk's shape when processJobs.stopSession throws.
+        return {text: '', status: 'interrupted', jobCleanup: 'unknown', providerReceipts: receipts,
+          error: 'job stop failed; process ownership retained, retry session shutdown'};
+      }
       if (input === 'hang' || input === 'hang-approval') {
         if (input === 'hang-approval') void confirmGate.requestApproval({kind: 'command', path: 'rm -rf x', detail: 'cwd=/', allowBypass: false}, signal);
         await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), {once: true}));
@@ -304,7 +311,8 @@ describe('session server protocol', () => {
     appendFileSync(log.path, '{"schemaVersion":1,"seq":3');
     const resumed = await harness({root, session: 'crashed'});
     // A dead process proves nothing about its tool loop: never confirmed.
-    expect(resumed.events()).toEqual([expect.objectContaining({type: 'turn.stop_unconfirmed', turnId: 't1', seq: 3, recovered: true,
+    expect(resumed.events()).toEqual([expect.objectContaining({type: 'usage', turnId: 't1', seq: 3, turn: null, complete: false}),
+      expect.objectContaining({type: 'turn.stop_unconfirmed', turnId: 't1', seq: 4, recovered: true,
       reason: 'process_exit', confirmed: false})]);
     // Its loop cannot continue here, so the resumed session still takes turns.
     await resumed.send({type: 'initialize', protocolVersion: 1});
@@ -437,5 +445,98 @@ describe('session server protocol', () => {
     expect((await h.send({type: 'usage'})).usage).toEqual({turns: 2, complete: false, lastTurn: null,
       session: {requests: 2, inputTokens: 30, outputTokens: 5, cachedInputTokens: 10, totalTokens: 35}});
     await h.send({type: 'shutdown'});
+  });
+
+  test('a harness cancel whose job cleanup is unknown is unconfirmed and blocks new turns', async () => {
+    const h = await harness();
+    await h.send({type: 'initialize', protocolVersion: 1});
+    const turn = await h.send({type: 'prompt', input: 'hang-cleanup-fails'});
+    await h.waitFor(line => line.type === 'turn.started');
+    await h.send({type: 'cancel'});
+    const outcome = await h.waitFor(line => line.turnId === turn.turnId && String(line.type).startsWith('turn.') && line.type !== 'turn.started');
+    expect(outcome).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false, reason: 'client', jobCleanup: 'unknown'});
+    expect(await h.send({type: 'prompt', input: 'say more'})).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
+    await h.send({type: 'shutdown'});
+  });
+
+  async function deadSession(events: Array<Record<string, unknown>>) {
+    const root = await mkdtemp(join(tmpdir(), 'sift-session-server-'));
+    roots.push(root);
+    const log = new WireEventLog({rootDir: root, session: 'dead', leaseStore: dir => new JsonlSessionEventStore({rootDir: dir})});
+    const ts = new Date().toISOString();
+    events.forEach((event, index) => log.append({schemaVersion: 1, seq: index + 1, session: 'dead', ts, type: 'status', ...event} as WireEvent));
+    log.close();
+    return root;
+  }
+  const usageOf = (n: number) => ({requests: 1, inputTokens: n, outputTokens: 1, cachedInputTokens: 0, totalTokens: n + 1});
+
+  test('recovery records the dead turn usage as unavailable, and a later resume keeps it', async () => {
+    const root = await deadSession([
+      {type: 'turn.started', turnId: 't1'},
+      {type: 'usage', turnId: 't1', turn: usageOf(10), cumulative: usageOf(10), complete: true},
+      {type: 'turn.completed', turnId: 't1', status: 'completed', text: 'ok'},
+      {type: 'turn.started', turnId: 't2'},
+    ]);
+    const first = await harness({root, session: 'dead'});
+    expect(first.events().map(event => event.type)).toEqual(['usage', 'turn.stop_unconfirmed']);
+    expect(first.events()[0]).toMatchObject({turnId: 't2', turn: null, complete: false});
+    await first.send({type: 'initialize', protocolVersion: 1});
+    expect((await first.send({type: 'usage'})).usage).toEqual({turns: 2, complete: false, lastTurn: null, session: usageOf(10)});
+    await first.send({type: 'shutdown'});
+    const second = await harness({root, session: 'dead'});
+    await second.send({type: 'initialize', protocolVersion: 1});
+    expect((await second.send({type: 'usage'})).usage).toEqual({turns: 2, complete: false, lastTurn: null, session: usageOf(10)});
+    await second.send({type: 'shutdown'});
+  });
+
+  test('recovery rebuilds requests; pending ones get a logged process_exit resolution', async () => {
+    const root = await deadSession([
+      {type: 'turn.started', turnId: 't1'},
+      {type: 'approval.request', turnId: 't1', requestId: 'a-old', kind: 'write', path: 'x', detail: '', decisions: ['deny', 'allow', 'always', 'bypass']},
+      {type: 'approval.resolved', turnId: 't1', requestId: 'a-old', decision: 'allow', source: 'client'},
+      {type: 'approval.request', turnId: 't1', requestId: 'a-open', kind: 'command', path: 'ls', detail: '', decisions: ['deny', 'allow']},
+      {type: 'question.request', turnId: 't1', requestId: 'q-open', question: 'Which?'},
+    ]);
+    const first = await harness({root, session: 'dead'});
+    expect(first.events()).toEqual([
+      expect.objectContaining({type: 'approval.resolved', requestId: 'a-open', decision: 'deny', source: 'process_exit'}),
+      expect.objectContaining({type: 'question.resolved', requestId: 'q-open', outcome: 'cancelled', reason: 'process_exit'}),
+      expect.objectContaining({type: 'usage', turn: null}),
+      expect.objectContaining({type: 'turn.stop_unconfirmed', turnId: 't1'}),
+    ]);
+    await first.send({type: 'initialize', protocolVersion: 1});
+    expect(await first.send({type: 'approval.respond', requestId: 'a-open', decision: 'allow'}))
+      .toMatchObject({ok: true, status: 'already_resolved', decision: 'deny', source: 'process_exit'});
+    expect(await first.send({type: 'approval.respond', requestId: 'a-old', decision: 'deny'}))
+      .toMatchObject({ok: true, status: 'already_resolved', decision: 'allow', source: 'client'});
+    expect(await first.send({type: 'question.answer', requestId: 'q-open', answer: 'late'}))
+      .toMatchObject({ok: true, status: 'already_resolved', outcome: 'cancelled'});
+    await first.send({type: 'shutdown'});
+    // The resolutions are in the log: a later resume emits nothing new and still answers.
+    const second = await harness({root, session: 'dead'});
+    expect(second.events()).toHaveLength(0);
+    await second.send({type: 'initialize', protocolVersion: 1});
+    expect(await second.send({type: 'approval.respond', requestId: 'a-open', decision: 'allow'}))
+      .toMatchObject({status: 'already_resolved', source: 'process_exit'});
+    await second.send({type: 'shutdown'});
+  });
+
+  test('the line reader decodes a multi-byte character split across chunks and limits bytes', async () => {
+    const h = await harness();
+    const input = new PassThrough();
+    const served = serveLines(h.server, input);
+    input.write(`${JSON.stringify({id: 1, type: 'initialize', protocolVersion: 1})}\n`);
+    const line = Buffer.from(`${JSON.stringify({id: 2, type: 'prompt', input: 'say €uro ✓'})}\n`, 'utf8');
+    const euro = line.indexOf(Buffer.from('€', 'utf8'));
+    input.write(line.subarray(0, euro + 1));
+    input.write(line.subarray(euro + 1, euro + 2));
+    input.write(line.subarray(euro + 2));
+    await h.waitFor(event => event.type === 'turn.completed');
+    expect(h.events().find(event => event.type === 'turn.completed')!.text).toBe('€uro ✓');
+    // 600k two-byte characters: under the limit in characters, over it in bytes.
+    input.write(`${JSON.stringify({id: 3, type: 'prompt', input: 'é'.repeat(600_000)})}\n`);
+    await h.waitFor(event => event.type === 'response' && event.error?.code === 'line_too_long');
+    input.end();
+    expect(await served).toBe(0);
   });
 });

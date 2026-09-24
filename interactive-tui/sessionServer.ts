@@ -197,7 +197,7 @@ interface ActiveTurn {
   done: Promise<void>;
 }
 
-interface ApprovalRecord { turnId?: string; state: 'pending' | 'resolved'; decision?: ApprovalDecision; source?: 'client' | 'cancelled'; allowAlways: boolean; allowBypass: boolean }
+interface ApprovalRecord { turnId?: string; state: 'pending' | 'resolved'; decision?: ApprovalDecision; source?: 'client' | 'cancelled' | 'process_exit'; allowAlways: boolean; allowBypass: boolean }
 interface QuestionRecord { turnId?: string; state: 'pending' | 'resolved'; outcome?: 'answered' | 'declined' | 'cancelled' }
 
 export interface SessionServerOptions {
@@ -224,8 +224,10 @@ export function interpretEngineResult(kind: SessionEngine['kind'], result: Brain
   }
   const status: TurnStatus = result.status === 'limit_reached' ? 'limit_reached' : result.status === 'interrupted' ? 'interrupted'
     : result.error ? 'failed' : result.status || 'failed';
-  // agentHarnessAsk resolves only after the loop returned and session jobs were stopped.
-  return {status, stopConfirmed: result.stopConfirmed !== false};
+  // agentHarnessAsk returns only after its loop unwound, then stops the
+  // session's process jobs. A stop is proven only when that cleanup is
+  // confirmed; 'unknown' (or a missing outcome) means jobs may still run.
+  return {status, stopConfirmed: result.stopConfirmed !== false && result.jobCleanup === 'confirmed'};
 }
 
 /**
@@ -341,11 +343,27 @@ export class SessionServer {
    */
   private restoreFromLog(): void {
     let open: string | undefined;
+    let openUsageRecorded = false;
     for (const event of this.options.log.after(0, Number.MAX_SAFE_INTEGER)) {
+      const requestId = typeof event.requestId === 'string' ? event.requestId : undefined;
+      const turnId = typeof event.turnId === 'string' ? event.turnId : undefined;
       if (event.type === 'turn.started') {
         open = String(event.turnId);
+        openUsageRecorded = false;
         this.turns += 1;
+      } else if (event.type === 'approval.request' && requestId) {
+        const decisions = Array.isArray(event.decisions) ? event.decisions : [];
+        this.approvals.set(requestId, {turnId, state: 'pending', allowAlways: decisions.includes('always'), allowBypass: decisions.includes('bypass')});
+      } else if (event.type === 'approval.resolved' && requestId) {
+        const record = this.approvals.get(requestId);
+        if (record) Object.assign(record, {state: 'resolved', decision: event.decision, source: event.source});
+      } else if (event.type === 'question.request' && requestId) {
+        this.questions.set(requestId, {turnId, state: 'pending'});
+      } else if (event.type === 'question.resolved' && requestId) {
+        const record = this.questions.get(requestId);
+        if (record) Object.assign(record, {state: 'resolved', outcome: event.outcome});
       } else if (event.type === 'usage') {
+        if (turnId === open) openUsageRecorded = true;
         const session = event.cumulative as Partial<UsageTotals> | undefined;
         const turn = event.turn as Partial<UsageTotals> | null | undefined;
         for (const key of Object.keys(this.usage) as Array<keyof UsageTotals>) {
@@ -356,13 +374,35 @@ export class SessionServer {
         if (event.complete === false) this.usageComplete = false;
       } else if (typeof event.type === 'string' && event.type.startsWith('turn.') && event.turnId === open) open = undefined;
     }
+    // Requests the dead process left pending can never be acted on. Resolve
+    // each once, in the log, so a late response reports this outcome.
+    let recovered = false;
+    for (const [requestId, record] of this.approvals) {
+      if (record.state !== 'pending') continue;
+      Object.assign(record, {state: 'resolved', decision: 'deny', source: 'process_exit'});
+      this.emit({type: 'approval.resolved', turnId: record.turnId, requestId, decision: 'deny', source: 'process_exit', recovered: true});
+      recovered = true;
+    }
+    for (const [requestId, record] of this.questions) {
+      if (record.state !== 'pending') continue;
+      Object.assign(record, {state: 'resolved', outcome: 'cancelled'});
+      this.emit({type: 'question.resolved', turnId: record.turnId, requestId, outcome: 'cancelled', reason: 'process_exit', recovered: true});
+      recovered = true;
+    }
     if (open) {
+      if (!openUsageRecorded) {
+        // The dead turn's usage is unknown: record it as unavailable, not zero.
+        this.lastTurnUsage = null;
+        this.usageComplete = false;
+        this.emit({type: 'usage', turnId: open, turn: null, cumulative: {...this.usage}, complete: false, recovered: true});
+      }
       // The process that ran this turn died; nothing proves its tool loop or
       // the processes it started ended cleanly. Its loop cannot continue in
       // this process, so new turns are allowed, but the stop is unconfirmed.
       this.emit({type: 'turn.stop_unconfirmed', turnId: open, status: 'interrupted', confirmed: false, reason: 'process_exit', recovered: true});
-      this.flush();
+      recovered = true;
     }
+    if (recovered) this.flush();
   }
 
   private onApprovalRequest(request: ConfirmRequest): void {
@@ -616,31 +656,57 @@ export class SessionServer {
  * its newline. Resolves with the exit code once the session has closed.
  */
 export function serveLines(server: SessionServer, input: Readable): Promise<number> {
-  let buffer = '';
+  // Frame on the newline byte and decode whole lines, so a multi-byte UTF-8
+  // character split across chunks is never corrupted and the limit is bytes.
+  let pending: Buffer[] = [];
+  let pendingBytes = 0;
   let discarding = false;
   let chain: Promise<unknown> = Promise.resolve();
   const tooLong = () => server.rejectLine('line_too_long', `Command exceeds ${MAX_COMMAND_BYTES} bytes`);
   const enqueue = (line: string) => { chain = chain.then(() => server.handleLine(line)).catch(() => undefined); };
+  const take = (tail: Buffer): Buffer => {
+    const line = pending.length ? Buffer.concat([...pending, tail]) : tail;
+    pending = [];
+    pendingBytes = 0;
+    return line;
+  };
+  const deliver = (bytes: Buffer) => {
+    const end = bytes.length > 0 && bytes[bytes.length - 1] === 0x0d ? bytes.length - 1 : bytes.length;
+    if (end > MAX_COMMAND_BYTES) return tooLong();
+    enqueue(bytes.toString('utf8', 0, end));
+  };
   const onData = (chunk: Buffer | string) => {
-    buffer += chunk.toString();
+    let data = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
     let newline: number;
-    while ((newline = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, newline);
-      buffer = buffer.slice(newline + 1);
-      if (discarding) { discarding = false; continue; }
-      if (Buffer.byteLength(line) > MAX_COMMAND_BYTES) { tooLong(); continue; }
-      enqueue(line.endsWith('\r') ? line.slice(0, -1) : line);
+    while ((newline = data.indexOf(0x0a)) >= 0) {
+      const head = data.subarray(0, newline);
+      data = data.subarray(newline + 1);
+      if (discarding) {
+        discarding = false;
+        pending = [];
+        pendingBytes = 0;
+        continue;
+      }
+      if (pendingBytes + head.length > MAX_COMMAND_BYTES + 1) { take(Buffer.alloc(0)); tooLong(); continue; }
+      deliver(take(head));
     }
-    if (discarding) buffer = '';
-    else if (Buffer.byteLength(buffer) > MAX_COMMAND_BYTES) {
+    if (discarding || data.length === 0) return;
+    pending.push(Buffer.from(data));
+    pendingBytes += data.length;
+    if (pendingBytes > MAX_COMMAND_BYTES + 1) {
       tooLong();
-      buffer = '';
+      pending = [];
+      pendingBytes = 0;
       discarding = true;
     }
   };
   const onEnd = () => {
-    if (buffer.trim() && !discarding) enqueue(buffer);
-    buffer = '';
+    if (!discarding && pendingBytes > 0) {
+      const tail = take(Buffer.alloc(0));
+      if (tail.toString('utf8').trim()) deliver(tail);
+    }
+    pending = [];
+    pendingBytes = 0;
     chain = chain.then(() => server.shutdown('eof'));
   };
   input.on('data', onData);

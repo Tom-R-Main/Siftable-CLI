@@ -41,8 +41,10 @@ directly: `session/prompt` to `prompt`, `session/cancel` to `cancel`,
       [--cwd DIR] [--session ID] [--deadline-ms N] [--max-rounds N] \
       [--base-url URL] [--effort E] [--max-output-tokens N]
 
-- One JSON object per line in each direction, UTF-8. Lines longer than
-  1 MiB are rejected with `line_too_long` and skipped.
+- One JSON object per line in each direction, UTF-8. Input is framed on the
+  newline byte and each whole line is decoded, so a character split across
+  reads is never corrupted. Lines longer than 1 MiB (counted in bytes) are
+  rejected with `line_too_long` and skipped.
 - stdout carries only protocol lines. Diagnostics go to stderr.
 - One process serves one session. The session holds at most one active turn,
   so there is one tool loop per session. The durable journal lease and a
@@ -99,9 +101,9 @@ could lose.
 | `turn.started` | A prompt was admitted. |
 | `token`, `tool_call`, `tool_result`, `status`, `provider`, `verification`, `done`, `error` | Brain events, the same shapes the one-shot mode emits. |
 | `approval.request` | `requestId`, `kind`, `path`, `detail`, `decisions` (the decisions offered). |
-| `approval.resolved` | `requestId`, `decision`, `source` (`client` or `cancelled`). |
+| `approval.resolved` | `requestId`, `decision`, `source` (`client`, `cancelled`, or `process_exit`). |
 | `question.request` | `requestId`, `question`, optional `options`. Raised by the `ask_user` tool. |
-| `question.resolved` | `requestId`, `outcome` (`answered`, `declined`, `cancelled`). |
+| `question.resolved` | `requestId`, `outcome` (`answered`, `declined`, `cancelled`); `reason: process_exit` when recovery resolved it. |
 | `status` with `status: stopping` | A cancel, deadline, or shutdown began stopping the turn. |
 | `usage` | `turn` and `cumulative` totals: requests, input, output, cached input, and total tokens, plus `complete`. `turn` is null when the engine reported no usage for the turn; that is "unavailable", not zero. `complete` becomes false for the rest of the session once any turn's usage was unavailable or partial, and `cumulative` is then a lower bound. `cumulative` spans every process that has served the session. It precedes the turn's terminal event. |
 | `turn.completed`, `turn.failed`, `turn.limit_reached`, `turn.interrupted` | Terminal event of a turn that was not cancelled. Same fields as the one-shot `run.*` event. |
@@ -111,8 +113,10 @@ could lose.
 
 Each turn ends with exactly one terminal event. When a turn is cancelled,
 `turn.stopped` is emitted only after the engine has proved the turn ended.
-For the Sift harness, that means its tool loop has returned and the session's
-process jobs have been stopped. For Codex, it means app-server sent
+For the Sift harness, that means its tool loop has returned and stopping the
+session's process jobs succeeded (`jobCleanup: confirmed`). If job cleanup
+failed or its outcome is unknown, jobs may still be running, so the turn ends
+with `turn.stop_unconfirmed` and later prompts return `stop_unconfirmed`. For Codex, it means app-server sent
 `turn/completed` after `turn/interrupt`. The interrupt acknowledgement alone
 is not enough. If Codex does not confirm within 10 seconds, or disconnects
 first, the turn ends with `turn.stop_unconfirmed` instead.
@@ -155,7 +159,14 @@ count are rebuilt from the log, so `usage` continues across restarts. The replay
 synchronously, so a live event can never fall between the replayed page and
 the stream. If the previous process died during a turn, the new process closes
 that turn once with `turn.stop_unconfirmed {reason: "process_exit",
-recovered: true, confirmed: false}`. Nothing proves how the dead turn ended,
+recovered: true, confirmed: false}`. Before that event it resolves, in the
+log, every approval still pending (`approval.resolved` with `decision: deny`,
+`source: process_exit`) and every question still pending (`question.resolved`
+with `outcome: cancelled`, `reason: process_exit`). If the dead turn recorded
+no usage, it also emits `usage {turn: null, complete: false}`, so its usage is
+reported as unavailable. Approval and question records are rebuilt from the
+log on every resume, so a late response to any earlier request returns
+`already_resolved` with the recorded outcome. Nothing proves how the dead turn ended,
 and processes it started may still be running. Its tool loop cannot continue
 in the new process, so the resumed session accepts new turns. The harness
 journal separately recovers the interrupted model turn.
