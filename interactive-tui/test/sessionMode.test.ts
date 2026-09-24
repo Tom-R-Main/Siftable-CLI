@@ -17,10 +17,10 @@ function toolMessage(name: string, args: Record<string, unknown>, id: string) {
   return {role: 'assistant', content: null, tool_calls: [{id, type: 'function', function: {name, arguments: JSON.stringify(args)}}]};
 }
 
-function spawnSession(root: string, port: number) {
+function spawnSession(root: string, port: number, cwd = root) {
   const child = Bun.spawn([process.execPath, resolve(import.meta.dir, '../headless.ts'), '--session-mode',
     '--provider', 'meta', '--model', 'fixture', '--base-url', `http://127.0.0.1:${port}/v1`,
-    '--cwd', root, '--session', 'fixture', '--deadline-ms', '8000'], {
+    '--cwd', cwd, '--session', 'fixture', '--deadline-ms', '8000'], {
     cwd: root,
     env: {
       PATH: `${dirname(process.execPath)}:${process.env.PATH || ''}`, HOME: root, META_API_KEY: 'fixture-key',
@@ -152,6 +152,27 @@ describe('headless session mode (production brain)', () => {
       expect(second.events().at(-1)).toMatchObject({type: 'session.closed', reason: 'eof', seq: firstEvents.length + 1});
     } finally {
       server.stop(true);
+      await rm(root, {recursive: true, force: true});
+    }
+  }, 30_000);
+
+  test('the same session id in another workspace does not resume this workspace\'s log', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sift-session-mode-'));
+    try {
+      const {mkdir} = await import('node:fs/promises');
+      await mkdir(join(root, 'a'));
+      await mkdir(join(root, 'b'));
+      const run = async (cwd: string) => {
+        const session = spawnSession(root, 9, join(root, cwd));
+        const init = await session.send({type: 'initialize', protocolVersion: 1});
+        await session.send({type: 'shutdown'});
+        expect((await session.finish()).exit).toBe(0);
+        return init;
+      };
+      expect(await run('a')).toMatchObject({resumed: false, lastSeq: 0});
+      expect(await run('b')).toMatchObject({resumed: false, lastSeq: 0});
+      expect(await run('a')).toMatchObject({resumed: true, lastSeq: 1});
+    } finally {
       await rm(root, {recursive: true, force: true});
     }
   }, 30_000);

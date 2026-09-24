@@ -214,8 +214,13 @@ pending.
 
 ## Replay and recovery
 
-The wire log is `<session-event-root>/wire/<sha256(session)>.wire.jsonl`, with
-file mode 0600. Whenever the log is opened, whether new or existing, the file
+The wire log is `<session-event-root>/wire/<sha256(identity)>.wire.jsonl`, with
+file mode 0600. In headless session mode the identity is the brain journal's
+conversation key, `headless:<session>:<cwd>`. Reusing a session id in another
+workspace therefore starts a new log (`resumed: false`) rather than replaying
+this one. Only the most recent 1000 events are held in memory. Older replay
+pages are read from disk, using a byte-offset checkpoint every 256 events, so
+memory stays bounded however long the session runs. Whenever the log is opened, whether new or existing, the file
 and its directory are fsynced before any record is treated as durable,
 replayed, or followed by a new event. A new file's directory entry is then
 durable, and lines that a dead process appended but never fsynced are made
@@ -241,10 +246,27 @@ with `outcome: cancelled`, `reason: process_exit`). If the dead turn recorded
 no usage, it also emits `usage {turn: null, complete: false}`, so its usage is
 reported as unavailable. Approval and question records are rebuilt from the
 log on every resume, so a late response to any earlier request returns
-`already_resolved` with the recorded outcome. Nothing proves how the dead turn ended,
-and processes it started may still be running. Its tool loop cannot continue
-in the new process, so the resumed session accepts new turns. The harness
-journal separately recovers the interrupted model turn.
+`already_resolved` with the recorded outcome. Nothing proves how the dead turn
+ended, and detached process jobs it started may still be running. Process-job
+ownership is not recorded durably, so no later process can find or stop those
+jobs. The session therefore refuses new prompts with `stop_unconfirmed`
+permanently, including after later clean shutdowns. Start a new session once
+the host has confirmed the old jobs are gone. The harness journal separately
+recovers the interrupted model turn.
+
+A live unconfirmed stop (`reason` `client`, `deadline`, `shutdown`, or
+`shutdown_timeout`) also persists across a resume, unless a later
+`session.closed` without an error shows that the engine closed and the
+process jobs drained. In that case the resumed session accepts prompts again.
+
+## Redaction
+
+Every event payload passes through the harness's credential sanitizer
+(`agent-harness/framework/redaction.ts`: `sanitizeSensitiveValue`) before it is
+appended to the wire log or written to stdout. Private-key blocks, bearer
+tokens, credential-named fields, known token shapes, and URL credentials
+become `[REDACTED]`. Tool names, paths, and the rest of a command stay
+readable, so an approval UI can still show what is being approved.
 
 ## Not covered yet
 
@@ -252,5 +274,7 @@ journal separately recovers the interrupted model turn.
 - Codex-provider turns do not raise `question.request`, and `initialize`
   reports `questions: false` for them. Codex approvals use the same gate and
   do round-trip.
-- Replay keeps the session's events in memory. A very long session grows
-  memory in proportion to its event count.
+- If shutdown times out on journal-writing work (an agent still being built,
+  or a mailbox drain), the session-journal lease is kept until the process
+  exits, and `session.closed` says so. Another process cannot take the
+  journal while that work may still write to it.

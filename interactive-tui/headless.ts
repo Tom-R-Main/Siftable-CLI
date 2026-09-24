@@ -128,10 +128,14 @@ export async function runSessionMode(options: SessionModeOptions): Promise<numbe
   const {SessionServer, WireEventLog, serveLines} = await import('./sessionServer');
   const {homedir} = await import('node:os');
   const {join, resolve} = await import('node:path');
-  brain.setAgentConversationKey(`headless:${options.session}:${options.cwd}`);
+  const conversationKey = `headless:${options.session}:${options.cwd}`;
+  brain.setAgentConversationKey(conversationKey);
   brain.setBrainModel({provider: options.provider, model: options.model, baseUrl: options.baseUrl, effort: options.effort});
   const rootDir = resolve(process.env.SIFT_SESSION_EVENT_ROOT?.trim() || join(homedir(), '.siftable', 'session-events', 'v1'));
-  const log = new WireEventLog({rootDir, session: options.session, leaseStore: dir => new JsonlSessionEventStore({rootDir: dir})});
+  // Bind the wire log to the same identity as the brain journal (session and
+  // workspace), so reusing a session id in another cwd never replays this one.
+  const log = new WireEventLog({rootDir, session: options.session, identity: conversationKey,
+    leaseStore: dir => new JsonlSessionEventStore({rootDir: dir})});
   const write = (line: string) => { process.stdout.write(line); };
   const server = new SessionServer({
     session: options.session, provider: options.provider, model: options.model, cwd: options.cwd, deadlineMs: options.deadlineMs,

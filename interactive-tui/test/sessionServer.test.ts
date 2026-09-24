@@ -72,6 +72,14 @@ function scriptedEngine(trace: string[]): SessionEngine {
         trace.push(`answer:${JSON.stringify(outcome)}`);
         return {text: 'answer' in outcome ? `chose ${outcome.answer}` : `no answer ${outcome.reason}`, status: 'completed', providerReceipts: receipts};
       }
+      if (input === 'leak secrets') {
+        const key = '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----';
+        onEvent({type: 'tool_call', toolCall: {name: 'write_file', args: {path: '.ssh/id_ed25519', content: key}}});
+        const decision = await confirmGate.requestApproval({kind: 'command',
+          path: 'curl -H "Authorization: Bearer sk-live-abcdefghijklmnop1234" https://api.example.com', detail: 'cwd=/'}, signal);
+        trace.push(`decision:${decision}`);
+        return {text: 'done', status: 'completed', providerReceipts: receipts};
+      }
       if (input === 'hang-mid-request') {
         onEvent({type: 'provider', providerEvent: {type: 'provider.attempt', requestId: 'rq-cut', attempt: 1, provider: 'fixture',
           requestedModel: 'fixture', oneShot: false, mode: 'streaming'}});
@@ -337,13 +345,17 @@ describe('session server protocol', () => {
     expect(resumed.events()).toEqual([expect.objectContaining({type: 'usage', turnId: 't1', seq: 3, turn: null, complete: false}),
       expect.objectContaining({type: 'turn.stop_unconfirmed', turnId: 't1', seq: 4, recovered: true,
       reason: 'process_exit', confirmed: false})]);
-    // Its loop cannot continue here, so the resumed session still takes turns.
+    // Its detached jobs cannot be found or stopped from here, so new turns are
+    // refused for good, even after a clean shutdown and another resume.
     await resumed.send({type: 'initialize', protocolVersion: 1});
-    await resumed.send({type: 'prompt', input: 'say resumed'});
-    await resumed.waitFor(line => line.type === 'turn.completed' && line.text === 'resumed');
-    await resumed.send({type: 'shutdown'});
+    const refused = await resumed.send({type: 'prompt', input: 'say resumed'});
+    expect(refused).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
+    expect(refused.error.message).toContain('Start a new session');
+    expect(await resumed.send({type: 'shutdown'})).toMatchObject({exitCode: 0});
     const again = await harness({root, session: 'crashed'});
     expect(again.events()).toHaveLength(0);
+    await again.send({type: 'initialize', protocolVersion: 1});
+    expect(await again.send({type: 'prompt', input: 'say resumed'})).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
     await again.send({type: 'shutdown'});
     const text = await readFile(log.path, 'utf8');
     expect(text.endsWith('\n')).toBe(true);
@@ -707,5 +719,90 @@ describe('session server protocol', () => {
     // The durable log ends with the terminal event and session.closed, nothing after.
     const logged = (await readFile(h.log.path, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     expect(logged.slice(-2).map(event => event.type)).toEqual(['turn.stop_unconfirmed', 'session.closed']);
+  });
+
+  test('a live unconfirmed stop is lifted by a clean shutdown; a failed shutdown keeps it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sift-session-server-'));
+    roots.push(root);
+    const first = await harness({root, engine: 'codex'});
+    await first.send({type: 'initialize', protocolVersion: 1});
+    await first.send({type: 'prompt', input: 'codex hang'});
+    await first.send({type: 'cancel'});
+    await first.waitFor(line => line.type === 'turn.stop_unconfirmed');
+    expect(await first.send({type: 'shutdown'})).toMatchObject({exitCode: 0});
+    const second = await harness({root, engine: 'codex'});
+    await second.send({type: 'initialize', protocolVersion: 1});
+    const ok = await second.send({type: 'prompt', input: 'codex ok'});
+    expect(ok).toMatchObject({ok: true});
+    await second.waitFor(line => line.turnId === ok.turnId && line.type === 'turn.completed');
+    await second.send({type: 'shutdown'});
+    // An unconfirmed stop followed by a failed shutdown stays blocked on resume.
+    const failingClose: SessionEngine = {kind: 'codex', close: async () => { throw new Error('close failed'); },
+      ask: (_input, _onEvent, signal) => new Promise(resolve => signal.addEventListener('abort',
+        () => resolve({text: '', status: 'interrupted', stopConfirmed: false}), {once: true}))};
+    const third = await harness({root, engineOverride: failingClose});
+    await third.send({type: 'initialize', protocolVersion: 1});
+    await third.send({type: 'prompt', input: 'x'});
+    await third.send({type: 'cancel'});
+    await third.waitFor(line => line.type === 'turn.stop_unconfirmed');
+    expect(await third.send({type: 'shutdown'})).toMatchObject({exitCode: 1});
+    const fourth = await harness({root, engine: 'codex'});
+    await fourth.send({type: 'initialize', protocolVersion: 1});
+    expect(await fourth.send({type: 'prompt', input: 'codex ok'})).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
+    await fourth.send({type: 'shutdown'});
+  });
+
+  test('replay keeps only a bounded tail in memory and reads older pages from disk', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sift-session-server-'));
+    roots.push(root);
+    const leaseStore = (dir: string) => new JsonlSessionEventStore({rootDir: dir});
+    const log = new WireEventLog({rootDir: root, session: 'long', leaseStore, tailSize: 50});
+    const ts = new Date().toISOString();
+    for (let seq = 1; seq <= 3000; seq++) log.append({schemaVersion: 1, seq, session: 'long', ts, type: 'token', content: `t${seq}`});
+    expect(log.retainedEventCount).toBe(50);
+    expect(log.after(10, 3).map(event => event.content)).toEqual(['t11', 't12', 't13']);
+    expect(log.after(1_000, 2).map(event => event.seq)).toEqual([1_001, 1_002]);
+    expect(log.after(2_990, 100).map(event => event.seq)).toEqual([2_991, 2_992, 2_993, 2_994, 2_995, 2_996, 2_997, 2_998, 2_999, 3_000]);
+    log.close();
+    const reopened = new WireEventLog({rootDir: root, session: 'long', leaseStore, tailSize: 50});
+    expect(reopened.lastSeq).toBe(3000);
+    expect(reopened.retainedEventCount).toBe(50);
+    expect(reopened.after(255, 3).map(event => event.seq)).toEqual([256, 257, 258]);
+    reopened.close();
+  });
+
+  test('credentials in tool arguments and approval commands never reach the log or stdout', async () => {
+    const h = await harness();
+    await h.send({type: 'initialize', protocolVersion: 1});
+    await h.send({type: 'prompt', input: 'leak secrets'});
+    const request = await h.waitFor(line => line.type === 'approval.request');
+    expect(request.path).toContain('curl');
+    await h.send({type: 'approval.respond', requestId: request.requestId, decision: 'deny'});
+    await h.waitFor(line => line.type === 'turn.completed');
+    await h.send({type: 'shutdown'});
+    const stdout = JSON.stringify(h.lines);
+    const disk = await readFile(h.log.path, 'utf8');
+    for (const text of [stdout, disk]) {
+      expect(text).not.toContain('b3BlbnNzaC1rZXktdjEAAAAA');
+      expect(text).not.toContain('sk-live-abcdefghijklmnop1234');
+      expect(text).toContain('[REDACTED]');
+    }
+    expect(h.events().find(event => event.type === 'tool_call')).toMatchObject({toolCall: {name: 'write_file', args: {path: '.ssh/id_ed25519'}}});
+  });
+
+  test('a wire log is bound to its identity: the same session id elsewhere does not resume it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sift-session-server-'));
+    roots.push(root);
+    const leaseStore = (dir: string) => new JsonlSessionEventStore({rootDir: dir});
+    const a = new WireEventLog({rootDir: root, session: 's', identity: 'headless:s:/work/a', leaseStore});
+    a.append({schemaVersion: 1, seq: 1, session: 's', ts: new Date().toISOString(), type: 'status'});
+    a.close();
+    const b = new WireEventLog({rootDir: root, session: 's', identity: 'headless:s:/work/b', leaseStore});
+    expect(b.lastSeq).toBe(0);
+    expect(b.path).not.toBe(a.path);
+    b.close();
+    const again = new WireEventLog({rootDir: root, session: 's', identity: 'headless:s:/work/a', leaseStore});
+    expect(again.lastSeq).toBe(1);
+    again.close();
   });
 });

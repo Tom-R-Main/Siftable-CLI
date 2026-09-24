@@ -11,13 +11,14 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  closeSync, constants, fstatSync, fsyncSync, ftruncateSync, lstatSync, openSync, readFileSync, writeSync,
+  closeSync, constants, fstatSync, fsyncSync, ftruncateSync, lstatSync, openSync, readSync, writeSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import type { Readable } from 'node:stream';
 import type { BrainAskResult, BrainEvent } from './brain';
 import type { ApprovalDecision, ConfirmRequest } from './confirmGate';
 import type { QuestionRequest } from './questionGate';
+import { sanitizeSensitiveValue } from './agent-harness/framework/redaction';
 
 export const SESSION_PROTOCOL_VERSION = 1;
 export const MAX_COMMAND_BYTES = 1024 * 1024;
@@ -79,28 +80,110 @@ interface LeaseStore { acquireLease(sessionId: string): {release(): void} }
  * The newline after each event is its commit marker; a torn final fragment is
  * truncated on open. The server fsyncs before it sends any event it appended.
  */
+export interface WireEventLogOptions {
+  rootDir: string;
+  /** Session id carried in every event envelope. */
+  session: string;
+  /**
+   * Identity the log file is bound to. Defaults to the session id; headless
+   * passes the same session+cwd key as the brain journal, so reusing a
+   * session id in another workspace never resumes this log.
+   */
+  identity?: string;
+  leaseStore: (rootDir: string) => LeaseStore;
+  /** Test seam; defaults to fsyncing the directory. */
+  syncDirectory?: (dir: string) => void;
+  /** Test seam; defaults to fsyncSync on the log's descriptor. */
+  syncFile?: (fd: number) => void;
+  /** Most recent events kept in memory; older pages are read from disk. Default 1000. */
+  tailSize?: number;
+}
+
+/** One committed line: its text and byte range in the file. */
+interface LogLine { text: string; start: number; end: number }
+
+const READ_CHUNK_BYTES = 64 * 1024;
+/** A byte offset is remembered for every CHECKPOINT_INTERVAL-th event, so a page seek is bounded. */
+const CHECKPOINT_INTERVAL = 256;
+
+/**
+ * Stream committed (newline-terminated) lines from `path` starting at byte
+ * `from`. Memory is bounded by the chunk size plus the longest line.
+ */
+function* committedLines(path: string, from: number): Generator<LogLine, number> {
+  const fd = openSync(path, constants.O_RDONLY);
+  try {
+    const chunk = Buffer.alloc(READ_CHUNK_BYTES);
+    let position = from;
+    let pending: Buffer[] = [];
+    let pendingStart = from;
+    let pendingBytes = 0;
+    while (true) {
+      const read = readSync(fd, chunk, 0, chunk.length, position);
+      if (read === 0) break;
+      let data = chunk.subarray(0, read);
+      let dataStart = position;
+      position += read;
+      let newline: number;
+      while ((newline = data.indexOf(0x0a)) >= 0) {
+        const piece = data.subarray(0, newline);
+        const line = pending.length ? Buffer.concat([...pending, piece]) : piece;
+        const start = pending.length ? pendingStart : dataStart;
+        pending = [];
+        pendingBytes = 0;
+        yield {text: line.toString('utf8'), start, end: start + line.length + 1};
+        data = data.subarray(newline + 1);
+        dataStart += newline + 1;
+      }
+      if (data.length) {
+        if (!pending.length) pendingStart = dataStart;
+        pending.push(Buffer.from(data));
+        pendingBytes += data.length;
+      }
+    }
+    // Committed end: everything before an unterminated final fragment.
+    return pendingBytes ? pendingStart : position;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Append-only JSONL of emitted wire events, one file per session identity
+ * under `<session-event-root>/wire/`. The directory is initialized and leased
+ * by the session journal's own store, so a second process cannot serve the
+ * same session and a crashed owner's lease is recovered by the journal's
+ * protocol. The newline after each event is its commit marker; a torn final
+ * fragment is truncated on open. The server fsyncs before it sends any event
+ * it appended. Only a bounded tail of events is held in memory; replay pages
+ * are read from disk through a sparse offset index.
+ */
 export class WireEventLog {
   readonly path: string;
-  private readonly events: WireEvent[] = [];
+  private readonly tail: WireEvent[] = [];
+  private readonly tailSize: number;
+  /** checkpoints[k] is the byte offset of seq k*CHECKPOINT_INTERVAL + 1. */
+  private readonly checkpoints: number[] = [];
+  private count = 0;
+  private bytes = 0;
   private fd: number | undefined;
   private lease: {release(): void} | undefined;
   private synced = 0;
 
-  constructor(private readonly options: {rootDir: string; session: string; leaseStore: (rootDir: string) => LeaseStore;
-    /** Test seam; defaults to fsyncing the directory. */
-    syncDirectory?: (dir: string) => void;
-    /** Test seam; defaults to fsyncSync on the log's descriptor. */
-    syncFile?: (fd: number) => void}) {
+  constructor(private readonly options: WireEventLogOptions) {
+    this.tailSize = Math.max(1, options.tailSize ?? 1000);
     const dir = join(options.rootDir, 'wire');
     const store = options.leaseStore(dir);
-    const digest = createHash('sha256').update(options.session, 'utf8').digest('hex');
+    const identity = options.identity ?? options.session;
+    const digest = createHash('sha256').update(identity, 'utf8').digest('hex');
     this.path = join(dir, `${digest}.wire.jsonl`);
-    this.lease = store.acquireLease(`wire:${options.session}`);
+    this.lease = store.acquireLease(`wire:${identity}`);
     try {
       const existed = this.load();
       const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
       this.fd = openSync(this.path, constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | noFollow, 0o600);
       if ((fstatSync(this.fd).mode & 0o077) !== 0) throw new Error('Wire event log must not be group or world accessible');
+      if (!existed) this.bytes = 0;
       // A new file needs its directory entry persisted; an existing one may
       // hold lines a dead process appended but never fsynced. Either way,
       // sync the file and its directory before any record is treated as
@@ -108,7 +191,7 @@ export class WireEventLog {
       // already fsynced any directories it created.
       (options.syncFile ?? fsyncSync)(this.fd);
       (options.syncDirectory ?? fsyncDirectory)(dir);
-      this.synced = this.events.length;
+      this.synced = this.count;
     } catch (error) {
       this.close();
       throw error;
@@ -117,50 +200,95 @@ export class WireEventLog {
 
   /** Returns false when there is no log file yet. */
   private load(): boolean {
-    let raw: string;
     try {
       if (lstatSync(this.path).isSymbolicLink()) throw new Error('Wire event log must not be a symbolic link');
-      raw = readFileSync(this.path, 'utf8');
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
       throw error;
     }
-    const committed = raw.lastIndexOf('\n') + 1;
-    if (committed < raw.length) {
+    const lines = committedLines(this.path, 0);
+    let step = lines.next();
+    while (!step.done) {
+      const {text, start, end} = step.value as LogLine;
+      if (text) {
+        const event = JSON.parse(text) as WireEvent;
+        if (!event || typeof event !== 'object' || event.seq !== this.count + 1 || event.session !== this.options.session) {
+          throw new Error(`Wire event log is not contiguous at seq ${this.count + 1}`);
+        }
+        this.remember(event, start);
+      }
+      this.bytes = end;
+      step = lines.next();
+    }
+    const committedEnd = step.value as number;
+    if (committedEnd < fstatSize(this.path)) {
       // A crash mid-append left a fragment without its commit newline.
       const fd = openSync(this.path, constants.O_RDWR);
-      try { ftruncateSync(fd, Buffer.byteLength(raw.slice(0, committed), 'utf8')); fsyncSync(fd); } finally { closeSync(fd); }
+      try { ftruncateSync(fd, committedEnd); fsyncSync(fd); } finally { closeSync(fd); }
     }
-    for (const line of raw.slice(0, committed).split('\n')) {
-      if (!line) continue;
-      const event = JSON.parse(line) as WireEvent;
-      if (!event || typeof event !== 'object' || event.seq !== this.events.length + 1 || event.session !== this.options.session) {
-        throw new Error(`Wire event log is not contiguous at seq ${this.events.length + 1}`);
-      }
-      this.events.push(event);
-    }
+    this.bytes = committedEnd;
     return true;
   }
 
+  private remember(event: WireEvent, start: number): void {
+    if ((event.seq - 1) % CHECKPOINT_INTERVAL === 0) this.checkpoints.push(start);
+    this.count = event.seq;
+    this.tail.push(event);
+    if (this.tail.length > this.tailSize) this.tail.shift();
+  }
+
   get lastSeq(): number {
-    return this.events.length;
+    return this.count;
+  }
+
+  /** Events currently held in memory (bounded by tailSize). */
+  get retainedEventCount(): number {
+    return this.tail.length;
   }
 
   last(): WireEvent | undefined {
-    return this.events.at(-1);
+    return this.tail.at(-1);
   }
 
   append(event: WireEvent): void {
     if (this.fd === undefined) throw new Error('Wire event log is closed');
-    if (event.seq !== this.events.length + 1) throw new Error('Wire event sequence must be contiguous');
+    if (event.seq !== this.count + 1) throw new Error('Wire event sequence must be contiguous');
     const bytes = Buffer.from(`${JSON.stringify(event)}\n`, 'utf8');
     let offset = 0;
     while (offset < bytes.length) offset += writeSync(this.fd, bytes, offset);
-    this.events.push(event);
+    this.remember(event, this.bytes);
+    this.bytes += bytes.length;
   }
 
+  /** Events with seq > cursor, at most `limit`: from memory when the tail covers them, else from disk. */
   after(cursor: number, limit: number): WireEvent[] {
-    return this.events.slice(cursor, cursor + limit);
+    const tailFirst = this.count - this.tail.length + 1;
+    if (cursor + 1 >= tailFirst) {
+      const from = cursor + 1 - tailFirst;
+      return this.tail.slice(from, from + limit);
+    }
+    const events: WireEvent[] = [];
+    for (const event of this.scan(cursor + 1)) {
+      events.push(event);
+      if (events.length >= limit) break;
+    }
+    return events;
+  }
+
+  /** Stream committed events from disk with seq >= fromSeq (default all), in order. */
+  *scan(fromSeq = 1): Generator<WireEvent> {
+    if (fromSeq > this.count) return;
+    const checkpoint = Math.floor((Math.max(1, fromSeq) - 1) / CHECKPOINT_INTERVAL);
+    const start = this.checkpoints[checkpoint] ?? 0;
+    const lines = committedLines(this.path, start);
+    for (let step = lines.next(); !step.done; step = lines.next()) {
+      const {text} = step.value as LogLine;
+      if (!text) continue;
+      const event = JSON.parse(text) as WireEvent;
+      if (event.seq < fromSeq) continue;
+      if (event.seq > this.count) return;
+      yield event;
+    }
   }
 
   /** Highest seq known to be on disk. */
@@ -169,8 +297,8 @@ export class WireEventLog {
   }
 
   sync(): void {
-    if (this.fd === undefined || this.synced === this.events.length) return;
-    const through = this.events.length;
+    if (this.fd === undefined || this.synced === this.count) return;
+    const through = this.count;
     fsyncSync(this.fd);
     this.synced = through;
   }
@@ -184,6 +312,11 @@ export class WireEventLog {
     try { this.lease?.release(); } catch { /* lease recovery handles a failed release */ }
     this.lease = undefined;
   }
+}
+
+function fstatSize(path: string): number {
+  const fd = openSync(path, constants.O_RDONLY);
+  try { return fstatSync(fd).size; } finally { closeSync(fd); }
 }
 
 // ── Protocol server ──────────────────────────────────────────────────────────
@@ -294,6 +427,8 @@ export class SessionServer {
   private turns = 0;
   /** A cancelled turn whose engine never confirmed it stopped; no new turn may start. */
   private unconfirmedStop: string | undefined;
+  /** True when the block came from a dead process: nothing here can account for its jobs. */
+  private unconfirmedStopSticky = false;
   /** Protocol lines waiting for the log to be durable through their seq. */
   private outbound: string[] = [];
   private flushScheduled = false;
@@ -324,7 +459,10 @@ export class SessionServer {
    * responses flush immediately so they never overtake earlier events.
    */
   private emit(event: {type: string; [key: string]: unknown}): WireEvent {
-    const envelope = {...event, schemaVersion: 1 as const, seq: this.options.log.lastSeq + 1,
+    // Tool arguments, commands, and model text can carry credentials. Redact
+    // recognized secrets before the event is persisted or sent (AGENTS.md).
+    const payload = sanitizeSensitiveValue(event) as {type: string; [key: string]: unknown};
+    const envelope = {...payload, schemaVersion: 1 as const, seq: this.options.log.lastSeq + 1,
       session: this.options.session, ts: this.clock().toISOString()} as WireEvent;
     this.options.log.append(envelope);
     this.outbound.push(`${JSON.stringify(envelope)}\n`);
@@ -367,7 +505,12 @@ export class SessionServer {
   private restoreFromLog(): void {
     let open: string | undefined;
     let openUsageRecorded = false;
-    for (const event of this.options.log.after(0, Number.MAX_SAFE_INTEGER)) {
+    // An unconfirmed stop blocks new turns. A clean session.closed (engine
+    // closed, process jobs drained) lifts a live one; one left by a dead
+    // process is permanent, because process jobs are not recorded durably
+    // and no later process can find or stop them.
+    let blocked: {turnId: string; sticky: boolean} | undefined;
+    for (const event of this.options.log.scan()) {
       const requestId = typeof event.requestId === 'string' ? event.requestId : undefined;
       const turnId = typeof event.turnId === 'string' ? event.turnId : undefined;
       if (event.type === 'turn.started') {
@@ -395,7 +538,12 @@ export class SessionServer {
         }
         this.lastTurnUsage = turn ? {...zeroUsage(), ...Object.fromEntries(Object.entries(turn).filter(([, value]) => Number.isSafeInteger(value)))} : null;
         if (event.complete === false) this.usageComplete = false;
-      } else if (typeof event.type === 'string' && event.type.startsWith('turn.') && event.turnId === open) open = undefined;
+      } else if (event.type === 'session.closed') {
+        if (blocked && !blocked.sticky && !event.error) blocked = undefined;
+      } else if (typeof event.type === 'string' && event.type.startsWith('turn.') && event.turnId === open) {
+        if (event.type === 'turn.stop_unconfirmed') blocked = {turnId: open, sticky: blocked?.sticky === true || event.reason === 'process_exit'};
+        open = undefined;
+      }
     }
     // Requests the dead process left pending can never be acted on. Resolve
     // each once, in the log, so a late response reports this outcome.
@@ -420,10 +568,16 @@ export class SessionServer {
         this.emit({type: 'usage', turnId: open, turn: null, cumulative: {...this.usage}, complete: false, recovered: true});
       }
       // The process that ran this turn died; nothing proves its tool loop or
-      // the processes it started ended cleanly. Its loop cannot continue in
-      // this process, so new turns are allowed, but the stop is unconfirmed.
+      // the detached process jobs it started ended. Those jobs are not
+      // recorded durably, so this process cannot find or stop them: refuse
+      // new turns for good (start a new session once the host confirms cleanup).
       this.emit({type: 'turn.stop_unconfirmed', turnId: open, status: 'interrupted', confirmed: false, reason: 'process_exit', recovered: true});
+      blocked = {turnId: open, sticky: true};
       recovered = true;
+    }
+    if (blocked) {
+      this.unconfirmedStop = blocked.turnId;
+      this.unconfirmedStopSticky = blocked.sticky;
     }
     if (recovered) this.flush();
   }
@@ -521,7 +675,9 @@ export class SessionServer {
     }
     if (this.active) return this.fail(id, 'turn_in_progress', `Turn ${this.active.turnId} is still running; cancel it or wait for its terminal event`);
     if (this.unconfirmedStop) {
-      return this.fail(id, 'stop_unconfirmed', `Turn ${this.unconfirmedStop} was not confirmed stopped; shut down and resume the session`);
+      return this.fail(id, 'stop_unconfirmed', this.unconfirmedStopSticky
+        ? `Turn ${this.unconfirmedStop} was left running by a process that exited; its process jobs cannot be verified or stopped from here. Start a new session once the host has confirmed cleanup`
+        : `Turn ${this.unconfirmedStop} was not confirmed stopped; shut down and resume the session`);
     }
     const turnId = randomUUID();
     const controller = new AbortController();
