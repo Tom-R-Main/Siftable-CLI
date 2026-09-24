@@ -121,6 +121,8 @@ export interface BrainAskResult {
   providerReceipts?: ProviderReceipt[];
   error?: string;
   jobCleanup?: 'confirmed' | 'unknown';
+  /** Set by engines that stop asynchronously (Codex): true only once the provider confirmed the turn ended. */
+  stopConfirmed?: boolean;
 }
 
 export type ChatInputPart =

@@ -325,6 +325,58 @@ describe('codexAsk generation disconnects', () => {
   });
 });
 
+describe('codexAsk cancellation (AGENT-RUNTIME-31)', () => {
+  async function injected(): Promise<FakeCodexProc> {
+    const proc = new FakeCodexProc();
+    const client = new CodexClient(proc.asSpawnFn());
+    const ready = client.ensureReady();
+    await completeHandshake(proc);
+    await ready;
+    __setCodexClientForTests(client, { type: 'chatgpt', email: 'test@example.com' });
+    return proc;
+  }
+  async function startTurn(proc: FakeCodexProc, signal: AbortSignal, stopTimeoutMs?: number) {
+    let settled = false;
+    const result = codexAsk('continue', () => {}, { signal, ...(stopTimeoutMs ? { stopTimeoutMs } : {}) });
+    void result.then(() => { settled = true; });
+    proc.reply(await waitForSent(proc, 'thread/start'), { thread: { id: 'thread-stop' } });
+    proc.reply(await waitForSent(proc, 'turn/start'), { turn: { id: 'turn-stop' } });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    return { result, isSettled: () => settled };
+  }
+
+  afterEach(() => {
+    shutdownCodex();
+    __setCodexClientForTests(null);
+  });
+
+  it('resolves only after app-server reports the interrupted turn completed', async () => {
+    const proc = await injected();
+    const controller = new AbortController();
+    const { result, isSettled } = await startTurn(proc, controller.signal);
+    controller.abort();
+    const interruptId = await waitForSent(proc, 'turn/interrupt');
+    expect(proc.sent.find((m) => m.id === interruptId)?.params).toEqual({ threadId: 'thread-stop', turnId: 'turn-stop' });
+    proc.reply(interruptId, {});
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The interrupt ACK alone does not prove the turn ended.
+    expect(isSettled()).toBe(false);
+    proc.notify('turn/completed', { threadId: 'thread-stop', turn: { id: 'turn-stop', status: 'interrupted' } });
+    await expect(result).resolves.toEqual({ text: '', status: 'interrupted', stopConfirmed: true });
+  });
+
+  it('reports an unconfirmed stop when app-server never confirms within the bound', async () => {
+    const proc = await injected();
+    const controller = new AbortController();
+    const { result } = await startTurn(proc, controller.signal, 30);
+    controller.abort();
+    await waitForSent(proc, 'turn/interrupt');
+    const outcome = await result;
+    expect(outcome).toMatchObject({ status: 'interrupted', stopConfirmed: false });
+    expect(outcome.error).toContain('did not confirm');
+  });
+});
+
 describe('CodexClient server→client approvals', () => {
   afterEach(() => {
     rejectAllConfirms();

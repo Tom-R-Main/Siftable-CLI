@@ -877,7 +877,7 @@ export function isCodexReasoningEffort(effort: string | undefined): effort is st
 export async function codexAsk(
   input: ChatInput,
   onEvent: (event: BrainEvent) => void,
-  opts: { signal?: AbortSignal; model?: string; effort?: string } = {},
+  opts: { signal?: AbortSignal; model?: string; effort?: string; stopTimeoutMs?: number } = {},
 ): Promise<BrainAskResult> {
   const c = await getClient();
   if (!c) {
@@ -901,13 +901,17 @@ export async function codexAsk(
 
   let assembled = '';
   let turnId: string | undefined;
+  const stopTimeoutMs = opts.stopTimeoutMs ?? 10_000;
 
   return new Promise<BrainAskResult>((resolve) => {
     let settled = false;
+    let stopping = false;
+    let stopTimer: ReturnType<typeof setTimeout> | undefined;
     let offDisconnect = () => {};
     const finish = (result: BrainAskResult) => {
       if (settled) return;
       settled = true;
+      clearTimeout(stopTimer);
       off();
       offDisconnect();
       if (opts.signal) opts.signal.removeEventListener('abort', onAbort);
@@ -920,6 +924,12 @@ export async function codexAsk(
       if (turnId && params.turnId && params.turnId !== turnId) return;
 
       if (method === 'turn/completed') {
+        // After an interrupt, app-server's turn/completed is the only proof
+        // that the turn stopped.
+        if (stopping) {
+          finish({ text: assembled, status: 'interrupted', stopConfirmed: true });
+          return;
+        }
         const turn = params.turn as Record<string, JsonValue> | undefined;
         const status = turn && typeof turn.status === 'string' ? turn.status : 'completed';
         onEvent({ type: 'done', message: { content: assembled } });
@@ -939,16 +949,27 @@ export async function codexAsk(
     });
 
     offDisconnect = c.onDisconnect((err) => {
-      finish({ text: assembled, error: err.message });
+      // A disconnect is not evidence that the turn stopped.
+      finish(stopping
+        ? { text: assembled, status: 'interrupted', stopConfirmed: false, error: err.message }
+        : { text: assembled, error: err.message });
     });
 
+    const interrupt = () => {
+      void c.request('turn/interrupt', { threadId: tid, turnId: turnId! }).catch(() => {});
+    };
     const onAbort = () => {
-      if (turnId) void c.request('turn/interrupt', { threadId: tid, turnId }).catch(() => {});
-      finish({ text: assembled });
+      if (stopping) return;
+      stopping = true;
+      stopTimer = setTimeout(() => finish({ text: assembled, status: 'interrupted', stopConfirmed: false,
+        error: `Codex did not confirm the turn stopped within ${stopTimeoutMs} ms` }), stopTimeoutMs);
+      // Before the turn/start ACK there is no turn id; interrupt on the ACK.
+      if (turnId) interrupt();
     };
     if (opts.signal) {
       if (opts.signal.aborted) {
-        finish({ text: '' });
+        // No turn was started.
+        finish({ text: '', status: 'interrupted', stopConfirmed: true });
         return;
       }
       opts.signal.addEventListener('abort', onAbort, { once: true });
@@ -971,9 +992,15 @@ export async function codexAsk(
       .then((ack) => {
         const turn = ack.turn as Record<string, JsonValue> | undefined;
         if (turn && typeof turn.id === 'string') turnId = turn.id;
+        if (stopping && !settled) {
+          if (turnId) interrupt();
+          else finish({ text: assembled, status: 'interrupted', stopConfirmed: false, error: 'Codex turn/start returned no turn id to interrupt' });
+        }
       })
       .catch((err) => {
-        finish({ text: assembled, error: err instanceof Error ? err.message : String(err) });
+        const error = err instanceof Error ? err.message : String(err);
+        // A rejected turn/start never began a turn, so a pending stop is confirmed.
+        finish(stopping ? { text: assembled, status: 'interrupted', stopConfirmed: true, error } : { text: assembled, error });
       });
   });
 }
