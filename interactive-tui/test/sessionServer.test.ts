@@ -805,4 +805,16 @@ describe('session server protocol', () => {
     expect(again.lastSeq).toBe(1);
     again.close();
   });
+
+  test('a whitespace-only final line without a newline is rejected at EOF', async () => {
+    const h = await harness();
+    const input = new PassThrough();
+    const served = serveLines(h.server, input);
+    input.write('   ');
+    input.end();
+    expect(await served).toBe(0);
+    expect(h.lines.filter(line => line.type === 'response')).toEqual([
+      expect.objectContaining({id: null, ok: false, error: expect.objectContaining({code: 'invalid_request'})}),
+    ]);
+  });
 });

@@ -908,7 +908,9 @@ export function serveLines(server: SessionServer, input: Readable): Promise<numb
   const onEnd = () => {
     if (!discarding && pendingBytes > 0) {
       const tail = take(Buffer.alloc(0));
-      if (tail.toString('utf8').trim()) deliver(tail);
+      // Any unterminated final bytes, even whitespace only, are a command
+      // line and get the same response a newline-terminated one would.
+      if (tail.length > 0) deliver(tail);
     }
     pending = [];
     pendingBytes = 0;

@@ -46,6 +46,7 @@ directly: `session/prompt` to `prompt`, `session/cancel` to `cancel`,
   reads is never corrupted. Lines longer than 1 MiB (counted in bytes) are
   rejected with `line_too_long` and skipped. An empty or whitespace-only line
   is malformed input and gets an `invalid_request` response with `id: null`.
+  That includes a final line left unterminated at EOF.
 - stdout carries only protocol lines. Diagnostics go to stderr.
 - One process serves one session. The session holds at most one active turn,
   so there is one tool loop per session. The durable journal lease and a
