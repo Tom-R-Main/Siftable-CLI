@@ -88,7 +88,9 @@ export class WireEventLog {
 
   constructor(private readonly options: {rootDir: string; session: string; leaseStore: (rootDir: string) => LeaseStore;
     /** Test seam; defaults to fsyncing the directory. */
-    syncDirectory?: (dir: string) => void}) {
+    syncDirectory?: (dir: string) => void;
+    /** Test seam; defaults to fsyncSync on the log's descriptor. */
+    syncFile?: (fd: number) => void}) {
     const dir = join(options.rootDir, 'wire');
     const store = options.leaseStore(dir);
     const digest = createHash('sha256').update(options.session, 'utf8').digest('hex');
@@ -99,13 +101,14 @@ export class WireEventLog {
       const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
       this.fd = openSync(this.path, constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | noFollow, 0o600);
       if ((fstatSync(this.fd).mode & 0o077) !== 0) throw new Error('Wire event log must not be group or world accessible');
-      if (!existed) {
-        // Persist the new directory entry before any event can be sent: an
-        // fsync of the file alone does not make its name durable. The store
-        // above already fsynced any directories it created.
-        fsyncSync(this.fd);
-        (options.syncDirectory ?? fsyncDirectory)(dir);
-      }
+      // A new file needs its directory entry persisted; an existing one may
+      // hold lines a dead process appended but never fsynced. Either way,
+      // sync the file and its directory before any record is treated as
+      // durable, replayed, or followed by a new event. The store above
+      // already fsynced any directories it created.
+      (options.syncFile ?? fsyncSync)(this.fd);
+      (options.syncDirectory ?? fsyncDirectory)(dir);
+      this.synced = this.events.length;
     } catch (error) {
       this.close();
       throw error;
@@ -136,7 +139,6 @@ export class WireEventLog {
       }
       this.events.push(event);
     }
-    this.synced = this.events.length;
     return true;
   }
 
@@ -238,7 +240,10 @@ export function interpretEngineResult(kind: SessionEngine['kind'], result: Brain
 export function turnUsageOf(kind: SessionEngine['kind'], result: BrainAskResult): {usage: UsageTotals | null; complete: boolean} {
   if (kind === 'codex') {
     const reported = result.engineUsage;
-    return reported ? {usage: {...zeroUsage(), ...reported}, complete: true} : {usage: null, complete: false};
+    // Only a normally completed turn has seen all of its usage notifications;
+    // an interrupted, failed, or disconnected turn's figures are a lower bound.
+    const finished = interpretEngineResult(kind, result).status === 'completed';
+    return reported ? {usage: {...zeroUsage(), ...reported}, complete: finished} : {usage: null, complete: false};
   }
   const usage = zeroUsage();
   let complete = true;

@@ -117,7 +117,9 @@ For the Sift harness, that means its tool loop has returned and stopping the
 session's process jobs succeeded (`jobCleanup: confirmed`). If job cleanup
 failed or its outcome is unknown, jobs may still be running, so the turn ends
 with `turn.stop_unconfirmed` and later prompts return `stop_unconfirmed`. For Codex, it means app-server sent
-`turn/completed` after `turn/interrupt`. The interrupt acknowledgement alone
+`turn/completed` for the interrupted turn after `turn/interrupt`. The match is
+on `turn.id` (`TurnCompletedNotification` is `{threadId, turn}` in codex-cli
+0.156.1), and a completion for any other turn is ignored. The interrupt acknowledgement alone
 is not enough. If Codex does not confirm within 10 seconds, or disconnects
 first, the turn ends with `turn.stop_unconfirmed` instead.
 
@@ -128,7 +130,9 @@ reports none when a turn completes, so a Codex result with no error is
 Usage is also read per engine. The harness sums its provider receipts. Codex
 sums the per-response `last` breakdowns from app-server's
 `thread/tokenUsage/updated` notifications. A Codex turn that received none
-reports `turn: null`. Pending approvals and questions
+reports `turn: null`. Codex usage counts as `complete` only when the turn
+completed normally. For an interrupted, failed, or disconnected turn, the
+reported figures are a lower bound and `complete` becomes false. Pending approvals and questions
 from that turn are revoked first, and their `*.resolved` events come before
 `turn.stopped`.
 
@@ -144,8 +148,12 @@ pending.
 ## Replay and recovery
 
 The wire log is `<session-event-root>/wire/<sha256(session)>.wire.jsonl`, with
-file mode 0600. When the log file is created, the file and its directory are
-fsynced before any event is sent, so the new directory entry is durable too.
+file mode 0600. Whenever the log is opened, whether new or existing, the file
+and its directory are fsynced before any record is treated as durable,
+replayed, or followed by a new event. A new file's directory entry is then
+durable, and lines that a dead process appended but never fsynced are made
+durable before a client can see them. If that sync fails, the session does
+not open.
 Directories the store creates are fsynced by the store. The log sits next to the harness session journal
 (`~/.siftable/session-events/v1` or `SIFT_SESSION_EVENT_ROOT`). A final
 fragment with no newline, left by a crash during an append, is truncated when

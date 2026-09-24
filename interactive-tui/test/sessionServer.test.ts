@@ -31,6 +31,12 @@ function codexEngine(trace: string[]): SessionEngine {
         return {text: 'hi'};
       }
       if (input === 'codex error') return {text: '', error: 'codex turn failed'};
+      if (input === 'codex usage then unconfirmed') {
+        await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), {once: true}));
+        trace.push('loop-stopped');
+        return {text: '', status: 'interrupted', stopConfirmed: false, error: 'Codex did not confirm the turn stopped within 10000 ms',
+          engineUsage: {requests: 1, inputTokens: 7, outputTokens: 1, cachedInputTokens: 0, totalTokens: 8}};
+      }
       if (input === 'codex usage') return {text: 'hi', engineUsage: {requests: 2, inputTokens: 30, outputTokens: 5, cachedInputTokens: 10, totalTokens: 35}};
       await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), {once: true}));
       trace.push('loop-stopped');
@@ -411,6 +417,12 @@ describe('session server protocol', () => {
     await unconfirmed.send({type: 'shutdown'});
   });
 
+  function reopened(root: string, leaseStore: (dir: string) => JsonlSessionEventStore, synced: string[]) {
+    const log = new WireEventLog({rootDir: root, session: 'dir-sync', leaseStore, syncDirectory: dir => synced.push(dir)});
+    expect(synced).toHaveLength(2);
+    log.close();
+  }
+
   test('a newly created wire log syncs its directory before any event is sent', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sift-session-server-'));
     roots.push(root);
@@ -425,10 +437,7 @@ describe('session server protocol', () => {
     await server.handleLine(JSON.stringify({id: 2, type: 'prompt', input: 'say durable'}));
     await server.shutdown('client');
     expect(written.filter(line => line.includes('"seq"')).every(line => line.startsWith('1:'))).toBe(true);
-    // Reopening an existing log creates no directory entry, so no directory sync.
-    const reopened = new WireEventLog({rootDir: root, session: 'dir-sync', leaseStore, syncDirectory: dir => synced.push(dir)});
-    expect(synced).toHaveLength(1);
-    reopened.close();
+    reopened(root, leaseStore, synced);
   });
 
   test('Codex sessions advertise no questions and report usage only when app-server supplied it', async () => {
@@ -538,5 +547,40 @@ describe('session server protocol', () => {
     await h.waitFor(event => event.type === 'response' && event.error?.code === 'line_too_long');
     input.end();
     expect(await served).toBe(0);
+  });
+
+  test('reopening a log syncs file and directory before any recovered record is durable or replayed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sift-session-server-'));
+    roots.push(root);
+    const leaseStore = (dir: string) => new JsonlSessionEventStore({rootDir: dir});
+    const first = new WireEventLog({rootDir: root, session: 'reopen', leaseStore});
+    const ts = new Date().toISOString();
+    // Appended by a process that died before its scheduled fsync.
+    first.append({schemaVersion: 1, seq: 1, session: 'reopen', ts, type: 'status', status: 'x'});
+    first.append({schemaVersion: 1, seq: 2, session: 'reopen', ts, type: 'status', status: 'y'});
+    first.close();
+    const order: string[] = [];
+    const log = new WireEventLog({rootDir: root, session: 'reopen', leaseStore,
+      syncFile: () => { order.push('file'); }, syncDirectory: () => { order.push('dir'); }});
+    expect(order).toEqual(['file', 'dir']);
+    expect(log.durableSeq).toBe(2);
+    log.close();
+    // A failing reopen sync exposes nothing: the log does not open.
+    expect(() => new WireEventLog({rootDir: root, session: 'reopen', leaseStore, syncFile: () => { throw new Error('EIO'); }})).toThrow('EIO');
+  });
+
+  test('Codex usage is partial when the turn did not complete normally', async () => {
+    const h = await harness({engine: 'codex'});
+    await h.send({type: 'initialize', protocolVersion: 1});
+    await h.send({type: 'prompt', input: 'codex usage'});
+    expect(await h.waitFor(line => line.type === 'usage')).toMatchObject({complete: true});
+    await h.waitFor(line => line.type === 'turn.completed');
+    const turn = await h.send({type: 'prompt', input: 'codex usage then unconfirmed'});
+    await h.waitFor(line => line.type === 'turn.started' && line.turnId === turn.turnId);
+    await h.send({type: 'cancel'});
+    await h.waitFor(line => line.type === 'turn.stop_unconfirmed');
+    expect(h.events().filter(event => event.type === 'usage')[1]).toMatchObject({turn: {requests: 1, totalTokens: 8}, complete: false});
+    expect((await h.send({type: 'usage'})).usage).toMatchObject({complete: false, session: {requests: 3, totalTokens: 43}});
+    await h.send({type: 'shutdown'});
   });
 });
