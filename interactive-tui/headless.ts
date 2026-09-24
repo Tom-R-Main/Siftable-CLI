@@ -74,6 +74,85 @@ export function parseHeadlessOptions(args: string[]): HeadlessOptions {
   };
 }
 
+export interface SessionModeOptions {
+  provider: string;
+  model: string;
+  cwd: string;
+  session: string;
+  deadlineMs: number;
+  maxRounds: number;
+  baseUrl?: string;
+  effort?: string;
+  maxOutputTokens?: number;
+}
+
+/**
+ * `--session-mode` (AGENT-RUNTIME-31): a long-lived session over NDJSON on
+ * stdin/stdout. Per-turn flags that only make sense for a one-shot run are
+ * refused rather than silently ignored.
+ */
+export function parseSessionModeOptions(args: string[]): SessionModeOptions {
+  const { values } = parseArgs({ args, options: {
+    'session-mode': {type: 'boolean'}, prompt: {type: 'string'}, approval: {type: 'string'}, format: {type: 'string'},
+    provider: {type: 'string'}, model: {type: 'string'}, cwd: {type: 'string'}, session: {type: 'string'},
+    'deadline-ms': {type: 'string'}, 'max-rounds': {type: 'string'},
+    'verify-command': {type: 'string'}, 'verify-file': {type: 'string', multiple: true},
+    'base-url': {type: 'string'}, effort: {type: 'string'}, 'max-output-tokens': {type: 'string'},
+    'supervisor-handoff': {type: 'boolean'}, 'handoff-timeout-ms': {type: 'string'},
+  }});
+  if (!values['session-mode']) throw new Error('session-mode is required');
+  for (const flag of ['prompt', 'approval', 'verify-command', 'verify-file', 'supervisor-handoff', 'handoff-timeout-ms'] as const) {
+    if (values[flag] !== undefined) throw new Error(`${flag} is not accepted in session mode; send prompts and approvals over the protocol`);
+  }
+  if (values.format !== undefined && values.format !== 'jsonl') throw new Error('session mode speaks jsonl only');
+  // Reuse the one-shot validation for every shared flag.
+  const shared = parseHeadlessOptions(['--prompt', 'session-mode', ...args.filter(arg => arg !== '--session-mode')]);
+  return {provider: shared.provider, model: shared.model, cwd: shared.cwd, session: shared.session,
+    deadlineMs: shared.deadlineMs, maxRounds: shared.maxRounds, baseUrl: shared.baseUrl, effort: shared.effort,
+    maxOutputTokens: shared.maxOutputTokens};
+}
+
+/** Serve one long-lived session on stdin/stdout until shutdown or EOF. */
+export async function runSessionMode(options: SessionModeOptions): Promise<number> {
+  process.env.SIFT_LOCAL_ONLY = '1';
+  process.env.SIFT_USER_CWD = options.cwd;
+  process.env.SIFT_WORKSPACE_ROOT = options.cwd;
+  process.env.SIFT_AGENT_MAX_ROUNDS = String(options.maxRounds);
+  // Approvals and questions round-trip to the client; no standing policy.
+  delete process.env.SIFT_AGENT_NONINTERACTIVE;
+  if (options.maxOutputTokens !== undefined) process.env.SIFT_AGENT_MAX_OUTPUT_TOKENS = String(options.maxOutputTokens);
+  const brain = await import('./brain');
+  const approvals = await import('./confirmGate');
+  const questions = await import('./questionGate');
+  const {JsonlSessionEventStore} = await import('./agent-harness/framework/session');
+  const {SessionServer, WireEventLog, serveLines} = await import('./sessionServer');
+  const {homedir} = await import('node:os');
+  const {join, resolve} = await import('node:path');
+  brain.setAgentConversationKey(`headless:${options.session}:${options.cwd}`);
+  brain.setBrainModel({provider: options.provider, model: options.model, baseUrl: options.baseUrl, effort: options.effort});
+  const rootDir = resolve(process.env.SIFT_SESSION_EVENT_ROOT?.trim() || join(homedir(), '.siftable', 'session-events', 'v1'));
+  const log = new WireEventLog({rootDir, session: options.session, leaseStore: dir => new JsonlSessionEventStore({rootDir: dir})});
+  const write = (line: string) => { process.stdout.write(line); };
+  const server = new SessionServer({
+    session: options.session, provider: options.provider, model: options.model, cwd: options.cwd, deadlineMs: options.deadlineMs,
+    log, write,
+    gates: {...approvals, ...questions},
+    engine: {
+      ask: (input, onEvent, signal) => brain.agentHarnessAsk(input, onEvent, signal),
+      close: () => brain.closeBrain(),
+    },
+  });
+  const stop = () => { void server.shutdown('signal'); };
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
+  try {
+    return await serveLines(server, process.stdin, write);
+  } finally {
+    process.removeListener('SIGINT', stop);
+    process.removeListener('SIGTERM', stop);
+  }
+}
+
 /** Run the production brain with a noninteractive approval adapter. */
 export async function runHeadless(options: HeadlessOptions): Promise<number> {
   if (options.supervisorHandoff) {
@@ -193,7 +272,10 @@ if (invokedAsEntryPoint) {
   console.log = (...values: unknown[]) => console.error(...values);
   console.info = (...values: unknown[]) => console.error(...values);
   try {
-    process.exitCode = await runHeadless(parseHeadlessOptions(process.argv.slice(2)));
+    const args = process.argv.slice(2);
+    process.exitCode = args.includes('--session-mode')
+      ? await runSessionMode(parseSessionModeOptions(args))
+      : await runHeadless(parseHeadlessOptions(args));
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
