@@ -146,8 +146,8 @@ export abstract class WorkActionCommand extends BaseCommand {
     return redactLifecycleResponse(response.data);
   }
 
-  protected coverageShadowGitReader(): GitReader {
-    return createGitReader(process.cwd());
+  protected coverageShadowGitReader(signal?: AbortSignal): GitReader {
+    return createGitReader(process.cwd(), {signal});
   }
 
   /**
@@ -157,17 +157,27 @@ export abstract class WorkActionCommand extends BaseCommand {
    */
   protected async runReviewCoverageShadow(workItemId: string, flags: ApiContextFlags): Promise<void> {
     if (process.env.SIFT_COVERAGE_SHADOW !== '1') return;
+    // Bounded independently of the review: the whole run (git reads and both API calls) is cancelled
+    // after SIFT_COVERAGE_SHADOW_TIMEOUT_MS (default 90 s), so it can never hold back the review's output.
+    const timeoutMs = Number(process.env.SIFT_COVERAGE_SHADOW_TIMEOUT_MS) > 0 ? Number(process.env.SIFT_COVERAGE_SHADOW_TIMEOUT_MS) : 90_000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`timed out after ${timeoutMs} ms`)), timeoutMs);
+    timer.unref?.();
     try {
       const saveDir = process.env.SIFT_COVERAGE_SHADOW_SAVE_DIR;
       await runCoverageShadow({
         workItemId,
-        git: this.coverageShadowGitReader(),
+        git: this.coverageShadowGitReader(controller.signal),
         savePath: saveDir ? autoSavePath(saveDir, workItemId) : undefined,
-        request: (path, options) => (options ? this.apiRequest(flags, path, options) : this.apiRequest(flags, path)),
+        request: <T>(path: string, options?: {method: 'POST'; body: unknown}) =>
+          this.apiRequest<T>(flags, path, {...(options ?? {}), signal: controller.signal}),
       });
     } catch (error) {
-      const message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').trim();
+      const reason = controller.signal.aborted ? controller.signal.reason : error;
+      const message = (reason instanceof Error ? reason.message : String(reason)).replace(/\s+/g, ' ').trim();
       process.stderr.write(`Warning: coverage shadow did not run: ${message}\n`);
+    } finally {
+      clearTimeout(timer);
     }
   }
 }

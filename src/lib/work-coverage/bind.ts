@@ -295,10 +295,12 @@ export interface GitReader {
 
 const GIT_BUFFER = 256 * 1024 * 1024;
 
-export function createGitReader(cwd: string = process.cwd()): GitReader {
+export function createGitReader(cwd: string = process.cwd(), options: {signal?: AbortSignal; timeoutMs?: number} = {}): GitReader {
   let top: Promise<string> | undefined;
   const git = async (args: string[], dir: string): Promise<string> => {
-    const {stdout} = await execFileAsync('git', args, {cwd: dir, maxBuffer: GIT_BUFFER, encoding: 'utf8'});
+    const {stdout} = await execFileAsync('git', args, {
+      cwd: dir, maxBuffer: GIT_BUFFER, encoding: 'utf8', timeout: options.timeoutMs ?? 30_000, signal: options.signal,
+    });
     return stdout;
   };
   const root = (): Promise<string> => {

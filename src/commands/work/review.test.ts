@@ -104,4 +104,21 @@ describe('sift work review coverage shadow', () => {
     expect(stderr).toHaveBeenCalledWith('Warning: coverage shadow did not run: API error (500): boom\n');
     expect(command.log).not.toHaveBeenCalled();
   });
+
+  it('cancels a stalled shadow after SIFT_COVERAGE_SHADOW_TIMEOUT_MS and still returns the review result', async () => {
+    vi.stubEnv('SIFT_COVERAGE_SHADOW', '1');
+    vi.stubEnv('SIFT_COVERAGE_SHADOW_TIMEOUT_MS', '50');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const hanging = vi.fn((_flags: unknown, _path: string, options?: {signal?: AbortSignal}) => new Promise((_, reject) => {
+      options?.signal?.addEventListener('abort', () => reject(options.signal!.reason));
+    }));
+    const {command} = prepare(hanging as never);
+    const result = await command.run();
+
+    expect(result).toEqual(EXPECTED_RESULT);
+    expect(hanging).toHaveBeenCalledTimes(1);
+    expect((hanging.mock.calls[0][2] as {signal: AbortSignal}).signal.aborted).toBe(true);
+    expect(stderr).toHaveBeenCalledWith('Warning: coverage shadow did not run: timed out after 50 ms\n');
+  });
 });
+
