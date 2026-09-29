@@ -244,8 +244,10 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
   },
   {
     // Door A: Opus 5.5 via OpenRouter, riding the OpenRouter `reasoning` wiring.
-    // Opus 5 is retired; its ids, saved selections, and the family aliases
-    // resolve here. Opus 5.5 defaults to medium effort.
+    // Opus 5 is retired. The family aliases, OpenRouter slugs, and saved
+    // OpenRouter catalog ids resolve here; first-party ids and saved direct
+    // ids resolve to Door B, so a saved selection keeps its provider.
+    // Opus 5.5 defaults to medium effort.
     id: "openrouter/anthropic/claude-opus-5.5",
     provider: "openrouter",
     model: "anthropic/claude-opus-5.5",
@@ -257,10 +259,8 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
       "claude-opus",
       "opus-5.5",
       "claude-opus-5.5",
-      "claude-opus-5-5",
-      "claude-opus-5",
-      "anthropic/claude-opus-5",
       "openrouter/anthropic/claude-opus-5",
+      "openrouter/anthropic/claude-opus-4.8",
       "claude-opus-4.8",
       "claude-opus-4.7",
     ],
@@ -270,8 +270,9 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
   },
   {
     // Door B: Opus 5.5 via the direct Anthropic API (adaptive thinking, no
-    // OpenRouter margin). Requires ANTHROPIC_API_KEY. The retired Opus 5
-    // direct id stays as an alias so saved selections resolve.
+    // OpenRouter margin). Requires ANTHROPIC_API_KEY. Retired direct catalog
+    // ids and first-party model ids stay as aliases so saved direct
+    // selections resolve to this door rather than switching to OpenRouter.
     id: "anthropic/claude-opus-5-5",
     provider: "anthropic",
     model: "claude-opus-5-5",
@@ -283,7 +284,11 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
       "anthropic-opus",
       "opus-5.5-direct",
       "anthropic-opus-5.5",
-      "anthropic/claude-opus-5-5",
+      "anthropic/claude-opus-5",
+      "anthropic/claude-opus-4-8",
+      "claude-opus-5",
+      "claude-opus-4-8",
+      "claude-opus-4-7",
     ],
     auth: "anthropic",
     requiredEnv: "ANTHROPIC_API_KEY",
@@ -299,7 +304,7 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     model: "anthropic/claude-fable-5.1",
     label: "Claude Fable 5.1",
     description: "OpenRouter · most capable Claude · 💸💸💸",
-    aliases: ["fable", "claude-fable", "claude-fable-5.1", "claude-fable-5-1"],
+    aliases: ["fable", "claude-fable", "claude-fable-5.1"],
     auth: "api-key",
     reasoningEfforts: CLAUDE_EFFORTS,
     defaultEffort: "high",
@@ -319,7 +324,8 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
   },
   {
     // Claude Sonnet 5.5 is the current Sonnet. Retired Sonnet aliases (5,
-    // 4.6, 4.5, 4) continue to select it.
+    // 4.6, 4.5, 4) continue to select it: OpenRouter slugs and saved
+    // OpenRouter ids here, first-party ids on the direct door below.
     id: "openrouter/anthropic/claude-sonnet-5.5",
     provider: "openrouter",
     model: "anthropic/claude-sonnet-5.5",
@@ -329,17 +335,13 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
       "sonnet",
       "claude-sonnet",
       "claude-sonnet-5.5",
-      "claude-sonnet-5-5",
-      "claude-sonnet-5",
       "claude-sonnet-4.6",
-      "claude-sonnet-4-6",
       "claude-sonnet-4.5",
-      "claude-sonnet-4-5",
-      "claude-sonnet-4",
       "anthropic/claude-sonnet-5",
       "anthropic/claude-sonnet-4.6",
       "anthropic/claude-sonnet-4.5",
       "anthropic/claude-sonnet-4",
+      "openrouter/anthropic/claude-sonnet-4.6",
     ],
     auth: "api-key",
     reasoningEfforts: CLAUDE_EFFORTS,
@@ -351,7 +353,14 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     model: "claude-sonnet-5-5",
     label: "Claude Sonnet 5.5 (Anthropic)",
     description: "direct Anthropic API · adaptive thinking · 💸",
-    aliases: ["sonnet-direct", "anthropic-sonnet"],
+    aliases: [
+      "sonnet-direct",
+      "anthropic-sonnet",
+      "claude-sonnet-5",
+      "claude-sonnet-4-6",
+      "claude-sonnet-4-5",
+      "claude-sonnet-4",
+    ],
     auth: "anthropic",
     requiredEnv: "ANTHROPIC_API_KEY",
     keyHint: "/key anthropic <key>",
@@ -680,10 +689,19 @@ export function explorerModelChoices(): InteractiveModelChoice[] {
   return INTERACTIVE_MODEL_CHOICES.filter((choice) => choice.provider !== "codex" && choice.model !== "morph/morph-v3-large");
 }
 
-/** Catalog ids the user starred in the model picker (persisted prefs). */
+/**
+ * Catalog ids the user starred in the model picker (persisted prefs). Stored
+ * ids resolve through the same aliases as a saved model selection, so a star
+ * on a retired catalog id (e.g. `openrouter/anthropic/claude-opus-5`) follows
+ * the entry that replaced it. Ids that no longer resolve are kept verbatim.
+ */
 export function favoriteModelIds(): string[] {
   const raw = loadPrefs().favorites;
-  return Array.isArray(raw) ? raw.filter((id): id is string => typeof id === "string") : [];
+  if (!Array.isArray(raw)) return [];
+  const ids = raw
+    .filter((id): id is string => typeof id === "string")
+    .map((id) => resolveModelChoice(id)?.id ?? id);
+  return [...new Set(ids)];
 }
 
 /** Toggle a catalog id in favorites; returns the new list and what happened. */

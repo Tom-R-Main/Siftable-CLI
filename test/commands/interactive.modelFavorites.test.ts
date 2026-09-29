@@ -30,6 +30,33 @@ describe('model favorites', () => {
     expect(pickerModelChoices()).toBe(INTERACTIVE_MODEL_CHOICES);
   });
 
+  it('carries stars on retired Opus and Sonnet catalog ids to their replacements', () => {
+    jest.mocked(prefs.loadPrefs).mockReturnValue({
+      favorites: [
+        'openrouter/anthropic/claude-opus-5',
+        'anthropic/claude-opus-5',
+        'openrouter/anthropic/claude-sonnet-4.6',
+        'openrouter/anthropic/claude-opus-5.5',
+      ],
+    });
+    expect(favoriteModelIds()).toEqual([
+      'openrouter/anthropic/claude-opus-5.5',
+      'anthropic/claude-opus-5-5',
+      'openrouter/anthropic/claude-sonnet-5.5',
+    ]);
+    const starred = pickerModelChoices().slice(0, 3).map((choice) => choice.id);
+    expect(new Set(starred)).toEqual(new Set([
+      'openrouter/anthropic/claude-opus-5.5',
+      'anthropic/claude-opus-5-5',
+      'openrouter/anthropic/claude-sonnet-5.5',
+    ]));
+    // Un-starring the replacement removes the migrated star.
+    expect(toggleFavoriteModel('anthropic/claude-opus-5-5').favorites).toEqual([
+      'openrouter/anthropic/claude-opus-5.5',
+      'openrouter/anthropic/claude-sonnet-5.5',
+    ]);
+  });
+
   it('toggles favorites and persists them', () => {
     const id = 'openrouter/openai/gpt-5.4-nano';
     expect(toggleFavoriteModel(id)).toEqual({ favorites: [id], added: true, saved: true });

@@ -350,15 +350,14 @@ describe('model catalog + reasoning effort', () => {
   });
 
   it('resolves both Opus doors by alias', () => {
-    // Door A — via OpenRouter. Opus 5 is retired; its aliases and saved ids
-    // resolve to Opus 5.5.
+    // Door A — via OpenRouter. Opus 5 is retired; family aliases, OpenRouter
+    // slugs, and saved OpenRouter ids resolve to OpenRouter Opus 5.5.
     for (const alias of [
       'opus',
       'claude',
       'openrouter',
-      'claude-opus-5',
-      'anthropic/claude-opus-5',
       'openrouter/anthropic/claude-opus-5',
+      'openrouter/anthropic/claude-opus-4.8',
       'claude-opus-4.8',
     ]) {
       expect(findModelChoice(alias)).toMatchObject({
@@ -370,21 +369,58 @@ describe('model catalog + reasoning effort', () => {
     expect(INTERACTIVE_MODEL_CHOICES.some((choice) => /claude-opus-5$/.test(choice.model))).toBe(false);
     // Retired Sonnet selections resolve to the current Sonnet rather than
     // resurrecting an obsolete catalog option.
-    for (const alias of ['sonnet', 'claude-sonnet-5', 'claude-sonnet-4.6', 'claude-sonnet-4-5', 'claude-sonnet-4']) {
+    for (const alias of ['sonnet', 'claude-sonnet-4.6', 'anthropic/claude-sonnet-5', 'openrouter/anthropic/claude-sonnet-4.6']) {
       expect(findModelChoice(alias)).toMatchObject({
         provider: 'openrouter',
         model: 'anthropic/claude-sonnet-5.5',
         defaultEffort: 'high',
       });
     }
+    for (const alias of ['claude-sonnet-5', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-sonnet-4', 'claude-sonnet-5-5']) {
+      expect(findModelChoice(alias)).toMatchObject({provider: 'anthropic', model: 'claude-sonnet-5-5'});
+    }
     expect(findModelChoice('anthropic')).toMatchObject({model: 'claude-opus-5-5'});
     // Door B — direct Anthropic API (/claude-api).
-    for (const alias of ['claude-api', 'opus-direct', 'anthropic-opus']) {
+    for (const alias of ['claude-api', 'opus-direct', 'anthropic-opus', 'claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8']) {
       expect(findModelChoice(alias)).toMatchObject({
         provider: 'anthropic',
         model: 'claude-opus-5-5',
         auth: 'anthropic',
       });
+    }
+  });
+
+  it('keeps each saved selection on the door it was saved from', () => {
+    // A saved direct-Anthropic Opus 5 selection must stay direct.
+    expect(findModelChoice('anthropic/claude-opus-5')?.id).toBe('anthropic/claude-opus-5-5');
+    expect(findModelChoice('anthropic/claude-opus-4-8')?.id).toBe('anthropic/claude-opus-5-5');
+    expect(findModelChoice('openrouter/anthropic/claude-opus-5')?.id).toBe('openrouter/anthropic/claude-opus-5.5');
+    expect(findModelChoice('openrouter/anthropic/claude-opus-4.8')?.id).toBe('openrouter/anthropic/claude-opus-5.5');
+    expect(findModelChoice('openrouter/anthropic/claude-sonnet-4.6')?.id).toBe('openrouter/anthropic/claude-sonnet-5.5');
+    expect(findModelChoice('claude-fable-5-1')?.id).toBe('anthropic/claude-fable-5-1');
+    // Every Claude alias names exactly one door: an alias never shadows another
+    // Claude entry's id or model string, and no alias repeats across entries.
+    const owners = new Map<string, string>();
+    for (const choice of INTERACTIVE_MODEL_CHOICES.filter((entry) => /claude/.test(entry.model))) {
+      for (const key of [choice.id, choice.model, ...(choice.aliases ?? [])]) {
+        const lower = key.toLowerCase();
+        const owner = owners.get(lower);
+        if (owner !== undefined && owner !== choice.id) {
+          throw new Error(`${key} resolves to both ${owner} and ${choice.id}`);
+        }
+        owners.set(lower, choice.id);
+      }
+    }
+    for (const choice of INTERACTIVE_MODEL_CHOICES) {
+      if (!/claude/.test(choice.model)) continue;
+      for (const alias of choice.aliases ?? []) {
+        const firstPartyId = /^(?:anthropic\/)?claude-[a-z]+-\d+(?:-\d+)*$/.test(alias) && !alias.includes('.');
+        const openRouterSaved = alias.startsWith('openrouter/');
+        if (firstPartyId && alias !== 'anthropic/claude-sonnet-5' && alias !== 'anthropic/claude-sonnet-4') {
+          expect([choice.provider, alias]).toEqual(['anthropic', alias]);
+        }
+        if (openRouterSaved) expect([choice.provider, alias]).toEqual(['openrouter', alias]);
+      }
     }
   });
 
