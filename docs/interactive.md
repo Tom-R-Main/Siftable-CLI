@@ -108,7 +108,9 @@ New installations start with **GPT-5.6 Sol through Codex**. A saved model select
 The catalog includes:
 
 - **GPT-5.6 Sol, Terra, and Luna** — run through your ChatGPT plan via the Codex engine (see below). `/codex login` and `/codex on` select Sol by default. Efforts: low/medium/high/xhigh/max.
-- **Claude Opus 5** — two routes: **Door A** via OpenRouter (`openrouter/anthropic/claude-opus-5`), and **Door B** direct to the Anthropic API (`anthropic/claude-opus-5`, needs `ANTHROPIC_API_KEY`; alias `claude-api`). Adaptive-thinking efforts: low/medium/high/xhigh/max.
+- **Claude Opus 5.5** — two routes: **Door A** via OpenRouter (`openrouter/anthropic/claude-opus-5.5`), and **Door B** direct to the Anthropic API (`anthropic/claude-opus-5-5`, needs `ANTHROPIC_API_KEY`; alias `claude-api`). Adaptive-thinking efforts: low/medium/high/xhigh/max, default medium. Saved Claude Opus 5 selections and `claude-opus-5` aliases resolve here.
+- **Claude Fable 5.1** — via OpenRouter (`openrouter/anthropic/claude-fable-5.1`) or direct (`anthropic/claude-fable-5-1`). Efforts: low/medium/high/xhigh/max.
+- **Claude Sonnet 5.5** — via OpenRouter (`openrouter/anthropic/claude-sonnet-5.5`) or direct (`anthropic/claude-sonnet-5-5`); alias `sonnet`. Efforts: low/medium/high/xhigh/max. Older Sonnet selections resolve here.
 - **Muse Spark 1.3** — direct to the Meta API (`meta/muse-spark-1.3`, needs `META_API_KEY`; aliases `spark`, `muse`). Efforts: minimal/low/medium/high/xhigh/max.
 - **Muse Spark 1.3 Contributor** — separate Meta tier (`meta/muse-spark-1.3-contributor`; aliases `spark-contributor`, `muse-contributor`). Efforts: minimal/low/medium/high/xhigh.
 - **GPT-6 Astra** — through the Codex engine (`codex/gpt-6-astra`; alias `astra`). Efforts include ultra.
