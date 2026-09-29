@@ -32,7 +32,7 @@ const STATIC = new RegExp(
   '\\b(typecheck|tsc\\b|build\\b|lint\\b|diff --check|i18n|verify:|verify-|preflight|prettier|eslint|'
   + 'semgrep|JSON\\.parse|test -f|test -d|git diff|grep\\b|rg\\b|ls\\b|cat\\b|jq\\b|--dry-run|audit\\b)',
 );
-const TEST_RUNNER = /(^|[\s:])(test(:unit|:vitest|:e2e|:integration)?|jest|vitest|playwright|node --test|vp test)(\s|$)/;
+const TEST_RUNNER = /(^|[\s:])(test(:[\w-]+)?|jest|vitest|playwright|node --test|vp test)(\s|$)/;
 const NON_JS = /(^|\s)(zig|cargo|go|pytest|python3? -m pytest|swift|xcodebuild|gradle|mvn)\s/;
 const VALUE_FLAGS = new Set(['--workspace', '-w', '--prefix', '--testNamePattern', '-t', '--config', '-c', '--project',
   '-p', '--projects', '--reporter', '--shard', '--maxWorkers', '--testTimeout', '--grep', '-g', '--outputFile']);
@@ -214,7 +214,14 @@ export function resolve(pats: string[], pdir: string | null, files: readonly str
   const out = new Set<string>();
   for (const p of pats) {
     if (p.includes('/') || TEST_FILE.test(p)) {
-      for (const cand of [p, pdir ? `${pdir}/${p}` : p]) if (all.has(cand)) out.add(cand);
+      const exact = [p, pdir ? `${pdir}/${p}` : p].filter((cand) => all.has(cand));
+      for (const cand of exact) out.add(cand);
+      if (exact.length) continue;
+      // Runners treat positional paths as filters: a directory or file-name prefix selects the test files under it.
+      for (const f of tests) {
+        const rel = pdir && f.startsWith(`${pdir}/`) ? f.slice(pdir.length + 1) : f;
+        if (f.startsWith(p) || rel.startsWith(p)) out.add(f);
+      }
       continue;
     }
     let rx: RegExp;

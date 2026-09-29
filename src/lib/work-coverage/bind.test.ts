@@ -160,3 +160,18 @@ describe('test-name filter forms', () => {
     expect(patterns(shlexSplit('npx jest -- share --testNamePattern=sends')).patterns).toEqual(['share']);
   });
 });
+
+describe('runner targets and path prefixes', () => {
+  it('recognises any test:<name> target such as test:int', () => {
+    expect(classify(shell('npm exec -- nx run @execufunction/exf-app:test:int -- src/routes/modelConnections.test.ts'))).toMatchObject({
+      class: 'patterned_test', projectDir: 'exf-app',
+    });
+  });
+
+  it('resolves directory and file-name path prefixes under the project', () => {
+    expect(resolve(['src/routes/modelConnections'], 'exf-app', FILES, 'jest')).toEqual(['exf-app/src/routes/modelConnections.test.ts']);
+    expect(resolve(['src/views'], 'exf-app/web', FILES, 'vitest')).toEqual(['exf-app/web/src/views/Home.test.tsx', 'exf-app/web/src/views/Home.vitest.tsx']);
+    expect(resolve(['src/nothing'], 'exf-app', FILES)).toEqual([]);
+  });
+});
+

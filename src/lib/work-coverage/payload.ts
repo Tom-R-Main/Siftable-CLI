@@ -65,9 +65,9 @@ export function boundAssertion(text: string): string {
  * spaces). A step without a name filter runs every case in the file. Titles whose runtime name is not
  * known statically (printf placeholders, dynamic titles) are kept.
  */
-export function selectedByNameFilters(fullName: string, title: string, filterSets: ReadonlyArray<readonly string[]>): boolean {
+export function selectedByNameFilters(fullName: string, title: string, filterSets: ReadonlyArray<readonly string[]>, describePath: readonly string[] = []): boolean {
   if (!filterSets.length) return true;
-  if (/%[sdifjoO#%]|\$\{|<dynamic>/.test(title)) return true;
+  if ([title, ...describePath].some((part) => /%[sdifjoO#%]|\$\{|<dynamic>/.test(part))) return true;
   return filterSets.some((filters) => filters.length === 0 || filters.some((f) => {
     try {
       return new RegExp(f).test(fullName);
@@ -112,7 +112,7 @@ export async function buildCoverageShadowPayload(input: {
         skippedCases += 1;
         continue;
       }
-      if (!selectedByNameFilters([...c.describePath, c.title].join(' '), c.title, filtersByFile.get(file) ?? [])) {
+      if (!selectedByNameFilters([...c.describePath, c.title].join(' '), c.title, filtersByFile.get(file) ?? [], c.describePath)) {
         filteredCases += 1;
         continue;
       }
