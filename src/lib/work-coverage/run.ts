@@ -8,7 +8,7 @@ import type {GitReader, PlanStep} from './bind.js';
 import {buildCoverageShadowPayload, type CoverageShadowPayload} from './payload.js';
 
 export type CoverageShadowResponse = {
-  status: 'recorded' | 'disabled' | 'too_broad' | 'no_candidates' | 'unavailable';
+  status: 'recorded' | 'disabled' | 'stale_plan' | 'too_broad' | 'no_candidates' | 'unavailable';
   recordId: string | null;
   criteria: number;
   requests: number;

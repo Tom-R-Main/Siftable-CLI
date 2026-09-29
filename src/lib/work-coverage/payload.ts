@@ -67,7 +67,8 @@ export function boundAssertion(text: string): string {
  */
 export function selectedByNameFilters(fullName: string, title: string, filterSets: ReadonlyArray<readonly string[]>, describePath: readonly string[] = []): boolean {
   if (!filterSets.length) return true;
-  if ([title, ...describePath].some((part) => /%[sdifjoO#%]|\$\{|<dynamic>/.test(part))) return true;
+  // printf placeholders (%s, %p, %#, ...), $variable / ${...} interpolation and dynamic titles.
+  if ([title, ...describePath].some((part) => /%[a-zA-Z#%]|\$\{|\$[A-Za-z_]|<dynamic>/.test(part))) return true;
   return filterSets.some((filters) => filters.length === 0 || filters.some((f) => {
     try {
       return new RegExp(f).test(fullName);

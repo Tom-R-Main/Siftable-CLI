@@ -72,6 +72,38 @@ export function skipString(src: string, start: number): number {
 }
 
 /** Replace // and /* *\/ comments with spaces (newlines kept), leaving strings intact. */
+/**
+ * If `/` at `start` begins a regular-expression literal (judged by the previous significant character),
+ * return the index just past it and its flags; otherwise -1. Stops at a newline (not a regex).
+ */
+export function regexLiteralEnd(src: string, start: number): number {
+  if (src[start] !== '/' || src[start + 1] === '/' || src[start + 1] === '*') return -1;
+  let p = start - 1;
+  while (p >= 0 && WS.has(src[p])) p -= 1;
+  const prev = p >= 0 ? src[p] : '';
+  const before = src.slice(Math.max(0, p - 9), p + 1);
+  if (!(prev === '' || '(,=:[!&|?{};+-*%<>~^'.includes(prev) || /\b(return|typeof|case|in|of|delete|void|throw|new)$/.test(before))) return -1;
+  let i = start + 1;
+  let inClass = false;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === '\n') return -1;
+    if (c === '\\') {
+      i += 2;
+      continue;
+    }
+    if (c === '[') inClass = true;
+    else if (c === ']') inClass = false;
+    else if (c === '/' && !inClass) {
+      i += 1;
+      while (i < src.length && /[a-z]/i.test(src[i])) i += 1;
+      return i;
+    }
+    i += 1;
+  }
+  return -1;
+}
+
 export function maskComments(src: string): string {
   const out = src.split('');
   const n = src.length;
@@ -81,6 +113,13 @@ export function maskComments(src: string): string {
     if (c === "'" || c === '"' || c === '`') {
       i = skipString(src, i);
       continue;
+    }
+    if (c === '/') {
+      const r = regexLiteralEnd(src, i);
+      if (r > 0) {
+        i = r;
+        continue;
+      }
     }
     if (src.startsWith('//', i)) {
       let j = src.indexOf('\n', i);
@@ -111,6 +150,13 @@ export function matchClose(src: string, start: number, open: string, close: stri
     if (ch === "'" || ch === '"' || ch === '`') {
       i = skipString(src, i);
       continue;
+    }
+    if (ch === '/') {
+      const r = regexLiteralEnd(src, i);
+      if (r > 0) {
+        i = r;
+        continue;
+      }
     }
     if (ch === open) depth += 1;
     else if (ch === close) {
@@ -145,6 +191,14 @@ export function literalSpans(src: string): Array<[number, number]> {
       spans.push([i, end]);
       i = Math.max(end, i + 1);
       continue;
+    }
+    if (ch === '/') {
+      const r = regexLiteralEnd(src, i);
+      if (r > 0) {
+        spans.push([i, r]);
+        i = r;
+        continue;
+      }
     }
     i += 1;
   }
@@ -299,7 +353,14 @@ export function extract(srcRaw: string): ExtractedCase[] {
     const parents = describes.filter((d) => d.start < c.start && c.start < d.end);
     const skipped = skipMods.has(c.mod ?? '') || parents.some((d) => skipMods.has(d.mod ?? ''));
     const gates = [c.gate, ...parents.map((d) => d.gate)].filter((g): g is string => Boolean(g));
-    for (const s of pwSkips) { // a conditional test.skip in an enclosing describe (or at file level) gates this case
+    for (const s of pwSkips) {
+      // A conditional test.skip inside a test gates only that test; one in a describe (or at file
+      // level, outside every test) gates the cases in that scope.
+      const inTest = calls.find((t) => t.kind !== 'describe' && t.kind !== 'pw_skip' && t.start < s.start && s.start < t.end);
+      if (inTest) {
+        if (inTest === c) gates.push(s.gate!);
+        continue;
+      }
       const enclosing = describes.filter((d) => d.start < s.start && s.start < d.end);
       if (!enclosing.length || enclosing.slice(-1).some((d) => d.start < c.start && c.start < d.end)) {
         gates.push(s.gate!);

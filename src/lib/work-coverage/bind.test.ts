@@ -1,5 +1,9 @@
 import {describe, expect, it} from 'vitest';
-import {bindPlan, classify, patterns, projectDir, resolve, shlexSplit, type PlanStep} from './bind.js';
+import {bindPlan, classify, createGitReader, patterns, projectDir, resolve, shlexSplit, type PlanStep} from './bind.js';
+import {execFileSync} from 'node:child_process';
+import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 
 const shell = (command: string): PlanStep => ({kind: 'shell', title: 'step', spec: {command}});
 
@@ -191,6 +195,38 @@ describe('runner detection ignores file patterns', () => {
     const c = classify(shell('npm exec -- nx run @execufunction/exf-app:test:int -- src/routes/modelConnections.vitest.test.ts'));
     expect(c).toMatchObject({class: 'patterned_test', runner: 'jest'});
     expect(bindPlan([shell('npm exec -- nx run @execufunction/exf-app:test:int -- src/routes/modelConnections.vitest.test.ts')], FILES).testFiles).toEqual([]);
+  });
+});
+
+describe('bot review round: node --test and Jest path regexes', () => {
+  it('collects node --test file arguments', () => {
+    expect(classify(shell('node --test packages/shared/src/format.test.ts'))).toMatchObject({class: 'patterned_test'});
+    expect(bindPlan([shell('node --test packages/shared/src/format.test.ts')], FILES).testFiles).toEqual(['packages/shared/src/format.test.ts']);
+  });
+
+  it('treats --testPathPattern values as regular expressions, slashes included', () => {
+    const files = bindPlan([shell("npx --prefix exf-app jest --testPathPattern='src/routes/(modelConnections)\\.test'")], FILES).testFiles;
+    expect(files).toEqual(['exf-app/src/routes/modelConnections.test.ts']);
+  });
+});
+
+describe('git reader failures', () => {
+  it('reads an absent path as empty but propagates other git failures', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sift-git-reader-'));
+    try {
+      const git = (...args: string[]) => execFileSync('git', args, {cwd: dir, encoding: 'utf8'});
+      git('init', '-q');
+      writeFileSync(join(dir, 'a.test.ts'), "it('x', () => {});\n");
+      git('add', '.');
+      git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'c');
+      const head = git('rev-parse', 'HEAD').trim();
+      const reader = createGitReader(dir);
+      expect(await reader.show(head, 'a.test.ts')).toContain("it('x'");
+      expect(await reader.show(head, 'missing.test.ts')).toBe('');
+      await expect(reader.show('0'.repeat(40), 'a.test.ts')).rejects.toThrow();
+    } finally {
+      rmSync(dir, {recursive: true, force: true});
+    }
   });
 });
 

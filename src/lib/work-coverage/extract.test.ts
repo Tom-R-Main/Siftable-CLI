@@ -217,3 +217,22 @@ describe('review fixes: literals, .only, same-line bodies', () => {
   });
 });
 
+describe('bot review round: regex literals and scoped Playwright skips', () => {
+  it('does not let parentheses inside a regex literal end a call early', () => {
+    const src = "it('regex', () => { expect(')').toMatch(/\\)/); expect(1).toBe(1); });\nit('next', () => { expect(2).toBe(2); });";
+    const cases = extract(src);
+    expect(cases.map((c) => c.title)).toEqual(['regex', 'next']);
+    expect(cases[0].assertions).toEqual(["expect(')').toMatch(/\\)/)", 'expect(1).toBe(1)']);
+  });
+
+  it('applies a test.skip(cond) inside one test only to that test', () => {
+    const src = [
+      "test('a', async ({}, info) => { test.skip(info.project.name !== 'chromium', 'desktop'); expect(1).toBe(1); });",
+      "test('b', async () => { expect(2).toBe(2); });",
+    ].join('\n');
+    const [a, b] = extract(src);
+    expect(a.flags).toContain('conditional_gate');
+    expect(b.flags).not.toContain('conditional_gate');
+  });
+});
+

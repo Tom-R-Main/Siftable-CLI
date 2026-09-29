@@ -115,6 +115,8 @@ describe('test-name filters', () => {
     expect(selectedByNameFilters('anything', 'anything', [])).toBe(true);
     expect(selectedByNameFilters('<dynamic> sends', 'sends', [['nomatch']], ['<dynamic>'])).toBe(true);
     expect(selectedByNameFilters('suite %s sends', 'sends', [['nomatch']], ['suite %s'])).toBe(true);
+    expect(selectedByNameFilters('handles %p', 'handles %p', [['nomatch']])).toBe(true);
+    expect(selectedByNameFilters('adds $a and $b', 'adds $a and $b', [['nomatch']])).toBe(true);
   });
 
   it('leaves out cases the step would not run', async () => {

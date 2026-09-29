@@ -40,6 +40,8 @@ const VALUE_FLAGS = new Set(['--workspace', '-w', '--prefix', '--testNamePattern
   '-p', '--projects', '--reporter', '--shard', '--maxWorkers', '--testTimeout', '--grep', '-g', '--outputFile']);
 
 export type Runner = 'vitest' | 'jest' | 'other';
+/** Marks a Jest `--testPathPattern` value: always a regular expression over the test file path. */
+export const PATH_REGEX_PREFIX = 're:';
 
 export type StepClass =
   | {class: 'external_text'}
@@ -174,11 +176,11 @@ export function patterns(tokens: string[]): {patterns: string[]; names: string[]
     // Jest path filters are file patterns, in separate or `=` form.
     const pathEq = /^--testPathPatterns?=(.+)$/.exec(t);
     if (pathEq) {
-      pats.push(pathEq[1]);
+      pats.push(PATH_REGEX_PREFIX + pathEq[1]);
       continue;
     }
     if ((t === '--testPathPattern' || t === '--testPathPatterns') && i + 1 < tokens.length) {
-      pats.push(tokens[i + 1]);
+      pats.push(PATH_REGEX_PREFIX + tokens[i + 1]);
       skip = true;
       continue;
     }
@@ -186,7 +188,7 @@ export function patterns(tokens: string[]): {patterns: string[]; names: string[]
       skip = true;
       continue;
     }
-    if (/(^|:)(test(:\w+)?|jest|vitest)$/.test(t) || t === '--run') {
+    if (/(^|:)(test(:\w+)?|jest|vitest)$/.test(t) || t === '--run' || t === '--test') {
       started = true;
       continue;
     }
@@ -230,6 +232,16 @@ export function resolve(pats: string[], pdir: string | null, files: readonly str
   }
   const out = new Set<string>();
   for (const p of pats) {
+    if (p.startsWith(PATH_REGEX_PREFIX)) {
+      let rx: RegExp;
+      try {
+        rx = new RegExp(p.slice(PATH_REGEX_PREFIX.length));
+      } catch {
+        continue;
+      }
+      for (const f of tests) if ((!pdir || f.startsWith(`${pdir}/`)) && rx.test(f)) out.add(f);
+      continue;
+    }
     if (p.includes('/') || TEST_FILE.test(p)) {
       // An explicit path still has to be a file this runner runs (Jest does not run *.vitest.* files).
       const exact = [p, pdir ? `${pdir}/${p}` : p].filter((cand) => all.has(cand) && !(runner === 'jest' && cand.includes('.vitest.')));
@@ -325,7 +337,14 @@ export function createGitReader(cwd: string = process.cwd(), options: {signal?: 
     async show(commit, path) {
       try {
         return await git(['show', `${commit}:${path}`], await root());
-      } catch {
+      } catch (error) {
+        // Only a path absent at that commit reads as empty; timeouts, cancellation and other git
+        // failures propagate, so an unreadable file never becomes an empty (complete) candidate set.
+        const stderr = String((error as {stderr?: unknown}).stderr ?? '');
+        if (!/does not exist in|exists on disk, but not in/.test(stderr)) throw error;
+        // Git uses the same wording for an unknown commit, so confirm the commit exists first.
+        const known = await git(['rev-parse', '--verify', '--quiet', `${commit}^{commit}`], await root()).catch(() => '');
+        if (!known.trim()) throw error;
         return '';
       }
     },
