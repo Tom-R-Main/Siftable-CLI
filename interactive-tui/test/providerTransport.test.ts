@@ -15,6 +15,54 @@ const sse = (events: unknown[], done = true) => new Response(events.map(event =>
 const adapter = (fetchImpl: typeof fetch, events: AdapterEvent[], extra = {}) => createChatCompletionsAdapter({ name: "Meta", model: "muse-spark-1.3-contributor", apiKey: "secret-never-log", baseUrl: "https://api.meta.ai/v1/", fetchImpl, onEvent: event => events.push(event), retry: { baseDelayMs: 0, maxDelayMs: 20 }, ...extra });
 
 describe("provider transport reliability", () => {
+  it("defaults GPT-6.1 Sol to medium reasoning through Responses", async () => {
+    const client = createOpenAIAdapter({ apiKey: "test", fetchImpl: (async (url, init) => {
+      expect(String(url)).toBe("https://api.openai.com/v1/responses");
+      const body = JSON.parse(String(init?.body));
+      expect(body.model).toBe("gpt-6.1-sol");
+      expect(body.reasoning).toEqual({ effort: "medium" });
+      expect(body.temperature).toBeUndefined();
+      return json({id: "sol-response", output: [{type: "message", content: [{type: "output_text", text: "done"}]}]});
+    }) as typeof fetch });
+    expect((await client.chat(messages, registry, {stream: false})).text).toBe("done");
+  });
+
+  it("rejects unsupported GPT-6.1 Sol efforts before dispatch", () => {
+    for (const reasoningEffort of ["none", "minimal"] as const) {
+      expect(() => createOpenAIAdapter({apiKey: "test", reasoningEffort})).toThrow("GPT-6.1 Sol supports reasoning efforts");
+    }
+  });
+
+  for (const model of ["gpt-6-astra", "gpt-6-luna", "gpt-6-astra-2026-09-29"]) {
+    it(`defaults ${model} to medium reasoning without temperature`, async () => {
+      const client = createOpenAIAdapter({apiKey: "test", model, fetchImpl: (async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        expect(body.model).toBe(model);
+        expect(body.reasoning).toEqual({effort: "medium"});
+        expect(body.temperature).toBeUndefined();
+        return json({id: "gpt6-response", output: [{type: "message", content: [{type: "output_text", text: "done"}]}]});
+      }) as typeof fetch});
+      expect((await client.chat(messages, registry, {stream: false})).text).toBe("done");
+    });
+  }
+
+  it("forwards explicit GPT-6 Luna none reasoning without temperature", async () => {
+    const client = createOpenAIAdapter({apiKey: "test", model: "gpt-6-luna", reasoningEffort: "none", fetchImpl: (async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.reasoning).toEqual({effort: "none"});
+      expect(body.temperature).toBeUndefined();
+      return json({id: "luna-response", output: [{type: "message", content: [{type: "output_text", text: "done"}]}]});
+    }) as typeof fetch});
+    expect((await client.chat(messages, registry, {stream: false})).text).toBe("done");
+  });
+
+  it("rejects unsupported Astra and Luna efforts before dispatch", () => {
+    for (const reasoningEffort of ["none", "minimal"] as const) {
+      expect(() => createOpenAIAdapter({apiKey: "test", model: "gpt-6-astra", reasoningEffort})).toThrow("GPT-6 Astra supports reasoning efforts");
+    }
+    expect(() => createOpenAIAdapter({apiKey: "test", model: "gpt-6-luna", reasoningEffort: "minimal"})).toThrow("GPT-6 Luna supports reasoning efforts");
+  });
+
   for (const count of [1, 2]) it(`preserves buffered text accompanying ${count} tool call(s) without synthesizing streaming deltas`, async () => {
     const events: AdapterEvent[] = [];
     const client = adapter((async () => json({id: "buffered-tools", choices: [{finish_reason: "tool_calls", message: {

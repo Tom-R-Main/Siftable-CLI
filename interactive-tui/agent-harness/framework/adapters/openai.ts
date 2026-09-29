@@ -36,10 +36,21 @@ export function createOpenAIAdapter(config?: Partial<AdapterConfig>): AIAdapter 
     );
   }
 
-  // GPT-5.6 Sol is the current expert default. Override via config.model when
-  // a caller deliberately needs another GPT-5.6 tier or a retained mini model.
-  const model = config?.model ?? "gpt-5.6-sol";
-  const reasoningEffort = config?.reasoningEffort;
+  // GPT-6 API tiers default to medium; Luna also permits explicit none.
+  const model = config?.model ?? "gpt-6.1-sol";
+  const gpt6Spec = [
+    { model: "gpt-6.1-sol", label: "GPT-6.1 Sol", supportsNone: false },
+    { model: "gpt-6-astra", label: "GPT-6 Astra", supportsNone: false },
+    { model: "gpt-6-luna", label: "GPT-6 Luna", supportsNone: true },
+  ].find((spec) => model === spec.model || model.startsWith(`${spec.model}-`));
+  const reasoningEffort = config?.reasoningEffort ?? (gpt6Spec ? "medium" : undefined);
+  if (gpt6Spec) {
+    const supportedEfforts = ["low", "medium", "high", "xhigh", "max"];
+    if (gpt6Spec.supportsNone) supportedEfforts.unshift("none");
+    if (!supportedEfforts.includes(reasoningEffort!)) {
+      throw new Error(`${gpt6Spec.label} supports reasoning efforts ${supportedEfforts.join(", ")}`);
+    }
+  }
   const maxOutputTokens = outputTokenLimit(config?.maxOutputTokens);
   const systemPrompt = config?.systemPrompt ?? "You are a helpful assistant with access to tools. Use tools when they're relevant.";
   const sessionStateKey = "openai.responses";
@@ -96,7 +107,9 @@ export function createOpenAIAdapter(config?: Partial<AdapterConfig>): AIAdapter 
         parallel_tool_calls: false,
       };
 
-      if (!reasoningEffort || reasoningEffort === "none") {
+      if (gpt6Spec) {
+        body.reasoning = { effort: reasoningEffort };
+      } else if (!reasoningEffort || reasoningEffort === "none") {
         body.temperature = 0.7;
       } else {
         body.reasoning = { effort: reasoningEffort };

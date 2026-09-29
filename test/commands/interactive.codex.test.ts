@@ -155,7 +155,7 @@ describe('codex approval mapping (4-way decision → JSON-RPC)', () => {
 describe('LocalControlClient — Codex engine', () => {
   it('gates auth on the Codex account when Codex is the active engine', async () => {
     const authed = new LocalControlClient({
-      getModel: () => ({provider: 'codex', model: 'gpt-5.6-sol'}),
+      getModel: () => ({provider: 'codex', model: 'gpt-6.1-sol'}),
       getCodexAccount: async () => ({type: 'chatgpt', email: 'tom@execufunction.com', planType: 'plus'}),
       getToken: () => undefined, // no Siftable token, but Codex is signed in
     });
@@ -165,7 +165,7 @@ describe('LocalControlClient — Codex engine', () => {
     expect(s.model?.provider).toBe('codex');
 
     const loggedOut = new LocalControlClient({
-      getModel: () => ({provider: 'codex', model: 'gpt-5.6-sol'}),
+      getModel: () => ({provider: 'codex', model: 'gpt-6.1-sol'}),
       getCodexAccount: async () => null,
       getToken: () => 'sift_pat_x', // Siftable token present but Codex is not
     });
@@ -186,13 +186,13 @@ describe('LocalControlClient — Codex engine', () => {
 
   it('reports codexStatus with account and active flag', async () => {
     const client = new LocalControlClient({
-      getModel: () => ({provider: 'codex', model: 'gpt-5.6-sol'}),
+      getModel: () => ({provider: 'codex', model: 'gpt-6.1-sol'}),
       getCodexAccount: async () => ({type: 'chatgpt', email: 'tom@execufunction.com', planType: 'plus'}),
     });
     const status = await client.codexStatus();
     expect(status.active).toBe(true);
     expect(status.account?.email).toBe('tom@execufunction.com');
-    expect(status.model).toBe('gpt-5.6-sol');
+    expect(status.model).toBe('gpt-6.1-sol');
   });
 
   it('codexSetActive switches the brain provider on and off', async () => {
@@ -203,7 +203,7 @@ describe('LocalControlClient — Codex engine', () => {
     const client = new LocalControlClient({setModel});
 
     const on = await client.codexSetActive(true);
-    expect(setModel).toHaveBeenCalledWith({provider: 'codex', model: 'gpt-5.6-sol'});
+    expect(setModel).toHaveBeenCalledWith({provider: 'codex', model: 'gpt-6.1-sol'});
     expect(on.provider).toBe('codex');
 
     const off = await client.codexSetActive(false);
@@ -218,7 +218,7 @@ describe('/codex command', () => {
       client: client as ControlTransport,
       apiClient: {} as any,
       baseUrl: 'in-process (test)',
-      model: () => 'gpt-5.6-sol',
+      model: () => 'gpt-6.1-sol',
       setModel: jest.fn(),
       agents: () => [],
       queuedCount: () => 0,
@@ -236,7 +236,7 @@ describe('/codex command', () => {
 
   it('shows status with the signed-in account', async () => {
     const {ctx, messages} = buildCtx({
-      codexStatus: async () => ({installed: true, account: {type: 'chatgpt', email: 'tom@x.io', planType: 'plus'}, active: true, model: 'gpt-5.6-sol'}),
+      codexStatus: async () => ({installed: true, account: {type: 'chatgpt', email: 'tom@x.io', planType: 'plus'}, active: true, model: 'gpt-6.1-sol'}),
       codexLogin: async () => ({verificationUri: 'u', userCode: 'c'}),
     });
     await runInteractiveCommand(ctx, '/codex status');
@@ -246,25 +246,25 @@ describe('/codex command', () => {
 
   it('activates the engine via the unified model-selection path on /codex on', async () => {
     const {ctx, messages} = buildCtx({
-      codexStatus: async () => ({installed: true, account: {type: 'chatgpt', email: 'tom@x.io'}, active: false, model: 'gpt-5.6-sol'}),
+      codexStatus: async () => ({installed: true, account: {type: 'chatgpt', email: 'tom@x.io'}, active: false, model: 'gpt-6.1-sol'}),
       codexLogin: async () => ({verificationUri: 'u', userCode: 'c'}),
-      config: async (input) => ({provider: input.provider ?? 'codex', model: input.model ?? 'gpt-5.6-sol'}),
+      config: async (input) => ({provider: input.provider ?? 'codex', model: input.model ?? 'gpt-6.1-sol'}),
     });
     await runInteractiveCommand(ctx, '/codex on');
     // Goes through applyModelChoice → client.config, same as picking it in /model.
-    expect(ctx.setModel).toHaveBeenCalledWith('gpt-5.6-sol');
-    expect(messages.at(-1)?.text).toContain('codex/gpt-5.6-sol');
+    expect(ctx.setModel).toHaveBeenCalledWith('gpt-6.1-sol');
+    expect(messages.at(-1)?.text).toContain('codex/gpt-6.1-sol');
     expect(messages.at(-1)?.text).toContain('signed in as tom@x.io');
   });
 
-  it('activates GPT-5.6 Sol after a successful Codex login', async () => {
+  it('activates GPT-6.1 Sol after a successful Codex login', async () => {
     let finishLogin!: (value: {success: boolean; email?: string}) => void;
     const completion = new Promise<{success: boolean; email?: string}>((resolve) => {
       finishLogin = resolve;
     });
-    const codexSetActive = jest.fn(async () => ({provider: 'codex', model: 'gpt-5.6-sol'}));
+    const codexSetActive = jest.fn(async () => ({provider: 'codex', model: 'gpt-6.1-sol'}));
     const {ctx, messages} = buildCtx({
-      codexStatus: async () => ({installed: true, account: null, active: false, model: 'gpt-5.6-sol'}),
+      codexStatus: async () => ({installed: true, account: null, active: false, model: 'gpt-6.1-sol'}),
       codexLogin: async () => ({verificationUri: 'u', userCode: 'c', completion}),
       codexSetActive,
     });
@@ -274,7 +274,7 @@ describe('/codex command', () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(codexSetActive).toHaveBeenCalledWith(true);
-    expect(ctx.setModel).toHaveBeenCalledWith('gpt-5.6-sol');
+    expect(ctx.setModel).toHaveBeenCalledWith('gpt-6.1-sol');
     expect(messages.at(-1)?.text).toContain('Codex is now your engine');
   });
 
@@ -292,7 +292,7 @@ describe('model catalog + reasoning effort', () => {
       client: client as ControlTransport,
       apiClient: {} as any,
       baseUrl: 'in-process (test)',
-      model: () => 'gpt-5.6-sol',
+      model: () => 'gpt-6.1-sol',
       setModel: jest.fn(),
       agents: () => [],
       queuedCount: () => 0,
@@ -477,10 +477,10 @@ describe('model catalog + reasoning effort', () => {
     expect(messages.at(-1)?.text).toContain('meta/muse-spark-1.3-contributor');
   });
 
-  it('catalogues GPT-5.6 Sol, Terra, and Luna through Codex with max reasoning', async () => {
+  it('catalogues GPT-6.1 Sol and preserves retained Codex tiers', async () => {
     const config = jest.fn(async (input: {provider?: string; model?: string; effort?: string}) => ({
       provider: input.provider ?? 'codex',
-      model: input.model ?? 'gpt-5.6-sol',
+      model: input.model ?? 'gpt-6.1-sol',
       effort: input.effort,
     }));
     const {ctx, messages} = buildCtx({
@@ -489,14 +489,33 @@ describe('model catalog + reasoning effort', () => {
         installed: true,
         account: {type: 'chatgpt', email: 'tom@x.io'},
         active: true,
-        model: 'gpt-5.6-sol',
+        model: 'gpt-6.1-sol',
       }),
       codexLogin: jest.fn(),
     });
 
-    expect(findModelChoice('gpt-5.6')).toMatchObject({provider: 'codex', model: 'gpt-5.6-sol'});
-    expect(findModelChoice('codex')).toMatchObject({provider: 'codex', model: 'gpt-5.6-sol'});
-    expect(findModelChoice('sol')?.model).toBe('gpt-5.6-sol');
+    expect(findModelChoice('gpt-5.6')).toMatchObject({provider: 'codex', model: 'gpt-6.1-sol'});
+    expect(findModelChoice('codex')).toMatchObject({provider: 'codex', model: 'gpt-6.1-sol'});
+    expect(findModelChoice('sol')?.model).toBe('gpt-6.1-sol');
+    for (const alias of ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol', 'codex/gpt-6-sol', 'codex/gpt-5.6-sol']) {
+      expect(findModelChoice(alias)?.model).toBe('gpt-6.1-sol');
+    }
+    expect(findModelChoice('sol')?.reasoningEfforts).not.toContain('none');
+    expect(findModelChoice('sol')?.reasoningEfforts).not.toContain('minimal');
+    expect(findModelChoice('astra')?.reasoningEfforts).not.toContain('none');
+    expect(findModelChoice('astra')?.reasoningEfforts).not.toContain('minimal');
+    expect(findModelChoice('luna-6')).toMatchObject({ provider: 'codex', model: 'gpt-6-luna' });
+    expect(findModelChoice('gpt-6-luna')?.reasoningEfforts).toEqual(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
+    await runInteractiveCommand(ctx, '/model gpt-6-luna none');
+    expect(config).toHaveBeenCalledWith({provider: 'codex', model: 'gpt-6-luna', effort: 'none'});
+    expect(isCodexReasoningEffort('none')).toBe(true);
+    expect(isCodexReasoningEffort('none', 'gpt-6-luna')).toBe(true);
+    expect(isCodexReasoningEffort('none', 'gpt-6.1-sol')).toBe(false);
+    expect(isCodexReasoningEffort('none', 'gpt-6-astra')).toBe(false);
+    expect(isCodexReasoningEffort('minimal', 'gpt-6.1-sol')).toBe(false);
+    expect(isCodexReasoningEffort('ultra', 'gpt-6.1-sol')).toBe(false);
+    await runInteractiveCommand(ctx, '/model codex/gpt-5.6-sol high');
+    expect(config).toHaveBeenCalledWith({provider: 'codex', model: 'gpt-6.1-sol', effort: 'high'});
     expect(findModelChoice('terra')?.model).toBe('gpt-5.6-terra');
     expect(findModelChoice('luna')?.model).toBe('gpt-5.6-luna');
     for (const alias of ['sol', 'terra', 'luna']) {
@@ -607,12 +626,12 @@ describe('model catalog + reasoning effort', () => {
   });
 
   it.each([
-    ['/model sol ultra', 'GPT-5.6 Sol', 'Supported efforts: low, medium, high, xhigh, max.'],
+    ['/model sol ultra', 'GPT-6.1 Sol', 'Supported efforts: low, medium, high, xhigh, max.'],
     ['/model codex/gpt-5.6-terra ultra', 'GPT-5.6 Terra', 'Supported efforts: low, medium, high, xhigh, max.'],
     ['/model muse-contributor max', 'Muse Spark 1.3 Contributor', 'Supported efforts: minimal, low, medium, high, xhigh.'],
     ['/model morph high', 'Morph v3 Large', 'This model does not offer configurable reasoning effort.'],
   ])('rejects an effort outside the selected catalog model: %s', async (command, label, guidance) => {
-    const config = jest.fn(async () => ({provider: 'codex', model: 'gpt-5.6-sol'}));
+    const config = jest.fn(async () => ({provider: 'codex', model: 'gpt-6.1-sol'}));
     const {ctx, messages} = buildCtx({config});
     await runInteractiveCommand(ctx, command);
     expect(config).not.toHaveBeenCalled();

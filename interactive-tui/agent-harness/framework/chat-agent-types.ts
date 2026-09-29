@@ -219,7 +219,7 @@ export interface ChatAgentConfig {
   /** AI provider: "gemini", "openai", "anthropic", "xai", "openrouter" */
   provider?: string;
 
-  /** Model override (e.g., "gemini-3.8-flash", "gpt-5.6-sol", "gpt-5.4-mini") */
+  /** Model override (e.g., "gemini-3.8-flash", "gpt-6.1-sol", "gpt-5.4-mini") */
   model?: string;
 
   /**

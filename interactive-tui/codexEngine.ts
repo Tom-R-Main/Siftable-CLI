@@ -49,7 +49,7 @@ function defaultCodexSpawn(): CodexProc {
 }
 
 /** Default Codex model surfaced when the user switches the engine on. */
-export const CODEX_DEFAULT_MODEL = 'gpt-5.6-sol';
+export const CODEX_DEFAULT_MODEL = 'gpt-6.1-sol';
 export const CODEX_PROVIDER = 'codex';
 
 export interface CodexAccount {
@@ -928,11 +928,15 @@ export async function ensureThread(c: CodexClient, model?: string): Promise<stri
  * back as {error} so the TUI renders a degraded state). The thread is reused
  * across calls so the conversation keeps context within the session.
  */
-/** Catalogued Codex efforts; Astra also supports ultra. */
-const CODEX_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+/** Catalogued Codex efforts; Luna supports none and Astra supports ultra. */
+const CODEX_EFFORTS = new Set(['none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 
-export function isCodexReasoningEffort(effort: string | undefined): effort is string {
-  return typeof effort === 'string' && CODEX_EFFORTS.has(effort);
+export function isCodexReasoningEffort(effort: string | undefined, model?: string): effort is string {
+  if (typeof effort !== 'string' || !CODEX_EFFORTS.has(effort)) return false;
+  if (!model) return true;
+  if (model === 'gpt-6-luna') return effort !== 'ultra';
+  if (model === 'gpt-6-astra') return effort !== 'none';
+  return effort !== 'none' && effort !== 'ultra';
 }
 
 /**
@@ -1159,7 +1163,7 @@ export async function codexAsk(
         excludeSlashTmp: false,
       },
       ...(opts.model ? { model: opts.model } : {}),
-      ...(isCodexReasoningEffort(opts.effort) ? { effort: opts.effort } : {}),
+      ...(isCodexReasoningEffort(opts.effort, opts.model ?? CODEX_DEFAULT_MODEL) ? { effort: opts.effort } : {}),
     })
       .then((ack) => {
         const turn = ack.turn as Record<string, JsonValue> | undefined;

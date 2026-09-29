@@ -199,12 +199,12 @@ const GLM_53_FLASH_EFFORTS = ["low", "high", "max"];
 export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
   // ── Flagship brains (reasoning-first) ──
   {
-    id: "codex/gpt-5.6-sol",
+    id: "codex/gpt-6.1-sol",
     provider: "codex",
-    model: "gpt-5.6-sol",
-    label: "GPT-5.6 Sol",
+    model: "gpt-6.1-sol",
+    label: "GPT-6.1 Sol",
     description: "ChatGPT/Codex account · flagship for complex work",
-    aliases: ["gpt-5.6", "sol", "gpt-5.6-sol", "codex", "gpt", "chatgpt"],
+    aliases: ["gpt-6.1", "sol", "gpt-6.1-sol", "gpt-6-sol", "gpt-5.6", "gpt-5.6-sol", "codex/gpt-6-sol", "codex/gpt-5.6-sol", "codex", "gpt", "chatgpt"],
     auth: "codex",
     reasoningEfforts: GPT56_EFFORTS,
     defaultEffort: "medium",
@@ -229,6 +229,17 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     aliases: ["terra", "gpt-5.6-terra"],
     auth: "codex",
     reasoningEfforts: GPT56_EFFORTS,
+    defaultEffort: "medium",
+  },
+  {
+    id: "codex/gpt-6-luna",
+    provider: "codex",
+    model: "gpt-6-luna",
+    label: "GPT-6 Luna",
+    description: "ChatGPT/Codex account · fast, low-cost work",
+    aliases: ["luna-6", "gpt-6-luna"],
+    auth: "codex",
+    reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
     defaultEffort: "medium",
   },
   {
@@ -2750,7 +2761,7 @@ export const interactiveCommands: InteractiveCommand[] = [
       }
 
       if (sub === "on" || sub === "use") {
-        await selectModel(ctx, "codex/gpt-5.6-sol");
+        await selectModel(ctx, "codex/gpt-6.1-sol");
         return;
       }
 
@@ -2785,7 +2796,7 @@ export const interactiveCommands: InteractiveCommand[] = [
         text:
           `Codex (ChatGPT engine)\n` +
           `account: ${acct}\n` +
-          `engine:  ${status.active ? `active · ${status.model}` : "not selected — run /model codex/gpt-5.6-sol"}`,
+          `engine:  ${status.active ? `active · ${status.model}` : "not selected — run /model codex/gpt-6.1-sol"}`,
       });
     },
   },
