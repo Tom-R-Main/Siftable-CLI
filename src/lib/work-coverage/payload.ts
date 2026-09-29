@@ -4,7 +4,7 @@
  */
 import {createHash} from 'node:crypto';
 import {bindPlan, type GitReader, type PlanBinding, type PlanStep} from './bind.js';
-import {ASSERT_CHARS, BODY_CHARS, MAX_ASSERT, bodyOf, clip, extract} from './extract.js';
+import {ASSERT_CHARS, MAX_ASSERT, bodyAt, clip, extract} from './extract.js';
 
 export const SCHEMA_VERSION = 1;
 export const MAX_CANDIDATES = 150;
@@ -107,8 +107,11 @@ export async function buildCoverageShadowPayload(input: {
       continue;
     }
     const src = await input.git.show(input.commit, file);
-    for (const c of extract(src)) {
-      if (c.flags.includes('skipped')) {
+    const cases = extract(src);
+    // A file with `.only` cases runs only those.
+    const exclusive = cases.some((c) => c.flags.includes('only') && !c.flags.includes('skipped'));
+    for (const c of cases) {
+      if (c.flags.includes('skipped') || (exclusive && !c.flags.includes('only'))) {
         skippedCases += 1;
         continue;
       }
@@ -125,7 +128,7 @@ export async function buildCoverageShadowPayload(input: {
         flags: clipAll(c.flags, BOUNDS.flags, BOUNDS.flagChars),
         gates: clipAll(c.gates, BOUNDS.gates, BOUNDS.gateChars),
         assertions: c.assertions.slice(0, MAX_ASSERT).map(boundAssertion),
-        body: clip(bodyOf(src, c.line), BODY_CHARS),
+        body: bodyAt(src, c.span),
       });
     }
   }

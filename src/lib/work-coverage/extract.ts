@@ -31,6 +31,8 @@ export type ExtractedCase = {
   assertions: string[];
   assertionsTruncated: boolean;
   line: number;
+  /** Source offsets of the case call (comments masked; offsets equal the raw source's). */
+  span: [number, number];
 };
 
 type Call = {
@@ -132,14 +134,47 @@ function literalTitle(src: string, i: number): [string | null, boolean] {
 const ALNUM = /[\p{L}\p{N}]/u;
 
 /** Complete expect(...) chains and assert calls in body, whitespace-collapsed and bounded. */
+/** [start, end) ranges of string and template literals in comment-masked source. */
+export function literalSpans(src: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  let i = 0;
+  while (i < src.length) {
+    const ch = src[i];
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const end = skipString(src, i);
+      spans.push([i, end]);
+      i = Math.max(end, i + 1);
+      continue;
+    }
+    i += 1;
+  }
+  return spans;
+}
+
+/** Whether offset `at` falls inside one of `spans` (sorted, non-overlapping). */
+export function insideSpans(spans: ReadonlyArray<[number, number]>, at: number): boolean {
+  let lo = 0;
+  let hi = spans.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const [a, b] = spans[mid];
+    if (at < a) hi = mid - 1;
+    else if (at >= b) lo = mid + 1;
+    else return true;
+  }
+  return false;
+}
+
 export function assertions(body: string): string[] {
   const out: string[] = [];
   let covered = 0;
+  const strings = literalSpans(body);
   const start = /\b(expect|assert)(\.\w+)?\s*\(/g;
   const chain = new RegExp(`\\.\\s*(${IDENT})`, 'y');
   for (const m of body.matchAll(start)) {
     const at = m.index ?? 0;
     if (at < covered) continue; // nested helper inside an assertion already captured
+    if (insideSpans(strings, at)) continue; // text inside a string or template literal is not code
     if (at) {
       const prev = body[at - 1];
       if (ALNUM.test(prev) || prev === '_' || prev === '$' || prev === '.') continue;
@@ -184,6 +219,7 @@ export function gateAliases(src: string): Map<string, [string, string]> {
 
 export function extract(srcRaw: string): ExtractedCase[] {
   const src = maskComments(srcRaw);
+  const strings = literalSpans(src);
   const aliases = gateAliases(src);
   const names = ['describe', 'it', 'test', ...[...aliases.keys()].map(escapeRegExp)].join('|');
   const call = new RegExp(
@@ -201,16 +237,19 @@ export function extract(srcRaw: string): ExtractedCase[] {
   for (const m of src.matchAll(pwDescribe)) {
     const mod = m[2] ?? null;
     const at = m.index ?? 0;
+    if (insideSpans(strings, at)) continue;
     addCall('describe', mod === 'skip' || mod === 'fixme' ? 'skip' : mod, at, at + m[0].length - 1);
   }
   for (const m of src.matchAll(ternary)) {
     const at = m.index ?? 0;
+    if (insideSpans(strings, at)) continue;
     addCall(m[2] === 'describe' ? 'describe' : 'it', null, at, at + m[0].length - 1, collapse(m[1]).trim());
   }
   for (const m of src.matchAll(call)) {
     const name = m[1];
     const mod = m[3] ?? null;
     const at = m.index ?? 0;
+    if (insideSpans(strings, at)) continue; // test-like text inside a string or template literal
     let kind: Call['kind'];
     let gate: string | null = null;
     if (name === 'describe' || name === 'it' || name === 'test') {
@@ -269,7 +308,7 @@ export function extract(srcRaw: string): ExtractedCase[] {
     const asserts = assertions(src.slice(c.start, c.end));
     const flagged: Array<[string, boolean]> = [
       ['dynamic_title', c.dynamic], ['parameterised', c.mod === 'each'], ['skipped', skipped],
-      ['only', c.mod === 'only'], ['conditional_gate', gates.length > 0], ['no_assertions', asserts.length === 0],
+      ['only', c.mod === 'only' || parents.some((d) => d.mod === 'only')], ['conditional_gate', gates.length > 0], ['no_assertions', asserts.length === 0],
     ];
     out.push({
       describePath: parents.map((d) => d.title || '<dynamic>'),
@@ -279,6 +318,7 @@ export function extract(srcRaw: string): ExtractedCase[] {
       assertions: asserts.slice(0, MAX_ASSERT),
       assertionsTruncated: asserts.length > MAX_ASSERT,
       line: countNewlines(src, c.start) + 1,
+      span: [c.start, c.end],
     });
   }
   return out;
@@ -295,6 +335,11 @@ function countNewlines(src: string, end: number): number {
  * line to the close of the first call parenthesis on or after it, comments masked, at most
  * BODY_CHARS characters.
  */
+/** The case's own call, from its first character to its closing parenthesis (comments masked), bounded. */
+export function bodyAt(srcRaw: string, span: readonly [number, number]): string {
+  return clip(maskComments(srcRaw).slice(span[0], span[1]), BODY_CHARS);
+}
+
 export function bodyOf(srcRaw: string, line: number): string {
   const src = maskComments(srcRaw);
   let start = 0;

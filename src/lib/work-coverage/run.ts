@@ -2,7 +2,7 @@
  * The coverage-shadow flow shared by `sift work coverage-shadow` and the opt-in shadow that
  * `sift work review` runs when SIFT_COVERAGE_SHADOW=1.
  */
-import {mkdir, writeFile} from 'node:fs/promises';
+import {chmod, mkdir, writeFile} from 'node:fs/promises';
 import {dirname, join} from 'node:path';
 import type {GitReader, PlanStep} from './bind.js';
 import {buildCoverageShadowPayload, type CoverageShadowPayload} from './payload.js';
@@ -55,7 +55,9 @@ export async function saveCoverageShadowPayload(
   at: Date = new Date(),
 ): Promise<void> {
   await mkdir(dirname(path), {recursive: true});
-  await writeFile(path, `${JSON.stringify({workItemId, savedAt: at.toISOString(), payload}, null, 2)}\n`, 'utf8');
+  // Saved payloads hold raw test bodies and assertions: owner-only permissions, also when overwriting.
+  await writeFile(path, `${JSON.stringify({workItemId, savedAt: at.toISOString(), payload}, null, 2)}\n`, {encoding: 'utf8', mode: 0o600});
+  await chmod(path, 0o600);
 }
 
 export async function runCoverageShadow(input: {

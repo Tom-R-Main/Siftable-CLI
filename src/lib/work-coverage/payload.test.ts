@@ -69,7 +69,7 @@ describe('buildCoverageShadowPayload', () => {
         flags: [],
         gates: [],
         assertions: ['expect(serialized).not.toContain(CREDENTIAL)'],
-        body: "  it('never echoes the credential', async () => {\n    expect(serialized).not.toContain(CREDENTIAL);\n  })",
+        body: "it('never echoes the credential', async () => {\n    expect(serialized).not.toContain(CREDENTIAL);\n  })",
       }],
     });
   });
@@ -141,3 +141,21 @@ describe('server bounds', () => {
     expect(built.payload.candidatesComplete).toBe(false);
   });
 });
+
+describe('exclusive and path-filtered selection', () => {
+  it('sends only the .only cases of a file that has them', async () => {
+    const src = "it.only('focused', () => { expect(1).toBe(1); });\nit('sibling', () => { expect(2).toBe(2); });\n";
+    const built = await buildCoverageShadowPayload({commit: COMMIT, planVersion: 1, git: stubGit({'exf-app/src/share.test.ts': src}),
+      steps: [step('npm test --workspace exf-app -- share')]});
+    expect(built.payload.candidates.map((c) => c.title)).toEqual(['focused']);
+  });
+
+  it('reads --testPathPattern (separate and = forms) as file patterns', async () => {
+    const src = "it('sends', () => { expect(1).toBe(1); });\n";
+    for (const cmd of ['npx jest --testPathPattern=share', 'npx jest --testPathPattern share']) {
+      const built = await buildCoverageShadowPayload({commit: COMMIT, planVersion: 1, git: stubGit({'exf-app/src/share.test.ts': src}), steps: [step(cmd)]});
+      expect(built.payload.candidates.map((c) => c.title)).toEqual(['sends']);
+    }
+  });
+});
+

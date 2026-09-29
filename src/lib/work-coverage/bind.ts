@@ -169,6 +169,17 @@ export function patterns(tokens: string[]): {patterns: string[]; names: string[]
       names.push(eq[2]);
       continue;
     }
+    // Jest path filters are file patterns, in separate or `=` form.
+    const pathEq = /^--testPathPatterns?=(.+)$/.exec(t);
+    if (pathEq) {
+      pats.push(pathEq[1]);
+      continue;
+    }
+    if ((t === '--testPathPattern' || t === '--testPathPatterns') && i + 1 < tokens.length) {
+      pats.push(tokens[i + 1]);
+      skip = true;
+      continue;
+    }
     if (VALUE_FLAGS.has(t)) {
       skip = true;
       continue;
@@ -198,9 +209,12 @@ export function classify(step: PlanStep): StepClass {
   if (cmd.includes('run-many') || cmd.includes('affected')) return {class: 'whole_target', projectDir: pdir};
   if (!pats.length) return {class: 'whole_target', projectDir: pdir, nameFilters: names};
   // In this repository `test:vitest` runs Vitest and every other `test`/`test:<name>` script runs Jest.
-  const runner: Runner = /vitest|vp test/.test(joined)
+  // Decide the runner from the command and its target, not from the file patterns it passes.
+  const patternSet = new Set(pats);
+  const target = tokens.filter((t) => !patternSet.has(t)).join(' ');
+  const runner: Runner = /vitest|vp test/.test(target)
     ? 'vitest'
-    : /(^|[\s:])(test(:[\w-]+)?|jest)(\s|$)/.test(joined) ? 'jest' : 'other';
+    : /(^|[\s:])(test(:[\w-]+)?|jest)(\s|$)/.test(target) ? 'jest' : 'other';
   return {class: 'patterned_test', projectDir: pdir, patterns: pats, nameFilters: names, runner};
 }
 

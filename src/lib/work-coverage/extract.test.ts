@@ -2,6 +2,7 @@
 // plus body-extraction cases for jev_v2_r2.py `body_of`.
 import {describe, expect, it} from 'vitest';
 import {BODY_CHARS, bodyOf, extract, type ExtractedCase} from './extract.js';
+import {bodyAt} from './extract.js';
 
 function byTitle(cases: ExtractedCase[]): Record<string, ExtractedCase> {
   return Object.fromEntries(cases.map((c) => [c.title, c]));
@@ -187,3 +188,32 @@ describe('extractor bounds and body', () => {
     expect(bodyOf(src, 1)).toHaveLength(BODY_CHARS);
   });
 });
+
+describe('review fixes: literals, .only, same-line bodies', () => {
+  it('does not treat test-like text inside strings or templates as tests or assertions', () => {
+    const src = [
+      "it('real', () => {",
+      "  const fixture = \"it('fake', () => { expect(x).toBe(1) })\";",
+      "  const tpl = `describe('also fake', () => {})`;",
+      "  expect(run(fixture)).toBe(1);",
+      "});",
+    ].join('\n');
+    const cases = extract(src);
+    expect(cases.map((c) => c.title)).toEqual(['real']);
+    expect(cases[0].assertions).toEqual(['expect(run(fixture)).toBe(1)']);
+  });
+
+  it('marks cases under describe.only as only', () => {
+    const cases = extract("describe.only('focus', () => { it('a', () => { expect(1).toBe(1); }); });\nit('b', () => { expect(2).toBe(2); });");
+    expect(cases.find((c) => c.title === 'a')!.flags).toContain('only');
+    expect(cases.find((c) => c.title === 'b')!.flags).not.toContain('only');
+  });
+
+  it('gives each same-line case its own body', () => {
+    const src = "setup(); it('one', () => { expect(1).toBe(1); }); it('two', () => { expect(2).toBe(2); });";
+    const [one, two] = extract(src);
+    expect(bodyAt(src, one.span)).toBe("it('one', () => { expect(1).toBe(1); })");
+    expect(bodyAt(src, two.span)).toBe("it('two', () => { expect(2).toBe(2); })");
+  });
+});
+

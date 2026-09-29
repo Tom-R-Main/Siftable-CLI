@@ -186,3 +186,11 @@ describe('Jest selection applies to every Jest target and to explicit paths', ()
   });
 });
 
+describe('runner detection ignores file patterns', () => {
+  it('keeps a Jest target Jest when it names a .vitest. file, so the file is excluded', () => {
+    const c = classify(shell('npm exec -- nx run @execufunction/exf-app:test:int -- src/routes/modelConnections.vitest.test.ts'));
+    expect(c).toMatchObject({class: 'patterned_test', runner: 'jest'});
+    expect(bindPlan([shell('npm exec -- nx run @execufunction/exf-app:test:int -- src/routes/modelConnections.vitest.test.ts')], FILES).testFiles).toEqual([]);
+  });
+});
+
