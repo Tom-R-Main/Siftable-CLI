@@ -164,6 +164,11 @@ export function patterns(tokens: string[]): {patterns: string[]; names: string[]
       skip = true;
       continue;
     }
+    const eq = /^(-t|--testNamePattern|--grep|-g)=(.*)$/.exec(t);
+    if (eq) {
+      names.push(eq[2]);
+      continue;
+    }
     if (VALUE_FLAGS.has(t)) {
       skip = true;
       continue;
@@ -201,10 +206,9 @@ export function classify(step: PlanStep): StepClass {
 export function resolve(pats: string[], pdir: string | null, files: readonly string[], runner: Runner = 'other'): string[] {
   const all = new Set(files);
   let tests = files.filter((f) => TEST_FILE.test(f));
-  if (runner === 'vitest') {
-    const vitestOnly = tests.filter((f) => f.includes('.vitest.'));
-    tests = vitestOnly.length ? vitestOnly : tests;
-  } else if (runner === 'jest') {
+  // Vitest projects in this repository include *.test.ts as well as *.vitest.ts, so a Vitest step keeps
+  // every test file; Jest projects exclude *.vitest.* files.
+  if (runner === 'jest') {
     tests = tests.filter((f) => !f.includes('.vitest.'));
   }
   const out = new Set<string>();

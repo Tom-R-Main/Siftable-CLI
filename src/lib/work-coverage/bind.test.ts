@@ -101,11 +101,12 @@ describe('resolve', () => {
 
   it('filters by runner-specific suffix', () => {
     expect(resolve(['modelConnections'], 'exf-app', FILES, 'jest')).toEqual(['exf-app/src/routes/modelConnections.test.ts']);
-    expect(resolve(['modelConnections'], 'exf-app', FILES, 'vitest')).toEqual(['exf-app/src/routes/modelConnections.vitest.test.ts']);
-    // The .vitest. preference is checkout-wide: with none anywhere, Vitest falls back to every test file.
-    expect(resolve(['billing'], 'exf-app', FILES, 'vitest')).toEqual([]);
-    const noVitest = FILES.filter((f) => !f.includes('.vitest.'));
-    expect(resolve(['billing'], 'exf-app', noVitest, 'vitest')).toEqual(['exf-app/src/services/billing.test.ts']);
+    // Vitest projects here run *.test.ts as well as *.vitest.ts, so a Vitest step keeps both.
+    expect(resolve(['modelConnections'], 'exf-app', FILES, 'vitest')).toEqual([
+      'exf-app/src/routes/modelConnections.test.ts',
+      'exf-app/src/routes/modelConnections.vitest.test.ts',
+    ]);
+    expect(resolve(['billing'], 'exf-app', FILES, 'vitest')).toEqual(['exf-app/src/services/billing.test.ts']);
     expect(resolve(['Home'], 'exf-app/web', FILES, 'jest')).toEqual(['exf-app/web/src/views/Home.test.tsx']);
   });
 });
@@ -147,5 +148,15 @@ describe('bindPlan', () => {
     const long = `npm exec -- nx run @execufunction/web:test ${'x'.repeat(200)}`;
     const b = bindPlan([shell(long)], FILES);
     expect(b.incompleteReasons[0]).toBe(`pattern resolved to no file: ${long.slice(0, 120)}`);
+  });
+});
+
+describe('test-name filter forms', () => {
+  it('reads separate and equals forms of -t, --testNamePattern and --grep', () => {
+    expect(patterns(shlexSplit("npx jest -- share -t 'sends email'")).names).toEqual(['sends email']);
+    expect(patterns(shlexSplit('npx jest -- share --testNamePattern=sends')).names).toEqual(['sends']);
+    expect(patterns(shlexSplit('npx vitest run share -t=revokes')).names).toEqual(['revokes']);
+    expect(patterns(shlexSplit('npx playwright test journey --grep=@smoke')).names).toEqual(['@smoke']);
+    expect(patterns(shlexSplit('npx jest -- share --testNamePattern=sends')).patterns).toEqual(['share']);
   });
 });

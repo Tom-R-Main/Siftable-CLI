@@ -9,7 +9,7 @@ import {ASSERT_CHARS, BODY_CHARS, MAX_ASSERT, bodyOf, clip, extract} from './ext
 export const SCHEMA_VERSION = 1;
 export const MAX_CANDIDATES = 150;
 /** Server-side schema bounds (exf-app workCoverageShadowService); the CLI never sends a payload outside them. */
-export const BOUNDS = {file: 500, title: 1000, describeItems: 20, describeChars: 500, gates: 10, gateChars: 400, flags: 10, flagChars: 40, reasons: 50, reasonChars: 300} as const;
+export const BOUNDS = {file: 300, title: 500, describeItems: 10, describeChars: 200, gates: 5, gateChars: 200, flags: 10, flagChars: 40, reasons: 50, reasonChars: 300} as const;
 const ELLIPSIS = ' …';
 
 export type CoverageCandidate = {
