@@ -55,7 +55,7 @@ export default class WorkCoverageShadow extends BaseCommand {
   private printSummary(summary: CoverageShadowSummary, outcome: string): void {
     if (this.jsonEnabled()) return;
     this.log(`Commit ${summary.commit}, plan v${summary.planVersion}`);
-    this.log(`Candidates ${summary.candidates} (skipped cases left out: ${summary.skippedCases}) from ${summary.files.length} file(s)`);
+    this.log(`Candidates ${summary.candidates} (skipped cases left out: ${summary.skippedCases}; not selected by a test-name filter: ${summary.filteredCases}) from ${summary.files.length} file(s)`);
     for (const file of summary.files) this.log(`  ${file}`);
     this.log(summary.candidatesComplete ? 'Candidate list complete' : 'Candidate list incomplete:');
     for (const reason of summary.incompleteReasons) this.log(`  ${reason}`);

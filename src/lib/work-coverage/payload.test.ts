@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {describe, expect, it} from 'vitest';
 import type {GitReader, PlanStep} from './bind.js';
-import {boundAssertion, buildCoverageShadowPayload, caseId, MAX_CANDIDATES} from './payload.js';
+import {BOUNDS, boundAssertion, buildCoverageShadowPayload, caseId, MAX_CANDIDATES, selectedByNameFilters} from './payload.js';
 
 const COMMIT = 'a'.repeat(40);
 
@@ -102,5 +102,40 @@ describe('buildCoverageShadowPayload', () => {
       commit: COMMIT, planVersion: 1, git: stubGit({'pkg/a.test.ts': cases.join('\n')}), steps: [step('npx jest pkg/a.test.ts')],
     });
     expect(built.tooBroad).toBe(false);
+  });
+});
+
+describe('test-name filters', () => {
+  it('matches the full name as a regular expression, keeps unknowable titles, and treats no filter as run-all', () => {
+    expect(selectedByNameFilters('share dialog sends email', 'sends email', [['sends']])).toBe(true);
+    expect(selectedByNameFilters('share dialog revokes link', 'revokes link', [['sends']])).toBe(false);
+    expect(selectedByNameFilters('share handles %s', 'handles %s', [['sends']])).toBe(true);
+    expect(selectedByNameFilters('x', 'x', [['nomatch'], []])).toBe(true);
+    expect(selectedByNameFilters('a (b', 'a (b', [['a (b']])).toBe(true);
+    expect(selectedByNameFilters('anything', 'anything', [])).toBe(true);
+  });
+
+  it('leaves out cases the step would not run', async () => {
+    const src = "describe('share', () => {\n  it('sends email', () => { expect(a).toBe(1); });\n  it('revokes link', () => { expect(b).toBe(1); });\n});\n";
+    const built = await buildCoverageShadowPayload({
+      commit: COMMIT, planVersion: 1, git: stubGit({'exf-app/src/share.test.ts': src}),
+      steps: [step("npm test --workspace exf-app -- share -t 'sends'")],
+    });
+    expect(built.payload.candidates.map((c) => c.title)).toEqual(['sends email']);
+    expect(built.filteredCases).toBe(1);
+  });
+});
+
+describe('server bounds', () => {
+  it('clips titles, describe paths, gates and incomplete reasons to the API schema', async () => {
+    const long = 'y'.repeat(1500);
+    const src = `describe('${'d'.repeat(700)}', () => {\n  it('${long}', () => { expect(a).toBe(1); });\n});\n`;
+    const steps = [step('npm test --workspace exf-app -- share'), ...Array.from({length: 60}, (_, i) => step(`npm run build --workspace exf-app-${i} && nx run-many -t test`))];
+    const built = await buildCoverageShadowPayload({commit: COMMIT, planVersion: 1, git: stubGit({'exf-app/src/share.test.ts': src}), steps});
+    const c = built.payload.candidates[0];
+    expect(c.title.length).toBeLessThanOrEqual(BOUNDS.title);
+    expect(c.describePath[0].length).toBeLessThanOrEqual(BOUNDS.describeChars);
+    expect(built.payload.incompleteReasons.length).toBeLessThanOrEqual(BOUNDS.reasons);
+    expect(built.payload.candidatesComplete).toBe(false);
   });
 });

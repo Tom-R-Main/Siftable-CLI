@@ -20,6 +20,7 @@ export type CoverageShadowSummary = {
   planVersion: number;
   candidates: number;
   skippedCases: number;
+  filteredCases: number;
   files: string[];
   candidatesComplete: boolean;
   incompleteReasons: string[];
@@ -83,6 +84,7 @@ export async function runCoverageShadow(input: {
     planVersion,
     candidates: built.payload.candidates.length,
     skippedCases: built.skippedCases,
+    filteredCases: built.filteredCases,
     files: built.binding.testFiles,
     candidatesComplete: built.payload.candidatesComplete,
     incompleteReasons: built.payload.incompleteReasons,

@@ -8,6 +8,8 @@ import {ASSERT_CHARS, BODY_CHARS, MAX_ASSERT, bodyOf, clip, extract} from './ext
 
 export const SCHEMA_VERSION = 1;
 export const MAX_CANDIDATES = 150;
+/** Server-side schema bounds (exf-app workCoverageShadowService); the CLI never sends a payload outside them. */
+export const BOUNDS = {file: 500, title: 1000, describeItems: 20, describeChars: 500, gates: 10, gateChars: 400, flags: 10, flagChars: 40, reasons: 50, reasonChars: 300} as const;
 const ELLIPSIS = ' …';
 
 export type CoverageCandidate = {
@@ -36,6 +38,8 @@ export type CoverageShadowBuild = {
   binding: PlanBinding;
   /** Unconditionally skipped cases found and left out of the payload. */
   skippedCases: number;
+  /** Cases no step would run because of its test-name filter. */
+  filteredCases: number;
   tooBroad: boolean;
 };
 
@@ -55,6 +59,26 @@ export function boundAssertion(text: string): string {
   return clip(base, ASSERT_CHARS - ELLIPSIS.length) + ELLIPSIS;
 }
 
+/**
+ * Whether a case is run by at least one step that resolves its file. Jest `-t`/`--testNamePattern` and
+ * Vitest `-t` match a regular expression against the full name (describe path and title joined by
+ * spaces). A step without a name filter runs every case in the file. Titles whose runtime name is not
+ * known statically (printf placeholders, dynamic titles) are kept.
+ */
+export function selectedByNameFilters(fullName: string, title: string, filterSets: ReadonlyArray<readonly string[]>): boolean {
+  if (!filterSets.length) return true;
+  if (/%[sdifjoO#%]|\$\{|<dynamic>/.test(title)) return true;
+  return filterSets.some((filters) => filters.length === 0 || filters.some((f) => {
+    try {
+      return new RegExp(f).test(fullName);
+    } catch {
+      return fullName.includes(f);
+    }
+  }));
+}
+
+const clipAll = (items: readonly string[], n: number, chars: number) => items.slice(0, n).map((x) => clip(x, chars));
+
 export async function buildCoverageShadowPayload(input: {
   commit: string;
   planVersion: number;
@@ -63,23 +87,43 @@ export async function buildCoverageShadowPayload(input: {
 }): Promise<CoverageShadowBuild> {
   const files = await input.git.listFiles(input.commit);
   const binding = bindPlan(input.steps, files);
+  // Name-filter sets of the steps that resolve each file.
+  const filtersByFile = new Map<string, string[][]>();
+  for (const step of binding.steps) {
+    if (step.class !== 'patterned_test') continue;
+    for (const f of step.resolved ?? []) {
+      const sets = filtersByFile.get(f) ?? [];
+      sets.push(step.nameFilters);
+      filtersByFile.set(f, sets);
+    }
+  }
   const candidates: CoverageCandidate[] = [];
   let skippedCases = 0;
+  let filteredCases = 0;
+  const reasons = [...binding.incompleteReasons];
   for (const file of binding.testFiles) {
+    if (file.length > BOUNDS.file) {
+      reasons.push(`test file path over ${BOUNDS.file} characters: ${clip(file, 120)}`);
+      continue;
+    }
     const src = await input.git.show(input.commit, file);
     for (const c of extract(src)) {
       if (c.flags.includes('skipped')) {
         skippedCases += 1;
         continue;
       }
+      if (!selectedByNameFilters([...c.describePath, c.title].join(' '), c.title, filtersByFile.get(file) ?? [])) {
+        filteredCases += 1;
+        continue;
+      }
       candidates.push({
         caseId: caseId(input.commit, file, c.line, c.title),
         file,
         line: c.line,
-        describePath: c.describePath,
-        title: c.title,
-        flags: c.flags,
-        gates: c.gates,
+        describePath: clipAll(c.describePath, BOUNDS.describeItems, BOUNDS.describeChars),
+        title: clip(c.title, BOUNDS.title),
+        flags: clipAll(c.flags, BOUNDS.flags, BOUNDS.flagChars),
+        gates: clipAll(c.gates, BOUNDS.gates, BOUNDS.gateChars),
         assertions: c.assertions.slice(0, MAX_ASSERT).map(boundAssertion),
         body: clip(bodyOf(src, c.line), BODY_CHARS),
       });
@@ -90,12 +134,13 @@ export async function buildCoverageShadowPayload(input: {
       schemaVersion: SCHEMA_VERSION,
       commit: input.commit,
       planVersion: input.planVersion,
-      candidatesComplete: binding.candidatesComplete,
-      incompleteReasons: binding.incompleteReasons,
+      candidatesComplete: reasons.length === 0,
+      incompleteReasons: clipAll(reasons, BOUNDS.reasons, BOUNDS.reasonChars),
       candidates,
     },
     binding,
     skippedCases,
+    filteredCases,
     tooBroad: candidates.length > MAX_CANDIDATES,
   };
 }
