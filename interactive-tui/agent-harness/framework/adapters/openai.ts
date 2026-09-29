@@ -339,9 +339,14 @@ export function createChatCompletionsAdapter(config: ChatCompletionsConfig): AIA
         body.temperature = 0.7;
       }
 
-      if (reasoningEffort && reasoningEffort !== "none") {
-        if (config.reasoningFormat === "openrouter") body.reasoning = { effort: reasoningEffort };
-        else body.reasoning_effort = reasoningEffort;
+      // These Claude models have no none/minimal level; the ReasoningEffort
+      // contract maps legacy none/minimal selections to low.
+      const effectiveEffort = adaptiveOnlyClaude && (!reasoningEffort || reasoningEffort === "none" || reasoningEffort === "minimal")
+        ? (reasoningEffort ? "low" : undefined)
+        : reasoningEffort;
+      if (effectiveEffort && effectiveEffort !== "none") {
+        if (config.reasoningFormat === "openrouter") body.reasoning = { effort: effectiveEffort };
+        else body.reasoning_effort = effectiveEffort;
       }
 
       // Tool choice support

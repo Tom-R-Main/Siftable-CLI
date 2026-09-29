@@ -104,6 +104,24 @@ describe("request bodies", () => {
     expect(request).not.toHaveProperty("tool_choice");
   });
 
+  it("maps legacy none and minimal efforts to low for the current Claude models on OpenRouter", async () => {
+    for (const reasoningEffort of ["none", "minimal"] as const) {
+      let request: Record<string, unknown> = {};
+      const client = createOpenRouterAdapter({
+        apiKey: "test",
+        model: "anthropic/claude-sonnet-5.5",
+        reasoningEffort,
+        fetchImpl: (async (_url, init) => {
+          request = JSON.parse(String(init?.body));
+          return json(completion);
+        }) as typeof fetch,
+      });
+      await client.chat(messages, registry);
+      expect(request.reasoning).toEqual({ effort: "low" });
+      expect(request).not.toHaveProperty("temperature");
+    }
+  });
+
   it("keeps the existing temperature for other OpenRouter models", async () => {
     let request: Record<string, unknown> = {};
     const client = createOpenRouterAdapter({

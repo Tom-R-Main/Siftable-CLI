@@ -397,6 +397,9 @@ describe('model catalog + reasoning effort', () => {
     expect(findModelChoice('openrouter/anthropic/claude-opus-5')?.id).toBe('openrouter/anthropic/claude-opus-5.5');
     expect(findModelChoice('openrouter/anthropic/claude-opus-4.8')?.id).toBe('openrouter/anthropic/claude-opus-5.5');
     expect(findModelChoice('openrouter/anthropic/claude-sonnet-4.6')?.id).toBe('openrouter/anthropic/claude-sonnet-5.5');
+    for (const retired of ['openrouter/anthropic/claude-sonnet-5', 'openrouter/anthropic/claude-sonnet-4.5', 'openrouter/anthropic/claude-sonnet-4']) {
+      expect(findModelChoice(retired)?.id).toBe('openrouter/anthropic/claude-sonnet-5.5');
+    }
     expect(findModelChoice('claude-fable-5-1')?.id).toBe('anthropic/claude-fable-5-1');
     // Every Claude alias names exactly one door: an alias never shadows another
     // Claude entry's id or model string, and no alias repeats across entries.
