@@ -1,6 +1,8 @@
 import {Args, Flags} from '@oclif/core';
 import type {TransitionWorkItemInput} from '@siftable/mcp-server/dist/exfClient.js';
-import {BaseCommand} from './base-command.js';
+import {BaseCommand, type ApiContextFlags} from './base-command.js';
+import {createGitReader, type GitReader} from './work-coverage/bind.js';
+import {autoSavePath, runCoverageShadow} from './work-coverage/run.js';
 import {
   deleteWorkLeaseSession,
   readWorkLeaseSession,
@@ -135,6 +137,37 @@ export abstract class WorkActionCommand extends BaseCommand {
     if (!this.jsonEnabled()) {
       this.log(`Work item ${action}: ${workItem.id}`);
     }
+    if (action === 'review') {
+      await this.runReviewCoverageShadow(
+        typeof workItem.id === 'string' && workItem.id ? workItem.id : args.id,
+        session ? {...flags, workspace: session.workspaceId} : flags,
+      );
+    }
     return redactLifecycleResponse(response.data);
+  }
+
+  protected coverageShadowGitReader(): GitReader {
+    return createGitReader(process.cwd());
+  }
+
+  /**
+   * Opt-in (SIFT_COVERAGE_SHADOW=1) Jev coverage shadow after a successful review transition.
+   * Best effort: it never changes the review result, exit code or output; a failure writes one
+   * warning line to stderr.
+   */
+  protected async runReviewCoverageShadow(workItemId: string, flags: ApiContextFlags): Promise<void> {
+    if (process.env.SIFT_COVERAGE_SHADOW !== '1') return;
+    try {
+      const saveDir = process.env.SIFT_COVERAGE_SHADOW_SAVE_DIR;
+      await runCoverageShadow({
+        workItemId,
+        git: this.coverageShadowGitReader(),
+        savePath: saveDir ? autoSavePath(saveDir, workItemId) : undefined,
+        request: (path, options) => (options ? this.apiRequest(flags, path, options) : this.apiRequest(flags, path)),
+      });
+    } catch (error) {
+      const message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').trim();
+      process.stderr.write(`Warning: coverage shadow did not run: ${message}\n`);
+    }
   }
 }

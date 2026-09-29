@@ -17603,6 +17603,93 @@
         "complete.js"
       ]
     },
+    "work:coverage-shadow": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Work item ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Post the test cases a work item's verification plan runs, for Jev coverage shadow evaluation",
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "commit": {
+          "description": "Commit to read test files at (default: HEAD of this checkout)",
+          "name": "commit",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "dry-run": {
+          "description": "Print the candidate summary and payload size without posting",
+          "name": "dry-run",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "save": {
+          "description": "Also write the built payload as JSON to this file (with or without --dry-run)",
+          "name": "save",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "work:coverage-shadow",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "work",
+        "coverage-shadow.js"
+      ]
+    },
     "work:create": {
       "aliases": [],
       "args": {},
