@@ -46,7 +46,7 @@ describe('model favorites', () => {
 
   it('floats starred models first in catalog order', () => {
     const nano = 'openrouter/openai/gpt-5.4-nano';
-    const opus = 'openrouter/anthropic/claude-opus-5';
+    const opus = 'openrouter/anthropic/claude-opus-5.5';
     jest.mocked(prefs.loadPrefs).mockReturnValue({ favorites: [nano, opus] });
     const ordered = pickerModelChoices();
     // Starred float first in catalog order (Opus precedes Nano), not starring order.

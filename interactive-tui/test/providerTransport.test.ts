@@ -121,7 +121,7 @@ describe("provider transport reliability", () => {
       { factory: createOpenAIAdapter, body: { id: "r1", output: [{ type: "message", content: [{ type: "output_text", text: "done" }] }] }, capField: "max_output_tokens" },
       { factory: createXAIAdapter, body: { id: "r1", output: [{ type: "message", content: [{ type: "output_text", text: "done" }] }] }, capField: "max_output_tokens" },
       { factory: createGeminiAdapter, body: { candidates: [{ content: { parts: [{ text: "done" }] } }] }, capField: "generationConfig" },
-      { factory: createAnthropicAdapter, body: { id: "a1", type: "message", role: "assistant", model: "claude-opus-5", content: [{ type: "text", text: "done" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } }, capField: "max_tokens" },
+      { factory: createAnthropicAdapter, body: { id: "a1", type: "message", role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "done" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } }, capField: "max_tokens" },
     ];
     for (const { factory, body, capField } of cases) {
       for (const maxOutputTokens of [0, -1, 1.2, NaN, Infinity, 131073]) expect(() => factory({ apiKey: "test", maxOutputTokens })).toThrow("maxOutputTokens");
@@ -395,7 +395,7 @@ describe("provider transport reliability", () => {
     const client = createAnthropicAdapter({ apiKey: "test", onEvent: event => events.push(event), retry: { baseDelayMs: 0 }, fetchImpl: (async () => {
       calls++;
       if (calls === 1) return json({ type: "error", error: { type: "overloaded_error", message: "busy" } }, 503);
-      return json({ id: "a1", type: "message", role: "assistant", model: "claude-opus-5", content: [{ type: "text", text: "done" }], stop_reason: "end_turn", usage: { input_tokens: 2, output_tokens: 1 } });
+      return json({ id: "a1", type: "message", role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "done" }], stop_reason: "end_turn", usage: { input_tokens: 2, output_tokens: 1 } });
     }) as typeof fetch });
     const result = await client.chat(messages, registry, { stream: false });
     expect(result.text).toBe("done");

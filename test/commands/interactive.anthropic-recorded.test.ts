@@ -29,18 +29,21 @@ const weatherRegistry = {
 } as any;
 
 describe('Anthropic adapter (recorded)', () => {
-  it('promotes a persisted pre-Opus-5 selection before calling Anthropic', async () => {
-    const cassette = createCassetteFetch('anthropic-text-answer');
-    const adapter = createAnthropicAdapter({apiKey: 'test-key', model: 'claude-opus-4-8', fetchImpl: cassette.fetch});
+  it.each(['claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-20260723'])(
+    'promotes a persisted retired Opus selection (%s) to Opus 5.5 before calling Anthropic',
+    async (persisted) => {
+      const cassette = createCassetteFetch('anthropic-text-answer');
+      const adapter = createAnthropicAdapter({apiKey: 'test-key', model: persisted, fetchImpl: cassette.fetch});
 
-    await adapter.chat([{role: 'user', content: 'What is the capital of France? Answer in one word.'}], emptyRegistry);
+      await adapter.chat([{role: 'user', content: 'What is the capital of France? Answer in one word.'}], emptyRegistry);
 
-    expect((cassette.sent[0].body as any).model).toBe('claude-opus-5');
-  });
+      expect((cassette.sent[0].body as any).model).toBe('claude-opus-5-5');
+    },
+  );
 
   it('replays a plain text answer and maps it to AdapterResponse.text', async () => {
     const cassette = createCassetteFetch('anthropic-text-answer');
-    const adapter = createAnthropicAdapter({apiKey: 'test-key', model: 'claude-opus-5', fetchImpl: cassette.fetch});
+    const adapter = createAnthropicAdapter({apiKey: 'test-key', model: 'claude-opus-5-5', fetchImpl: cassette.fetch});
 
     const result = await adapter.chat(
       [{role: 'user', content: 'What is the capital of France? Answer in one word.'}],
@@ -50,14 +53,16 @@ describe('Anthropic adapter (recorded)', () => {
     expect(result.text).toBe('Paris.');
     expect(result.toolCall).toBeUndefined();
 
-    // Opus 5 uses adaptive thinking even when the caller omits effort.
+    // Opus 5.5 uses adaptive thinking and its medium default when the caller
+    // omits effort. (The recorded response itself predates Opus 5.5.)
     expect(cassette.sent).toHaveLength(1);
     const body = cassette.sent[0].body as any;
     expect(cassette.sent[0].url).toBe('https://api.anthropic.com/v1/messages');
-    expect(body.model).toBe('claude-opus-5');
+    expect(body.model).toBe('claude-opus-5-5');
     expect(body.max_tokens).toBe(16000);
     expect(body.thinking).toEqual({type: 'adaptive'});
-    expect(body.output_config).toEqual({effort: 'high'});
+    expect(body.output_config).toEqual({effort: 'medium'});
+    expect(body).not.toHaveProperty('temperature');
     expect(body.tools).toEqual([]);
   });
 
@@ -65,7 +70,7 @@ describe('Anthropic adapter (recorded)', () => {
     const cassette = createCassetteFetch('anthropic-tool-use');
     const adapter = createAnthropicAdapter({
       apiKey: 'test-key',
-      model: 'claude-opus-5',
+      model: 'claude-opus-5-5',
       reasoningEffort: 'medium',
       fetchImpl: cassette.fetch,
     });
@@ -91,7 +96,7 @@ describe('Anthropic adapter (recorded)', () => {
 describe('cassette transport behavior', () => {
   it('throws when the cassette is exhausted (more requests than recorded)', async () => {
     const cassette = createCassetteFetch('anthropic-text-answer');
-    const adapter = createAnthropicAdapter({apiKey: 'k', model: 'claude-opus-5', fetchImpl: cassette.fetch});
+    const adapter = createAnthropicAdapter({apiKey: 'k', model: 'claude-opus-5-5', fetchImpl: cassette.fetch});
     await adapter.chat([{role: 'user', content: 'first — consumes the only interaction'}], emptyRegistry);
     const error = await adapter
       .chat([{role: 'user', content: 'second — nothing left to replay'}], emptyRegistry)

@@ -55,7 +55,7 @@ describe("resolveContextWindow", () => {
   it("resolves family estimates with an honest source tag", () => {
     expect(resolveContextWindow("google/gemini-3.8-flash"))
       .toEqual({ window: 1_000_000, source: "family" });
-    expect(resolveContextWindow("anthropic/claude-opus-5"))
+    expect(resolveContextWindow("anthropic/claude-haiku-4.5"))
       .toEqual({ window: 200_000, source: "family" });
     expect(resolveContextWindow("deepseek/deepseek-v3.2"))
       .toEqual({ window: 128_000, source: "family" });

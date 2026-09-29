@@ -28,24 +28,25 @@ const completion = { id: "r1", model: "served", choices: [{ finish_reason: "stop
 
 describe("normalizeClaudeModel", () => {
   it("passes the current Claude ids through", () => {
-    for (const id of ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-opus-5", "claude-haiku-4-5"]) {
+    for (const id of ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-haiku-4-5"]) {
       expect(normalizeClaudeModel(id)).toBe(id);
     }
   });
 
-  it("routes retired Sonnets to Sonnet 5.5 and older Opus ids to Opus 5", () => {
+  it("routes retired Sonnets to Sonnet 5.5 and every older Opus id to Opus 5.5", () => {
     for (const id of ["claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5-20250929", "claude-sonnet-4-20250514"]) {
       expect(normalizeClaudeModel(id)).toBe("claude-sonnet-5-5");
     }
-    expect(normalizeClaudeModel("claude-opus-4-8")).toBe("claude-opus-5");
-    expect(normalizeClaudeModel(undefined)).toBe("claude-opus-5");
+    for (const id of ["claude-opus-5", "claude-opus-5-20260723", "claude-opus-4-8", "claude-opus-4-1-20250805"]) {
+      expect(normalizeClaudeModel(id)).toBe("claude-opus-5-5");
+    }
+    expect(normalizeClaudeModel(undefined)).toBe("claude-opus-5-5");
   });
 });
 
 describe("normalizeClaudeEffort", () => {
   it("defaults Opus 5.5 to medium and the other Claude models to high", () => {
     expect(normalizeClaudeEffort("claude-opus-5-5")).toBe("medium");
-    expect(normalizeClaudeEffort("claude-opus-5")).toBe("high");
     expect(normalizeClaudeEffort("claude-sonnet-5-5")).toBe("high");
     expect(normalizeClaudeEffort("claude-fable-5-1")).toBe("high");
   });

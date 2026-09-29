@@ -27,7 +27,7 @@ export type ChatContent = string | ContentPart[];
  * Reasoning effort levels, normalized across providers.
  *
  * - OpenAI / OpenRouter / Codex map these straight to their `effort` field.
- * - Claude (Fable 5.1, Opus 5.5, Opus 5, Sonnet 5.5) maps these to
+ * - Claude (Fable 5.1, Opus 5.5, Sonnet 5.5) maps these to
  *   `output_config.effort`; legacy none/minimal selections normalize to low
  *   so adaptive thinking remains enabled. An omitted effort uses the model
  *   default: medium on Opus 5.5, high on the others.

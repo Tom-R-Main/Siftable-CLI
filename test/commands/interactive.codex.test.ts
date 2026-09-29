@@ -350,11 +350,24 @@ describe('model catalog + reasoning effort', () => {
   });
 
   it('resolves both Opus doors by alias', () => {
-    // Door A — via OpenRouter.
-    expect(findModelChoice('opus')).toMatchObject({
-      provider: 'openrouter',
-      model: 'anthropic/claude-opus-5',
-    });
+    // Door A — via OpenRouter. Opus 5 is retired; its aliases and saved ids
+    // resolve to Opus 5.5.
+    for (const alias of [
+      'opus',
+      'claude',
+      'openrouter',
+      'claude-opus-5',
+      'anthropic/claude-opus-5',
+      'openrouter/anthropic/claude-opus-5',
+      'claude-opus-4.8',
+    ]) {
+      expect(findModelChoice(alias)).toMatchObject({
+        provider: 'openrouter',
+        model: 'anthropic/claude-opus-5.5',
+        defaultEffort: 'medium',
+      });
+    }
+    expect(INTERACTIVE_MODEL_CHOICES.some((choice) => /claude-opus-5$/.test(choice.model))).toBe(false);
     // Retired Sonnet selections resolve to the current Sonnet rather than
     // resurrecting an obsolete catalog option.
     for (const alias of ['sonnet', 'claude-sonnet-5', 'claude-sonnet-4.6', 'claude-sonnet-4-5', 'claude-sonnet-4']) {
@@ -364,14 +377,15 @@ describe('model catalog + reasoning effort', () => {
         defaultEffort: 'high',
       });
     }
-    expect(findModelChoice('anthropic')).toMatchObject({model: 'claude-opus-5'});
+    expect(findModelChoice('anthropic')).toMatchObject({model: 'claude-opus-5-5'});
     // Door B — direct Anthropic API (/claude-api).
-    const direct = findModelChoice('claude-api');
-    expect(direct).toMatchObject({
-      provider: 'anthropic',
-      model: 'claude-opus-5',
-      auth: 'anthropic',
-    });
+    for (const alias of ['claude-api', 'opus-direct', 'anthropic-opus']) {
+      expect(findModelChoice(alias)).toMatchObject({
+        provider: 'anthropic',
+        model: 'claude-opus-5-5',
+        auth: 'anthropic',
+      });
+    }
   });
 
   it('resolves the current Claude models with their effort defaults', () => {
@@ -609,7 +623,7 @@ describe('model catalog + reasoning effort', () => {
   it('gates the direct-Anthropic door behind an API key instead of failing a turn', async () => {
     const prev = process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
-    const config = jest.fn(async () => ({provider: 'anthropic', model: 'claude-opus-5'}));
+    const config = jest.fn(async () => ({provider: 'anthropic', model: 'claude-opus-5-5'}));
     const {ctx, messages} = buildCtx({config});
     await applyModelChoice(ctx, findModelChoice('claude-api')!, 'high');
     expect(config).not.toHaveBeenCalled();

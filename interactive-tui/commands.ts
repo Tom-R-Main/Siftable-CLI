@@ -183,7 +183,7 @@ export interface ExplorerBudgetChoice {
 }
 
 // GPT-5.6 Codex models add `max`; older gpt-5.x OpenRouter models expose
-// low/med/high/xhigh. Claude Fable 5.1, Opus 5.5, Opus 5, and Sonnet 5.5
+// low/med/high/xhigh. Claude Fable 5.1, Opus 5.5, and Sonnet 5.5
 // expose the full adaptive-effort ladder; thinking cannot be disabled.
 const GPT56_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const GPT5_EFFORTS = ["low", "medium", "high", "xhigh"];
@@ -243,38 +243,53 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     defaultEffort: "medium",
   },
   {
-    // Door A: Opus 5 via OpenRouter — rides the OpenRouter `reasoning` wiring.
-    id: "openrouter/anthropic/claude-opus-5",
+    // Door A: Opus 5.5 via OpenRouter, riding the OpenRouter `reasoning` wiring.
+    // Opus 5 is retired; its ids, saved selections, and the family aliases
+    // resolve here. Opus 5.5 defaults to medium effort.
+    id: "openrouter/anthropic/claude-opus-5.5",
     provider: "openrouter",
-    model: "anthropic/claude-opus-5",
-    label: "Claude Opus 5",
+    model: "anthropic/claude-opus-5.5",
+    label: "Claude Opus 5.5",
     description: "OpenRouter · 💸 premium",
     aliases: [
       "opus",
       "claude",
       "claude-opus",
+      "opus-5.5",
+      "claude-opus-5.5",
+      "claude-opus-5-5",
       "claude-opus-5",
+      "anthropic/claude-opus-5",
+      "openrouter/anthropic/claude-opus-5",
       "claude-opus-4.8",
       "claude-opus-4.7",
     ],
     auth: "api-key",
     reasoningEfforts: CLAUDE_EFFORTS,
-    defaultEffort: "high",
+    defaultEffort: "medium",
   },
   {
-    // Door B: Opus 5 via the direct Anthropic API (adaptive thinking, no
-    // OpenRouter margin). Requires ANTHROPIC_API_KEY.
-    id: "anthropic/claude-opus-5",
+    // Door B: Opus 5.5 via the direct Anthropic API (adaptive thinking, no
+    // OpenRouter margin). Requires ANTHROPIC_API_KEY. The retired Opus 5
+    // direct id stays as an alias so saved selections resolve.
+    id: "anthropic/claude-opus-5-5",
     provider: "anthropic",
-    model: "claude-opus-5",
-    label: "Claude Opus 5 (Anthropic)",
+    model: "claude-opus-5-5",
+    label: "Claude Opus 5.5 (Anthropic)",
     description: "direct Anthropic API · adaptive thinking · 💸💸",
-    aliases: ["opus-direct", "claude-api", "anthropic-opus"],
+    aliases: [
+      "opus-direct",
+      "claude-api",
+      "anthropic-opus",
+      "opus-5.5-direct",
+      "anthropic-opus-5.5",
+      "anthropic/claude-opus-5-5",
+    ],
     auth: "anthropic",
     requiredEnv: "ANTHROPIC_API_KEY",
     keyHint: "/key anthropic <key>",
     reasoningEfforts: CLAUDE_EFFORTS,
-    defaultEffort: "high",
+    defaultEffort: "medium",
   },
   {
     // Claude Fable 5.1: Anthropic's most capable model. Thinking is always
@@ -301,31 +316,6 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     keyHint: "/key anthropic <key>",
     reasoningEfforts: CLAUDE_EFFORTS,
     defaultEffort: "high",
-  },
-  {
-    // Claude Opus 5.5 defaults to medium effort, one level below Opus 5.
-    id: "openrouter/anthropic/claude-opus-5.5",
-    provider: "openrouter",
-    model: "anthropic/claude-opus-5.5",
-    label: "Claude Opus 5.5",
-    description: "OpenRouter · current Opus · 💸 premium",
-    aliases: ["opus-5.5", "claude-opus-5.5", "claude-opus-5-5"],
-    auth: "api-key",
-    reasoningEfforts: CLAUDE_EFFORTS,
-    defaultEffort: "medium",
-  },
-  {
-    id: "anthropic/claude-opus-5-5",
-    provider: "anthropic",
-    model: "claude-opus-5-5",
-    label: "Claude Opus 5.5 (Anthropic)",
-    description: "direct Anthropic API · adaptive thinking · 💸💸",
-    aliases: ["opus-5.5-direct", "anthropic-opus-5.5"],
-    auth: "anthropic",
-    requiredEnv: "ANTHROPIC_API_KEY",
-    keyHint: "/key anthropic <key>",
-    reasoningEfforts: CLAUDE_EFFORTS,
-    defaultEffort: "medium",
   },
   {
     // Claude Sonnet 5.5 is the current Sonnet. Retired Sonnet aliases (5,

@@ -140,7 +140,7 @@ describe.serial("provider journal integration", () => {
       const store = new FailingProviderStore();
       let calls = 0;
       const fetchImpl = (async () => { calls++; return json(provider === "Meta" ? answer() : {
-        id: "claude-1", type: "message", role: "assistant", model: "claude-opus-5", content: [{ type: "text", text: "done" }], stop_reason: "end_turn", usage: { input_tokens: 9, output_tokens: 2 },
+        id: "claude-1", type: "message", role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "done" }], stop_reason: "end_turn", usage: { input_tokens: 9, output_tokens: 2 },
       }); }) as typeof fetch;
       const adapter = provider === "Meta"
         ? createChatCompletionsAdapter({ name: "Meta", model: "requested-model", apiKey: "test", baseUrl: "https://api.meta.ai/v1", fetchImpl })
