@@ -175,3 +175,14 @@ describe('runner targets and path prefixes', () => {
   });
 });
 
+describe('Jest selection applies to every Jest target and to explicit paths', () => {
+  it('treats test:int, test:unit and test:jest as Jest and excludes *.vitest.* files, even when named explicitly', () => {
+    for (const target of ['test:int', 'test:unit', 'test:jest', 'test']) {
+      expect(classify(shell(`npm exec -- nx run @execufunction/exf-app:${target} -- src/routes/modelConnections`))).toMatchObject({runner: 'jest'});
+    }
+    expect(resolve(['src/routes/modelConnections'], 'exf-app', FILES, 'jest')).toEqual(['exf-app/src/routes/modelConnections.test.ts']);
+    expect(resolve(['src/routes/modelConnections.vitest.test.ts'], 'exf-app', FILES, 'jest')).toEqual([]);
+    expect(classify(shell('npm exec -- nx run @execufunction/exf-app:test:vitest -- src/routes/modelConnections'))).toMatchObject({runner: 'vitest'});
+  });
+});
+

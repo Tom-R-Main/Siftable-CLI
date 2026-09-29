@@ -197,9 +197,10 @@ export function classify(step: PlanStep): StepClass {
   const {patterns: pats, names} = patterns(tokens);
   if (cmd.includes('run-many') || cmd.includes('affected')) return {class: 'whole_target', projectDir: pdir};
   if (!pats.length) return {class: 'whole_target', projectDir: pdir, nameFilters: names};
+  // In this repository `test:vitest` runs Vitest and every other `test`/`test:<name>` script runs Jest.
   const runner: Runner = /vitest|vp test/.test(joined)
     ? 'vitest'
-    : /(^|[\s:])(test|test:unit|jest)(\s|$)/.test(joined) ? 'jest' : 'other';
+    : /(^|[\s:])(test(:[\w-]+)?|jest)(\s|$)/.test(joined) ? 'jest' : 'other';
   return {class: 'patterned_test', projectDir: pdir, patterns: pats, nameFilters: names, runner};
 }
 
@@ -214,7 +215,8 @@ export function resolve(pats: string[], pdir: string | null, files: readonly str
   const out = new Set<string>();
   for (const p of pats) {
     if (p.includes('/') || TEST_FILE.test(p)) {
-      const exact = [p, pdir ? `${pdir}/${p}` : p].filter((cand) => all.has(cand));
+      // An explicit path still has to be a file this runner runs (Jest does not run *.vitest.* files).
+      const exact = [p, pdir ? `${pdir}/${p}` : p].filter((cand) => all.has(cand) && !(runner === 'jest' && cand.includes('.vitest.')));
       for (const cand of exact) out.add(cand);
       if (exact.length) continue;
       // Runners treat positional paths as filters: a directory or file-name prefix selects the test files under it.
