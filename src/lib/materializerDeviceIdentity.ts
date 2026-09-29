@@ -260,6 +260,7 @@ function decryptPrivateKey(state: StoredIdentity, wrappingKey: Buffer): Buffer {
     'aes-256-gcm',
     wrappingKey,
     Buffer.from(state.iv, 'base64url'),
+    {authTagLength: 16},
   );
   decipher.setAuthTag(Buffer.from(state.authTag, 'base64url'));
   return Buffer.concat([

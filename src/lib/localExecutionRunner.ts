@@ -277,7 +277,9 @@ export function decryptExecutionGrantEnvelope(
     oaepHash: 'sha256',
   }, base64url(envelope.wrappedKey));
   try {
-    const decipher = createDecipheriv('aes-256-gcm', key, base64url(envelope.nonce));
+    const decipher = createDecipheriv('aes-256-gcm', key, base64url(envelope.nonce), {
+      authTagLength: 16,
+    });
     decipher.setAAD(Buffer.from(binding, 'utf8'));
     decipher.setAuthTag(base64url(envelope.authTag));
     const plaintext = Buffer.concat([

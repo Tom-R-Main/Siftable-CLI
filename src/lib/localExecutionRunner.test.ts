@@ -84,6 +84,13 @@ describe('trusted local execution runner', () => {
     expect(JSON.stringify(encrypted)).not.toContain('SENTINEL_EPHEMERAL');
     expect(decryptExecutionGrantEnvelope(encrypted, runner.privateKey!, binding))
       .toEqual(payload);
+    expect(Buffer.from(encrypted.authTag, 'base64url')).toHaveLength(16);
+    const shortenedTag = {
+      ...encrypted,
+      authTag: Buffer.from(encrypted.authTag, 'base64url').subarray(0, 4).toString('base64url'),
+    };
+    expect(() => decryptExecutionGrantEnvelope(shortenedTag, runner.privateKey!, binding))
+      .toThrow();
     expect(() => decryptExecutionGrantEnvelope(encrypted, runner.privateKey!, `${binding}x`))
       .toThrow('binding is invalid');
   });

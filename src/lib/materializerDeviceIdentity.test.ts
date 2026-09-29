@@ -135,6 +135,26 @@ describe('materializer device identity', () => {
     })).rejects.toThrow('credential-store key is missing');
   });
 
+  it('rejects a shortened authentication tag in stored encrypted identity state', async () => {
+    const stateDirectory = await temporaryDirectory();
+    const store = new MemoryIdentityStore();
+    const input = {apiUrl: 'https://siftable.io', stateDirectory, store};
+    const first = await loadOrCreateMaterializerDeviceIdentity(input);
+    expect((await loadOrCreateMaterializerDeviceIdentity(input)).fingerprint)
+      .toBe(first.fingerprint);
+    const [stateFile] = await readdir(stateDirectory);
+    const filePath = path.join(stateDirectory, stateFile);
+    const state = JSON.parse(await readFile(filePath, 'utf8'));
+    const tag = Buffer.from(state.authTag, 'base64url');
+    expect(tag).toHaveLength(16);
+    state.authTag = tag.subarray(0, 4).toString('base64url');
+    await writeFile(filePath, JSON.stringify(state), {mode: 0o600});
+
+    await expect(loadOrCreateMaterializerDeviceIdentity(input)).rejects.toThrow();
+    expect(store.values.size).toBe(1);
+    expect(JSON.parse(await readFile(filePath, 'utf8')).authTag).toBe(state.authTag);
+  });
+
   it('rolls back the wrapping key when encrypted state persistence fails', async () => {
     const stateDirectory = await temporaryDirectory();
     const apiUrl = 'https://siftable.io';
