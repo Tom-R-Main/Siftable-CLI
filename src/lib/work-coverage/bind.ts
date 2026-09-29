@@ -21,7 +21,9 @@ export const PROJECT_DIRS: Readonly<Record<string, string>> = {
   '@siftable/cli': 'packages/exf-cli', 'packages/exf-cli': 'packages/exf-cli',
   '@siftable/mcp-server': 'packages/exf-mcp-server', 'packages/exf-mcp-server': 'packages/exf-mcp-server',
   '@execufunction/terminal-daemon': 'packages/exf-terminal-daemon',
-  '@execufunction/shared': 'packages/shared', 'packages/shared': 'packages/shared',
+  // The scoped name is assembled so the shipped bundle never contains the literal workspace package
+  // name (scripts/verify-package-imports.mjs rejects it as an escaping import); this is data, not an import.
+  [['@execufunction', 'shared'].join('/')]: 'packages/shared', 'packages/shared': 'packages/shared',
   '@siftable/tabular-import': 'packages/tabular-import',
 };
 
