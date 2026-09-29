@@ -3,6 +3,10 @@
  *
  * Env: ANTHROPIC_API_KEY
  * Default model: claude-opus-5
+ *
+ * Every request uses adaptive thinking, effort-only depth control, and
+ * automatic tool choice, which Claude Fable 5.1, Opus 5.5, Opus 5, and
+ * Sonnet 5.5 all accept. No sampling parameters or thinking budgets are sent.
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -12,19 +16,29 @@ import { compatibleBaseUrl, outputTokenLimit, providerTransport } from "./transp
 import { safeJsonParse } from "./util.js";
 import { chatContentToText, imageBase64, imageMime, normalizeChatContent } from "./content.js";
 
-type ClaudeOpus5Effort = "low" | "medium" | "high" | "xhigh" | "max";
+type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
-const normalizeClaudeOpus5Effort = (effort?: ReasoningEffort): ClaudeOpus5Effort => {
-  if (!effort) return "high";
+/**
+ * Thinking cannot be disabled on Opus 5 at high effort and above, nor at all
+ * on Fable 5.1, Opus 5.5, or Sonnet 5.5, so none/minimal become the lowest
+ * effort. An omitted effort takes the model's own default: medium on Opus 5.5,
+ * high elsewhere.
+ */
+export const normalizeClaudeEffort = (model: string, effort?: ReasoningEffort): ClaudeEffort => {
+  if (!effort) return /^claude-opus-5-5$/.test(model) ? "medium" : "high";
   if (effort === "none" || effort === "minimal") return "low";
   return effort;
 };
 
-const normalizeClaudeModel = (model?: string): string => {
+/**
+ * Current Claude ids pass through. Every Sonnet before 5.5 is retired and
+ * resolves to Sonnet 5.5; older Opus ids resolve to Opus 5.
+ */
+export const normalizeClaudeModel = (model?: string): string => {
   const requested = model?.trim() || "claude-opus-5";
-  if (/claude-(?:opus|sonnet)-(?!5(?:$|-))/.test(requested) || requested.includes("claude-sonnet-")) {
-    return "claude-opus-5";
-  }
+  if (/^claude-(?:opus-5-5|sonnet-5-5|fable-5-1)$/.test(requested)) return requested;
+  if (requested.includes("claude-sonnet-")) return "claude-sonnet-5-5";
+  if (/claude-opus-(?!5(?:$|-))/.test(requested)) return "claude-opus-5";
   return requested;
 };
 
@@ -38,7 +52,7 @@ export function createAnthropicAdapter(config?: Partial<AdapterConfig>): AIAdapt
 
   const model = normalizeClaudeModel(config?.model);
   const systemPrompt = config?.systemPrompt ?? "You are a helpful assistant with access to tools. Use tools when they're relevant.";
-  const effort = normalizeClaudeOpus5Effort(config?.reasoningEffort);
+  const effort = normalizeClaudeEffort(model, config?.reasoningEffort);
   const maxTokens = outputTokenLimit(config?.maxOutputTokens) ?? (effort === "xhigh" || effort === "max" ? 64_000 : 16_000);
 
   return {

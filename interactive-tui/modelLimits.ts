@@ -44,6 +44,14 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "glm-5.2": 1_000_000,
   "deepseek/deepseek-v4-flash-0731": 1_000_000,
   "deepseek-v4-flash-0731": 1_000_000,
+  // Claude Fable 5.1, Opus 5.5, and Sonnet 5.5: 1M context on OpenRouter and
+  // the direct Anthropic API.
+  "anthropic/claude-fable-5.1": 1_000_000,
+  "claude-fable-5-1": 1_000_000,
+  "anthropic/claude-opus-5.5": 1_000_000,
+  "claude-opus-5-5": 1_000_000,
+  "anthropic/claude-sonnet-5.5": 1_000_000,
+  "claude-sonnet-5-5": 1_000_000,
 };
 
 // Provider-family estimates, first match wins. Conservative where a family

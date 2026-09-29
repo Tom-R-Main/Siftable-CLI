@@ -22,6 +22,7 @@ import type {
 } from "./types.js";
 import type { ToolRegistry } from "../registry.js";
 import { chatContentToText, imageDataUrl, normalizeChatContent } from "./content.js";
+import { isAdaptiveOnlyClaudeModel } from "./util.js";
 
 // ─── OpenAI Responses API ──────────────────────────────────────────────────
 
@@ -314,9 +315,14 @@ export function createChatCompletionsAdapter(config: ChatCompletionsConfig): AIA
         // thinking, so a caller must deliberately choose a smaller limit.
       };
 
+      // Claude Fable 5.1, Opus 5.5, and Sonnet 5.5 (via OpenRouter) return 400
+      // for sampling parameters and forced tool choice; omitting both keeps
+      // adaptive thinking and automatic tool selection.
+      const adaptiveOnlyClaude = isAdaptiveOnlyClaudeModel(model);
+
       // Temperature is only meaningful for non-reasoning turns — reasoning
       // models reject or ignore it (opencode strips it, codex never sends it).
-      if (!reasoningEffort || reasoningEffort === "none") {
+      if ((!reasoningEffort || reasoningEffort === "none") && !adaptiveOnlyClaude) {
         body.temperature = 0.7;
       }
 
@@ -326,7 +332,9 @@ export function createChatCompletionsAdapter(config: ChatCompletionsConfig): AIA
       }
 
       // Tool choice support
-      if (options?.toolChoice === "required") {
+      if (adaptiveOnlyClaude) {
+        // Forced tool choice is rejected; the default is automatic.
+      } else if (options?.toolChoice === "required") {
         body.tool_choice = "required";
       } else if (typeof options?.toolChoice === "object") {
         body.tool_choice = { type: "function", function: { name: options.toolChoice.name } };

@@ -39,6 +39,19 @@ describe("resolveContextWindow", () => {
       .toEqual({ window: 1_000_000, source: "model" });
   });
 
+  it("resolves the current Claude models to their exact 1M window", () => {
+    for (const id of [
+      "anthropic/claude-fable-5.1",
+      "claude-fable-5-1",
+      "anthropic/claude-opus-5.5",
+      "claude-opus-5-5",
+      "anthropic/claude-sonnet-5.5",
+      "claude-sonnet-5-5",
+    ]) {
+      expect(resolveContextWindow(id), id).toEqual({ window: 1_000_000, source: "model" });
+    }
+  });
+
   it("resolves family estimates with an honest source tag", () => {
     expect(resolveContextWindow("google/gemini-3.8-flash"))
       .toEqual({ window: 1_000_000, source: "family" });

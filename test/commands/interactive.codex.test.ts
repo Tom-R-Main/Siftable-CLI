@@ -355,12 +355,16 @@ describe('model catalog + reasoning effort', () => {
       provider: 'openrouter',
       model: 'anthropic/claude-opus-5',
     });
-    // Persisted Sonnet selections are promoted rather than resurrecting an
-    // obsolete catalog option.
-    expect(findModelChoice('sonnet')).toMatchObject({
-      provider: 'openrouter',
-      model: 'anthropic/claude-opus-5',
-    });
+    // Retired Sonnet selections resolve to the current Sonnet rather than
+    // resurrecting an obsolete catalog option.
+    for (const alias of ['sonnet', 'claude-sonnet-5', 'claude-sonnet-4.6', 'claude-sonnet-4-5', 'claude-sonnet-4']) {
+      expect(findModelChoice(alias)).toMatchObject({
+        provider: 'openrouter',
+        model: 'anthropic/claude-sonnet-5.5',
+        defaultEffort: 'high',
+      });
+    }
+    expect(findModelChoice('anthropic')).toMatchObject({model: 'claude-opus-5'});
     // Door B — direct Anthropic API (/claude-api).
     const direct = findModelChoice('claude-api');
     expect(direct).toMatchObject({
@@ -368,6 +372,29 @@ describe('model catalog + reasoning effort', () => {
       model: 'claude-opus-5',
       auth: 'anthropic',
     });
+  });
+
+  it('resolves the current Claude models with their effort defaults', () => {
+    expect(findModelChoice('opus-5.5')).toMatchObject({
+      provider: 'openrouter',
+      model: 'anthropic/claude-opus-5.5',
+      defaultEffort: 'medium',
+    });
+    expect(findModelChoice('anthropic/claude-opus-5-5')).toMatchObject({
+      provider: 'anthropic',
+      model: 'claude-opus-5-5',
+      defaultEffort: 'medium',
+    });
+    expect(findModelChoice('fable')).toMatchObject({
+      provider: 'openrouter',
+      model: 'anthropic/claude-fable-5.1',
+      defaultEffort: 'high',
+    });
+    expect(findModelChoice('fable-direct')).toMatchObject({provider: 'anthropic', model: 'claude-fable-5-1'});
+    expect(findModelChoice('sonnet-direct')).toMatchObject({provider: 'anthropic', model: 'claude-sonnet-5-5'});
+    for (const model of ['anthropic/claude-sonnet-5.5', 'anthropic/claude-opus-5.5', 'anthropic/claude-fable-5.1']) {
+      expect(findModelChoice(model)?.reasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    }
   });
 
   it('routes standard and Contributor Muse to distinct Meta model IDs', async () => {

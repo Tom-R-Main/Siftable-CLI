@@ -183,7 +183,8 @@ export interface ExplorerBudgetChoice {
 }
 
 // GPT-5.6 Codex models add `max`; older gpt-5.x OpenRouter models expose
-// low/med/high/xhigh. Claude Opus 5 exposes the full adaptive-effort ladder.
+// low/med/high/xhigh. Claude Fable 5.1, Opus 5.5, Opus 5, and Sonnet 5.5
+// expose the full adaptive-effort ladder; thinking cannot be disabled.
 const GPT56_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const GPT5_EFFORTS = ["low", "medium", "high", "xhigh"];
 const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
@@ -255,8 +256,6 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
       "claude-opus-5",
       "claude-opus-4.8",
       "claude-opus-4.7",
-      "sonnet",
-      "claude-sonnet-4.6",
     ],
     auth: "api-key",
     reasoningEfforts: CLAUDE_EFFORTS,
@@ -271,6 +270,98 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     label: "Claude Opus 5 (Anthropic)",
     description: "direct Anthropic API · adaptive thinking · 💸💸",
     aliases: ["opus-direct", "claude-api", "anthropic-opus"],
+    auth: "anthropic",
+    requiredEnv: "ANTHROPIC_API_KEY",
+    keyHint: "/key anthropic <key>",
+    reasoningEfforts: CLAUDE_EFFORTS,
+    defaultEffort: "high",
+  },
+  {
+    // Claude Fable 5.1: Anthropic's most capable model. Thinking is always
+    // on; forced tool choice and sampling parameters are rejected.
+    id: "openrouter/anthropic/claude-fable-5.1",
+    provider: "openrouter",
+    model: "anthropic/claude-fable-5.1",
+    label: "Claude Fable 5.1",
+    description: "OpenRouter · most capable Claude · 💸💸💸",
+    aliases: ["fable", "claude-fable", "claude-fable-5.1", "claude-fable-5-1"],
+    auth: "api-key",
+    reasoningEfforts: CLAUDE_EFFORTS,
+    defaultEffort: "high",
+  },
+  {
+    id: "anthropic/claude-fable-5-1",
+    provider: "anthropic",
+    model: "claude-fable-5-1",
+    label: "Claude Fable 5.1 (Anthropic)",
+    description: "direct Anthropic API · adaptive thinking · 30-day retention required · 💸💸💸",
+    aliases: ["fable-direct", "anthropic-fable"],
+    auth: "anthropic",
+    requiredEnv: "ANTHROPIC_API_KEY",
+    keyHint: "/key anthropic <key>",
+    reasoningEfforts: CLAUDE_EFFORTS,
+    defaultEffort: "high",
+  },
+  {
+    // Claude Opus 5.5 defaults to medium effort, one level below Opus 5.
+    id: "openrouter/anthropic/claude-opus-5.5",
+    provider: "openrouter",
+    model: "anthropic/claude-opus-5.5",
+    label: "Claude Opus 5.5",
+    description: "OpenRouter · current Opus · 💸 premium",
+    aliases: ["opus-5.5", "claude-opus-5.5", "claude-opus-5-5"],
+    auth: "api-key",
+    reasoningEfforts: CLAUDE_EFFORTS,
+    defaultEffort: "medium",
+  },
+  {
+    id: "anthropic/claude-opus-5-5",
+    provider: "anthropic",
+    model: "claude-opus-5-5",
+    label: "Claude Opus 5.5 (Anthropic)",
+    description: "direct Anthropic API · adaptive thinking · 💸💸",
+    aliases: ["opus-5.5-direct", "anthropic-opus-5.5"],
+    auth: "anthropic",
+    requiredEnv: "ANTHROPIC_API_KEY",
+    keyHint: "/key anthropic <key>",
+    reasoningEfforts: CLAUDE_EFFORTS,
+    defaultEffort: "medium",
+  },
+  {
+    // Claude Sonnet 5.5 is the current Sonnet. Retired Sonnet aliases (5,
+    // 4.6, 4.5, 4) continue to select it.
+    id: "openrouter/anthropic/claude-sonnet-5.5",
+    provider: "openrouter",
+    model: "anthropic/claude-sonnet-5.5",
+    label: "Claude Sonnet 5.5",
+    description: "OpenRouter · everyday coding and agent work",
+    aliases: [
+      "sonnet",
+      "claude-sonnet",
+      "claude-sonnet-5.5",
+      "claude-sonnet-5-5",
+      "claude-sonnet-5",
+      "claude-sonnet-4.6",
+      "claude-sonnet-4-6",
+      "claude-sonnet-4.5",
+      "claude-sonnet-4-5",
+      "claude-sonnet-4",
+      "anthropic/claude-sonnet-5",
+      "anthropic/claude-sonnet-4.6",
+      "anthropic/claude-sonnet-4.5",
+      "anthropic/claude-sonnet-4",
+    ],
+    auth: "api-key",
+    reasoningEfforts: CLAUDE_EFFORTS,
+    defaultEffort: "high",
+  },
+  {
+    id: "anthropic/claude-sonnet-5-5",
+    provider: "anthropic",
+    model: "claude-sonnet-5-5",
+    label: "Claude Sonnet 5.5 (Anthropic)",
+    description: "direct Anthropic API · adaptive thinking · 💸",
+    aliases: ["sonnet-direct", "anthropic-sonnet"],
     auth: "anthropic",
     requiredEnv: "ANTHROPIC_API_KEY",
     keyHint: "/key anthropic <key>",

@@ -16,3 +16,13 @@ export function safeJsonParse<T>(value: string, fallback: T): T {
     return fallback;
   }
 }
+
+/**
+ * Claude Fable 5.1, Opus 5.5, and Sonnet 5.5 in any spelling: OpenRouter
+ * (`anthropic/claude-opus-5.5`) or first-party (`claude-opus-5-5`). These
+ * models reject sampling parameters, forced tool choice, disabled thinking,
+ * and thinking budgets.
+ */
+export function isAdaptiveOnlyClaudeModel(model: string | undefined): boolean {
+  return /claude-(?:fable-5[.-]1|opus-5[.-]5|sonnet-5[.-]5)(?![\d.])/i.test(model ?? "");
+}
