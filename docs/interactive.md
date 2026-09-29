@@ -103,11 +103,12 @@ The model picker (`/model`) is a two-stage overlay: choose a **model** (↑/↓)
 
 **Muse Spark 1.3** and **Muse Spark 1.3 Contributor** are available through the direct Meta adapter: `/model muse` selects the standard tier; `/model muse-contributor` selects Contributor. It requires `META_API_KEY`; `/key meta <key>` sets the key and remembers it in the system keychain for the next launch. The selection is restored on the next launch.
 
-New installations start with **GPT-5.6 Sol through Codex**. A saved model selection takes precedence on subsequent launches, including a personal Muse selection.
+New installations start with **GPT-6.1 Sol through Codex**. A saved model selection takes precedence on subsequent launches, including a personal Muse selection. Older GPT-5.6 Sol and GPT-6 Sol selections resolve to GPT-6.1 Sol.
 
 The catalog includes:
 
-- **GPT-5.6 Sol, Terra, and Luna** — run through your ChatGPT plan via the Codex engine (see below). `/codex login` and `/codex on` select Sol by default. Efforts: low/medium/high/xhigh/max.
+- **GPT-6.1 Sol, GPT-5.6 Terra, and GPT-5.6 Luna** — run through your ChatGPT plan via the Codex engine (see below). `/codex login` and `/codex on` select Sol by default. Efforts: low/medium/high/xhigh/max.
+- **GPT-6 Luna** — through the Codex engine (`codex/gpt-6-luna`; alias `luna-6`). Efforts: none/low/medium/high/xhigh/max. The `luna` alias retains GPT-5.6 Luna.
 - **Claude Opus 5** — two routes: **Door A** via OpenRouter (`openrouter/anthropic/claude-opus-5`), and **Door B** direct to the Anthropic API (`anthropic/claude-opus-5`, needs `ANTHROPIC_API_KEY`; alias `claude-api`). Adaptive-thinking efforts: low/medium/high/xhigh/max.
 - **Muse Spark 1.3** — direct to the Meta API (`meta/muse-spark-1.3`, needs `META_API_KEY`; aliases `spark`, `muse`). Efforts: minimal/low/medium/high/xhigh/max.
 - **Muse Spark 1.3 Contributor** — separate Meta tier (`meta/muse-spark-1.3-contributor`; aliases `spark-contributor`, `muse-contributor`). Efforts: minimal/low/medium/high/xhigh.

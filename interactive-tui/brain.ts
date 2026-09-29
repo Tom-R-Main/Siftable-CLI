@@ -364,7 +364,7 @@ const DEFAULT_AGENT_HARNESS_MODEL = 'google/gemini-3.8-flash';
 
 let currentProvider = process.env.EXECUTERM_MODEL_PROVIDER || (process.env.EXECUTERM_MODEL ? 'openrouter' : CODEX_PROVIDER);
 let currentBaseUrl: string | undefined = process.env.SIFT_MODEL_BASE_URL;
-let currentModel = process.env.EXECUTERM_MODEL || (currentProvider === CODEX_PROVIDER ? 'gpt-5.6-sol' : DEFAULT_AGENT_HARNESS_MODEL);
+let currentModel = process.env.EXECUTERM_MODEL || (currentProvider === CODEX_PROVIDER ? 'gpt-6.1-sol' : DEFAULT_AGENT_HARNESS_MODEL);
 let currentEffort: string | undefined = process.env.EXECUTERM_MODEL_EFFORT || undefined;
 
 const SCOUT_PROMPT =
