@@ -25,7 +25,6 @@ import {
   resolveAppOrigin,
   runtimeRequestDecisionUrl,
   isAbortError,
-  isAmbiguousControlFailure,
   sendControlWithRetry,
   sleep,
   waitScope,
@@ -234,12 +233,12 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
       this.error(error instanceof Error ? error.message : String(error));
     }
     const api = this.runtimeApi(flags);
-    const {result, requestAttempts} = await sendControlWithRetry(api, workItemId, input, {
+    const {result, requestAttempts, ambiguousFailure} = await sendControlWithRetry(api, workItemId, input, {
       idempotencyKey,
       retries: flags.retries,
       retryDelayMs: flags['retry-delay-ms'],
     });
-    if (!result.ok && isAmbiguousControlFailure(result)) {
+    if (!result.ok && ambiguousFailure) {
       // The server may have stored it. Never drop the key: a resend with it
       // returns the stored control instead of queueing a second one.
       const unconfirmed: WorkControlUnconfirmedOutput = {
@@ -249,12 +248,14 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
         kind: input.kind,
         idempotencyKey,
         requestAttempts,
-        cause: result.status === 0 ? 'transport' : 'http',
-        httpStatus: result.status === 0 ? null : result.status,
+        cause: ambiguousFailure.status === 0 ? 'transport' : 'http',
+        httpStatus: ambiguousFailure.status === 0 ? null : ambiguousFailure.status,
       };
       if (!this.jsonEnabled()) {
         const noun = input.kind === 'interrupt' ? 'Interrupt' : 'Instruction';
-        const why = result.status === 0 ? 'no response could be read' : `the server answered HTTP ${result.status}`;
+        const why = ambiguousFailure.status === 0
+          ? 'an attempt got no readable response'
+          : `an attempt got HTTP ${ambiguousFailure.status}`;
         this.log(`${noun} outcome unknown: after ${requestAttempts} attempt${requestAttempts === 1 ? '' : 's'}, ${why}. The server may or may not have queued it.`);
         this.log(`Retry with the same key to avoid a duplicate: --idempotency-key ${idempotencyKey}`);
       }

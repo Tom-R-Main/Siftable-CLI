@@ -496,6 +496,26 @@ describe('sift work runtime commands', () => {
       });
     });
 
+    it('stays unconfirmed with the key when a lost response is followed by a 429 and a 409', async () => {
+      installApi((call, all) => {
+        if (call.method !== 'POST') return undefined;
+        const posts = all.filter(entry => entry.method === 'POST').length;
+        if (posts === 1) return {status: 201, body: {version: 1, applied: true, control: control()}, bodyError: true};
+        if (posts === 2) return {status: 429, body: {error: 'Too many requests'}};
+        return {status: 409, body: {error: 'Idempotency key in use'}};
+      });
+
+      const result = await runCommand(['work', 'send', WORK_ID, 'Also update the README', '--retry-delay-ms', '0', '--json', ...auth]);
+
+      expect(result.exitCode).toBe(1);
+      expect(calls).toHaveLength(3);
+      const key = calls[0].headers['Idempotency-Key'];
+      expect(calls.every(call => call.headers['Idempotency-Key'] === key)).toBe(true);
+      expect(JSON.parse(result.stdout)).toEqual({
+        version: 1, ok: false, outcome: 'unconfirmed', kind: 'instruction', idempotencyKey: key, requestAttempts: 3, cause: 'transport', httpStatus: null,
+      });
+    });
+
     it('names the retry key in text when no response could be read', async () => {
       installApi(call => (call.method === 'POST' ? {status: 201, body: {version: 1, applied: true, control: control()}, bodyError: true} : undefined));
 
@@ -1046,12 +1066,76 @@ describe('sift work runtime commands', () => {
         });
       });
 
+      it('stays unconfirmed when a lost response is followed by a parsed 429 and 409', async () => {
+        installApi((call, all) => {
+          if (call.method !== 'POST') return undefined;
+          const posts = all.filter(entry => entry.method === 'POST').length;
+          if (posts === 1) return {status: 201, body: {}, bodyError: true};
+          if (posts === 2) return {status: 429, body: {error: 'Too many requests'}};
+          return {status: 409, body: {error: 'Idempotency key in use'}};
+        });
+
+        const outcome = await submitAttachControl(api(), WORK_ID, {kind: 'instruction', instruction: 'Also update the README'}, live, {retries: 2, retryDelayMs: 0});
+
+        expect(calls).toHaveLength(3);
+        expect(outcome).toEqual({
+          status: 'unconfirmed',
+          record: {
+            version: 1, type: 'control_unconfirmed', kind: 'instruction', instruction: 'Also update the README',
+            idempotencyKey: calls[0].headers['Idempotency-Key'], cause: 'transport', httpStatus: null,
+          },
+        });
+      });
+
       it('reports a parsed 4xx refusal as not accepted', async () => {
         installApi(call => (call.method === 'POST' ? {status: 409, body: {error: 'This work has no running execution to receive the control'}} : undefined));
 
         await expect(send()).resolves.toEqual({status: 'refused', httpStatus: 409});
         expect(calls).toHaveLength(1);
       });
+    });
+
+    it.each([
+      ['Ctrl-C', 'signal'],
+      ['the timeout', 'timeout'],
+    ] as const)('ends with %s, not attempt_ended, when it stops a control stalled during queue shutdown', async (_label, cause) => {
+      installApi((call, all) => {
+        const path = call.url.pathname;
+        if (call.method === 'POST' && path === `${BASE}/runtime-controls`) return STALL;
+        // The attempt ends only once the control POST is in flight.
+        if (path === `${BASE}/execution`) return {status: 200, body: execution(all.some(entry => entry.method === 'POST') ? 'ended' : 'running')};
+        if (path === `${BASE}/events/wait`) return {status: 200, body: {version: 1, events: [], nextSequence: null, consumerKey: 'default', timedOut: true}};
+        if (path === `${BASE}/events`) return {status: 200, body: {version: 1, events: [], nextSequence: null}};
+        if (path === `${BASE}/runtime-requests`) return {status: 200, body: {version: 1, requests: []}};
+        if (path === `${BASE}/runtime-controls`) return {status: 200, body: {version: 1, controls: [], truncated: false}};
+        return undefined;
+      });
+      const caller = new AbortController();
+      const records: WatchRecord[] = [];
+      const api = new WorkRuntimeApi({apiUrl: 'https://siftable.io', token: 't'});
+      let follower: WorkItemFollower | undefined;
+      let shuttingDown = false;
+      const queue = new ControlInputQueue(async line => {
+        const outcome = await submitAttachControl(api, WORK_ID, {kind: 'instruction', instruction: line}, follower!);
+        if (outcome.status === 'unconfirmed') records.push(outcome.record);
+      });
+      follower = new WorkItemFollower(api, followerOptions(records, {
+        signal: caller.signal,
+        waitMs: 1000,
+        timeoutMs: cause === 'timeout' ? 600 : 30_000,
+        beforeEnd: async () => {
+          shuttingDown = true;
+          if (cause === 'signal') setTimeout(() => caller.abort(), 100);
+          await queue.close();
+        },
+      }));
+      queue.submit('Also update the README');
+
+      await expect(follower.run()).resolves.toBe(cause);
+      expect(shuttingDown).toBe(true);
+      expect(records.at(-2)).toMatchObject({type: 'control_unconfirmed', cause, httpStatus: null});
+      expect(records.at(-1)).toMatchObject({type: 'end', reason: cause});
+      expect(records.some(record => record.type === 'end' && record.reason === 'attempt_ended')).toBe(false);
     });
 
     function attemptEndsDuringScan(before: unknown, after: unknown): void {

@@ -330,13 +330,26 @@ export async function sendControlWithRetry(
   workItemId: string,
   input: {kind: 'instruction'; instruction: string} | {kind: 'interrupt'},
   options: {idempotencyKey: string; retries: number; retryDelayMs: number; signal?: AbortSignal},
-): Promise<{result: ApiResult<RuntimeControlResult>; requestAttempts: number}> {
+): Promise<{
+  result: ApiResult<RuntimeControlResult>;
+  requestAttempts: number;
+  /**
+   * The first failed attempt that may have been stored, if any. Once set, only
+   * a success confirms the outcome: a later definite refusal (for example a
+   * 429 or 409 on a retry) does not prove the earlier attempt was not queued.
+   */
+  ambiguousFailure: {status: number; error: string} | null;
+}> {
   let requestAttempts = 0;
+  let ambiguousFailure: {status: number; error: string} | null = null;
   for (;;) {
     requestAttempts += 1;
     const result = await api.sendControl(workItemId, input, options.idempotencyKey, options.signal);
+    if (!result.ok && !ambiguousFailure && isAmbiguousControlFailure(result)) {
+      ambiguousFailure = {status: result.status, error: result.error};
+    }
     if (result.ok || !isRetryableControlStatus(result.status) || requestAttempts > options.retries) {
-      return {result, requestAttempts};
+      return {result, requestAttempts, ambiguousFailure};
     }
     await sleep(options.retryDelayMs * 2 ** (requestAttempts - 1), options.signal);
   }
@@ -771,8 +784,12 @@ export class WorkItemFollower {
       }, this.options.timeoutMs)
       : undefined;
     this.runSignal = run.signal;
-    const end = async (reason: WatchEndReason): Promise<WatchEndReason> => {
+    const end = async (requested: WatchEndReason): Promise<WatchEndReason> => {
       await this.options.beforeEnd?.();
+      // Ctrl-C or the deadline may fire while beforeEnd (attach's control queue)
+      // is still settling; report that stop rather than the earlier reason.
+      const stopped = this.stopCause;
+      const reason = stopped && (requested === 'attempt_ended' || requested === 'once') ? stopped : requested;
       this.emit({version: 1, type: 'end', reason, afterSequence: this.cursor});
       return reason;
     };
@@ -967,14 +984,15 @@ export async function submitAttachControl(
   if (signal.aborted) return {status: 'not_sent'};
   const idempotencyKey = options.idempotencyKey ?? newControlIdempotencyKey(input.kind);
   try {
-    const {result} = await sendControlWithRetry(api, workItemId, input, {
+    const {result, ambiguousFailure} = await sendControlWithRetry(api, workItemId, input, {
       idempotencyKey,
       retries: options.retries ?? 2,
       retryDelayMs: options.retryDelayMs ?? 500,
       signal,
     });
     if (!result.ok) {
-      if (!isAmbiguousControlFailure(result)) return {status: 'refused', httpStatus: result.status};
+      if (!ambiguousFailure) return {status: 'refused', httpStatus: result.status};
+      const failure = ambiguousFailure;
       // The server may have stored it: keep the key so a resend cannot duplicate it.
       return {
         status: 'unconfirmed',
@@ -984,8 +1002,8 @@ export async function submitAttachControl(
           kind: input.kind,
           instruction: input.kind === 'instruction' ? input.instruction : null,
           idempotencyKey,
-          cause: result.status === 0 ? 'transport' : 'http',
-          httpStatus: result.status === 0 ? null : result.status,
+          cause: failure.status === 0 ? 'transport' : 'http',
+          httpStatus: failure.status === 0 ? null : failure.status,
         },
       };
     }
