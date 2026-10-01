@@ -678,8 +678,32 @@ export class WorkItemFollower {
   private async drain(deadline: number, now: () => number): Promise<'page_limit' | 'timeout' | null> {
     const {workItemId, signal} = this.options;
     for (let page = 0; page < MAX_DRAIN_PAGES; page += 1) {
-      if (now() >= deadline) return 'timeout';
-      const result = unwrap(await this.api.listEvents(workItemId, this.cursor, EVENT_PAGE_LIMIT, signal));
+      const remaining = deadline - now();
+      if (remaining <= 0) return 'timeout';
+      // A stalled response or body read must not outlive --timeout: abort the
+      // request on the caller's signal or when the remaining time runs out.
+      const request = new AbortController();
+      const onAbort = () => request.abort();
+      signal.addEventListener('abort', onAbort, {once: true});
+      if (signal.aborted) request.abort();
+      let deadlineHit = false;
+      const timer = Number.isFinite(remaining)
+        ? setTimeout(() => {
+          deadlineHit = true;
+          request.abort();
+        }, remaining)
+        : undefined;
+      let page: ApiResult<LedgerPage>;
+      try {
+        page = await this.api.listEvents(workItemId, this.cursor, EVENT_PAGE_LIMIT, request.signal);
+      } catch (error) {
+        if (deadlineHit && !signal.aborted) return 'timeout';
+        throw error;
+      } finally {
+        if (timer) clearTimeout(timer);
+        signal.removeEventListener('abort', onAbort);
+      }
+      const result = unwrap(page);
       for (const event of result.events) {
         if (event.sequence <= this.cursor) continue;
         this.cursor = event.sequence;
@@ -699,12 +723,29 @@ export class WorkItemFollower {
       this.emit({version: 1, type: 'end', reason, afterSequence: this.cursor});
       return reason;
     };
+    const finish = async (): Promise<WatchEndReason> => {
+      const incomplete = await this.drain(deadline, now);
+      if (incomplete) {
+        this.emit({version: 1, type: 'drain_incomplete', cause: incomplete, afterSequence: this.cursor});
+        return end('drain_incomplete');
+      }
+      return end('attempt_ended');
+    };
     try {
+      // Read the execution before the ledger scan too, so an attempt that ends
+      // while the scan runs still counts as one this watch saw live.
+      const before = unwrap(await this.api.getExecution(workItemId, signal));
       const backlog = await this.startCursor();
       const execution = await this.refresh(true);
       for (const event of backlog) this.emit({version: 1, type: 'event', event});
-      this.sawLive = isLiveAttempt(execution.currentAttempt);
+      const known = new Set(before.attempts.map(attempt => attempt.id));
+      if (before.currentAttempt) known.add(before.currentAttempt.id);
+      this.sawLive = isLiveAttempt(execution.currentAttempt)
+        || isLiveAttempt(before.currentAttempt)
+        // Started and ended during the scan: absent before, ended after.
+        || execution.attempts.some(attempt => !known.has(attempt.id) && !isLiveAttempt(attempt));
       if (once) return end('once');
+      if (exitOnAttemptEnd && this.sawLive && !isLiveAttempt(execution.currentAttempt)) return finish();
       for (;;) {
         const remaining = deadline - now();
         if (remaining <= 0) return end('timeout');
@@ -717,14 +758,7 @@ export class WorkItemFollower {
         }
         const current = await this.refresh(false);
         const live = isLiveAttempt(current.currentAttempt);
-        if (exitOnAttemptEnd && this.sawLive && !live) {
-          const incomplete = await this.drain(deadline, now);
-          if (incomplete) {
-            this.emit({version: 1, type: 'drain_incomplete', cause: incomplete, afterSequence: this.cursor});
-            return end('drain_incomplete');
-          }
-          return end('attempt_ended');
-        }
+        if (exitOnAttemptEnd && this.sawLive && !live) return finish();
         if (live) this.sawLive = true;
       }
     } catch (error) {

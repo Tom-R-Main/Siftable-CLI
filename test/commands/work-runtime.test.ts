@@ -278,10 +278,10 @@ describe('sift work runtime commands', () => {
         if (path === `${BASE}/events`) return {status: 200, body: {version: 1, events: [], nextSequence: null}};
         if (path === `${BASE}/execution`) {
           refreshes += 1;
-          return {status: 200, body: execution(refreshes >= 3 ? 'ended' : 'running')};
+          return {status: 200, body: execution(refreshes >= 4 ? 'ended' : 'running')};
         }
         if (path === `${BASE}/runtime-requests`) {
-          return {status: 200, body: {version: 1, requests: refreshes >= 2 ? [request()] : []}};
+          return {status: 200, body: {version: 1, requests: refreshes >= 3 ? [request()] : []}};
         }
         if (path === `${BASE}/runtime-controls`) return {status: 200, body: {version: 1, controls: [], truncated: false}};
         return undefined;
@@ -322,7 +322,7 @@ describe('sift work runtime commands', () => {
         }
         if (path === `${BASE}/execution`) {
           refreshes += 1;
-          return {status: 200, body: execution(refreshes >= 2 ? 'ended' : 'running')};
+          return {status: 200, body: execution(refreshes >= 3 ? 'ended' : 'running')};
         }
         if (path === `${BASE}/runtime-requests`) return {status: 200, body: {version: 1, requests: []}};
         if (path === `${BASE}/runtime-controls`) return {status: 200, body: {version: 1, controls: [], truncated: false}};
@@ -361,7 +361,7 @@ describe('sift work runtime commands', () => {
     }
 
     it('reports drain_incomplete and exits non-zero when the final drain hits its page cap', async () => {
-      endlessLedger(2);
+      endlessLedger(3);
 
       const result = await runCommand(['work', 'watch', WORK_ID, '--after-sequence', '0', '--wait-ms', '1000', '--json', ...auth]);
 
@@ -751,6 +751,95 @@ describe('sift work runtime commands', () => {
   });
 
   describe('follower and attach queue', () => {
+    const followerOptions = (records: WatchRecord[], overrides: Partial<ConstructorParameters<typeof WorkItemFollower>[1]> = {}) => ({
+      workItemId: WORK_ID,
+      afterSequence: 0,
+      backlog: 0,
+      waitMs: 1000,
+      timeoutMs: 0,
+      once: false,
+      exitOnAttemptEnd: true,
+      signal: new AbortController().signal,
+      emit: (record: WatchRecord) => records.push(record),
+      ...overrides,
+    });
+
+    it('aborts a stalled final-drain request at the timeout and reports drain_incomplete', async () => {
+      calls = [];
+      global.fetch = jest.fn((input: RequestInfo | URL, init: RequestInit = {}) => {
+        const url = new URL(String(input));
+        calls.push({method: 'GET', url, headers: {}});
+        const reply = (body: unknown) => Promise.resolve({ok: true, status: 200, headers: new Headers(), text: async () => JSON.stringify(body), json: async () => body} as Response);
+        if (url.pathname === `${BASE}/execution`) {
+          // Live before the start, ended at the first refresh: the follower drains straight away.
+          const reads = calls.filter(entry => entry.url.pathname === `${BASE}/execution`).length;
+          return reply(execution(reads >= 2 ? 'ended' : 'running'));
+        }
+        if (url.pathname === `${BASE}/runtime-requests`) return reply({version: 1, requests: []});
+        if (url.pathname === `${BASE}/runtime-controls`) return reply({version: 1, controls: [], truncated: false});
+        // The ledger read never answers; only an abort ends it.
+        return new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), {name: 'AbortError'})), {once: true});
+        });
+      }) as typeof fetch;
+      const records: WatchRecord[] = [];
+      const started = Date.now();
+      const follower = new WorkItemFollower(new WorkRuntimeApi({apiUrl: 'https://siftable.io', token: 't'}), followerOptions(records, {timeoutMs: 300}));
+
+      await expect(follower.run()).resolves.toBe('drain_incomplete');
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(records.at(-2)).toEqual({version: 1, type: 'drain_incomplete', cause: 'timeout', afterSequence: 0});
+      expect(records.at(-1)).toEqual({version: 1, type: 'end', reason: 'drain_incomplete', afterSequence: 0});
+      expect(records.some(record => record.type === 'end' && record.reason === 'signal')).toBe(false);
+    });
+
+    function attemptEndsDuringScan(before: unknown, after: unknown): void {
+      installApi(call => {
+        const path = call.url.pathname;
+        if (path === `${BASE}/execution`) {
+          const reads = calls.filter(entry => entry.url.pathname === `${BASE}/execution`).length;
+          return {status: 200, body: reads === 1 ? before : after};
+        }
+        if (path === `${BASE}/events`) return {status: 200, body: {version: 1, events: [event(1)], nextSequence: 1}};
+        if (path === `${BASE}/events/wait`) return {status: 200, body: {version: 1, events: [], nextSequence: null, consumerKey: 'default', timedOut: true}};
+        if (path === `${BASE}/runtime-requests`) return {status: 200, body: {version: 1, requests: []}};
+        if (path === `${BASE}/runtime-controls`) return {status: 200, body: {version: 1, controls: [], truncated: false}};
+        return undefined;
+      });
+    }
+
+    it.each([
+      ['was live before the scan', execution('running'), execution('ended')],
+      ['started and ended during the scan', {version: 1, workspace: null, currentAttempt: null, currentLeaseActive: false, attempts: []}, execution('ended')],
+    ])('drains and ends when the attempt %s', async (_label, before, after) => {
+      attemptEndsDuringScan(before, after);
+
+      const result = await runCommand(['work', 'watch', WORK_ID, '--wait-ms', '1000', '--timeout', '30', '--json', ...auth]);
+
+      expect(result.exitCode).toBe(0);
+      const records = jsonLines(result.stdout);
+      expect(records.at(-1)).toEqual({version: 1, type: 'end', reason: 'attempt_ended', afterSequence: 1});
+      expect(calls.some(call => call.url.pathname === `${BASE}/events/wait`)).toBe(false);
+    });
+
+    it('keeps following with --keep-following when the attempt ended during the scan', async () => {
+      attemptEndsDuringScan(execution('running'), execution('ended'));
+
+      const result = await runCommand(['work', 'watch', WORK_ID, '--keep-following', '--wait-ms', '1000', '--timeout', '1', '--json', ...auth]);
+
+      expect(result.exitCode).toBe(0);
+      expect(jsonLines(result.stdout).at(-1)).toMatchObject({type: 'end', reason: 'timeout'});
+      expect(calls.some(call => call.url.pathname === `${BASE}/events/wait`)).toBe(true);
+    });
+
+    it('does not treat an attempt that ended before the watch began as live', async () => {
+      attemptEndsDuringScan(execution('ended'), execution('ended'));
+
+      const result = await runCommand(['work', 'watch', WORK_ID, '--wait-ms', '1000', '--timeout', '1', '--json', ...auth]);
+
+      expect(jsonLines(result.stdout).at(-1)).toMatchObject({type: 'end', reason: 'timeout'});
+    });
+
     it('stops the final drain at the timeout and reports drain_incomplete', async () => {
       endlessLedgerForApi();
       let clock = 0;
