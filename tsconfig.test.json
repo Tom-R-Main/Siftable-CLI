@@ -61,6 +61,7 @@
     "test/environmentState.test.ts",
     "test/error-exit-contract.test.ts",
     "test/lib/dataset-query.test.ts",
-    "test/commands/work-collaboration.test.ts"
+    "test/commands/work-collaboration.test.ts",
+    "test/commands/work-runtime.test.ts"
   ]
 }
