@@ -591,6 +591,9 @@ export class WorkItemFollower {
   private readonly controls = new Map<string, string>();
   private attempt = '';
   private sawLive = false;
+  /** Aborts on the caller's signal (Ctrl-C) or when --timeout elapses; every read uses it. */
+  private runSignal: AbortSignal = new AbortController().signal;
+  private deadlineHit = false;
   cursor = 0;
 
   constructor(private readonly api: WorkRuntimeApi, private readonly options: WatchOptions) {}
@@ -605,7 +608,8 @@ export class WorkItemFollower {
   }
 
   private async startCursor(): Promise<LedgerEvent[]> {
-    const {workItemId, signal, backlog} = this.options;
+    const {workItemId, backlog} = this.options;
+    const signal = this.runSignal;
     if (this.options.afterSequence !== undefined) {
       this.cursor = this.options.afterSequence;
       return [];
@@ -632,7 +636,8 @@ export class WorkItemFollower {
   }
 
   private async refresh(initial: boolean): Promise<WorkExecution> {
-    const {workItemId, signal} = this.options;
+    const {workItemId} = this.options;
+    const signal = this.runSignal;
     const [execution, requestLists, controlList] = await Promise.all([
       this.api.getExecution(workItemId, signal).then(unwrap),
       this.api.listRequestsWithOpen(workItemId, signal).then(unwrap),
@@ -678,32 +683,16 @@ export class WorkItemFollower {
   private async drain(deadline: number, now: () => number): Promise<'page_limit' | 'timeout' | null> {
     const {workItemId, signal} = this.options;
     for (let page = 0; page < MAX_DRAIN_PAGES; page += 1) {
-      const remaining = deadline - now();
-      if (remaining <= 0) return 'timeout';
-      // A stalled response or body read must not outlive --timeout: abort the
-      // request on the caller's signal or when the remaining time runs out.
-      const request = new AbortController();
-      const onAbort = () => request.abort();
-      signal.addEventListener('abort', onAbort, {once: true});
-      if (signal.aborted) request.abort();
-      let deadlineHit = false;
-      const timer = Number.isFinite(remaining)
-        ? setTimeout(() => {
-          deadlineHit = true;
-          request.abort();
-        }, remaining)
-        : undefined;
-      let page: ApiResult<LedgerPage>;
+      if (deadline - now() <= 0) return 'timeout';
+      let response: ApiResult<LedgerPage>;
       try {
-        page = await this.api.listEvents(workItemId, this.cursor, EVENT_PAGE_LIMIT, request.signal);
+        // The run signal aborts a stalled request at the deadline or on Ctrl-C.
+        response = await this.api.listEvents(workItemId, this.cursor, EVENT_PAGE_LIMIT, this.runSignal);
       } catch (error) {
-        if (deadlineHit && !signal.aborted) return 'timeout';
+        if (this.deadlineHit && !signal.aborted) return 'timeout';
         throw error;
-      } finally {
-        if (timer) clearTimeout(timer);
-        signal.removeEventListener('abort', onAbort);
       }
-      const result = unwrap(page);
+      const result = unwrap(response);
       for (const event of result.events) {
         if (event.sequence <= this.cursor) continue;
         this.cursor = event.sequence;
@@ -718,6 +707,18 @@ export class WorkItemFollower {
     const {workItemId, signal, once, exitOnAttemptEnd} = this.options;
     const now = this.options.now ?? Date.now;
     const deadline = this.options.timeoutMs > 0 ? now() + this.options.timeoutMs : Number.POSITIVE_INFINITY;
+    const run = new AbortController();
+    const onAbort = () => run.abort();
+    signal.addEventListener('abort', onAbort, {once: true});
+    if (signal.aborted) run.abort();
+    this.deadlineHit = false;
+    const timer = this.options.timeoutMs > 0
+      ? setTimeout(() => {
+        this.deadlineHit = true;
+        run.abort();
+      }, this.options.timeoutMs)
+      : undefined;
+    this.runSignal = run.signal;
     const end = async (reason: WatchEndReason): Promise<WatchEndReason> => {
       await this.options.beforeEnd?.();
       this.emit({version: 1, type: 'end', reason, afterSequence: this.cursor});
@@ -734,7 +735,7 @@ export class WorkItemFollower {
     try {
       // Read the execution before the ledger scan too, so an attempt that ends
       // while the scan runs still counts as one this watch saw live.
-      const before = unwrap(await this.api.getExecution(workItemId, signal));
+      const before = unwrap(await this.api.getExecution(workItemId, this.runSignal));
       const backlog = await this.startCursor();
       const execution = await this.refresh(true);
       for (const event of backlog) this.emit({version: 1, type: 'event', event});
@@ -745,12 +746,12 @@ export class WorkItemFollower {
         // Started and ended during the scan: absent before, ended after.
         || execution.attempts.some(attempt => !known.has(attempt.id) && !isLiveAttempt(attempt));
       if (once) return end('once');
-      if (exitOnAttemptEnd && this.sawLive && !isLiveAttempt(execution.currentAttempt)) return finish();
+      if (exitOnAttemptEnd && this.sawLive && !isLiveAttempt(execution.currentAttempt)) return await finish();
       for (;;) {
         const remaining = deadline - now();
         if (remaining <= 0) return end('timeout');
         const waitMs = Math.max(0, Math.min(this.options.waitMs, MAX_EVENT_WAIT_MS, remaining));
-        const page = unwrap(await this.api.waitEvents(workItemId, this.cursor, waitMs, signal));
+        const page = unwrap(await this.api.waitEvents(workItemId, this.cursor, waitMs, this.runSignal));
         for (const event of page.events) {
           if (event.sequence <= this.cursor) continue;
           this.cursor = event.sequence;
@@ -758,12 +759,18 @@ export class WorkItemFollower {
         }
         const current = await this.refresh(false);
         const live = isLiveAttempt(current.currentAttempt);
-        if (exitOnAttemptEnd && this.sawLive && !live) return finish();
+        if (exitOnAttemptEnd && this.sawLive && !live) return await finish();
         if (live) this.sawLive = true;
       }
     } catch (error) {
-      if (signal.aborted || isAbortError(error)) return end('signal');
+      // A timeout and a user interrupt end differently, whichever read they cut short.
+      if (signal.aborted) return end('signal');
+      if (this.deadlineHit) return end('timeout');
+      if (isAbortError(error)) return end('signal');
       throw error;
+    } finally {
+      if (timer) clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
     }
   }
 }

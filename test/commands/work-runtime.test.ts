@@ -793,6 +793,88 @@ describe('sift work runtime commands', () => {
       expect(records.some(record => record.type === 'end' && record.reason === 'signal')).toBe(false);
     });
 
+    /** Answers every read except those whose path matches `stall`, which end only on abort. */
+    function stallingApi(stall: (path: string) => boolean, executionState: (reads: number) => string): void {
+      calls = [];
+      global.fetch = jest.fn((input: RequestInfo | URL, init: RequestInit = {}) => {
+        const url = new URL(String(input));
+        calls.push({method: 'GET', url, headers: {}});
+        if (stall(url.pathname)) {
+          return new Promise<Response>((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), {name: 'AbortError'})), {once: true});
+          });
+        }
+        const reply = (body: unknown) => Promise.resolve({ok: true, status: 200, headers: new Headers(), text: async () => JSON.stringify(body), json: async () => body} as Response);
+        if (url.pathname === `${BASE}/execution`) {
+          const reads = calls.filter(entry => entry.url.pathname === `${BASE}/execution`).length;
+          return reply(execution(executionState(reads)));
+        }
+        if (url.pathname === `${BASE}/events`) return reply({version: 1, events: [], nextSequence: null});
+        if (url.pathname === `${BASE}/runtime-requests`) return reply({version: 1, requests: []});
+        if (url.pathname === `${BASE}/runtime-controls`) return reply({version: 1, controls: [], truncated: false});
+        return reply({version: 1, events: [], nextSequence: null, timedOut: true});
+      }) as typeof fetch;
+    }
+
+    it('ends with signal, after beforeEnd, when Ctrl-C arrives during the final drain', async () => {
+      stallingApi(path => path === `${BASE}/events`, reads => (reads >= 2 ? 'ended' : 'running'));
+      const caller = new AbortController();
+      const records: WatchRecord[] = [];
+      let settled = false;
+      const follower = new WorkItemFollower(new WorkRuntimeApi({apiUrl: 'https://siftable.io', token: 't'}), followerOptions(records, {
+        signal: caller.signal,
+        timeoutMs: 30_000,
+        beforeEnd: async () => { settled = true; },
+      }));
+      setTimeout(() => caller.abort(), 100);
+
+      await expect(follower.run()).resolves.toBe('signal');
+      expect(settled).toBe(true);
+      expect(records.at(-1)).toEqual({version: 1, type: 'end', reason: 'signal', afterSequence: 0});
+      expect(records.some(record => record.type === 'drain_incomplete')).toBe(false);
+    });
+
+    it('ends with timeout when a start-scan page stalls', async () => {
+      stallingApi(path => path === `${BASE}/events`, () => 'running');
+      const records: WatchRecord[] = [];
+      const started = Date.now();
+      const follower = new WorkItemFollower(new WorkRuntimeApi({apiUrl: 'https://siftable.io', token: 't'}), followerOptions(records, {
+        afterSequence: undefined,
+        timeoutMs: 300,
+      }));
+
+      await expect(follower.run()).resolves.toBe('timeout');
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(records.map(record => record.type)).toEqual(['end']);
+      expect(records[0]).toMatchObject({reason: 'timeout'});
+    });
+
+    it('ends with timeout when the long-poll stalls', async () => {
+      stallingApi(path => path === `${BASE}/events/wait`, () => 'running');
+      const records: WatchRecord[] = [];
+      const started = Date.now();
+      const follower = new WorkItemFollower(new WorkRuntimeApi({apiUrl: 'https://siftable.io', token: 't'}), followerOptions(records, {timeoutMs: 300}));
+
+      await expect(follower.run()).resolves.toBe('timeout');
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(records.map(record => record.type)).toEqual(['snapshot', 'end']);
+      expect(records.at(-1)).toMatchObject({reason: 'timeout'});
+    });
+
+    it('ends with signal, not timeout, when Ctrl-C interrupts a stalled long-poll', async () => {
+      stallingApi(path => path === `${BASE}/events/wait`, () => 'running');
+      const caller = new AbortController();
+      const records: WatchRecord[] = [];
+      const follower = new WorkItemFollower(new WorkRuntimeApi({apiUrl: 'https://siftable.io', token: 't'}), followerOptions(records, {
+        signal: caller.signal,
+        timeoutMs: 30_000,
+      }));
+      setTimeout(() => caller.abort(), 100);
+
+      await expect(follower.run()).resolves.toBe('signal');
+      expect(records.at(-1)).toMatchObject({type: 'end', reason: 'signal'});
+    });
+
     function attemptEndsDuringScan(before: unknown, after: unknown): void {
       installApi(call => {
         const path = call.url.pathname;
