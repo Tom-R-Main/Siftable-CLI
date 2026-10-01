@@ -96,11 +96,59 @@ sift tasks complete "$TASK_ID"
 
 Link work to a planning task with `sift work create --task <task-id>` rather than assigning an executor directly to a task.
 
+### Following and steering running work
+
+`sift work watch`, `attach`, `send`, `interrupt`, `approve` and `answer` act on a work item that is already running. They call the Sift API only: none of them starts a model process or connects to the agent runtime directly. The one process they may start is your platform's URL opener (`open`, `xdg-open` or `rundll32`), for `approve` and `answer`.
+
+```bash
+sift work watch "$WORK_ID"                    # follow until the live attempt ends
+sift work attach "$WORK_ID"                   # recent ledger + follow; typed lines become instructions
+sift work send "$WORK_ID" "Also update the README" --wait
+sift work interrupt "$WORK_ID" --wait
+sift work approve "$WORK_ID"                  # opens the web app to decide; waits for the outcome
+sift work answer "$WORK_ID" "$REQUEST_ID" --no-browser
+```
+
+**watch / attach.** Reads the ledger from an explicit sequence with `GET /events/wait` (long-poll) and refreshes the execution attempt, runtime requests and runtime controls after each poll window. It never reads or advances a durable consumer cursor. It stops when an attempt it saw live is no longer live (`--keep-following` to continue), after `--timeout` seconds, on Ctrl-C, or immediately with `--once`. With `--json` the output is JSON Lines, one record per line, each with `version: 1` and a `type`:
+
+| `type` | Fields |
+|---|---|
+| `snapshot` | `workItemId`, `afterSequence` (ledger cursor), `attempt` (live attempt or `null`), `leaseActive`, `openRequests[]`, `openControls[]` (queued or dispatching) |
+| `event` | `event`: a ledger event as returned by `GET /events` |
+| `attempt` | `attempt`, `leaseActive`: the live attempt changed |
+| `request` | `request`: a runtime request appeared or changed state or delivery state |
+| `control` | `control`: a runtime control appeared or changed state |
+| `end` | `reason` (`attempt_ended`, `timeout`, `once`, `signal`), `afterSequence`; pass it to `--after-sequence` to resume |
+
+`attach` reads typed lines only from a terminal, and not with `--no-input` or `--once`: a line queues an instruction, `/interrupt` interrupts the turn, `/quit` detaches.
+
+**send / interrupt.** `POST /runtime-controls` with `{kind: "instruction", instruction}` or `{kind: "interrupt"}`. Each invocation generates one `Idempotency-Key` (or uses `--idempotency-key`) and reuses it for its retries after a transport error, 408, 429 or 5xx, so a retry never queues a second control. Output (`--json`):
+
+```json
+{"version": 1, "applied": true, "control": {"id": "…", "kind": "instruction", "state": "queued", "…": "…"}, "idempotencyKey": "cli-instruction-…", "requestAttempts": 1}
+```
+
+`applied: false` means the server returned an existing control: a retry of the same key, or an interrupt that was already open. `control.state` is exactly what the server recorded: `queued`, `dispatching`, `delivered`, `acknowledged`, `cancelled`, `failed`, `expired` or `unconfirmed`. An instruction is delivered only at `delivered`; an interrupt is acknowledged only at `acknowledged`. With `--wait` the command polls until a final state or `--timeout`, adds `settled: boolean`, and exits 1 unless the instruction reached `delivered` or the interrupt reached `acknowledged`.
+
+**approve / answer.** The server refuses access tokens (PATs and delegated OAuth) for resolving runtime requests, so the CLI never calls `POST /runtime-requests/:requestId/resolve`. It opens the web app page for the request, where you decide with your signed-in session, then polls `GET /runtime-requests` until the request leaves `pending`. Without a request ID it picks the only open approval (or question). The decision page is:
+
+```
+<app origin>/app/work/<workItemId>?request=<requestId>
+```
+
+The app origin is `--app-url`, else `SIFT_APP_URL`, else the `--api-url` origin (`http://localhost:8080` maps to the local web client on `:3000`). Output (`--json`):
+
+```json
+{"version": 1, "workItemId": "…", "requestId": "…", "kind": "approval", "decisionUrl": "https://siftable.io/app/work/…?request=…", "browserOpened": true, "outcome": "resolved", "request": {"state": "resolved", "resolution": {"decision": "accept"}, "deliveryState": "delivered", "…": "…"}}
+```
+
+`outcome` is `resolved`, `expired`, `superseded` or `timed_out` (still pending after `--timeout` seconds); the command exits 0 only for `resolved`. `request.resolution` holds the stored decision, and `request.deliveryState` says whether it reached the agent.
+
 ---
 
 ## Command reference
 
-All 341 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
+All 350 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
 
 **Topics:** [General](#general) · [Agent](#agent) · [Agents](#agents) · [Ai](#ai) · [Approvals](#approvals) · [Auth](#auth) · [Billing](#billing) · [Calendar](#calendar) · [Capabilities](#capabilities) · [Code](#code) · [Codebase](#codebase) · [Codex](#codex) · [Context](#context) · [Crm](#crm) · [Datasets](#datasets) · [Documents](#documents) · [Env](#env) · [Events](#events) · [Evidence](#evidence) · [Grants](#grants) · [Graph](#graph) · [Lead-discovery](#lead-discovery) · [Notes](#notes) · [Organizations](#organizations) · [People](#people) · [Projects](#projects) · [Recipes](#recipes) · [Relationships](#relationships) · [Research](#research) · [Skills](#skills) · [Tasks](#tasks) · [Timeline](#timeline) · [Vault](#vault) · [Work](#work) · [Worker](#worker) · [Workspaces](#workspaces)
 
@@ -1329,27 +1377,54 @@ Generate a deterministic names-and-placeholders-only example
 - `--checkout-root <value>` — Exact Git checkout root containing .sift/environment.yaml
 - `--write` — Write the deterministic output to .env.example instead of displaying it
 
+#### `sift env export contract`
+Export the environment contract (metadata only, never values)
+
+**Flags**
+
+- `--checkout-root <value>` — Checkout containing .sift/environment.yaml
+- `--format <value>` *(required)* — Export format: json or csv
+- `--output <value>` — New local output file to create (O_EXCL); prints to stdout when omitted
+- `--owner <value>` — Exact Vault owner: personal or workspace:<tenant-id>
+
 #### `sift env import apply`
-Apply one exact reviewed dotenv import plan atomically
+Apply one exact reviewed dotenv or CSV import plan atomically
+
+**Flags**
+
+- `--checkout-root <value>` — Checkout used only to reject Sift-managed source files
+- `--format <value>` *(default: "dotenv")* — Source format: dotenv or csv
+- `--owner <value>` — Exact Vault owner: personal or workspace:<tenant-id>
+- `--plan-file <value>` *(required)* — Reviewed value-free plan artifact
+- `--receipt-file <value>` — New local value-free import receipt to create (required for later source cleanup)
+- `--source <value>` *(required)* — Same explicit source used to create the plan
+
+#### `sift env import cleanup`
+Remove one reviewed import source after a completed import
 
 **Flags**
 
 - `--checkout-root <value>` — Checkout used only to reject Sift-managed source files
 - `--owner <value>` — Exact Vault owner: personal or workspace:<tenant-id>
-- `--plan-file <value>` *(required)* — Reviewed value-free plan artifact
-- `--source <value>` *(required)* — Same explicit dotenv source used to create the plan
+- `--receipt-file <value>` *(required)* — Value-free import receipt from the completed apply
+- `--source <value>` *(required)* — Explicit import source file to remove
+- `--yes` *(required)* — Fresh human confirmation for this removal
 
 #### `sift env import plan`
-Create a value-free, owner-scoped plan for one explicitly named dotenv source
+Create a value-free, owner-scoped plan for one explicitly named dotenv or CSV source
 
 **Flags**
 
 - `--checkout-root <value>` — Checkout used only to reject Sift-managed source files
 - `--decision <value>` *(repeatable)* — Explicit per-index decision: INDEX:keep-existing|overwrite|skip|rename=NAME
+- `--delimiter <value>` — CSV delimiter: comma, semicolon, tab, or pipe
+- `--format <value>` *(default: "dotenv")* — Source format: dotenv or csv
+- `--header-row <value>` — CSV header row (1-based line number)
+- `--map <value>` *(repeatable)* — CSV column mapping: field=DisplayedHeader (repeatable)
 - `--owner <value>` — Exact Vault owner: personal or workspace:<tenant-id>
 - `--plan-file <value>` *(required)* — New local value-free plan artifact to create
 - `--project <value>` — Exact owner-scoped project UUID
-- `--source <value>` *(required)* — Explicit dotenv source file
+- `--source <value>` *(required)* — Explicit dotenv or CSV source file
 
 #### `sift env pull`
 Pull one exact governed Vault bundle into a Sift-managed development environment file
@@ -1365,26 +1440,32 @@ Pull one exact governed Vault bundle into a Sift-managed development environment
 - `--replace` — Replace a changed Sift-managed file using its exact observed precondition
 
 #### `sift env push apply`
-Apply one exact reviewed dotenv import plan atomically
+Apply one exact reviewed dotenv or CSV import plan atomically
 
 **Flags**
 
 - `--checkout-root <value>` — Checkout used only to reject Sift-managed source files
+- `--format <value>` *(default: "dotenv")* — Source format: dotenv or csv
 - `--owner <value>` — Exact Vault owner: personal or workspace:<tenant-id>
 - `--plan-file <value>` *(required)* — Reviewed value-free plan artifact
-- `--source <value>` *(required)* — Same explicit dotenv source used to create the plan
+- `--receipt-file <value>` — New local value-free import receipt to create (required for later source cleanup)
+- `--source <value>` *(required)* — Same explicit source used to create the plan
 
 #### `sift env push plan`
-Create a value-free, owner-scoped plan for one explicitly named dotenv source
+Create a value-free, owner-scoped plan for one explicitly named dotenv or CSV source
 
 **Flags**
 
 - `--checkout-root <value>` — Checkout used only to reject Sift-managed source files
 - `--decision <value>` *(repeatable)* — Explicit per-index decision: INDEX:keep-existing|overwrite|skip|rename=NAME
+- `--delimiter <value>` — CSV delimiter: comma, semicolon, tab, or pipe
+- `--format <value>` *(default: "dotenv")* — Source format: dotenv or csv
+- `--header-row <value>` — CSV header row (1-based line number)
+- `--map <value>` *(repeatable)* — CSV column mapping: field=DisplayedHeader (repeatable)
 - `--owner <value>` — Exact Vault owner: personal or workspace:<tenant-id>
 - `--plan-file <value>` *(required)* — New local value-free plan artifact to create
 - `--project <value>` — Exact owner-scoped project UUID
-- `--source <value>` *(required)* — Explicit dotenv source file
+- `--source <value>` *(required)* — Explicit dotenv or CSV source file
 
 #### `sift env rm`
 Remove one exact Sift-managed local environment file
@@ -3620,6 +3701,52 @@ Read an addressed outbound A2A dispatch
 - `connection` *(required)* — A2A connection ID
 - `dispatch` *(required)* — Outbound dispatch ID
 
+#### `sift work answer`
+Answer a question a running agent asked. Opens the web app, where you answer with your signed-in session, then waits for the stored outcome.
+
+**Arguments**
+
+- `id` *(required)* — Work item UUID
+- `requestId` — Runtime request UUID (default: the only open question)
+
+**Flags**
+
+- `--app-url <value>` — Web app origin for the decision page (default: SIFT_APP_URL, else derived from --api-url)
+- `--no-browser` — Print the decision URL instead of opening it
+- `--poll-ms <value>` *(default: 2000)*
+- `--timeout <value>` *(default: 900)* — Seconds to wait for the decision
+
+#### `sift work approve`
+Decide an approval a running agent is waiting on. Opens the web app, where you decide with your signed-in session, then waits for the stored outcome.
+
+**Arguments**
+
+- `id` *(required)* — Work item UUID
+- `requestId` — Runtime request UUID (default: the only open approval)
+
+**Flags**
+
+- `--app-url <value>` — Web app origin for the decision page (default: SIFT_APP_URL, else derived from --api-url)
+- `--no-browser` — Print the decision URL instead of opening it
+- `--poll-ms <value>` *(default: 2000)*
+- `--timeout <value>` *(default: 900)* — Seconds to wait for the decision
+
+#### `sift work attach`
+Attach to a running work item: show its state and recent ledger, follow it, and (on a terminal) send typed lines as instructions
+
+**Arguments**
+
+- `id` *(required)* — Work item UUID
+
+**Flags**
+
+- `--after-sequence <value>` — Follow from after this ledger sequence instead of the current end
+- `--backlog <value>` *(default: 20)* — Replay this many ledger events before the current end
+- `--keep-following` — Keep following after the live execution attempt ends
+- `--once` — Print the current state (and backlog) once, then exit
+- `--timeout <value>` *(default: 0)* — Stop following after this many seconds (0 = no limit)
+- `--wait-ms <value>` *(default: 10000)* — Long-poll window per ledger request; runtime requests and controls refresh after each window
+
 #### `sift work block`
 Mark a work item as blocked
 
@@ -3795,6 +3922,19 @@ Deterministically validate a Work Contract V1 file or fetched work item
 
 - `--file <value>` — Path to a Work Contract V1 JSON file
 
+#### `sift work coverage-shadow`
+Post the test cases a work item's verification plan runs, for Jev coverage shadow evaluation
+
+**Arguments**
+
+- `id` *(required)* — Work item ID
+
+**Flags**
+
+- `--commit <value>` — Commit to read test files at (default: HEAD of this checkout)
+- `--dry-run` — Print the candidate summary and payload size without posting
+- `--save <value>` — Also write the built payload as JSON to this file (with or without --dry-run)
+
 #### `sift work create`
 Create an executable agent work item
 
@@ -3927,6 +4067,22 @@ Extend a work item lease
 - `--summary <value>` — Result summary
 - `--verification-results <value>` — Verification evidence JSON array: [{"command","exitCode","output"?}]
 
+#### `sift work interrupt`
+Interrupt the current turn of a running work item; the session stays open for further instructions
+
+**Arguments**
+
+- `id` *(required)* — Work item UUID
+
+**Flags**
+
+- `--idempotency-key <value>` — Retry key (1-128 of A-Z a-z 0-9 . _ : -). Default: a new key per invocation, reused for its own retries
+- `--poll-ms <value>` *(default: 1000)*
+- `--retries <value>` *(default: 2)* — Retries after a transport error, 408, 429 or 5xx, with the same key
+- `--retry-delay-ms <value>` *(default: 500)*
+- `--timeout <value>` *(default: 120)* — Seconds to wait with --wait
+- `--wait` — Wait until the server records a final state for the control
+
 #### `sift work list`
 List executable agent work items
 
@@ -4002,6 +4158,23 @@ List immutable, attributable work-item revision receipts and field diffs
 **Flags**
 
 - `--limit <value>` *(default: 50)* — Maximum revisions to return
+
+#### `sift work send`
+Queue a follow-up instruction for a running work item; it runs as the next turn after the current turn settles
+
+**Arguments**
+
+- `id` *(required)* — Work item UUID
+- `instruction` *(required)* — Instruction text, or - to read it from stdin
+
+**Flags**
+
+- `--idempotency-key <value>` — Retry key (1-128 of A-Z a-z 0-9 . _ : -). Default: a new key per invocation, reused for its own retries
+- `--poll-ms <value>` *(default: 1000)*
+- `--retries <value>` *(default: 2)* — Retries after a transport error, 408, 429 or 5xx, with the same key
+- `--retry-delay-ms <value>` *(default: 500)*
+- `--timeout <value>` *(default: 120)* — Seconds to wait with --wait
+- `--wait` — Wait until the server records a final state for the control
 
 #### `sift work start`
 Mark a work item as running
@@ -4085,6 +4258,22 @@ Deprecated compatibility command. Hosted LLM verification is retired; use verifi
 - `--history` — List historical verifier runs recorded before retirement
 - `--model <value>` — Deprecated; ignored because hosted verification is retired
 - `--reps <value>` — Deprecated; ignored because hosted verification is retired
+
+#### `sift work watch`
+Follow a running work item: ledger events, the execution attempt, runtime requests and controls. Read-only.
+
+**Arguments**
+
+- `id` *(required)* — Work item UUID
+
+**Flags**
+
+- `--after-sequence <value>` — Follow from after this ledger sequence instead of the current end
+- `--backlog <value>` *(default: 0)* — Replay this many ledger events before the current end
+- `--keep-following` — Keep following after the live execution attempt ends
+- `--once` — Print the current state (and backlog) once, then exit
+- `--timeout <value>` *(default: 0)* — Stop following after this many seconds (0 = no limit)
+- `--wait-ms <value>` *(default: 10000)* — Long-poll window per ledger request; runtime requests and controls refresh after each window
 
 
 ### Worker

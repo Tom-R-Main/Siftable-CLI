@@ -161,6 +161,17 @@ function eventReferenceSummary(event: CollaborationResponse): string {
   return references.join(', ');
 }
 
+/** One redacted, terminal-safe line for a ledger event. */
+export function renderCollaborationEventLine(event: CollaborationResponse): string {
+  const preview = eventTextPreview(event) || eventReferenceSummary(event) || '—';
+  return [
+    `#${sanitizeTerminalLine(event.sequence ?? '?')}`,
+    sanitizeTerminalLine(event.kind ?? 'unknown'),
+    actorLabel(event.actor),
+    preview,
+  ].join('  ');
+}
+
 export function renderCollaborationEvents(data: CollaborationResponse): string {
   const events = collaborationRecords(data.events);
   const serverPageLastSequence = Number.isSafeInteger(data.nextSequence) && Number(data.nextSequence) >= 0
@@ -171,15 +182,7 @@ export function renderCollaborationEvents(data: CollaborationResponse): string {
     && deliveredSequences.every((sequence) => Number.isSafeInteger(sequence) && Number(sequence) >= 0)
     ? Math.max(...deliveredSequences.map(Number))
     : null;
-  const lines = events.map((event) => {
-    const preview = eventTextPreview(event) || eventReferenceSummary(event) || '—';
-    return [
-      `#${sanitizeTerminalLine(event.sequence ?? '?')}`,
-      sanitizeTerminalLine(event.kind ?? 'unknown'),
-      actorLabel(event.actor),
-      preview,
-    ].join('  ');
-  });
+  const lines = events.map(renderCollaborationEventLine);
   if (events.length === 0) lines.push(data.timedOut === true ? 'Wait timed out with no events.' : 'No collaboration events found.');
   if (typeof data.consumerKey === 'string') lines.push(`Consumer: ${sanitizeTerminalLine(data.consumerKey)}`);
   if (serverPageLastSequence !== null) lines.push(`Server page watermark: ${serverPageLastSequence}`);

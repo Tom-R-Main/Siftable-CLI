@@ -51,6 +51,13 @@ export const STATIC_READINESS_CAPABILITIES: StaticReadinessCapability[] = [
     description: 'Represent long-running agent execution as resumable work items with evidence and review states.',
   },
   {
+    id: 'agent.work.runtime_control',
+    kind: 'static_readiness',
+    status: 'ready',
+    commands: ['sift work watch', 'sift work attach', 'sift work send', 'sift work interrupt', 'sift work approve', 'sift work answer'],
+    description: 'Follow a running work item and steer it through the Sift API: queue instructions, interrupt a turn, and decide agent requests in the web app.',
+  },
+  {
     id: 'research.workflow',
     kind: 'static_readiness',
     status: 'ready',

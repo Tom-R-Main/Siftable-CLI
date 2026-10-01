@@ -101,6 +101,11 @@ The most-used surface, grouped by domain. Run `sift --help` or `sift <topic> --h
 | `sift work fail <id>` | Mark work failed |
 | `sift work release <id>` | Release a claim back to the queue |
 | `sift work cancel <id>` | Cancel work |
+| `sift work watch <id>` | Follow a running work item's ledger, attempt, requests and controls |
+| `sift work attach <id>` | Show recent state, follow, and send typed lines as instructions |
+| `sift work send <id> <text>` | Queue a follow-up instruction for the running agent |
+| `sift work interrupt <id>` | Interrupt the agent's current turn |
+| `sift work approve <id>` / `answer <id>` | Decide an agent request in the web app and wait for the outcome |
 
 ### Agents
 | Command | Description |

@@ -45,6 +45,32 @@
                 </dl>
               </div>
             </details>
+            <h2 id="cli-agent" data-i18n="docs.cli.agent.title">Agent</h2>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.agent.count">1 command</span></summary>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift agent run</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.agent.run.desc">Run Sift’s local agent harness headlessly with durable session events</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--approval &lt;deny|allow&gt;</code> <span class="flag-meta">default: "deny"</span> — Tool approval policy; allow approves local tool requests. Shell commands run with host permissions</dd>
+                  <dd><code>--base-url &lt;value&gt;</code> — Compatible provider endpoint (HTTPS or loopback HTTP)</dd>
+                  <dd><code>--cwd &lt;value&gt;</code> — Local workspace directory and writable root (defaults to current directory)</dd>
+                  <dd><code>--deadline-ms &lt;value&gt;</code> <span class="flag-meta">default: 600000</span> — Turn deadline in milliseconds</dd>
+                  <dd><code>--effort &lt;none|minimal|low|medium|high|xhigh|max&gt;</code> — Provider reasoning effort</dd>
+                  <dd><code>--format &lt;jsonl|json|text&gt;</code> <span class="flag-meta">default: "jsonl"</span> — Output protocol (--json selects json)</dd>
+                  <dd><code>--handoff-timeout-ms &lt;value&gt;</code> — Maximum external grading handoff duration</dd>
+                  <dd><code>--max-output-tokens &lt;value&gt;</code> — Maximum provider output tokens</dd>
+                  <dd><code>--max-rounds &lt;value&gt;</code> <span class="flag-meta">default: 24</span> — Maximum tool rounds</dd>
+                  <dd><code>--model &lt;value&gt;</code> <span class="flag-meta">required</span> — Exact provider model ID</dd>
+                  <dd><code>--prompt &lt;value&gt;</code> <span class="flag-meta">required</span> — Task for the local agent</dd>
+                  <dd><code>--provider &lt;value&gt;</code> <span class="flag-meta">required</span> — Provider adapter; credentials are read from the environment</dd>
+                  <dd><code>--session &lt;value&gt;</code> — Resume this session ID; defaults to a fresh session</dd>
+                  <dd><code>--supervisor-handoff</code> — Keep session jobs owned during external grading; requires a supervisor stdin pipe and JSONL</dd>
+                  <dd><code>--verify-command &lt;value&gt;</code> — Explicit post-run check as a JSON argv array; requires --verify-file</dd>
+                  <dd><code>--verify-file &lt;value&gt;</code> <span class="flag-meta">repeatable</span> — Exact candidate file to bind to the check (repeat for each file)</dd>
+                </dl>
+              </div>
+            </details>
             <h2 id="cli-agents" data-i18n="docs.cli.agents.title">Agents</h2>
             <p class="cli-topic__intro" data-i18n="docs.cli.agents.intro">Agent aliases.</p>
             <details class="cli-topic"><summary><span data-i18n="docs.cli.agents.count">6 commands</span></summary>
@@ -488,6 +514,17 @@
                   <dd><code>--file &lt;value&gt;</code> — Related file path</dd>
                   <dd><code>--path &lt;value&gt;</code> <span class="flag-meta">repeatable</span> — Additional related path (repeatable)</dd>
                   <dd><code>--reason &lt;value&gt;</code> <span class="flag-meta">required</span> — Audit reason</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-codebase" data-i18n="docs.cli.codebase.title">Codebase</h2>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.codebase.count">1 command</span></summary>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift codebase search</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.codebase.search.desc">Explain the retired source-code search command and its local recovery</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>query</code> — Legacy source-code search query</dd>
                 </dl>
               </div>
             </details>
@@ -1143,7 +1180,7 @@
             </details>
             <h2 id="cli-env" data-i18n="docs.cli.env.title">Env</h2>
             <p class="cli-topic__intro" data-i18n="docs.cli.env.intro">Declarative environment contracts and governed Vault bundle materialization.</p>
-            <details class="cli-topic"><summary><span data-i18n="docs.cli.env.count">11 commands</span></summary>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.env.count">13 commands</span></summary>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift env check</code></div></div>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.env.check.desc">Validate the environment contract for local or CI use</p>
@@ -1183,27 +1220,56 @@
                 </dl>
               </div>
               <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift env export contract</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.env.export-contract.desc">Export the environment contract (metadata only, never values)</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--checkout-root &lt;value&gt;</code> — Checkout containing .sift/environment.yaml</dd>
+                  <dd><code>--format &lt;value&gt;</code> <span class="flag-meta">required</span> — Export format: json or csv</dd>
+                  <dd><code>--output &lt;value&gt;</code> — New local output file to create (O_EXCL); prints to stdout when omitted</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Exact Vault owner: personal or workspace:&lt;tenant-id&gt;</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift env import apply</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.env.import-apply.desc">Apply one exact reviewed dotenv import plan atomically</p>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.env.import-apply.desc">Apply one exact reviewed dotenv or CSV import plan atomically</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--checkout-root &lt;value&gt;</code> — Checkout used only to reject Sift-managed source files</dd>
+                  <dd><code>--format &lt;value&gt;</code> <span class="flag-meta">default: "dotenv"</span> — Source format: dotenv or csv</dd>
+                  <dd><code>--owner &lt;value&gt;</code> — Exact Vault owner: personal or workspace:&lt;tenant-id&gt;</dd>
+                  <dd><code>--plan-file &lt;value&gt;</code> <span class="flag-meta">required</span> — Reviewed value-free plan artifact</dd>
+                  <dd><code>--receipt-file &lt;value&gt;</code> — New local value-free import receipt to create (required for later source cleanup)</dd>
+                  <dd><code>--source &lt;value&gt;</code> <span class="flag-meta">required</span> — Same explicit source used to create the plan</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift env import cleanup</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.env.import-cleanup.desc">Remove one reviewed import source after a completed import</p>
                 <dl class="cli-cmd__params">
                   <dt>Flags</dt>
                   <dd><code>--checkout-root &lt;value&gt;</code> — Checkout used only to reject Sift-managed source files</dd>
                   <dd><code>--owner &lt;value&gt;</code> — Exact Vault owner: personal or workspace:&lt;tenant-id&gt;</dd>
-                  <dd><code>--plan-file &lt;value&gt;</code> <span class="flag-meta">required</span> — Reviewed value-free plan artifact</dd>
-                  <dd><code>--source &lt;value&gt;</code> <span class="flag-meta">required</span> — Same explicit dotenv source used to create the plan</dd>
+                  <dd><code>--receipt-file &lt;value&gt;</code> <span class="flag-meta">required</span> — Value-free import receipt from the completed apply</dd>
+                  <dd><code>--source &lt;value&gt;</code> <span class="flag-meta">required</span> — Explicit import source file to remove</dd>
+                  <dd><code>--yes</code> <span class="flag-meta">required</span> — Fresh human confirmation for this removal</dd>
                 </dl>
               </div>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift env import plan</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.env.import-plan.desc">Create a value-free, owner-scoped plan for one explicitly named dotenv source</p>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.env.import-plan.desc">Create a value-free, owner-scoped plan for one explicitly named dotenv or CSV source</p>
                 <dl class="cli-cmd__params">
                   <dt>Flags</dt>
                   <dd><code>--checkout-root &lt;value&gt;</code> — Checkout used only to reject Sift-managed source files</dd>
                   <dd><code>--decision &lt;value&gt;</code> <span class="flag-meta">repeatable</span> — Explicit per-index decision: INDEX:keep-existing|overwrite|skip|rename=NAME</dd>
+                  <dd><code>--delimiter &lt;value&gt;</code> — CSV delimiter: comma, semicolon, tab, or pipe</dd>
+                  <dd><code>--format &lt;value&gt;</code> <span class="flag-meta">default: "dotenv"</span> — Source format: dotenv or csv</dd>
+                  <dd><code>--header-row &lt;value&gt;</code> — CSV header row (1-based line number)</dd>
+                  <dd><code>--map &lt;value&gt;</code> <span class="flag-meta">repeatable</span> — CSV column mapping: field=DisplayedHeader (repeatable)</dd>
                   <dd><code>--owner &lt;value&gt;</code> — Exact Vault owner: personal or workspace:&lt;tenant-id&gt;</dd>
                   <dd><code>--plan-file &lt;value&gt;</code> <span class="flag-meta">required</span> — New local value-free plan artifact to create</dd>
                   <dd><code>--project &lt;value&gt;</code> — Exact owner-scoped project UUID</dd>
-                  <dd><code>--source &lt;value&gt;</code> <span class="flag-meta">required</span> — Explicit dotenv source file</dd>
+                  <dd><code>--source &lt;value&gt;</code> <span class="flag-meta">required</span> — Explicit dotenv or CSV source file</dd>
                 </dl>
               </div>
               <div class="cli-cmd">
@@ -1222,26 +1288,32 @@
               </div>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift env push apply</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.env.push-apply.desc">Apply one exact reviewed dotenv import plan atomically</p>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.env.push-apply.desc">Apply one exact reviewed dotenv or CSV import plan atomically</p>
                 <dl class="cli-cmd__params">
                   <dt>Flags</dt>
                   <dd><code>--checkout-root &lt;value&gt;</code> — Checkout used only to reject Sift-managed source files</dd>
+                  <dd><code>--format &lt;value&gt;</code> <span class="flag-meta">default: "dotenv"</span> — Source format: dotenv or csv</dd>
                   <dd><code>--owner &lt;value&gt;</code> — Exact Vault owner: personal or workspace:&lt;tenant-id&gt;</dd>
                   <dd><code>--plan-file &lt;value&gt;</code> <span class="flag-meta">required</span> — Reviewed value-free plan artifact</dd>
-                  <dd><code>--source &lt;value&gt;</code> <span class="flag-meta">required</span> — Same explicit dotenv source used to create the plan</dd>
+                  <dd><code>--receipt-file &lt;value&gt;</code> — New local value-free import receipt to create (required for later source cleanup)</dd>
+                  <dd><code>--source &lt;value&gt;</code> <span class="flag-meta">required</span> — Same explicit source used to create the plan</dd>
                 </dl>
               </div>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift env push plan</code></div></div>
-                <p class="cli-cmd__desc" data-i18n="docs.cli.env.push-plan.desc">Create a value-free, owner-scoped plan for one explicitly named dotenv source</p>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.env.push-plan.desc">Create a value-free, owner-scoped plan for one explicitly named dotenv or CSV source</p>
                 <dl class="cli-cmd__params">
                   <dt>Flags</dt>
                   <dd><code>--checkout-root &lt;value&gt;</code> — Checkout used only to reject Sift-managed source files</dd>
                   <dd><code>--decision &lt;value&gt;</code> <span class="flag-meta">repeatable</span> — Explicit per-index decision: INDEX:keep-existing|overwrite|skip|rename=NAME</dd>
+                  <dd><code>--delimiter &lt;value&gt;</code> — CSV delimiter: comma, semicolon, tab, or pipe</dd>
+                  <dd><code>--format &lt;value&gt;</code> <span class="flag-meta">default: "dotenv"</span> — Source format: dotenv or csv</dd>
+                  <dd><code>--header-row &lt;value&gt;</code> — CSV header row (1-based line number)</dd>
+                  <dd><code>--map &lt;value&gt;</code> <span class="flag-meta">repeatable</span> — CSV column mapping: field=DisplayedHeader (repeatable)</dd>
                   <dd><code>--owner &lt;value&gt;</code> — Exact Vault owner: personal or workspace:&lt;tenant-id&gt;</dd>
                   <dd><code>--plan-file &lt;value&gt;</code> <span class="flag-meta">required</span> — New local value-free plan artifact to create</dd>
                   <dd><code>--project &lt;value&gt;</code> — Exact owner-scoped project UUID</dd>
-                  <dd><code>--source &lt;value&gt;</code> <span class="flag-meta">required</span> — Explicit dotenv source file</dd>
+                  <dd><code>--source &lt;value&gt;</code> <span class="flag-meta">required</span> — Explicit dotenv or CSV source file</dd>
                 </dl>
               </div>
               <div class="cli-cmd">
@@ -1553,6 +1625,111 @@
                   <dt>Flags</dt>
                   <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 20</span> — Maximum results</dd>
                   <dd><code>--types &lt;value&gt;</code> — Comma-separated entity types</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-lead-discovery" data-i18n="docs.cli.lead-discovery.title">Lead-discovery</h2>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.lead-discovery.count">10 commands</span></summary>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift lead-discovery candidates list</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.lead-discovery.candidates-list.desc">List source-backed review candidates for a durable discovery run</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>runId</code> <span class="req">required</span> — Discovery run UUID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift lead-discovery candidates review</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.lead-discovery.candidates-review.desc">Versioned shortlist, reject, or restore of one discovery candidate</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>candidateId</code> <span class="req">required</span> — Discovery candidate UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--expected-review-version &lt;value&gt;</code> <span class="flag-meta">required</span> — Current review version used for optimistic concurrency</dd>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> — Stable retry key; generated when omitted</dd>
+                  <dd><code>--reason-code &lt;value&gt;</code> <span class="flag-meta">required</span> — Structured shortlist/reject reason code</dd>
+                  <dd><code>--reason-note &lt;value&gt;</code> — Optional private review note</dd>
+                  <dd><code>--state &lt;discovered|shortlisted|rejected&gt;</code> <span class="flag-meta">required</span> — New review state</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift lead-discovery candidates review-many</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.lead-discovery.candidates-review-many.desc">Review up to 25 discovery candidates with ordered per-item receipts</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--reviews &lt;value&gt;</code> — Exact versioned review commands as a JSON array</dd>
+                  <dd><code>--reviews-file &lt;value&gt;</code> — Path to exact versioned review commands JSON array</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift lead-discovery companies prepare</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.lead-discovery.companies-prepare.desc">Prepare an exact company-discovery quote without dispatching provider work</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> — Stable retry key; generated when omitted</dd>
+                  <dd><code>--query &lt;value&gt;</code> — Exact lead-discovery query JSON object</dd>
+                  <dd><code>--query-file &lt;value&gt;</code> — Path to an exact lead-discovery query JSON object</dd>
+                  <dd><code>--target-kind &lt;organization|organization_person&gt;</code> <span class="flag-meta">default: "organization"</span> — Discovery target kind</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift lead-discovery companies run</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.lead-discovery.companies-run.desc">Run one exact opaque prepared company-discovery contract</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>preparedQueryId</code> <span class="req">required</span> — Opaque prepared-query UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--approved-maximum-charge-micros &lt;value&gt;</code> <span class="flag-meta">required</span> — Exact maximum charge returned by prepare and approved by the caller</dd>
+                  <dd><code>--query-digest &lt;value&gt;</code> <span class="flag-meta">required</span> — Exact digest returned by prepare</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift lead-discovery companies search</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.lead-discovery.companies-search.desc">Prepare and run a bounded company search under an explicit approved maximum charge</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> — Stable retry key; generated when omitted</dd>
+                  <dd><code>--maximum-charge-micros &lt;value&gt;</code> <span class="flag-meta">required</span> — Caller-approved charge ceiling in micro-USD</dd>
+                  <dd><code>--query &lt;value&gt;</code> — Exact lead-discovery query JSON object</dd>
+                  <dd><code>--query-file &lt;value&gt;</code> — Path to an exact lead-discovery query JSON object</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift lead-discovery import-plan create</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.lead-discovery.import-plan-create.desc">Create or recover the import plan bound to an exact reviewed shortlist</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>runId</code> <span class="req">required</span> — Discovery run UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--candidate-id &lt;value&gt;</code> <span class="flag-meta">required; repeatable</span> — Shortlisted candidate UUID; repeat for each candidate</dd>
+                  <dd><code>--expected-shortlist-digest &lt;value&gt;</code> <span class="flag-meta">required</span> — Exact 64-character shortlist digest</dd>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> — Stable retry key; generated when omitted</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift lead-discovery import-plan lookup</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.lead-discovery.import-plan-lookup.desc">Recover the import plan bound to a run and exact shortlist digest</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>runId</code> <span class="req">required</span> — Discovery run UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--expected-shortlist-digest &lt;value&gt;</code> <span class="flag-meta">required</span> — Exact 64-character shortlist digest</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift lead-discovery origin get</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.lead-discovery.origin-get.desc">Get persisted discovery-origin evidence for an imported organization</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>organizationId</code> <span class="req">required</span> — Organization UUID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift lead-discovery runs get</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.lead-discovery.runs-get.desc">Recover durable discovery run status and receipt by stable run ID</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>runId</code> <span class="req">required</span> — Discovery run UUID</dd>
                 </dl>
               </div>
             </details>
@@ -3298,7 +3475,124 @@
             </details>
             <h2 id="cli-work" data-i18n="docs.cli.work.title">Work</h2>
             <p class="cli-topic__intro" data-i18n="docs.cli.work.intro">Executable agent work queue.</p>
-            <details class="cli-topic"><summary><span data-i18n="docs.cli.work.count">25 commands</span></summary>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.work.count">46 commands</span></summary>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work a2a cancel</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.a2a-cancel.desc">Cancel the remote conversation; worker termination remains unconfirmed</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>connection</code> <span class="req">required</span> — A2A connection ID</dd>
+                  <dd><code>dispatch</code> <span class="req">required</span> — Outbound dispatch ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work a2a continue</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.a2a-continue.desc">Send one explicit clarification to a waiting A2A conversation</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>connection</code> <span class="req">required</span> — A2A connection ID</dd>
+                  <dd><code>dispatch</code> <span class="req">required</span> — Outbound dispatch ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--request-key &lt;value&gt;</code> <span class="flag-meta">required</span> — Stable key to reuse when retrying this operation</dd>
+                  <dd><code>--text &lt;value&gt;</code> <span class="flag-meta">required</span> — Clarification text to send on this conversation</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work a2a recover</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.a2a-recover.desc">Recover an addressed blocked dispatch after repairing authority</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>connection</code> <span class="req">required</span> — A2A connection ID</dd>
+                  <dd><code>dispatch</code> <span class="req">required</span> — Outbound dispatch ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--generation &lt;value&gt;</code> <span class="flag-meta">required</span> — Observed dispatch generation</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work a2a review</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.a2a-review.desc">Inspect scoped A2A dispatch history, artifacts and verification</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Local work item ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work a2a run</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.a2a-run.desc">Run or poll an addressed outbound A2A dispatch</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>connection</code> <span class="req">required</span> — A2A connection ID</dd>
+                  <dd><code>dispatch</code> <span class="req">required</span> — Outbound dispatch ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work a2a send</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.a2a-send.desc">Send one bounded assignment to an explicit A2A connection and remote work item</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>connection</code> <span class="req">required</span> — A2A connection ID</dd>
+                  <dd><code>work</code> <span class="req">required</span> — Local work item ID that holds the assignment and review</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--deadline &lt;value&gt;</code> <span class="flag-meta">required</span> — Absolute ISO deadline for this conversation</dd>
+                  <dd><code>--max-turns &lt;value&gt;</code> <span class="flag-meta">default: 8</span> — Maximum outgoing sends in this conversation, including the opening</dd>
+                  <dd><code>--remote-work &lt;value&gt;</code> <span class="flag-meta">required</span> — Remote work item UUID the receiver re-authorizes</dd>
+                  <dd><code>--remote-workspace &lt;value&gt;</code> — Remote workspace UUID; omit for personal scope</dd>
+                  <dd><code>--request-key &lt;value&gt;</code> <span class="flag-meta">required</span> — Stable key to reuse when retrying this assignment</dd>
+                  <dd><code>--text &lt;value&gt;</code> <span class="flag-meta">required</span> — Assignment text to send to the remote agent</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work a2a status</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.a2a-status.desc">Read an addressed outbound A2A dispatch</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>connection</code> <span class="req">required</span> — A2A connection ID</dd>
+                  <dd><code>dispatch</code> <span class="req">required</span> — Outbound dispatch ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work answer</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.answer.desc">Answer a question a running agent asked. Opens the web app, where you answer with your signed-in session, then waits for the stored outcome.</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item UUID</dd>
+                  <dd><code>requestId</code> — Runtime request UUID (default: the only open question)</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--app-url &lt;value&gt;</code> — Web app origin for the decision page (default: SIFT_APP_URL, else derived from --api-url)</dd>
+                  <dd><code>--no-browser</code> — Print the decision URL instead of opening it</dd>
+                  <dd><code>--poll-ms &lt;value&gt;</code> <span class="flag-meta">default: 2000</span></dd>
+                  <dd><code>--timeout &lt;value&gt;</code> <span class="flag-meta">default: 900</span> — Seconds to wait for the decision</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work approve</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.approve.desc">Decide an approval a running agent is waiting on. Opens the web app, where you decide with your signed-in session, then waits for the stored outcome.</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item UUID</dd>
+                  <dd><code>requestId</code> — Runtime request UUID (default: the only open approval)</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--app-url &lt;value&gt;</code> — Web app origin for the decision page (default: SIFT_APP_URL, else derived from --api-url)</dd>
+                  <dd><code>--no-browser</code> — Print the decision URL instead of opening it</dd>
+                  <dd><code>--poll-ms &lt;value&gt;</code> <span class="flag-meta">default: 2000</span></dd>
+                  <dd><code>--timeout &lt;value&gt;</code> <span class="flag-meta">default: 900</span> — Seconds to wait for the decision</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work attach</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.attach.desc">Attach to a running work item: show its state and recent ledger, follow it, and (on a terminal) send typed lines as instructions</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--after-sequence &lt;value&gt;</code> — Follow from after this ledger sequence instead of the current end</dd>
+                  <dd><code>--backlog &lt;value&gt;</code> <span class="flag-meta">default: 20</span> — Replay this many ledger events before the current end</dd>
+                  <dd><code>--keep-following</code> — Keep following after the live execution attempt ends</dd>
+                  <dd><code>--once</code> — Print the current state (and backlog) once, then exit</dd>
+                  <dd><code>--timeout &lt;value&gt;</code> <span class="flag-meta">default: 0</span> — Stop following after this many seconds (0 = no limit)</dd>
+                  <dd><code>--wait-ms &lt;value&gt;</code> <span class="flag-meta">default: 10000</span> — Long-poll window per ledger request; runtime requests and controls refresh after each window</dd>
+                </dl>
+              </div>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work block</code></div></div>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.work.block.desc">Mark a work item as blocked</p>
@@ -3346,6 +3640,96 @@
                 </dl>
               </div>
               <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work collaboration acknowledge</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.collaboration-acknowledge.desc">Advance a named mailbox cursor through one exact, durably processed sequence</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--as-agent-id &lt;value&gt;</code> — Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)</dd>
+                  <dd><code>--consumer-key &lt;value&gt;</code> <span class="flag-meta">required</span> — Stable non-secret key naming this durable event consumer</dd>
+                  <dd><code>--last-sequence &lt;value&gt;</code> <span class="flag-meta">required</span> — Exact highest contiguous sequence durably processed by this consumer</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work collaboration events</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.collaboration-events.desc">List ordered mailbox events without advancing any durable cursor</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--after-sequence &lt;value&gt;</code> — Return events after this exact sequence</dd>
+                  <dd><code>--as-agent-id &lt;value&gt;</code> — Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)</dd>
+                  <dd><code>--limit &lt;value&gt;</code> — Maximum events to return</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work collaboration participant add</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.collaboration-participant-add.desc">Add a contributor, reviewer, or observer to a work-item mailbox</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--agent-alias-id &lt;value&gt;</code> — Agent alias UUID represented by the participant</dd>
+                  <dd><code>--as-agent-id &lt;value&gt;</code> — Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)</dd>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> <span class="flag-meta">required</span> — Caller-owned stable 8-128 character key for exact retries</dd>
+                  <dd><code>--participant-user-id &lt;value&gt;</code> <span class="flag-meta">required</span> — User UUID represented by the participant</dd>
+                  <dd><code>--role &lt;contributor|reviewer|observer&gt;</code> <span class="flag-meta">required</span> — Participant role</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work collaboration participant remove</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.collaboration-participant-remove.desc">Remove an assignable participant from a work-item mailbox</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item UUID</dd>
+                  <dd><code>participantId</code> <span class="req">required</span> — Collaboration participant UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--as-agent-id &lt;value&gt;</code> — Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)</dd>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> <span class="flag-meta">required</span> — Caller-owned stable 8-128 character key for exact retries</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work collaboration participants</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.collaboration-participants.desc">List the durable collaboration participants for a work item</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--as-agent-id &lt;value&gt;</code> — Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work collaboration send</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.collaboration-send.desc">Append a retry-safe message or artifact event to a work-item mailbox</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--as-agent-id &lt;value&gt;</code> — Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)</dd>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> <span class="flag-meta">required</span> — Caller-owned stable 8-128 character key for exact retries</dd>
+                  <dd><code>--kind &lt;message|artifact_published&gt;</code> <span class="flag-meta">default: "message"</span> — Client event kind</dd>
+                  <dd><code>--parts &lt;value&gt;</code> — Exact collaboration event parts as a JSON array</dd>
+                  <dd><code>--reply-to-event-id &lt;value&gt;</code> — Existing event UUID this event replies to</dd>
+                  <dd><code>--supersedes-event-id &lt;value&gt;</code> — Caller-authored event UUID this event supersedes</dd>
+                  <dd><code>--text &lt;value&gt;</code> — Convenience text part; cannot be combined with --parts</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work collaboration wait</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.collaboration-wait.desc">Wait for mailbox events at least once; never acknowledges them automatically</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--after-sequence &lt;value&gt;</code> — Override cursor resume and wait after this sequence</dd>
+                  <dd><code>--as-agent-id &lt;value&gt;</code> — Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)</dd>
+                  <dd><code>--consumer-key &lt;value&gt;</code> <span class="flag-meta">required</span> — Stable non-secret key naming this durable event consumer</dd>
+                  <dd><code>--limit &lt;value&gt;</code> — Maximum events to return</dd>
+                  <dd><code>--wait-ms &lt;value&gt;</code> — Long-poll duration in milliseconds</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work complete</code></div></div>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.work.complete.desc">Approve and complete an executable agent work item</p>
                 <dl class="cli-cmd__params">
@@ -3370,6 +3754,18 @@
                   <dd><code>id</code> — Work item ID to fetch and validate</dd>
                   <dt>Flags</dt>
                   <dd><code>--file &lt;value&gt;</code> — Path to a Work Contract V1 JSON file</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work coverage-shadow</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.coverage-shadow.desc">Post the test cases a work item's verification plan runs, for Jev coverage shadow evaluation</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--commit &lt;value&gt;</code> — Commit to read test files at (default: HEAD of this checkout)</dd>
+                  <dd><code>--dry-run</code> — Print the candidate summary and payload size without posting</dd>
+                  <dd><code>--save &lt;value&gt;</code> — Also write the built payload as JSON to this file (with or without --dry-run)</dd>
                 </dl>
               </div>
               <div class="cli-cmd">
@@ -3506,12 +3902,27 @@
                 </dl>
               </div>
               <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work interrupt</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.interrupt.desc">Interrupt the current turn of a running work item; the session stays open for further instructions</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> — Retry key (1-128 of A-Z a-z 0-9 . _ : -). Default: a new key per invocation, reused for its own retries</dd>
+                  <dd><code>--poll-ms &lt;value&gt;</code> <span class="flag-meta">default: 1000</span></dd>
+                  <dd><code>--retries &lt;value&gt;</code> <span class="flag-meta">default: 2</span> — Retries after a transport error, 408, 429 or 5xx, with the same key</dd>
+                  <dd><code>--retry-delay-ms &lt;value&gt;</code> <span class="flag-meta">default: 500</span></dd>
+                  <dd><code>--timeout &lt;value&gt;</code> <span class="flag-meta">default: 120</span> — Seconds to wait with --wait</dd>
+                  <dd><code>--wait</code> — Wait until the server records a final state for the control</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work list</code></div></div>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.work.list.desc">List executable agent work items</p>
                 <dl class="cli-cmd__params">
                   <dt>Flags</dt>
                   <dd><code>--agent &lt;value&gt;</code> — Filter by assigned agent alias</dd>
-                  <dd><code>--limit &lt;value&gt;</code> — Maximum results</dd>
+                  <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 50</span> — Maximum results</dd>
                   <dd><code>--project &lt;value&gt;</code> — Filter by project ID</dd>
                   <dd><code>--status &lt;value&gt;</code> — Filter by status</dd>
                   <dd><code>--task &lt;value&gt;</code> — Filter by parent human planning task ID</dd>
@@ -3576,6 +3987,22 @@
                   <dd><code>id</code> <span class="req">required</span> — Work item ID</dd>
                   <dt>Flags</dt>
                   <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 50</span> — Maximum revisions to return</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work send</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.send.desc">Queue a follow-up instruction for a running work item; it runs as the next turn after the current turn settles</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item UUID</dd>
+                  <dd><code>instruction</code> <span class="req">required</span> — Instruction text, or - to read it from stdin</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> — Retry key (1-128 of A-Z a-z 0-9 . _ : -). Default: a new key per invocation, reused for its own retries</dd>
+                  <dd><code>--poll-ms &lt;value&gt;</code> <span class="flag-meta">default: 1000</span></dd>
+                  <dd><code>--retries &lt;value&gt;</code> <span class="flag-meta">default: 2</span> — Retries after a transport error, 408, 429 or 5xx, with the same key</dd>
+                  <dd><code>--retry-delay-ms &lt;value&gt;</code> <span class="flag-meta">default: 500</span></dd>
+                  <dd><code>--timeout &lt;value&gt;</code> <span class="flag-meta">default: 120</span> — Seconds to wait with --wait</dd>
+                  <dd><code>--wait</code> — Wait until the server records a final state for the control</dd>
                 </dl>
               </div>
               <div class="cli-cmd">
@@ -3659,10 +4086,25 @@
                   <dd><code>--reps &lt;value&gt;</code> — Deprecated; ignored because hosted verification is retired</dd>
                 </dl>
               </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift work watch</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.work.watch.desc">Follow a running work item: ledger events, the execution attempt, runtime requests and controls. Read-only.</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>id</code> <span class="req">required</span> — Work item UUID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--after-sequence &lt;value&gt;</code> — Follow from after this ledger sequence instead of the current end</dd>
+                  <dd><code>--backlog &lt;value&gt;</code> <span class="flag-meta">default: 0</span> — Replay this many ledger events before the current end</dd>
+                  <dd><code>--keep-following</code> — Keep following after the live execution attempt ends</dd>
+                  <dd><code>--once</code> — Print the current state (and backlog) once, then exit</dd>
+                  <dd><code>--timeout &lt;value&gt;</code> <span class="flag-meta">default: 0</span> — Stop following after this many seconds (0 = no limit)</dd>
+                  <dd><code>--wait-ms &lt;value&gt;</code> <span class="flag-meta">default: 10000</span> — Long-poll window per ledger request; runtime requests and controls refresh after each window</dd>
+                </dl>
+              </div>
             </details>
             <h2 id="cli-worker" data-i18n="docs.cli.worker.title">Worker</h2>
             <p class="cli-topic__intro" data-i18n="docs.cli.worker.intro">Local executable work runners.</p>
-            <details class="cli-topic"><summary><span data-i18n="docs.cli.worker.count">2 commands</span></summary>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.worker.count">3 commands</span></summary>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift worker dispatch</code></div></div>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.worker.dispatch.desc">Build a no-spend, surface-neutral plan for exactly two AWS agent workers</p>
@@ -3672,6 +4114,23 @@
                   <dd><code>--source-sha &lt;value&gt;</code> — Reviewed 40-character source Git SHA; defaults to a clean current HEAD</dd>
                   <dd><code>--surface &lt;cli|t3|codex|claude-code|mcp&gt;</code> <span class="flag-meta">default: "cli"</span> — Calling control surface; does not change dispatch identity</dd>
                   <dd><code>--work-item &lt;value&gt;</code> <span class="flag-meta">required; repeatable</span> — Queued Sift work-item UUID; repeat exactly twice</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift worker listen</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.worker.listen.desc">Receive reviewed mobile launches on a host-configured local worker</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--agent-alias-id &lt;value&gt;</code> — Agent alias UUID for this runner; defaults to the credential binding</dd>
+                  <dd><code>--arg &lt;value&gt;</code> <span class="flag-meta">default: []; repeatable</span> — Fixed executable argument (repeatable)</dd>
+                  <dd><code>--checkpoint-arg &lt;value&gt;</code> <span class="flag-meta">default: []; repeatable</span> — Fixed checkpoint argument (repeatable)</dd>
+                  <dd><code>--checkpoint-executable &lt;value&gt;</code> — Optional host-approved checkpoint executable</dd>
+                  <dd><code>--cwd &lt;value&gt;</code> <span class="flag-meta">required</span> — Host-approved working directory</dd>
+                  <dd><code>--executable &lt;value&gt;</code> <span class="flag-meta">required</span> — Host-approved executable; receives work JSON on stdin</dd>
+                  <dd><code>--name &lt;value&gt;</code> <span class="flag-meta">required</span> — Runner name shown on the phone</dd>
+                  <dd><code>--once</code> — Register and poll once, then exit</dd>
+                  <dd><code>--receipts &lt;value&gt;</code> <span class="flag-meta">required</span> — Durable local receipt directory</dd>
+                  <dd><code>--runner &lt;value&gt;</code> <span class="flag-meta">required</span> — Stable runner UUID</dd>
                 </dl>
               </div>
               <div class="cli-cmd">

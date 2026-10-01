@@ -1,0 +1,682 @@
+import {spawn} from 'node:child_process';
+import {randomUUID} from 'node:crypto';
+import {sanitizeTerminalLine, truncate} from './output.js';
+import {renderCollaborationEventLine} from './work-collaboration.js';
+
+/*
+ * Client side of following and steering a running work item through the Sift
+ * API (AGENT-RUNTIME-17). Every call here is an HTTPS request to the Sift API;
+ * nothing talks to a T3 socket or port and nothing starts a model process. The
+ * only process this module may start is the platform's URL opener, so a person
+ * can decide a runtime request in the web app with their own session.
+ *
+ * The record types mirror packages/shared/src/types/agentWorkRuntimeRequests.ts,
+ * agentWorkRuntimeControls.ts, agentWorkExecution.ts and agentWorkCollaboration.ts.
+ * The CLI does not depend on the shared package at runtime, so keep these in step.
+ */
+
+export const WORK_RUNTIME_OUTPUT_VERSION = 1 as const;
+
+export type RuntimeRequestKind = 'approval' | 'user_input';
+export type RuntimeRequestState = 'pending' | 'resolved' | 'expired' | 'superseded';
+export type RuntimeRequestDeliveryState = 'pending' | 'delivered' | 'already_resolved' | 'failed' | 'unconfirmed';
+export type RuntimeControlKind = 'instruction' | 'interrupt';
+export type RuntimeControlState =
+  | 'queued' | 'dispatching' | 'delivered' | 'acknowledged' | 'cancelled' | 'failed' | 'expired' | 'unconfirmed';
+
+export const RUNTIME_INSTRUCTION_MAX_CHARS = 16_000;
+export const EVENT_PAGE_LIMIT = 100;
+export const MAX_EVENT_WAIT_MS = 30_000;
+
+export interface RuntimeQuestion {
+  id: string;
+  header: string;
+  question: string;
+  options: Array<{label: string; description: string; value?: string}>;
+  optionsOmitted?: number;
+  allowCustomAnswer?: boolean;
+  multiSelect?: boolean;
+}
+
+export interface RuntimeRequest {
+  id: string;
+  workItemId: string;
+  attemptId: string;
+  runtimeId: string;
+  leaseGeneration: number;
+  providerRequestId: string;
+  kind: RuntimeRequestKind;
+  blocking: boolean;
+  category: string | null;
+  summary: string;
+  detail: {text?: string; questions?: RuntimeQuestion[]} | null;
+  state: RuntimeRequestState;
+  resolution: {decision: string} | {answers: Record<string, string | string[]>} | null;
+  resolvedBy: string | null;
+  resolvedAt: string | null;
+  closeReason: string | null;
+  closedAt: string | null;
+  externalDecision: string | null;
+  deliveryState: RuntimeRequestDeliveryState;
+  deliveryAttempts: number;
+  deliveredAt: string | null;
+  deliveryError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RuntimeControl {
+  id: string;
+  workItemId: string;
+  attemptId: string;
+  runtimeId: string;
+  leaseGeneration: number;
+  kind: RuntimeControlKind;
+  instruction: string | null;
+  ordinal: number;
+  state: RuntimeControlState;
+  failureReason: string | null;
+  requestedBy: string | null;
+  cancelledBy: string | null;
+  dispatchedAt: string | null;
+  settledAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RuntimeControlResult {
+  version: 1;
+  applied: boolean;
+  control: RuntimeControl;
+}
+
+export interface ExecutionAttempt {
+  id: string;
+  runtimeId: string;
+  leaseGeneration: number;
+  claimOwner: string;
+  host: string | null;
+  model: string | null;
+  harness: string | null;
+  state: 'starting' | 'running' | 'interrupted' | 'ended' | 'superseded';
+  endReason: string | null;
+  startedAt: string;
+  runningAt: string | null;
+  endedAt: string | null;
+  updatedAt: string;
+  [key: string]: unknown;
+}
+
+export interface WorkExecution {
+  version: 1;
+  workspace: Record<string, unknown> | null;
+  currentAttempt: ExecutionAttempt | null;
+  currentLeaseActive: boolean;
+  attempts: ExecutionAttempt[];
+}
+
+export interface LedgerEvent {
+  id: string;
+  workItemId: string;
+  sequence: number;
+  kind: string;
+  [key: string]: unknown;
+}
+
+export interface LedgerPage {
+  events: LedgerEvent[];
+  nextSequence: number | null;
+  timedOut?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Transport
+
+export interface RuntimeApiContext {
+  apiUrl: string;
+  token: string;
+  workspaceId?: string;
+}
+
+/** A failed call keeps the HTTP status (0 for a transport failure) and the raw error body. */
+export type ApiResult<T> =
+  | {ok: true; status: number; body: T}
+  | {ok: false; status: number; error: string};
+
+export function isAbortError(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'AbortError' || (error as {code?: unknown}).code === 'ABORT_ERR');
+}
+
+export class WorkRuntimeApi {
+  constructor(private readonly context: RuntimeApiContext) {}
+
+  get apiUrl(): string {
+    return this.context.apiUrl;
+  }
+
+  async request<T>(
+    method: 'GET' | 'POST',
+    path: string,
+    options: {query?: Record<string, string | number | undefined>; body?: unknown; idempotencyKey?: string; signal?: AbortSignal} = {},
+  ): Promise<ApiResult<T>> {
+    const url = new URL(`${this.context.apiUrl.replace(/\/+$/, '')}${path}`);
+    for (const [key, value] of Object.entries(options.query ?? {})) {
+      if (value !== undefined) url.searchParams.set(key, String(value));
+    }
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.context.token}`,
+      Accept: 'application/json',
+    };
+    if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+    if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
+    if (this.context.workspaceId) headers['X-Workspace-Id'] = this.context.workspaceId;
+    let response: Response;
+    try {
+      response = await fetch(url.toString(), {
+        method,
+        headers,
+        signal: options.signal,
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      });
+    } catch (error) {
+      if (isAbortError(error) || options.signal?.aborted) throw error;
+      return {ok: false, status: 0, error: JSON.stringify({error: `Request failed: ${error instanceof Error ? error.message : String(error)}`})};
+    }
+    if (!response.ok) return {ok: false, status: response.status, error: await response.text()};
+    return {ok: true, status: response.status, body: (await response.json()) as T};
+  }
+
+  private workPath(workItemId: string, suffix: string): string {
+    return `/api/v1/work-items/${encodeURIComponent(workItemId)}${suffix}`;
+  }
+
+  getExecution(workItemId: string, signal?: AbortSignal): Promise<ApiResult<WorkExecution>> {
+    return this.request('GET', this.workPath(workItemId, '/execution'), {signal});
+  }
+
+  listRequests(workItemId: string, options: {open?: boolean; signal?: AbortSignal} = {}): Promise<ApiResult<{version: 1; requests: RuntimeRequest[]}>> {
+    return this.request('GET', this.workPath(workItemId, '/runtime-requests'), {
+      query: {open: options.open ? 'true' : undefined},
+      signal: options.signal,
+    });
+  }
+
+  listControls(workItemId: string, signal?: AbortSignal): Promise<ApiResult<{version: 1; controls: RuntimeControl[]; truncated: boolean}>> {
+    return this.request('GET', this.workPath(workItemId, '/runtime-controls'), {signal});
+  }
+
+  /** Reads the ledger after an explicit sequence; never reads or advances a durable consumer cursor. */
+  listEvents(workItemId: string, afterSequence: number, limit = EVENT_PAGE_LIMIT, signal?: AbortSignal): Promise<ApiResult<LedgerPage>> {
+    return this.request('GET', this.workPath(workItemId, '/events'), {query: {afterSequence, limit}, signal});
+  }
+
+  /** Long-polls the ledger after an explicit sequence; never reads or advances a durable consumer cursor. */
+  waitEvents(workItemId: string, afterSequence: number, waitMs: number, signal?: AbortSignal): Promise<ApiResult<LedgerPage>> {
+    return this.request('GET', this.workPath(workItemId, '/events/wait'), {
+      query: {afterSequence, waitMs, limit: EVENT_PAGE_LIMIT},
+      signal,
+    });
+  }
+
+  sendControl(
+    workItemId: string,
+    input: {kind: 'instruction'; instruction: string} | {kind: 'interrupt'},
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<ApiResult<RuntimeControlResult>> {
+    return this.request('POST', this.workPath(workItemId, '/runtime-controls'), {body: input, idempotencyKey, signal});
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Runtime controls: send with a stable Idempotency-Key
+
+/** HTTP statuses after which the same request may be retried with the same key. */
+export const RETRYABLE_CONTROL_STATUSES: ReadonlySet<number> = new Set([0, 408, 429, 500, 502, 503, 504]);
+const IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+export function newControlIdempotencyKey(kind: RuntimeControlKind): string {
+  return `cli-${kind}-${randomUUID()}`;
+}
+
+export function normalizeControlIdempotencyKey(value: string): string {
+  const normalized = value.trim();
+  if (!IDEMPOTENCY_KEY.test(normalized)) {
+    throw new Error('Idempotency key must be 1-128 letters, numbers, dots, colons, underscores, or hyphens, starting with a letter or number.');
+  }
+  return normalized;
+}
+
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(Object.assign(new Error('Aborted'), {name: 'AbortError'}));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(Object.assign(new Error('Aborted'), {name: 'AbortError'}));
+    };
+    signal?.addEventListener('abort', onAbort, {once: true});
+  });
+}
+
+/**
+ * Posts one control. The key is generated once by the caller and reused for
+ * every retry, so a retry after a lost response returns the stored control
+ * (`applied: false`) instead of queueing a second instruction.
+ */
+export async function sendControlWithRetry(
+  api: WorkRuntimeApi,
+  workItemId: string,
+  input: {kind: 'instruction'; instruction: string} | {kind: 'interrupt'},
+  options: {idempotencyKey: string; retries: number; retryDelayMs: number; signal?: AbortSignal},
+): Promise<{result: ApiResult<RuntimeControlResult>; requestAttempts: number}> {
+  let requestAttempts = 0;
+  for (;;) {
+    requestAttempts += 1;
+    const result = await api.sendControl(workItemId, input, options.idempotencyKey, options.signal);
+    if (result.ok || !RETRYABLE_CONTROL_STATUSES.has(result.status) || requestAttempts > options.retries) {
+      return {result, requestAttempts};
+    }
+    await sleep(options.retryDelayMs * 2 ** (requestAttempts - 1), options.signal);
+  }
+}
+
+const INSTRUCTION_SETTLED: ReadonlySet<RuntimeControlState> = new Set(['delivered', 'cancelled', 'failed', 'expired', 'unconfirmed']);
+const INTERRUPT_SETTLED: ReadonlySet<RuntimeControlState> = new Set(['acknowledged', 'cancelled', 'failed', 'expired', 'unconfirmed']);
+
+export function isControlSettled(control: Pick<RuntimeControl, 'kind' | 'state'>): boolean {
+  return (control.kind === 'interrupt' ? INTERRUPT_SETTLED : INSTRUCTION_SETTLED).has(control.state);
+}
+
+/** True only for the state the server records when T3 accepted the control. */
+export function isControlSuccess(control: Pick<RuntimeControl, 'kind' | 'state'>): boolean {
+  return control.kind === 'interrupt' ? control.state === 'acknowledged' : control.state === 'delivered';
+}
+
+/** Describes only what the server has recorded; never infers delivery or acknowledgement. */
+export function describeControlState(control: Pick<RuntimeControl, 'kind' | 'state' | 'failureReason' | 'ordinal'>): string {
+  const noun = control.kind === 'interrupt' ? 'Interrupt' : 'Instruction';
+  const reason = control.failureReason ? ` (${sanitizeTerminalLine(control.failureReason)})` : '';
+  switch (control.state) {
+    case 'queued':
+      return control.kind === 'interrupt'
+        ? 'Interrupt requested; the agent has not acknowledged it yet.'
+        : `Instruction queued at position ${control.ordinal}; not delivered yet. It runs after the current turn settles.`;
+    case 'dispatching':
+      return `${noun} is being dispatched; delivery is not confirmed yet.`;
+    case 'delivered':
+      return 'Delivered: the agent accepted the instruction as its next turn.';
+    case 'acknowledged':
+      return 'Acknowledged: the agent accepted the interrupt.';
+    case 'cancelled':
+      return `${noun} was cancelled before dispatch.`;
+    case 'failed':
+      return `${noun} failed${reason}.`;
+    case 'expired':
+      return `${noun} expired${reason}; the attempt ended before it was dispatched.`;
+    case 'unconfirmed':
+      return `${noun} is unconfirmed: the attempt ended during dispatch, so the agent may or may not have received it.`;
+    default:
+      return `${noun} state: ${sanitizeTerminalLine(control.state)}.`;
+  }
+}
+
+export function renderControlLine(control: RuntimeControl): string {
+  const text = control.kind === 'instruction' && control.instruction
+    ? ` "${truncate(sanitizeTerminalLine(control.instruction), 120)}"`
+    : '';
+  return `[control ${sanitizeTerminalLine(control.id)}] ${control.kind} ${sanitizeTerminalLine(control.state)}${text} — ${describeControlState(control)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Runtime requests: browser-mediated decisions
+
+/** Mirrors agentWorkRuntimeRequestDecisionPath in packages/shared. */
+export function runtimeRequestDecisionPath(workItemId: string, requestId: string): string {
+  return `/work/${encodeURIComponent(workItemId)}?request=${encodeURIComponent(requestId)}`;
+}
+
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+/**
+ * The web app origin for decision links. An explicit --app-url or SIFT_APP_URL
+ * wins; otherwise the API origin serves `/app/` (siftable.io), except the
+ * local API on :8080, whose web client runs on :3000.
+ */
+export function resolveAppOrigin(apiUrl: string, override?: string): string {
+  const raw = override?.trim() || apiUrl;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`Invalid app URL: ${sanitizeTerminalLine(raw)}`);
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('App URL must use http or https.');
+  if (url.username || url.password) throw new Error('App URL must not contain credentials.');
+  if (!override?.trim() && LOOPBACK_HOSTS.has(url.hostname) && url.port === '8080') url.port = '3000';
+  return url.origin;
+}
+
+export function runtimeRequestDecisionUrl(appOrigin: string, workItemId: string, requestId: string): string {
+  return `${appOrigin}/app${runtimeRequestDecisionPath(workItemId, requestId)}`;
+}
+
+/**
+ * Opens an http(s) URL with the platform opener, without a shell. Returns false
+ * when the URL is not http(s) or the opener could not be started.
+ */
+export function openUrlInBrowser(url: string, platform: NodeJS.Platform = process.platform): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false;
+  const target = parsed.toString();
+  const [command, args] = platform === 'darwin'
+    ? ['open', [target]]
+    : platform === 'win32'
+      ? ['rundll32', ['url.dll,FileProtocolHandler', target]]
+      : ['xdg-open', [target]];
+  try {
+    const child = spawn(command, args, {stdio: 'ignore', detached: true});
+    child.on('error', () => {
+      // The URL is always printed, so a missing opener is not fatal.
+    });
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function describeResolution(request: Pick<RuntimeRequest, 'resolution'>): string {
+  const resolution = request.resolution;
+  if (!resolution) return 'no decision recorded';
+  if ('decision' in resolution) return `decision ${sanitizeTerminalLine(resolution.decision)}`;
+  const count = Object.keys(resolution.answers ?? {}).length;
+  return `${count} answer${count === 1 ? '' : 's'}`;
+}
+
+export function describeRequestDelivery(request: Pick<RuntimeRequest, 'deliveryState' | 'deliveryError'>): string {
+  switch (request.deliveryState) {
+    case 'pending':
+      return 'not delivered to the agent yet';
+    case 'delivered':
+      return 'delivered to the agent';
+    case 'already_resolved':
+      return 'the agent had already received another answer';
+    case 'failed':
+      return `delivery failed${request.deliveryError ? ` (${sanitizeTerminalLine(request.deliveryError)})` : ''}`;
+    case 'unconfirmed':
+      return 'delivery unconfirmed: the attempt ended before the host recorded an outcome';
+    default:
+      return `delivery ${sanitizeTerminalLine(request.deliveryState)}`;
+  }
+}
+
+export function requestCommandHint(request: Pick<RuntimeRequest, 'kind' | 'workItemId' | 'id'>): string {
+  const verb = request.kind === 'approval' ? 'approve' : 'answer';
+  return `sift work ${verb} ${sanitizeTerminalLine(request.workItemId)} ${sanitizeTerminalLine(request.id)}`;
+}
+
+export function renderRequestLines(request: RuntimeRequest): string[] {
+  const id = sanitizeTerminalLine(request.id);
+  const summary = truncate(sanitizeTerminalLine(request.summary), 300);
+  if (request.state === 'pending') {
+    const label = request.kind === 'approval' ? 'Approval needed' : 'Question';
+    const lines = [`[request ${id}] ${label}: ${summary}`];
+    if (request.detail?.text) lines.push(`  ${truncate(sanitizeTerminalLine(request.detail.text), 500)}`);
+    for (const question of request.detail?.questions ?? []) {
+      lines.push(`  ${sanitizeTerminalLine(question.header)}: ${truncate(sanitizeTerminalLine(question.question), 300)}`);
+      for (const option of question.options) lines.push(`    - ${sanitizeTerminalLine(option.label)}`);
+    }
+    lines.push(`  Decide in the browser: ${requestCommandHint(request)}`);
+    return lines;
+  }
+  if (request.state === 'resolved') {
+    return [`[request ${id}] resolved: ${describeResolution(request)}${request.resolvedBy ? ` by ${sanitizeTerminalLine(request.resolvedBy)}` : ''}; ${describeRequestDelivery(request)}`];
+  }
+  const reason = request.closeReason ? ` (${sanitizeTerminalLine(request.closeReason)})` : '';
+  const external = request.externalDecision ? `; answered in T3: ${sanitizeTerminalLine(request.externalDecision)}` : '';
+  return [`[request ${id}] ${sanitizeTerminalLine(request.state)}${reason}${external}`];
+}
+
+// ---------------------------------------------------------------------------
+// Following the ledger
+
+export type WatchEndReason = 'attempt_ended' | 'timeout' | 'once' | 'signal';
+
+export type WatchRecord =
+  | {
+    version: 1;
+    type: 'snapshot';
+    workItemId: string;
+    afterSequence: number;
+    attempt: ExecutionAttempt | null;
+    leaseActive: boolean;
+    openRequests: RuntimeRequest[];
+    openControls: RuntimeControl[];
+  }
+  | {version: 1; type: 'event'; event: LedgerEvent}
+  | {version: 1; type: 'attempt'; attempt: ExecutionAttempt | null; leaseActive: boolean}
+  | {version: 1; type: 'request'; request: RuntimeRequest}
+  | {version: 1; type: 'control'; control: RuntimeControl}
+  | {version: 1; type: 'end'; reason: WatchEndReason; afterSequence: number};
+
+export class WorkRuntimeApiError extends Error {
+  constructor(readonly status: number, readonly body: string) {
+    super(`API error (${status})`);
+  }
+}
+
+function unwrap<T>(result: ApiResult<T>): T {
+  if (!result.ok) throw new WorkRuntimeApiError(result.status, result.error);
+  return result.body;
+}
+
+export function isLiveAttempt(attempt: ExecutionAttempt | null | undefined): boolean {
+  return attempt?.state === 'starting' || attempt?.state === 'running';
+}
+
+function attemptSignature(execution: WorkExecution): string {
+  const attempt = execution.currentAttempt;
+  return attempt ? `${attempt.id}|${attempt.state}|${attempt.endReason ?? ''}|${execution.currentLeaseActive}` : `none|${execution.currentLeaseActive}`;
+}
+
+function requestSignature(request: RuntimeRequest): string {
+  return `${request.state}|${request.deliveryState}|${request.updatedAt}`;
+}
+
+function controlSignature(control: RuntimeControl): string {
+  return `${control.state}|${control.updatedAt}`;
+}
+
+export interface WatchOptions {
+  workItemId: string;
+  /** Start after this sequence instead of the ledger's current end. */
+  afterSequence?: number;
+  /** Ledger events before the start point to replay first. */
+  backlog: number;
+  waitMs: number;
+  /** Overall limit in milliseconds; 0 means none. */
+  timeoutMs: number;
+  once: boolean;
+  /** Stop when an attempt seen live during the watch is no longer live. */
+  exitOnAttemptEnd: boolean;
+  signal: AbortSignal;
+  emit: (record: WatchRecord) => void;
+  now?: () => number;
+}
+
+/**
+ * Follows a work item: the ledger by long-poll from an explicit cursor, plus
+ * changes to the execution attempt, runtime requests and runtime controls.
+ * Read-only: it sends no control and resolves no request.
+ */
+export class WorkItemFollower {
+  private readonly requests = new Map<string, string>();
+  private readonly controls = new Map<string, string>();
+  private attempt = '';
+  private sawLive = false;
+  cursor = 0;
+
+  constructor(private readonly api: WorkRuntimeApi, private readonly options: WatchOptions) {}
+
+  /** Records a control the caller just sent so the next refresh does not repeat it. */
+  noteControl(control: RuntimeControl): void {
+    this.controls.set(control.id, controlSignature(control));
+  }
+
+  private emit(record: WatchRecord): void {
+    this.options.emit(record);
+  }
+
+  private async startCursor(): Promise<LedgerEvent[]> {
+    const {workItemId, signal, backlog} = this.options;
+    if (this.options.afterSequence !== undefined) {
+      this.cursor = this.options.afterSequence;
+      return [];
+    }
+    const tail: LedgerEvent[] = [];
+    let after = 0;
+    for (let page = 0; page < 10_000; page += 1) {
+      const result = unwrap(await this.api.listEvents(workItemId, after, EVENT_PAGE_LIMIT, signal));
+      for (const event of result.events) {
+        if (event.sequence > after) after = event.sequence;
+        if (backlog > 0) {
+          tail.push(event);
+          if (tail.length > backlog) tail.shift();
+        }
+      }
+      if (result.events.length < EVENT_PAGE_LIMIT) break;
+    }
+    this.cursor = after;
+    return tail;
+  }
+
+  private async refresh(initial: boolean): Promise<WorkExecution> {
+    const {workItemId, signal} = this.options;
+    const [execution, requestList, controlList] = await Promise.all([
+      this.api.getExecution(workItemId, signal).then(unwrap),
+      this.api.listRequests(workItemId, {signal}).then(unwrap),
+      this.api.listControls(workItemId, signal).then(unwrap),
+    ]);
+    const attemptKey = attemptSignature(execution);
+    if (!initial && attemptKey !== this.attempt) {
+      this.emit({version: 1, type: 'attempt', attempt: execution.currentAttempt, leaseActive: execution.currentLeaseActive});
+    }
+    this.attempt = attemptKey;
+    // Oldest first, so a reader sees requests and controls in the order they arose.
+    for (const request of [...requestList.requests].reverse()) {
+      const signature = requestSignature(request);
+      if (this.requests.get(request.id) === signature) continue;
+      this.requests.set(request.id, signature);
+      if (!initial) this.emit({version: 1, type: 'request', request});
+    }
+    for (const control of [...controlList.controls].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.ordinal - b.ordinal)) {
+      const signature = controlSignature(control);
+      if (this.controls.get(control.id) === signature) continue;
+      this.controls.set(control.id, signature);
+      if (!initial) this.emit({version: 1, type: 'control', control});
+    }
+    if (initial) {
+      this.emit({
+        version: 1,
+        type: 'snapshot',
+        workItemId,
+        afterSequence: this.cursor,
+        attempt: execution.currentAttempt,
+        leaseActive: execution.currentLeaseActive,
+        openRequests: requestList.requests.filter(request => request.state === 'pending').reverse(),
+        openControls: controlList.controls.filter(control => control.state === 'queued' || control.state === 'dispatching'),
+      });
+    }
+    return execution;
+  }
+
+  async run(): Promise<WatchEndReason> {
+    const {workItemId, signal, once, exitOnAttemptEnd} = this.options;
+    const now = this.options.now ?? Date.now;
+    const deadline = this.options.timeoutMs > 0 ? now() + this.options.timeoutMs : Number.POSITIVE_INFINITY;
+    const end = (reason: WatchEndReason): WatchEndReason => {
+      this.emit({version: 1, type: 'end', reason, afterSequence: this.cursor});
+      return reason;
+    };
+    try {
+      const backlog = await this.startCursor();
+      const execution = await this.refresh(true);
+      for (const event of backlog) this.emit({version: 1, type: 'event', event});
+      this.sawLive = isLiveAttempt(execution.currentAttempt);
+      if (once) return end('once');
+      for (;;) {
+        const remaining = deadline - now();
+        if (remaining <= 0) return end('timeout');
+        const waitMs = Math.max(0, Math.min(this.options.waitMs, MAX_EVENT_WAIT_MS, remaining));
+        const page = unwrap(await this.api.waitEvents(workItemId, this.cursor, waitMs, signal));
+        for (const event of page.events) {
+          if (event.sequence <= this.cursor) continue;
+          this.cursor = event.sequence;
+          this.emit({version: 1, type: 'event', event});
+        }
+        const current = await this.refresh(false);
+        const live = isLiveAttempt(current.currentAttempt);
+        if (exitOnAttemptEnd && this.sawLive && !live) return end('attempt_ended');
+        if (live) this.sawLive = true;
+      }
+    } catch (error) {
+      if (signal.aborted || isAbortError(error)) return end('signal');
+      throw error;
+    }
+  }
+}
+
+export function renderAttemptLine(attempt: ExecutionAttempt | null, leaseActive: boolean): string {
+  if (!attempt) return 'No live execution attempt.';
+  const parts = [`Attempt ${sanitizeTerminalLine(attempt.id)} ${sanitizeTerminalLine(attempt.state)}`];
+  if (attempt.endReason) parts.push(`end reason ${sanitizeTerminalLine(attempt.endReason)}`);
+  if (attempt.harness) parts.push(`harness ${sanitizeTerminalLine(attempt.harness)}`);
+  if (attempt.model) parts.push(`model ${sanitizeTerminalLine(attempt.model)}`);
+  if (attempt.host) parts.push(`host ${sanitizeTerminalLine(attempt.host)}`);
+  parts.push(leaseActive ? 'lease active' : 'lease not active');
+  return parts.join(' · ');
+}
+
+const END_TEXT: Record<WatchEndReason, string> = {
+  attempt_ended: 'The execution attempt is no longer live; stopped following.',
+  timeout: 'Stopped following: the timeout elapsed.',
+  once: 'Printed the current state once.',
+  signal: 'Stopped following.',
+};
+
+export function renderWatchRecord(record: WatchRecord): string[] {
+  switch (record.type) {
+    case 'snapshot': {
+      const lines = [
+        `Work ${sanitizeTerminalLine(record.workItemId)} · ledger at #${record.afterSequence}`,
+        renderAttemptLine(record.attempt, record.leaseActive),
+      ];
+      if (record.openRequests.length === 0) lines.push('No open runtime requests.');
+      for (const request of record.openRequests) lines.push(...renderRequestLines(request));
+      for (const control of record.openControls) lines.push(renderControlLine(control));
+      return lines;
+    }
+    case 'event':
+      return [renderCollaborationEventLine(record.event as unknown as Record<string, unknown>)];
+    case 'attempt':
+      return [renderAttemptLine(record.attempt, record.leaseActive)];
+    case 'request':
+      return renderRequestLines(record.request);
+    case 'control':
+      return [renderControlLine(record.control)];
+    case 'end':
+      return [`${END_TEXT[record.reason]} Resume with --after-sequence ${record.afterSequence}.`];
+  }
+}
