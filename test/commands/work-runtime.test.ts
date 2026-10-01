@@ -1114,6 +1114,7 @@ describe('sift work runtime commands', () => {
 
     it('aborts a stalled attach control and closes the queue when the watch fails', async () => {
       let controlAborted = false;
+      let unconfirmedCause: string | undefined;
       installApi(call => {
         const path = call.url.pathname;
         if (call.method === 'POST' && path === `${BASE}/runtime-controls`) return STALL;
@@ -1141,7 +1142,10 @@ describe('sift work runtime commands', () => {
       let queueClosed = false;
       const queue = new ControlInputQueue(async line => {
         const outcome = await submitAttachControl(api, WORK_ID, {kind: 'instruction', instruction: line}, follower!);
-        if (outcome.status === 'unconfirmed') controlAborted = true;
+        if (outcome.status === 'unconfirmed') {
+          controlAborted = true;
+          if (outcome.record.type === 'control_unconfirmed') unconfirmedCause = outcome.record.cause;
+        }
       });
       follower = new WorkItemFollower(api, followerOptions(records, {
         waitMs: 20,
@@ -1158,6 +1162,7 @@ describe('sift work runtime commands', () => {
       await expect(running).rejects.toThrow();
       expect(Date.now() - started).toBeLessThan(5_000);
       expect(controlAborted).toBe(true);
+      expect(unconfirmedCause).toBe('watch_failed');
       expect(queueClosed).toBe(true);
     });
 

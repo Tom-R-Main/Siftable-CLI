@@ -265,7 +265,7 @@ export class WorkRuntimeApi {
 // Runtime controls: send with a stable Idempotency-Key
 
 /** Transport failures, 408, 429 and every 5xx may be retried with the same key. */
-export type ControlUnconfirmedCause = 'signal' | 'timeout' | 'transport' | 'http';
+export type ControlUnconfirmedCause = 'signal' | 'timeout' | 'watch_failed' | 'transport' | 'http';
 
 /**
  * True when a failed control POST may still have been stored: no readable
@@ -647,6 +647,7 @@ export class WorkItemFollower {
   /** Aborts on the caller's signal (Ctrl-C) or when --timeout elapses; every read uses it. */
   private runSignal: AbortSignal = new AbortController().signal;
   private deadlineHit = false;
+  private watchFailed = false;
   /** Aborts the run signal as a timeout; set by run() for its own controller. */
   private expire: () => void = () => undefined;
   cursor = 0;
@@ -659,9 +660,10 @@ export class WorkItemFollower {
   }
 
   /** Why the run signal fired, or null while it has not. */
-  get stopCause(): 'signal' | 'timeout' | null {
+  get stopCause(): 'signal' | 'timeout' | 'watch_failed' | null {
     if (this.options.signal.aborted) return 'signal';
     if (this.deadlineHit) return 'timeout';
+    if (this.watchFailed) return 'watch_failed';
     return null;
   }
 
@@ -784,6 +786,7 @@ export class WorkItemFollower {
     signal.addEventListener('abort', onAbort, {once: true});
     if (signal.aborted) run.abort();
     this.deadlineHit = false;
+    this.watchFailed = false;
     this.expire = () => {
       this.deadlineHit = true;
       run.abort();
@@ -797,7 +800,7 @@ export class WorkItemFollower {
       await settle();
       // Ctrl-C or the deadline may fire while beforeEnd (attach's control queue)
       // is still settling; report that stop rather than the earlier reason.
-      const stopped = this.stopCause;
+      const stopped = this.stopCause === 'watch_failed' ? null : this.stopCause;
       const reason = stopped && (requested === 'attempt_ended' || requested === 'once') ? stopped : requested;
       this.emit({version: 1, type: 'end', reason, afterSequence: this.cursor});
       return reason;
@@ -852,6 +855,7 @@ export class WorkItemFollower {
       if (isAbortError(error)) return await end('signal');
       // A failed watch cuts short attach's in-flight controls and stops its
       // queue before the error surfaces, as the other ends do.
+      this.watchFailed = true;
       run.abort();
       await settle().catch(() => undefined);
       throw error;
@@ -909,6 +913,8 @@ export function renderWatchRecord(record: WatchRecord): string[] {
         ? 'the timeout elapsed while it was being sent'
         : record.cause === 'signal'
           ? 'you stopped the command while it was being sent'
+          : record.cause === 'watch_failed'
+            ? 'the watch failed while it was being sent'
           : record.cause === 'transport'
             ? 'no response could be read after every retry'
             : `retries ended on HTTP ${record.httpStatus ?? '?'}`;
