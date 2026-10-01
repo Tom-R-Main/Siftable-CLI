@@ -148,7 +148,7 @@ The last line is the outcome (the only line when the request was already closed)
 {"version": 1, "type": "outcome", "workItemId": "…", "requestId": "…", "kind": "approval", "decisionUrl": "https://siftable.io/app/work/…?request=…", "browserOpened": true, "outcome": "resolved", "request": {"state": "resolved", "resolution": {"decision": "accept"}, "deliveryState": "delivered", "…": "…"}}
 ```
 
-Pending requests are read from `GET /runtime-requests?open=true`, so an older pending request is found even when the general list is full of newer closed ones. `outcome` is `resolved`, `expired`, `superseded` or `timed_out` (still pending after `--timeout` seconds); the command exits 0 only for `resolved`. `request.resolution` holds the stored decision, and `request.deliveryState` says whether it reached the agent.
+Pending requests are read from `GET /runtime-requests?open=true`, so an older pending request is found even when the general list is full of newer closed ones. `outcome` is `resolved`, `expired`, `superseded`, `timed_out` (still pending after `--timeout` seconds) or `closed`. `closed` means the request left the open list but is not in the general list either, which holds only the newest 100 requests: it was decided or closed, and its stored outcome cannot be read through the API. In that case `outcomeAvailable` is `false`, `request.state` is `closed`, and `request.resolution`, `resolvedBy`, `resolvedAt`, `deliveryState`, `deliveredAt` and `deliveryError` are `null`; check the web app for the decision. `outcomeAvailable` is `true` for every other outcome. The command exits 0 for `resolved` and `closed`, and 1 otherwise. `request.resolution` holds the stored decision, and `request.deliveryState` says whether it reached the agent.
 
 ---
 

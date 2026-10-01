@@ -459,6 +459,7 @@ describe('sift work runtime commands', () => {
         decisionUrl,
         browserOpened: true,
         outcome: 'resolved',
+        outcomeAvailable: true,
         request: expect.objectContaining({state: 'resolved', resolution: {decision: 'accept'}, deliveryState: 'delivered'}),
       });
       expect(calls.every(call => call.method === 'GET')).toBe(true);
@@ -566,6 +567,61 @@ describe('sift work runtime commands', () => {
 
       const watch = await runCommand(['work', 'watch', WORK_ID, '--once', '--json', ...auth]);
       expect(jsonLines(watch.stdout)[0]).toMatchObject({type: 'snapshot', openRequests: [{id: REQUEST_ID, state: 'pending'}]});
+    });
+
+    it('stops waiting when the older request is decided and is in neither list', async () => {
+      const closed = Array.from({length: 100}, (_, index) => request({
+        id: `99999999-9999-4999-8999-${String(index).padStart(12, '0')}`,
+        state: 'expired',
+        createdAt: '2026-10-01T01:00:00.000Z',
+      }));
+      let polls = 0;
+      installApi(call => {
+        if (call.url.pathname !== `${BASE}/runtime-requests`) return undefined;
+        if (isOpenList(call)) {
+          polls += 1;
+          return {status: 200, body: {version: 1, requests: polls <= 2 ? [request({createdAt: '2026-09-30T00:00:00.000Z'})] : []}};
+        }
+        return {status: 200, body: {version: 1, requests: closed}};
+      });
+
+      const result = await runCommand(['work', 'approve', WORK_ID, '--no-browser', '--timeout', '30', '--poll-ms', '0', '--json', ...auth]);
+
+      expect(result.exitCode).toBe(0);
+      const records = jsonLines(result.stdout);
+      expect(records.map(record => record.type)).toEqual(['decision_required', 'outcome']);
+      expect(records[1]).toMatchObject({
+        type: 'outcome',
+        requestId: REQUEST_ID,
+        outcome: 'closed',
+        outcomeAvailable: false,
+        request: {id: REQUEST_ID, state: 'closed', resolution: null, resolvedBy: null, resolvedAt: null, deliveryState: null, deliveredAt: null, deliveryError: null},
+      });
+      expect(calls.every(call => call.method === 'GET')).toBe(true);
+    });
+
+    it('reports the stored outcome when the older request leaves the open list and appears in history', async () => {
+      let polls = 0;
+      installApi(call => {
+        if (call.url.pathname !== `${BASE}/runtime-requests`) return undefined;
+        if (isOpenList(call)) {
+          polls += 1;
+          return {status: 200, body: {version: 1, requests: polls <= 2 ? [request()] : []}};
+        }
+        return {status: 200, body: {version: 1, requests: polls <= 2 ? [] : [request({
+          state: 'resolved', resolution: {decision: 'accept'}, resolvedBy: 'user-1', deliveryState: 'delivered',
+        })]}};
+      });
+
+      const result = await runCommand(['work', 'approve', WORK_ID, REQUEST_ID, '--no-browser', '--timeout', '30', '--poll-ms', '0', '--json', ...auth]);
+
+      expect(result.exitCode).toBe(0);
+      expect(jsonLines(result.stdout).at(-1)).toMatchObject({
+        type: 'outcome',
+        outcome: 'resolved',
+        outcomeAvailable: true,
+        request: {state: 'resolved', resolution: {decision: 'accept'}, deliveryState: 'delivered'},
+      });
     });
 
     it('asks for a request ID when several approvals are open', async () => {

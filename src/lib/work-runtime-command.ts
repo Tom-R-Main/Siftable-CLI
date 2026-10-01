@@ -53,11 +53,31 @@ export interface WorkDecisionOutput {
   decisionUrl: string;
   /** Whether the CLI started the platform URL opener. False with --no-browser or when the request was already closed. */
   browserOpened: boolean;
-  /** The stored state when the CLI stopped observing; `timed_out` means the request was still pending. */
-  outcome: 'resolved' | 'expired' | 'superseded' | 'timed_out';
+  /**
+   * The stored state when the CLI stopped observing. `timed_out`: still pending.
+   * `closed`: the request left the open list but is outside the capped history,
+   * so it was decided or closed and the stored outcome cannot be read here.
+   */
+  outcome: 'resolved' | 'expired' | 'superseded' | 'timed_out' | 'closed';
+  /** False only for `closed`: `request` then carries null resolution and delivery fields. */
+  outcomeAvailable: boolean;
   /** The request as last read from the server, including any stored resolution and delivery state. */
-  request: RuntimeRequest;
+  request: RuntimeRequest | ClosedRuntimeRequestView;
 }
+
+/** A request known to have left the open list whose stored outcome is not readable. */
+export type ClosedRuntimeRequestView = Omit<
+  RuntimeRequest,
+  'state' | 'resolution' | 'resolvedBy' | 'resolvedAt' | 'deliveryState' | 'deliveredAt' | 'deliveryError'
+> & {
+  state: 'closed';
+  resolution: null;
+  resolvedBy: null;
+  resolvedAt: null;
+  deliveryState: null;
+  deliveredAt: null;
+  deliveryError: null;
+};
 
 /** `--json` output of `sift work send` and `sift work interrupt` (version 1). */
 export interface WorkControlOutput {
@@ -296,7 +316,23 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
       decisionUrl,
       browserOpened,
       outcome: current.state === 'pending' ? 'timed_out' : current.state,
+      outcomeAvailable: true,
       request: current,
+    });
+    const closedOutput = (last: RuntimeRequest, browserOpened: boolean): WorkDecisionOutput => ({
+      ...output(last, browserOpened),
+      outcome: 'closed',
+      outcomeAvailable: false,
+      request: {
+        ...last,
+        state: 'closed',
+        resolution: null,
+        resolvedBy: null,
+        resolvedAt: null,
+        deliveryState: null,
+        deliveredAt: null,
+        deliveryError: null,
+      },
     });
 
     if (request.state !== 'pending') {
@@ -328,10 +364,28 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
 
     const deadline = Date.now() + flags.timeout * 1000;
     let current = request;
+    let leftOpenListUnseen = false;
     while (current.state === 'pending' && Date.now() < deadline) {
       await sleep(Math.min(flags['poll-ms'], Math.max(0, deadline - Date.now())));
-      const latest = this.unwrapApi(await api.listRequestsWithOpen(workItemId)).all.find(candidate => candidate.id === current.id);
-      if (latest) current = latest;
+      const lists = this.unwrapApi(await api.listRequestsWithOpen(workItemId));
+      const open = lists.open.find(candidate => candidate.id === current.id);
+      if (open) {
+        current = open;
+        continue;
+      }
+      // No longer open: the general list is capped, so it may not hold the
+      // stored outcome. Stop waiting either way; a pending record outside the
+      // open list belongs to an attempt that has ended.
+      const stored = lists.all.find(candidate => candidate.id === current.id);
+      if (stored && stored.state !== 'pending') current = stored;
+      else leftOpenListUnseen = true;
+      break;
+    }
+    if (leftOpenListUnseen) {
+      if (!this.jsonEnabled()) {
+        this.log('The request is no longer open: it was decided or closed. Its stored outcome is outside the request history the API returns, so it cannot be shown here.');
+      }
+      return this.finishDecision(closedOutput(current, browserOpened));
     }
     const result = output(current, browserOpened);
     if (!this.jsonEnabled()) {
