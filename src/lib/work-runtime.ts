@@ -847,10 +847,16 @@ export class WorkItemFollower {
       if (signal.aborted) return await end('signal');
       if (this.deadlineHit) return await end('timeout');
       if (isAbortError(error)) return await end('signal');
+      // A failed watch cuts short attach's in-flight controls and stops its
+      // queue before the error surfaces, as the other ends do.
+      run.abort();
+      await this.options.beforeEnd?.().catch(() => undefined);
       throw error;
     } finally {
       if (timer) clearTimeout(timer);
       signal.removeEventListener('abort', onAbort);
+      // Nothing reads after the watch returns; release anything still pending.
+      run.abort();
     }
   }
 }

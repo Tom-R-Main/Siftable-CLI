@@ -1112,6 +1112,55 @@ describe('sift work runtime commands', () => {
       expect(notSent).toEqual(['never sent']);
     });
 
+    it('aborts a stalled attach control and closes the queue when the watch fails', async () => {
+      let controlAborted = false;
+      installApi(call => {
+        const path = call.url.pathname;
+        if (call.method === 'POST' && path === `${BASE}/runtime-controls`) return STALL;
+        if (path === `${BASE}/execution`) return {status: 200, body: execution('running')};
+        if (path === `${BASE}/runtime-requests`) return {status: 200, body: {version: 1, requests: []}};
+        if (path === `${BASE}/runtime-controls`) return {status: 200, body: {version: 1, controls: [], truncated: false}};
+        return undefined;
+      });
+      // The long-poll fails outright while the control is still stalled.
+      const mocked = global.fetch;
+      global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (!String(input).includes('/events/wait')) return mocked(input, init);
+        await new Promise(resolve => setTimeout(resolve, 150));
+        return {
+          ok: false,
+          status: 500,
+          headers: new Headers({'content-type': 'application/json'}),
+          text: async () => JSON.stringify({error: 'boom'}),
+          json: async () => ({error: 'boom'}),
+        } as Response;
+      });
+      const records: WatchRecord[] = [];
+      const api = new WorkRuntimeApi({apiUrl: 'https://siftable.io', token: 't'});
+      let follower: WorkItemFollower | undefined;
+      let queueClosed = false;
+      const queue = new ControlInputQueue(async line => {
+        const outcome = await submitAttachControl(api, WORK_ID, {kind: 'instruction', instruction: line}, follower!);
+        if (outcome.status === 'unconfirmed') controlAborted = true;
+      });
+      follower = new WorkItemFollower(api, followerOptions(records, {
+        waitMs: 20,
+        beforeEnd: async () => {
+          await queue.close();
+          queueClosed = true;
+        },
+      }));
+      const running = follower.run();
+      await new Promise(resolve => setTimeout(resolve, 50));
+      queue.submit('Also update the README');
+      const started = Date.now();
+
+      await expect(running).rejects.toThrow();
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(controlAborted).toBe(true);
+      expect(queueClosed).toBe(true);
+    });
+
     describe('attach control failures after retries', () => {
       const live = {activeSignal: new AbortController().signal, stopCause: null};
       const api = () => new WorkRuntimeApi({apiUrl: 'https://siftable.io', token: 't'});
