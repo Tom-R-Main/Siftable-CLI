@@ -82,6 +82,7 @@ export default class WorkAttach extends WorkRuntimeCommand {
       ? {kind: 'interrupt' as const}
       : {kind: 'instruction' as const, instruction: text};
     if (input.kind === 'instruction' && input.instruction.length > RUNTIME_INSTRUCTION_MAX_CHARS) {
+      this.failedControls += 1;
       console.error(`Instruction is longer than ${RUNTIME_INSTRUCTION_MAX_CHARS} characters; not sent.`);
       return;
     }

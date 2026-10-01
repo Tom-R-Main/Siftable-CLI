@@ -7,6 +7,7 @@ import {restoreFetch, runCommand} from '../helpers/mock-api';
 import {
   ControlInputQueue,
   MAX_DRAIN_PAGES,
+  RUNTIME_INSTRUCTION_MAX_CHARS,
   isAmbiguousControlFailure,
   submitAttachControl,
   WorkItemFollower,
@@ -466,6 +467,20 @@ describe('sift work runtime commands', () => {
 
       expect(result.exitCode).toBe(0);
       expect(jsonLines(result.stdout).some(record => record.type === 'control')).toBe(true);
+    });
+
+    it('exits 1 when a typed instruction is too long to send', async () => {
+      let posts = 0;
+      liveWorkItem(() => {
+        posts += 1;
+        return {status: 201, body: {version: 1, applied: true, control: control()}};
+      });
+      typeLines(['x'.repeat(RUNTIME_INSTRUCTION_MAX_CHARS + 1)]);
+
+      const result = await runCommand(['work', 'attach', WORK_ID, '--backlog', '0', '--wait-ms', '1000', '--json', ...auth]);
+
+      expect(result.exitCode).toBe(1);
+      expect(posts).toBe(0);
     });
   });
 
