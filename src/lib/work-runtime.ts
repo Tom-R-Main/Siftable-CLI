@@ -647,6 +647,8 @@ export class WorkItemFollower {
   /** Aborts on the caller's signal (Ctrl-C) or when --timeout elapses; every read uses it. */
   private runSignal: AbortSignal = new AbortController().signal;
   private deadlineHit = false;
+  /** Aborts the run signal as a timeout; set by run() for its own controller. */
+  private expire: () => void = () => undefined;
   cursor = 0;
 
   constructor(private readonly api: WorkRuntimeApi, private readonly options: WatchOptions) {}
@@ -748,7 +750,12 @@ export class WorkItemFollower {
   private async drain(deadline: number, now: () => number): Promise<'page_limit' | 'timeout' | null> {
     const {workItemId, signal} = this.options;
     for (let page = 0; page < MAX_DRAIN_PAGES; page += 1) {
-      if (deadline - now() <= 0) return 'timeout';
+      if (deadline - now() <= 0) {
+        // The clock passed the deadline before the timer fired: abort as a
+        // timeout so work still pending at shutdown (attach's controls) stops too.
+        this.expire();
+        return 'timeout';
+      }
       let response: ApiResult<LedgerPage>;
       try {
         // The run signal aborts a stalled request at the deadline or on Ctrl-C.
@@ -777,12 +784,11 @@ export class WorkItemFollower {
     signal.addEventListener('abort', onAbort, {once: true});
     if (signal.aborted) run.abort();
     this.deadlineHit = false;
-    const timer = this.options.timeoutMs > 0
-      ? setTimeout(() => {
-        this.deadlineHit = true;
-        run.abort();
-      }, this.options.timeoutMs)
-      : undefined;
+    this.expire = () => {
+      this.deadlineHit = true;
+      run.abort();
+    };
+    const timer = this.options.timeoutMs > 0 ? setTimeout(this.expire, this.options.timeoutMs) : undefined;
     this.runSignal = run.signal;
     const end = async (requested: WatchEndReason): Promise<WatchEndReason> => {
       await this.options.beforeEnd?.();
@@ -797,9 +803,9 @@ export class WorkItemFollower {
       const incomplete = await this.drain(deadline, now);
       if (incomplete) {
         this.emit({version: 1, type: 'drain_incomplete', cause: incomplete, afterSequence: this.cursor});
-        return end('drain_incomplete');
+        return await end('drain_incomplete');
       }
-      return end('attempt_ended');
+      return await end('attempt_ended');
     };
     try {
       // Read the execution before the ledger scan too, so an attempt that ends
@@ -814,11 +820,16 @@ export class WorkItemFollower {
         || isLiveAttempt(before.currentAttempt)
         // Started and ended during the scan: absent before, ended after.
         || execution.attempts.some(attempt => !known.has(attempt.id) && !isLiveAttempt(attempt));
-      if (once) return end('once');
+      if (once) return await end('once');
       if (exitOnAttemptEnd && this.sawLive && !isLiveAttempt(execution.currentAttempt)) return await finish();
       for (;;) {
         const remaining = deadline - now();
-        if (remaining <= 0) return end('timeout');
+        if (remaining <= 0) {
+          // Abort as a timeout before shutting down, so attach's pending
+          // controls are cut short too; cleanup in finally waits for end().
+          this.expire();
+          return await end('timeout');
+        }
         const waitMs = Math.max(0, Math.min(this.options.waitMs, MAX_EVENT_WAIT_MS, remaining));
         const page = unwrap(await this.api.waitEvents(workItemId, this.cursor, waitMs, this.runSignal));
         for (const event of page.events) {
@@ -833,9 +844,9 @@ export class WorkItemFollower {
       }
     } catch (error) {
       // A timeout and a user interrupt end differently, whichever read they cut short.
-      if (signal.aborted) return end('signal');
-      if (this.deadlineHit) return end('timeout');
-      if (isAbortError(error)) return end('signal');
+      if (signal.aborted) return await end('signal');
+      if (this.deadlineHit) return await end('timeout');
+      if (isAbortError(error)) return await end('signal');
       throw error;
     } finally {
       if (timer) clearTimeout(timer);

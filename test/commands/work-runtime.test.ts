@@ -1138,6 +1138,42 @@ describe('sift work runtime commands', () => {
       expect(records.some(record => record.type === 'end' && record.reason === 'attempt_ended')).toBe(false);
     });
 
+    it('aborts a stalled attach control when a refresh crosses the deadline before the timer fires', async () => {
+      installApi(call => {
+        const path = call.url.pathname;
+        if (call.method === 'POST' && path === `${BASE}/runtime-controls`) return STALL;
+        if (path === `${BASE}/execution`) return {status: 200, body: execution('running')};
+        if (path === `${BASE}/events/wait`) return {status: 200, body: {version: 1, events: [], nextSequence: null, consumerKey: 'default', timedOut: true}};
+        if (path === `${BASE}/runtime-requests`) return {status: 200, body: {version: 1, requests: []}};
+        if (path === `${BASE}/runtime-controls`) return {status: 200, body: {version: 1, controls: [], truncated: false}};
+        return undefined;
+      });
+      const records: WatchRecord[] = [];
+      const api = new WorkRuntimeApi({apiUrl: 'https://siftable.io', token: 't'});
+      let follower: WorkItemFollower | undefined;
+      const queue = new ControlInputQueue(async line => {
+        const outcome = await submitAttachControl(api, WORK_ID, {kind: 'instruction', instruction: line}, follower!);
+        if (outcome.status === 'unconfirmed') records.push(outcome.record);
+      });
+      // The clock jumps past the deadline once the control POST is in flight;
+      // the real 30 s timer has not fired, so only the elapsed check can stop it.
+      const now = () => (calls.some(call => call.method === 'POST') ? 1_000_000 : 0);
+      follower = new WorkItemFollower(api, followerOptions(records, {
+        waitMs: 1000,
+        timeoutMs: 30_000,
+        now,
+        beforeEnd: () => queue.close(),
+      }));
+      queue.submit('Also update the README');
+      const started = Date.now();
+
+      await expect(follower.run()).resolves.toBe('timeout');
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(calls.filter(call => call.method === 'POST')).toHaveLength(1);
+      expect(records.at(-2)).toMatchObject({type: 'control_unconfirmed', cause: 'timeout', httpStatus: null});
+      expect(records.at(-1)).toMatchObject({type: 'end', reason: 'timeout'});
+    });
+
     function attemptEndsDuringScan(before: unknown, after: unknown): void {
       installApi(call => {
         const path = call.url.pathname;
