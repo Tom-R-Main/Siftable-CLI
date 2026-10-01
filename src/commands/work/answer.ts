@@ -19,7 +19,7 @@ export default class WorkAnswer extends WorkRuntimeCommand {
     ...WorkRuntimeCommand.decisionFlags,
   };
 
-  async run(): Promise<WorkDecisionOutput> {
+  async run(): Promise<WorkDecisionOutput | undefined> {
     const {args, flags} = await this.parse(WorkAnswer);
     return this.decideInBrowser('user_input', args.id, args.requestId, flags);
   }

@@ -27,9 +27,25 @@ import {
   sleep,
 } from './work-runtime.js';
 
-/** `--json` output of `sift work approve` and `sift work answer` (version 1). */
+/**
+ * `--json` output of `sift work approve` and `sift work answer` is JSON Lines.
+ * While the request is pending, the first line is `decision_required`, written
+ * before the command starts waiting; the last line is `outcome`.
+ */
+export interface WorkDecisionRequiredRecord {
+  version: typeof WORK_RUNTIME_OUTPUT_VERSION;
+  type: 'decision_required';
+  workItemId: string;
+  requestId: string;
+  kind: RuntimeRequestKind;
+  /** Open this page with a signed-in session to decide the request. */
+  url: string;
+  browserOpened: boolean;
+}
+
 export interface WorkDecisionOutput {
   version: typeof WORK_RUNTIME_OUTPUT_VERSION;
+  type: 'outcome';
   workItemId: string;
   requestId: string;
   kind: RuntimeRequestKind;
@@ -240,16 +256,17 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
     workItemId: string,
     requestId: string | undefined,
     flags: ApiContextFlags & {'no-browser'?: boolean; 'app-url'?: string; timeout: number; 'poll-ms': number},
-  ): Promise<WorkDecisionOutput> {
+  ): Promise<WorkDecisionOutput | undefined> {
     const api = this.runtimeApi(flags);
     const noun = kind === 'approval' ? 'approval' : 'question';
-    const listed = this.unwrapApi(await api.listRequests(workItemId)).requests;
+    const lists = this.unwrapApi(await api.listRequestsWithOpen(workItemId));
     let request: RuntimeRequest | undefined;
     if (requestId) {
-      request = listed.find(candidate => candidate.id === requestId.trim().toLowerCase() || candidate.id === requestId.trim());
+      const wanted = requestId.trim().toLowerCase();
+      request = lists.all.find(candidate => candidate.id.toLowerCase() === wanted);
       if (!request) this.error(`Not found: runtime request ${sanitizeTerminalLine(requestId)} on work item ${sanitizeTerminalLine(workItemId)}.`, {exit: 4});
     } else {
-      const open = listed.filter(candidate => candidate.state === 'pending' && candidate.kind === kind);
+      const open = lists.open.filter(candidate => candidate.state === 'pending' && candidate.kind === kind);
       if (open.length === 0) this.error(`No open ${noun} requests on work item ${sanitizeTerminalLine(workItemId)}.`, {exit: 4});
       if (open.length > 1) {
         this.error(
@@ -272,6 +289,7 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
     const decisionUrl = runtimeRequestDecisionUrl(appOrigin, workItemId, request.id);
     const output = (current: RuntimeRequest, browserOpened: boolean): WorkDecisionOutput => ({
       version: WORK_RUNTIME_OUTPUT_VERSION,
+      type: 'outcome',
       workItemId,
       requestId: current.id,
       kind: current.kind,
@@ -287,12 +305,23 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
         for (const line of renderRequestLines(request)) this.log(line);
       }
       if (request.state !== 'resolved') process.exitCode = 1;
-      return output(request, false);
+      return this.finishDecision(output(request, false));
     }
 
     if (!this.jsonEnabled()) for (const line of renderRequestLines(request).slice(0, -1)) this.log(line);
     const browserOpened = flags['no-browser'] ? false : openUrlInBrowser(decisionUrl);
-    if (!this.jsonEnabled()) {
+    if (this.jsonEnabled()) {
+      const required: WorkDecisionRequiredRecord = {
+        version: WORK_RUNTIME_OUTPUT_VERSION,
+        type: 'decision_required',
+        workItemId,
+        requestId: request.id,
+        kind: request.kind,
+        url: decisionUrl,
+        browserOpened,
+      };
+      console.log(JSON.stringify(required));
+    } else {
       this.log(`${browserOpened ? 'Opened' : 'Open'} ${decisionUrl}`);
       this.log('Decide there with your signed-in session; access tokens cannot answer agent requests. Waiting for the decision...');
     }
@@ -301,7 +330,7 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
     let current = request;
     while (current.state === 'pending' && Date.now() < deadline) {
       await sleep(Math.min(flags['poll-ms'], Math.max(0, deadline - Date.now())));
-      const latest = this.unwrapApi(await api.listRequests(workItemId)).requests.find(candidate => candidate.id === current.id);
+      const latest = this.unwrapApi(await api.listRequestsWithOpen(workItemId)).all.find(candidate => candidate.id === current.id);
       if (latest) current = latest;
     }
     const result = output(current, browserOpened);
@@ -310,6 +339,13 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
       else for (const line of renderRequestLines(current)) this.log(line);
     }
     if (result.outcome !== 'resolved') process.exitCode = 1;
-    return result;
+    return this.finishDecision(result);
+  }
+
+  /** In --json mode the outcome is the last JSON Lines record; oclif prints nothing more. */
+  private finishDecision(result: WorkDecisionOutput): WorkDecisionOutput | undefined {
+    if (!this.jsonEnabled()) return result;
+    console.log(JSON.stringify(result));
+    return undefined;
   }
 }

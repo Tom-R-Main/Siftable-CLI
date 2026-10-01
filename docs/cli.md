@@ -109,7 +109,7 @@ sift work approve "$WORK_ID"                  # opens the web app to decide; wai
 sift work answer "$WORK_ID" "$REQUEST_ID" --no-browser
 ```
 
-**watch / attach.** Reads the ledger from an explicit sequence with `GET /events/wait` (long-poll) and refreshes the execution attempt, runtime requests and runtime controls after each poll window. It never reads or advances a durable consumer cursor. It stops when an attempt it saw live is no longer live (`--keep-following` to continue), after `--timeout` seconds, on Ctrl-C, or immediately with `--once`. With `--json` the output is JSON Lines, one record per line, each with `version: 1` and a `type`:
+**watch / attach.** Reads the ledger from an explicit sequence with `GET /events/wait` (long-poll) and refreshes the execution attempt, runtime requests and runtime controls after each poll window. It never reads or advances a durable consumer cursor. Open requests in the snapshot come from `GET /runtime-requests?open=true`. It stops when an attempt it saw live is no longer live, after reading every remaining ledger page, (`--keep-following` to continue), after `--timeout` seconds, on Ctrl-C, or immediately with `--once`. With `--json` the output is JSON Lines, one record per line, each with `version: 1` and a `type`:
 
 | `type` | Fields |
 |---|---|
@@ -136,13 +136,19 @@ sift work answer "$WORK_ID" "$REQUEST_ID" --no-browser
 <app origin>/app/work/<workItemId>?request=<requestId>
 ```
 
-The app origin is `--app-url`, else `SIFT_APP_URL`, else the `--api-url` origin (`http://localhost:8080` maps to the local web client on `:3000`). Output (`--json`):
+The app origin is `--app-url`, else `SIFT_APP_URL`, else the `--api-url` origin (`http://localhost:8080` maps to the local web client on `:3000`). With `--json` the output is JSON Lines. While the request is pending, the first line is written before the command starts waiting, so a script using `--no-browser` can hand the URL to a person:
 
 ```json
-{"version": 1, "workItemId": "…", "requestId": "…", "kind": "approval", "decisionUrl": "https://siftable.io/app/work/…?request=…", "browserOpened": true, "outcome": "resolved", "request": {"state": "resolved", "resolution": {"decision": "accept"}, "deliveryState": "delivered", "…": "…"}}
+{"version": 1, "type": "decision_required", "workItemId": "…", "requestId": "…", "kind": "approval", "url": "https://siftable.io/app/work/…?request=…", "browserOpened": false}
 ```
 
-`outcome` is `resolved`, `expired`, `superseded` or `timed_out` (still pending after `--timeout` seconds); the command exits 0 only for `resolved`. `request.resolution` holds the stored decision, and `request.deliveryState` says whether it reached the agent.
+The last line is the outcome (the only line when the request was already closed):
+
+```json
+{"version": 1, "type": "outcome", "workItemId": "…", "requestId": "…", "kind": "approval", "decisionUrl": "https://siftable.io/app/work/…?request=…", "browserOpened": true, "outcome": "resolved", "request": {"state": "resolved", "resolution": {"decision": "accept"}, "deliveryState": "delivered", "…": "…"}}
+```
+
+Pending requests are read from `GET /runtime-requests?open=true`, so an older pending request is found even when the general list is full of newer closed ones. `outcome` is `resolved`, `expired`, `superseded` or `timed_out` (still pending after `--timeout` seconds); the command exits 0 only for `resolved`. `request.resolution` holds the stored decision, and `request.deliveryState` says whether it reached the agent.
 
 ---
 

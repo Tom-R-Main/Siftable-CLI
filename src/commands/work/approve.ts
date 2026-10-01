@@ -19,7 +19,7 @@ export default class WorkApprove extends WorkRuntimeCommand {
     ...WorkRuntimeCommand.decisionFlags,
   };
 
-  async run(): Promise<WorkDecisionOutput> {
+  async run(): Promise<WorkDecisionOutput | undefined> {
     const {args, flags} = await this.parse(WorkApprove);
     return this.decideInBrowser('approval', args.id, args.requestId, flags);
   }

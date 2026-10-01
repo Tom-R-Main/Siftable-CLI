@@ -27,6 +27,8 @@ export type RuntimeControlState =
 export const RUNTIME_INSTRUCTION_MAX_CHARS = 16_000;
 export const EVENT_PAGE_LIMIT = 100;
 export const MAX_EVENT_WAIT_MS = 30_000;
+/** Pages read after an attempt ends before the watch stops (100 events each). */
+export const MAX_DRAIN_PAGES = 100;
 
 export interface RuntimeQuestion {
   id: string;
@@ -182,8 +184,16 @@ export class WorkRuntimeApi {
       if (isAbortError(error) || options.signal?.aborted) throw error;
       return {ok: false, status: 0, error: JSON.stringify({error: `Request failed: ${error instanceof Error ? error.message : String(error)}`})};
     }
-    if (!response.ok) return {ok: false, status: response.status, error: await response.text()};
-    return {ok: true, status: response.status, body: (await response.json()) as T};
+    // A connection that drops while the body streams is a transport failure
+    // too: the server may have applied the request, so the caller retries with
+    // the same Idempotency-Key and receives the stored result.
+    try {
+      if (!response.ok) return {ok: false, status: response.status, error: await response.text()};
+      return {ok: true, status: response.status, body: (await response.json()) as T};
+    } catch (error) {
+      if (isAbortError(error) || options.signal?.aborted) throw error;
+      return {ok: false, status: 0, error: JSON.stringify({error: `Response could not be read: ${error instanceof Error ? error.message : String(error)}`})};
+    }
   }
 
   private workPath(workItemId: string, suffix: string): string {
@@ -199,6 +209,24 @@ export class WorkRuntimeApi {
       query: {open: options.open ? 'true' : undefined},
       signal: options.signal,
     });
+  }
+
+  /**
+   * Pending requests and all known requests. The general list is capped and
+   * newest first, so an older pending request is read from `?open=true`.
+   */
+  async listRequestsWithOpen(workItemId: string, signal?: AbortSignal): Promise<ApiResult<{open: RuntimeRequest[]; all: RuntimeRequest[]}>> {
+    const [open, all] = await Promise.all([
+      this.listRequests(workItemId, {open: true, signal}),
+      this.listRequests(workItemId, {signal}),
+    ]);
+    if (!open.ok) return open;
+    if (!all.ok) return all;
+    const merged = new Map<string, RuntimeRequest>();
+    for (const request of all.body.requests) merged.set(request.id, request);
+    for (const request of open.body.requests) merged.set(request.id, request);
+    const byNewest = [...merged.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return {ok: true, status: 200, body: {open: open.body.requests, all: byNewest}};
   }
 
   listControls(workItemId: string, signal?: AbortSignal): Promise<ApiResult<{version: 1; controls: RuntimeControl[]; truncated: boolean}>> {
@@ -564,9 +592,9 @@ export class WorkItemFollower {
 
   private async refresh(initial: boolean): Promise<WorkExecution> {
     const {workItemId, signal} = this.options;
-    const [execution, requestList, controlList] = await Promise.all([
+    const [execution, requestLists, controlList] = await Promise.all([
       this.api.getExecution(workItemId, signal).then(unwrap),
-      this.api.listRequests(workItemId, {signal}).then(unwrap),
+      this.api.listRequestsWithOpen(workItemId, signal).then(unwrap),
       this.api.listControls(workItemId, signal).then(unwrap),
     ]);
     const attemptKey = attemptSignature(execution);
@@ -575,7 +603,7 @@ export class WorkItemFollower {
     }
     this.attempt = attemptKey;
     // Oldest first, so a reader sees requests and controls in the order they arose.
-    for (const request of [...requestList.requests].reverse()) {
+    for (const request of [...requestLists.all].reverse()) {
       const signature = requestSignature(request);
       if (this.requests.get(request.id) === signature) continue;
       this.requests.set(request.id, signature);
@@ -595,11 +623,25 @@ export class WorkItemFollower {
         afterSequence: this.cursor,
         attempt: execution.currentAttempt,
         leaseActive: execution.currentLeaseActive,
-        openRequests: requestList.requests.filter(request => request.state === 'pending').reverse(),
+        openRequests: [...requestLists.open].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
         openControls: controlList.controls.filter(control => control.state === 'queued' || control.state === 'dispatching'),
       });
     }
     return execution;
+  }
+
+  /** Reads every ledger page after the cursor, bounded, so no event is left behind at the end. */
+  private async drain(): Promise<void> {
+    const {workItemId, signal} = this.options;
+    for (let page = 0; page < MAX_DRAIN_PAGES; page += 1) {
+      const result = unwrap(await this.api.listEvents(workItemId, this.cursor, EVENT_PAGE_LIMIT, signal));
+      for (const event of result.events) {
+        if (event.sequence <= this.cursor) continue;
+        this.cursor = event.sequence;
+        this.emit({version: 1, type: 'event', event});
+      }
+      if (result.events.length < EVENT_PAGE_LIMIT) return;
+    }
   }
 
   async run(): Promise<WatchEndReason> {
@@ -628,7 +670,10 @@ export class WorkItemFollower {
         }
         const current = await this.refresh(false);
         const live = isLiveAttempt(current.currentAttempt);
-        if (exitOnAttemptEnd && this.sawLive && !live) return end('attempt_ended');
+        if (exitOnAttemptEnd && this.sawLive && !live) {
+          await this.drain();
+          return end('attempt_ended');
+        }
         if (live) this.sawLive = true;
       }
     } catch (error) {

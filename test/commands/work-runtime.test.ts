@@ -27,7 +27,7 @@ interface Call {
   body?: unknown;
 }
 
-type Reply = {status: number; body: unknown};
+type Reply = {status: number; body: unknown; bodyError?: boolean};
 let calls: Call[] = [];
 
 function installApi(handler: (call: Call, calls: Call[]) => Reply | undefined): void {
@@ -45,8 +45,14 @@ function installApi(handler: (call: Call, calls: Call[]) => Reply | undefined): 
       ok: reply.status >= 200 && reply.status < 300,
       status: reply.status,
       headers: new Headers({'content-type': 'application/json'}),
-      text: async () => JSON.stringify(reply.body),
-      json: async () => reply.body,
+      text: async () => {
+        if (reply.bodyError) throw new TypeError('terminated');
+        return JSON.stringify(reply.body);
+      },
+      json: async () => {
+        if (reply.bodyError) throw new TypeError('terminated');
+        return reply.body;
+      },
     } as Response;
   }) as typeof fetch;
 }
@@ -171,8 +177,10 @@ function control(overrides: Record<string, unknown> = {}) {
 }
 
 function jsonLines(stdout: string): Array<Record<string, unknown>> {
-  return stdout.split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>);
+  return stdout.split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line) as Record<string, unknown>);
 }
+
+const isOpenList = (call: Call) => call.url.searchParams.get('open') === 'true';
 
 const auth = ['--token', 'sift_pat_test'];
 
@@ -229,6 +237,7 @@ describe('sift work runtime commands', () => {
           if (after === 5) return {status: 200, body: {version: 1, events: [event(6), event(7)], nextSequence: 7, consumerKey: 'default', timedOut: false}};
           return {status: 200, body: {version: 1, events: [], nextSequence: null, consumerKey: 'default', timedOut: true}};
         }
+        if (path === `${BASE}/events`) return {status: 200, body: {version: 1, events: [], nextSequence: null}};
         if (path === `${BASE}/execution`) {
           refreshes += 1;
           return {status: 200, body: execution(refreshes >= 3 ? 'ended' : 'running')};
@@ -250,7 +259,8 @@ describe('sift work runtime commands', () => {
         // The watcher keeps its own cursor and never touches a durable consumer cursor.
         expect(wait.url.searchParams.has('consumerKey')).toBe(false);
       }
-      expect(calls.some(call => call.url.pathname === `${BASE}/events`)).toBe(false);
+      // The only plain read is the final drain after the attempt ended.
+      expect(calls.filter(call => call.url.pathname === `${BASE}/events`).map(call => call.url.searchParams.get('afterSequence'))).toEqual(['7']);
       expect(calls.some(call => call.method !== 'GET')).toBe(false);
       const records = jsonLines(result.stdout);
       expect(records.map(record => record.type)).toEqual(['snapshot', 'event', 'event', 'request', 'attempt', 'end']);
@@ -259,6 +269,37 @@ describe('sift work runtime commands', () => {
       expect(records[4]).toMatchObject({type: 'attempt', attempt: null, leaseActive: false});
       expect(records[5]).toEqual({version: 1, type: 'end', reason: 'attempt_ended', afterSequence: 7});
       expectNoProcessStarted();
+    });
+
+    it('drains every remaining ledger page before reporting that the attempt ended', async () => {
+      let refreshes = 0;
+      installApi(call => {
+        const path = call.url.pathname;
+        if (path === `${BASE}/events/wait`) return {status: 200, body: {version: 1, events: [], nextSequence: null, consumerKey: 'default', timedOut: true}};
+        if (path === `${BASE}/events`) {
+          const after = Number(call.url.searchParams.get('afterSequence'));
+          const limit = Number(call.url.searchParams.get('limit'));
+          const events = Array.from({length: 101}, (_, index) => event(index + 1)).filter(entry => entry.sequence > after).slice(0, limit);
+          return {status: 200, body: {version: 1, events, nextSequence: events.at(-1)?.sequence ?? null}};
+        }
+        if (path === `${BASE}/execution`) {
+          refreshes += 1;
+          return {status: 200, body: execution(refreshes >= 2 ? 'ended' : 'running')};
+        }
+        if (path === `${BASE}/runtime-requests`) return {status: 200, body: {version: 1, requests: []}};
+        if (path === `${BASE}/runtime-controls`) return {status: 200, body: {version: 1, controls: [], truncated: false}};
+        return undefined;
+      });
+
+      const result = await runCommand(['work', 'watch', WORK_ID, '--after-sequence', '0', '--wait-ms', '1000', '--json', ...auth]);
+
+      expect(result.exitCode).toBe(0);
+      const records = jsonLines(result.stdout);
+      const sequences = records.filter(record => record.type === 'event').map(record => (record.event as {sequence: number}).sequence);
+      expect(sequences).toEqual(Array.from({length: 101}, (_, index) => index + 1));
+      expect(records.at(-1)).toEqual({version: 1, type: 'end', reason: 'attempt_ended', afterSequence: 101});
+      const drains = calls.filter(call => call.url.pathname === `${BASE}/events`);
+      expect(drains.map(call => call.url.searchParams.get('afterSequence'))).toEqual(['0', '100']);
     });
 
     it('renders readable text with a decision hint for an open request', async () => {
@@ -318,6 +359,22 @@ describe('sift work runtime commands', () => {
       expect(JSON.parse(result.stdout)).toMatchObject({applied: false, requestAttempts: 2, idempotencyKey: calls[0].headers['Idempotency-Key']});
     });
 
+    it('retries with the same key when the connection drops while the response body is read', async () => {
+      installApi((call, all) => {
+        if (call.method !== 'POST') return undefined;
+        return all.length === 1
+          ? {status: 201, body: {version: 1, applied: true, control: control()}, bodyError: true}
+          : {status: 200, body: {version: 1, applied: false, control: control()}};
+      });
+
+      const result = await runCommand(['work', 'send', WORK_ID, 'Also update the README', '--retry-delay-ms', '0', '--json', ...auth]);
+
+      expect(result.exitCode).toBe(0);
+      expect(calls).toHaveLength(2);
+      expect(calls[1].headers['Idempotency-Key']).toBe(calls[0].headers['Idempotency-Key']);
+      expect(JSON.parse(result.stdout)).toMatchObject({applied: false, requestAttempts: 2, control: {id: CONTROL_ID}});
+    });
+
     it('uses a caller-supplied key and does not retry a conflict', async () => {
       installApi(call => (call.method === 'POST'
         ? {status: 409, body: {error: 'This work has no running execution to receive the control'}}
@@ -370,7 +427,8 @@ describe('sift work runtime commands', () => {
       let lists = 0;
       installApi(call => {
         if (call.url.pathname === `${BASE}/runtime-requests` && call.method === 'GET') {
-          lists += 1;
+          if (!isOpenList(call)) lists += 1;
+          if (isOpenList(call)) return {status: 200, body: {version: 1, requests: lists < 3 ? [request()] : []}};
           return {status: 200, body: {version: 1, requests: [lists < 3 ? request() : request({
             state: 'resolved',
             resolution: {decision: 'accept'},
@@ -386,10 +444,15 @@ describe('sift work runtime commands', () => {
       const result = await runCommand(['work', 'approve', WORK_ID, '--poll-ms', '0', '--json', ...auth]);
 
       expect(result.exitCode).toBe(0);
-      const output = JSON.parse(result.stdout);
+      const records = jsonLines(result.stdout);
       const decisionUrl = `https://siftable.io/app/work/${WORK_ID}?request=${REQUEST_ID}`;
-      expect(output).toEqual({
+      expect(records).toHaveLength(2);
+      expect(records[0]).toEqual({
+        version: 1, type: 'decision_required', workItemId: WORK_ID, requestId: REQUEST_ID, kind: 'approval', url: decisionUrl, browserOpened: true,
+      });
+      expect(records[1]).toEqual({
         version: 1,
+        type: 'outcome',
         workItemId: WORK_ID,
         requestId: REQUEST_ID,
         kind: 'approval',
@@ -410,7 +473,7 @@ describe('sift work runtime commands', () => {
 
     it('prints the local web URL with --no-browser and starts no process', async () => {
       installApi(call => (call.url.pathname === `${BASE}/runtime-requests`
-        ? {status: 200, body: {version: 1, requests: [request({kind: 'user_input', detail: {questions: [{id: 'q1', header: 'Branch', question: 'Which branch?', options: [{label: 'main', description: ''}]}]}, state: 'resolved', resolution: {answers: {q1: 'main'}}})]}}
+        ? {status: 200, body: {version: 1, requests: isOpenList(call) ? [] : [request({kind: 'user_input', detail: {questions: [{id: 'q1', header: 'Branch', question: 'Which branch?', options: [{label: 'main', description: ''}]}]}, state: 'resolved', resolution: {answers: {q1: 'main'}}})]}}
         : undefined));
 
       const result = await runCommand([
@@ -418,7 +481,10 @@ describe('sift work runtime commands', () => {
       ]);
 
       expect(result.exitCode).toBe(0);
-      expect(JSON.parse(result.stdout)).toMatchObject({
+      const records = jsonLines(result.stdout);
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+        type: 'outcome',
         kind: 'user_input',
         decisionUrl: `http://127.0.0.1:3000/app/work/${WORK_ID}?request=${REQUEST_ID}`,
         browserOpened: false,
@@ -435,8 +501,71 @@ describe('sift work runtime commands', () => {
       const result = await runCommand(['work', 'approve', WORK_ID, REQUEST_ID, '--no-browser', '--timeout', '1', '--poll-ms', '200', '--json', ...auth]);
 
       expect(result.exitCode).toBe(1);
-      expect(JSON.parse(result.stdout)).toMatchObject({outcome: 'timed_out', browserOpened: false, request: {state: 'pending'}});
+      const records = jsonLines(result.stdout);
+      expect(records[0]).toMatchObject({type: 'decision_required', requestId: REQUEST_ID, browserOpened: false});
+      expect(records.at(-1)).toMatchObject({type: 'outcome', outcome: 'timed_out', browserOpened: false, request: {state: 'pending'}});
       expect(calls.every(call => call.method === 'GET')).toBe(true);
+    });
+
+    it('writes the decision URL as JSON before it starts waiting on a pending request', async () => {
+      let polls = 0;
+      installApi(call => {
+        if (call.url.pathname !== `${BASE}/runtime-requests`) return undefined;
+        if (!isOpenList(call)) {
+          polls += 1;
+          // Marks, in stdout order, the moment the command starts waiting.
+          if (polls === 2) console.log('POLL-STARTED');
+        }
+        const resolved = polls >= 2;
+        if (isOpenList(call)) return {status: 200, body: {version: 1, requests: resolved ? [] : [request()]}};
+        return {status: 200, body: {version: 1, requests: [resolved ? request({state: 'resolved', resolution: {decision: 'decline'}}) : request()]}};
+      });
+
+      const result = await runCommand(['work', 'approve', WORK_ID, REQUEST_ID, '--no-browser', '--poll-ms', '0', '--json', ...auth]);
+
+      const lines = result.stdout.split('\n').filter(Boolean);
+      const requiredIndex = lines.findIndex(line => line.includes('"decision_required"'));
+      expect(requiredIndex).toBeGreaterThanOrEqual(0);
+      expect(requiredIndex).toBeLessThan(lines.indexOf('POLL-STARTED'));
+      expect(JSON.parse(lines[requiredIndex])).toEqual({
+        version: 1,
+        type: 'decision_required',
+        workItemId: WORK_ID,
+        requestId: REQUEST_ID,
+        kind: 'approval',
+        url: `https://siftable.io/app/work/${WORK_ID}?request=${REQUEST_ID}`,
+        browserOpened: false,
+      });
+      expect(jsonLines(result.stdout).at(-1)).toMatchObject({type: 'outcome', outcome: 'resolved', request: {resolution: {decision: 'decline'}}});
+      expect(result.exitCode).toBe(0);
+      expectNoProcessStarted();
+    });
+
+    it('finds an older pending request through the open list when 100 newer requests are closed', async () => {
+      const closed = Array.from({length: 100}, (_, index) => request({
+        id: `99999999-9999-4999-8999-${String(index).padStart(12, '0')}`,
+        state: 'expired',
+        closeReason: 'session_ended',
+        createdAt: `2026-10-01T01:${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}.000Z`,
+      }));
+      const older = request({createdAt: '2026-09-30T00:00:00.000Z'});
+      installApi(call => {
+        if (call.url.pathname === `${BASE}/runtime-requests`) {
+          return {status: 200, body: {version: 1, requests: isOpenList(call) ? [older] : closed}};
+        }
+        if (call.url.pathname === `${BASE}/events`) return {status: 200, body: {version: 1, events: [], nextSequence: null}};
+        if (call.url.pathname === `${BASE}/execution`) return {status: 200, body: execution('running')};
+        if (call.url.pathname === `${BASE}/runtime-controls`) return {status: 200, body: {version: 1, controls: [], truncated: false}};
+        return undefined;
+      });
+
+      const approve = await runCommand(['work', 'approve', WORK_ID, '--no-browser', '--timeout', '1', '--poll-ms', '500', '--json', ...auth]);
+      expect(jsonLines(approve.stdout)[0]).toMatchObject({type: 'decision_required', requestId: REQUEST_ID});
+      const named = await runCommand(['work', 'approve', WORK_ID, REQUEST_ID, '--no-browser', '--timeout', '1', '--poll-ms', '500', '--json', ...auth]);
+      expect(jsonLines(named.stdout)[0]).toMatchObject({type: 'decision_required', requestId: REQUEST_ID});
+
+      const watch = await runCommand(['work', 'watch', WORK_ID, '--once', '--json', ...auth]);
+      expect(jsonLines(watch.stdout)[0]).toMatchObject({type: 'snapshot', openRequests: [{id: REQUEST_ID, state: 'pending'}]});
     });
 
     it('asks for a request ID when several approvals are open', async () => {
