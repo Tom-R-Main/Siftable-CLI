@@ -790,8 +790,11 @@ export class WorkItemFollower {
     };
     const timer = this.options.timeoutMs > 0 ? setTimeout(this.expire, this.options.timeoutMs) : undefined;
     this.runSignal = run.signal;
+    // beforeEnd runs at most once, whichever end reaches it first.
+    let ending: Promise<void> | undefined;
+    const settle = (): Promise<void> => (ending ??= this.options.beforeEnd?.() ?? Promise.resolve());
     const end = async (requested: WatchEndReason): Promise<WatchEndReason> => {
-      await this.options.beforeEnd?.();
+      await settle();
       // Ctrl-C or the deadline may fire while beforeEnd (attach's control queue)
       // is still settling; report that stop rather than the earlier reason.
       const stopped = this.stopCause;
@@ -850,7 +853,7 @@ export class WorkItemFollower {
       // A failed watch cuts short attach's in-flight controls and stops its
       // queue before the error surfaces, as the other ends do.
       run.abort();
-      await this.options.beforeEnd?.().catch(() => undefined);
+      await settle().catch(() => undefined);
       throw error;
     } finally {
       if (timer) clearTimeout(timer);

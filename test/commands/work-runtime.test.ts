@@ -1161,6 +1161,28 @@ describe('sift work runtime commands', () => {
       expect(queueClosed).toBe(true);
     });
 
+    it('runs beforeEnd once when it rejects during a normal end', async () => {
+      installApi(call => {
+        const path = call.url.pathname;
+        if (path === `${BASE}/events`) return {status: 200, body: {version: 1, events: [], nextSequence: null}};
+        if (path === `${BASE}/execution`) return {status: 200, body: execution('running')};
+        if (path === `${BASE}/runtime-requests`) return {status: 200, body: {version: 1, requests: []}};
+        if (path === `${BASE}/runtime-controls`) return {status: 200, body: {version: 1, controls: [], truncated: false}};
+        return undefined;
+      });
+      let calls = 0;
+      const follower = new WorkItemFollower(new WorkRuntimeApi({apiUrl: 'https://siftable.io', token: 't'}), followerOptions([], {
+        once: true,
+        beforeEnd: async () => {
+          calls += 1;
+          throw new Error('close failed');
+        },
+      }));
+
+      await expect(follower.run()).rejects.toThrow('close failed');
+      expect(calls).toBe(1);
+    });
+
     describe('attach control failures after retries', () => {
       const live = {activeSignal: new AbortController().signal, stopCause: null};
       const api = () => new WorkRuntimeApi({apiUrl: 'https://siftable.io', token: 't'});
