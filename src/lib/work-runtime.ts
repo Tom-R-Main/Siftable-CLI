@@ -521,6 +521,19 @@ export type WatchRecord =
   | {version: 1; type: 'attempt'; attempt: ExecutionAttempt | null; leaseActive: boolean}
   | {version: 1; type: 'request'; request: RuntimeRequest}
   | {version: 1; type: 'control'; control: RuntimeControl}
+  /**
+   * attach only: a typed control whose POST was cut short by Ctrl-C or
+   * --timeout. The server may or may not have stored it; resending with the
+   * same `idempotencyKey` returns the stored control instead of a second one.
+   */
+  | {
+    version: 1;
+    type: 'control_unconfirmed';
+    kind: RuntimeControlKind;
+    instruction: string | null;
+    idempotencyKey: string;
+    cause: 'signal' | 'timeout';
+  }
   /** The attempt ended but ledger events remain after `afterSequence`: the final read hit its page cap or the timeout. */
   | {version: 1; type: 'drain_incomplete'; cause: 'page_limit' | 'timeout'; afterSequence: number}
   | {version: 1; type: 'end'; reason: WatchEndReason; afterSequence: number};
@@ -597,6 +610,18 @@ export class WorkItemFollower {
   cursor = 0;
 
   constructor(private readonly api: WorkRuntimeApi, private readonly options: WatchOptions) {}
+
+  /** Aborts when the watch is stopped by Ctrl-C or --timeout; attach bounds its control posts with it. */
+  get activeSignal(): AbortSignal {
+    return this.runSignal;
+  }
+
+  /** Why the run signal fired, or null while it has not. */
+  get stopCause(): 'signal' | 'timeout' | null {
+    if (this.options.signal.aborted) return 'signal';
+    if (this.deadlineHit) return 'timeout';
+    return null;
+  }
 
   /** Records a control the caller just sent so the next refresh does not repeat it. */
   noteControl(control: RuntimeControl): void {
@@ -814,6 +839,14 @@ export function renderWatchRecord(record: WatchRecord): string[] {
       return renderRequestLines(record.request);
     case 'control':
       return [renderControlLine(record.control)];
+    case 'control_unconfirmed': {
+      const noun = record.kind === 'interrupt' ? 'Interrupt' : 'Instruction';
+      const cause = record.cause === 'timeout' ? 'the timeout elapsed' : 'you stopped the command';
+      const retry = record.kind === 'interrupt'
+        ? `sift work interrupt <id> --idempotency-key ${record.idempotencyKey}`
+        : `sift work send <id> <same text> --idempotency-key ${record.idempotencyKey}`;
+      return [`${noun} outcome unknown: ${cause} while it was being sent, so the server may or may not have queued it. To check or retry without a duplicate: ${retry}`];
+    }
     case 'drain_incomplete':
       return [`Stopped before the end of the ledger (${record.cause === 'timeout' ? 'the timeout elapsed' : 'page limit reached'}); events after #${record.afterSequence} were not read.`];
     case 'end':
@@ -845,5 +878,82 @@ export class ControlInputQueue {
 
   idle(): Promise<void> {
     return this.tail;
+  }
+}
+
+/**
+ * One signal for a command's wait loop: aborts on Ctrl-C or when `timeoutMs`
+ * elapses, and says which happened. Call dispose() when the wait ends.
+ */
+export function waitScope(timeoutMs: number): {
+  signal: AbortSignal;
+  cause: () => 'signal' | 'timeout' | null;
+  dispose: () => void;
+} {
+  const controller = new AbortController();
+  let cause: 'signal' | 'timeout' | null = null;
+  const onSigint = () => {
+    cause ??= 'signal';
+    controller.abort();
+  };
+  process.once('SIGINT', onSigint);
+  const timer = setTimeout(() => {
+    cause ??= 'timeout';
+    controller.abort();
+  }, timeoutMs);
+  return {
+    signal: controller.signal,
+    cause: () => cause,
+    dispose: () => {
+      clearTimeout(timer);
+      process.off('SIGINT', onSigint);
+    },
+  };
+}
+
+export type AttachControlResult =
+  | {status: 'sent'; record: WatchRecord}
+  | {status: 'unconfirmed'; record: WatchRecord}
+  | {status: 'refused'; httpStatus: number}
+  | {status: 'not_sent'};
+
+/**
+ * Sends one control typed into attach, bounded by the follower's run signal.
+ * A POST cut short by Ctrl-C or --timeout is reported as unconfirmed, never
+ * as accepted or refused; its Idempotency-Key lets the person retry safely.
+ */
+export async function submitAttachControl(
+  api: WorkRuntimeApi,
+  workItemId: string,
+  input: {kind: 'instruction'; instruction: string} | {kind: 'interrupt'},
+  follower: Pick<WorkItemFollower, 'activeSignal' | 'stopCause'>,
+  options: {retries?: number; retryDelayMs?: number; idempotencyKey?: string} = {},
+): Promise<AttachControlResult> {
+  const signal = follower.activeSignal;
+  // Lines still queued after the watch stopped are never sent.
+  if (signal.aborted) return {status: 'not_sent'};
+  const idempotencyKey = options.idempotencyKey ?? newControlIdempotencyKey(input.kind);
+  try {
+    const {result} = await sendControlWithRetry(api, workItemId, input, {
+      idempotencyKey,
+      retries: options.retries ?? 2,
+      retryDelayMs: options.retryDelayMs ?? 500,
+      signal,
+    });
+    if (!result.ok) return {status: 'refused', httpStatus: result.status};
+    return {status: 'sent', record: {version: 1, type: 'control', control: result.body.control}};
+  } catch (error) {
+    if (!isAbortError(error) && !signal.aborted) throw error;
+    return {
+      status: 'unconfirmed',
+      record: {
+        version: 1,
+        type: 'control_unconfirmed',
+        kind: input.kind,
+        instruction: input.kind === 'instruction' ? input.instruction : null,
+        idempotencyKey,
+        cause: follower.stopCause ?? 'signal',
+      },
+    };
   }
 }

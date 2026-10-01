@@ -4,11 +4,9 @@ import {WorkRuntimeCommand} from '../../lib/work-runtime-command.js';
 import {
   ControlInputQueue,
   RUNTIME_INSTRUCTION_MAX_CHARS,
+  submitAttachControl,
   type WorkItemFollower,
   type WorkRuntimeApi,
-  isAbortError,
-  newControlIdempotencyKey,
-  sendControlWithRetry,
 } from '../../lib/work-runtime.js';
 
 export default class WorkAttach extends WorkRuntimeCommand {
@@ -82,19 +80,17 @@ export default class WorkAttach extends WorkRuntimeCommand {
       return;
     }
     try {
-      const {result} = await sendControlWithRetry(api, workItemId, input, {
-        idempotencyKey: newControlIdempotencyKey(input.kind),
-        retries: 2,
-        retryDelayMs: 500,
-      });
-      if (!result.ok) {
-        console.error(`Control was not accepted (HTTP ${result.status}).`);
-        return;
+      const outcome = await submitAttachControl(api, workItemId, input, follower);
+      if (outcome.status === 'not_sent') {
+        console.error('The watch has stopped; this line was not sent.');
+      } else if (outcome.status === 'refused') {
+        console.error(`Control was not accepted (HTTP ${outcome.httpStatus}).`);
+      } else {
+        if (outcome.record.type === 'control') follower.noteControl(outcome.record.control);
+        this.emitRecord(outcome.record);
       }
-      follower.noteControl(result.body.control);
-      this.emitRecord({version: 1, type: 'control', control: result.body.control});
     } catch (error) {
-      if (!isAbortError(error)) console.error(`Control was not sent: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`Control was not sent: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 }

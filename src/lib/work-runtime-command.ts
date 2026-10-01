@@ -24,8 +24,10 @@ import {
   renderWatchRecord,
   resolveAppOrigin,
   runtimeRequestDecisionUrl,
+  isAbortError,
   sendControlWithRetry,
   sleep,
+  waitScope,
 } from './work-runtime.js';
 
 /**
@@ -54,8 +56,11 @@ export interface WorkDecisionOutput {
   decisionUrl: string;
   /** Whether the platform URL opener started. False with --no-browser, when the opener failed, or when the request was already closed. */
   browserOpened: boolean;
-  /** The request's stored state when the CLI stopped observing; `timed_out` means it was still pending. */
-  outcome: 'resolved' | 'expired' | 'superseded' | 'timed_out';
+  /**
+   * The request's stored state when the CLI stopped observing. `timed_out`: still
+   * pending at --timeout. `interrupted`: still pending when Ctrl-C stopped the wait (exit 130).
+   */
+  outcome: 'resolved' | 'expired' | 'superseded' | 'timed_out' | 'interrupted';
   /** The request as last read by ID from the server, including any stored resolution and delivery state. */
   request: RuntimeRequest;
 }
@@ -72,6 +77,8 @@ export interface WorkControlOutput {
   requestAttempts: number;
   /** Present with --wait: whether the control reached a final state before the timeout. */
   settled?: boolean;
+  /** Present with --wait when not settled: `timeout`, or `signal` for Ctrl-C (exit 130). */
+  stoppedBy?: 'timeout' | 'signal';
 }
 
 function envValue(primary: string, legacy: string): string | undefined {
@@ -232,20 +239,34 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
       this.log(describeControlState(sent.control));
     }
     if (flags.wait) {
-      const deadline = Date.now() + flags.timeout * 1000;
+      // Ctrl-C or the deadline aborts a stalled read as well as the pause between reads.
+      const scope = waitScope(flags.timeout * 1000);
       let control = sent.control;
-      while (!isControlSettled(control) && Date.now() < deadline) {
-        await sleep(Math.min(flags['poll-ms'], Math.max(0, deadline - Date.now())));
-        const list = this.unwrapApi(await api.listControls(workItemId));
-        const latest = list.controls.find(candidate => candidate.id === control.id);
-        if (!latest) continue;
-        if (latest.state !== control.state && !this.jsonEnabled()) this.log(describeControlState(latest));
-        control = latest;
+      try {
+        while (!isControlSettled(control) && !scope.signal.aborted) {
+          await sleep(flags['poll-ms'], scope.signal);
+          const list = this.unwrapApi(await api.listControls(workItemId, scope.signal));
+          const latest = list.controls.find(candidate => candidate.id === control.id);
+          if (!latest) continue;
+          if (latest.state !== control.state && !this.jsonEnabled()) this.log(describeControlState(latest));
+          control = latest;
+        }
+      } catch (error) {
+        if (!scope.cause() || !isAbortError(error)) throw error;
+      } finally {
+        scope.dispose();
       }
       output.control = control;
       output.settled = isControlSettled(control);
-      if (!output.settled && !this.jsonEnabled()) this.log(`Still ${control.state} after ${flags.timeout}s; stopped waiting.`);
-      if (!isControlSuccess(control)) process.exitCode = 1;
+      if (!output.settled) {
+        output.stoppedBy = scope.cause() === 'signal' ? 'signal' : 'timeout';
+        if (!this.jsonEnabled()) {
+          this.log(output.stoppedBy === 'signal'
+            ? `Stopped waiting; last recorded state: ${control.state}.`
+            : `Still ${control.state} after ${flags.timeout}s; stopped waiting.`);
+        }
+      }
+      if (!isControlSuccess(control)) process.exitCode = output.stoppedBy === 'signal' ? 130 : 1;
     }
     return output;
   }
@@ -337,17 +358,27 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
 
     const deadline = Date.now() + flags.timeout * 1000;
     let current = request;
-    while (current.state === 'pending' && Date.now() < deadline) {
-      await sleep(Math.min(flags['poll-ms'], Math.max(0, deadline - Date.now())));
-      // Read the selected request by ID: its true stored state, never a capped list.
-      current = this.unwrapApi(await api.getRequest(workItemId, current.id)).request;
+    // Ctrl-C or the deadline aborts a stalled read as well as the pause between reads.
+    const scope = waitScope(Math.max(0, deadline - Date.now()));
+    try {
+      while (current.state === 'pending' && !scope.signal.aborted) {
+        await sleep(flags['poll-ms'], scope.signal);
+        // Read the selected request by ID: its true stored state, never a capped list.
+        current = this.unwrapApi(await api.getRequest(workItemId, current.id, scope.signal)).request;
+      }
+    } catch (error) {
+      if (!scope.cause() || !isAbortError(error)) throw error;
+    } finally {
+      scope.dispose();
     }
     const result = output(current, browserOpened);
+    if (current.state === 'pending' && scope.cause() === 'signal') result.outcome = 'interrupted';
     if (!this.jsonEnabled()) {
-      if (current.state === 'pending') this.log(`Still pending after ${flags.timeout}s. Run this command again to keep waiting.`);
+      if (result.outcome === 'interrupted') this.log('Stopped waiting; the request is still pending. Run this command again to keep waiting.');
+      else if (current.state === 'pending') this.log(`Still pending after ${flags.timeout}s. Run this command again to keep waiting.`);
       else for (const line of renderRequestLines(current)) this.log(line);
     }
-    if (result.outcome !== 'resolved') process.exitCode = 1;
+    if (result.outcome !== 'resolved') process.exitCode = result.outcome === 'interrupted' ? 130 : 1;
     return this.finishDecision(result);
   }
 

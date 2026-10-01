@@ -6,6 +6,7 @@ import {restoreFetch, runCommand} from '../helpers/mock-api';
 import {
   ControlInputQueue,
   MAX_DRAIN_PAGES,
+  submitAttachControl,
   WorkItemFollower,
   WorkRuntimeApi,
   type WatchRecord,
@@ -34,7 +35,9 @@ interface Call {
   body?: unknown;
 }
 
-type Reply = {status: number; body: unknown; bodyError?: boolean};
+type Reply = {status: number; body: unknown; bodyError?: boolean} | {stall: true};
+
+const STALL: Reply = {stall: true};
 let calls: Call[] = [];
 
 function installApi(handler: (call: Call, calls: Call[]) => Reply | undefined): void {
@@ -48,6 +51,12 @@ function installApi(handler: (call: Call, calls: Call[]) => Reply | undefined): 
     };
     calls.push(call);
     const reply = handler(call, calls) ?? {status: 500, body: {error: `No mock for ${call.method} ${call.url.pathname}`}};
+    if ('stall' in reply) {
+      // Never answers; only an abort of the request's signal ends it.
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), {name: 'AbortError'})), {once: true});
+      });
+    }
     return {
       ok: reply.status >= 200 && reply.status < 300,
       status: reply.status,
@@ -504,6 +513,33 @@ describe('sift work runtime commands', () => {
       expectNoProcessStarted();
     });
 
+    it('stops --wait at --timeout when a control poll read stalls, keeping the last recorded state', async () => {
+      installApi(call => {
+        if (call.method === 'POST') return {status: 201, body: {version: 1, applied: true, control: control()}};
+        return STALL;
+      });
+      const started = Date.now();
+
+      const result = await runCommand(['work', 'send', WORK_ID, 'Also update the README', '--wait', '--timeout', '1', '--poll-ms', '0', '--json', ...auth]);
+
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(result.exitCode).toBe(1);
+      expect(JSON.parse(result.stdout)).toMatchObject({settled: false, stoppedBy: 'timeout', control: {state: 'queued'}});
+    });
+
+    it('stops --wait with exit 130 when Ctrl-C interrupts a stalled control poll', async () => {
+      installApi(call => {
+        if (call.method === 'POST') return {status: 201, body: {version: 1, applied: true, control: control({kind: 'interrupt', instruction: null})}};
+        setTimeout(() => process.emit('SIGINT'), 50);
+        return STALL;
+      });
+
+      const result = await runCommand(['work', 'interrupt', WORK_ID, '--wait', '--timeout', '30', '--poll-ms', '0', '--json', ...auth]);
+
+      expect(result.exitCode).toBe(130);
+      expect(JSON.parse(result.stdout)).toMatchObject({settled: false, stoppedBy: 'signal', control: {state: 'queued'}});
+    });
+
     it('reports an unconfirmed instruction as unconfirmed and exits non-zero', async () => {
       installApi(call => {
         if (call.method === 'POST') return {status: 201, body: {version: 1, applied: true, control: control()}};
@@ -719,6 +755,37 @@ describe('sift work runtime commands', () => {
       });
     });
 
+    it('ends with timed_out when a decision poll read stalls past --timeout', async () => {
+      let reads = 0;
+      installApi(call => {
+        if (call.url.pathname !== exactPath) return undefined;
+        reads += 1;
+        return reads === 1 ? {status: 200, body: {version: 1, request: request()}} : STALL;
+      });
+      const started = Date.now();
+
+      const result = await runCommand(['work', 'approve', WORK_ID, REQUEST_ID, '--no-browser', '--timeout', '1', '--poll-ms', '0', '--json', ...auth]);
+
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(result.exitCode).toBe(1);
+      expect(jsonLines(result.stdout).at(-1)).toMatchObject({type: 'outcome', outcome: 'timed_out', request: {state: 'pending'}});
+    });
+
+    it('ends with interrupted (exit 130) when Ctrl-C stops a stalled decision poll', async () => {
+      let reads = 0;
+      installApi(call => {
+        if (call.url.pathname !== exactPath) return undefined;
+        reads += 1;
+        if (reads === 2) setTimeout(() => process.emit('SIGINT'), 50);
+        return reads === 1 ? {status: 200, body: {version: 1, request: request()}} : STALL;
+      });
+
+      const result = await runCommand(['work', 'approve', WORK_ID, REQUEST_ID, '--no-browser', '--timeout', '30', '--poll-ms', '0', '--json', ...auth]);
+
+      expect(result.exitCode).toBe(130);
+      expect(jsonLines(result.stdout).at(-1)).toMatchObject({type: 'outcome', outcome: 'interrupted', request: {state: 'pending'}});
+    });
+
     it('reports a request ID that is not on the work item as not found', async () => {
       installApi(call => (call.url.pathname === exactPath ? {status: 404, body: {error: 'Request not found'}} : undefined));
 
@@ -873,6 +940,60 @@ describe('sift work runtime commands', () => {
 
       await expect(follower.run()).resolves.toBe('signal');
       expect(records.at(-1)).toMatchObject({type: 'end', reason: 'signal'});
+    });
+
+    it.each([
+      ['Ctrl-C', 'signal'],
+      ['the timeout', 'timeout'],
+    ] as const)('reports a stalled attach control as unconfirmed when %s stops the watch', async (_label, cause) => {
+      installApi(call => {
+        const path = call.url.pathname;
+        if (call.method === 'POST' && path === `${BASE}/runtime-controls`) return STALL;
+        if (path === `${BASE}/events/wait`) return STALL;
+        if (path === `${BASE}/execution`) return {status: 200, body: execution('running')};
+        if (path === `${BASE}/runtime-requests`) return {status: 200, body: {version: 1, requests: []}};
+        if (path === `${BASE}/runtime-controls`) return {status: 200, body: {version: 1, controls: [], truncated: false}};
+        return undefined;
+      });
+      const caller = new AbortController();
+      const records: WatchRecord[] = [];
+      const api = new WorkRuntimeApi({apiUrl: 'https://siftable.io', token: 't'});
+      let follower: WorkItemFollower | undefined;
+      const notSent: string[] = [];
+      const queue = new ControlInputQueue(async line => {
+        const outcome = await submitAttachControl(api, WORK_ID, {kind: 'instruction', instruction: line}, follower!);
+        if (outcome.status === 'sent' || outcome.status === 'unconfirmed') records.push(outcome.record);
+        else if (outcome.status === 'not_sent') notSent.push(line);
+      });
+      follower = new WorkItemFollower(api, followerOptions(records, {
+        signal: caller.signal,
+        timeoutMs: cause === 'timeout' ? 400 : 30_000,
+        beforeEnd: () => queue.close(),
+      }));
+      const running = follower.run();
+      await new Promise(resolve => setTimeout(resolve, 50));
+      queue.submit('Also update the README');
+      queue.submit('never sent');
+      if (cause === 'signal') setTimeout(() => caller.abort(), 150);
+      const started = Date.now();
+
+      await expect(running).resolves.toBe(cause);
+      expect(Date.now() - started).toBeLessThan(5_000);
+      const post = calls.filter(call => call.method === 'POST');
+      expect(post).toHaveLength(1);
+      const tail = records.slice(-2);
+      expect(tail[0]).toEqual({
+        version: 1,
+        type: 'control_unconfirmed',
+        kind: 'instruction',
+        instruction: 'Also update the README',
+        idempotencyKey: post[0].headers['Idempotency-Key'],
+        cause,
+      });
+      expect(tail[1]).toMatchObject({type: 'end', reason: cause});
+      expect(records.some(record => record.type === 'control')).toBe(false);
+      // The line queued behind the stalled one is never posted once the watch stops.
+      expect(notSent).toEqual(['never sent']);
     });
 
     function attemptEndsDuringScan(before: unknown, after: unknown): void {
