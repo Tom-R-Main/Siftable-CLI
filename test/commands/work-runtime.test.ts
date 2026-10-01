@@ -6,6 +6,7 @@ import {restoreFetch, runCommand} from '../helpers/mock-api';
 import {
   ControlInputQueue,
   MAX_DRAIN_PAGES,
+  isAmbiguousControlFailure,
   submitAttachControl,
   WorkItemFollower,
   WorkRuntimeApi,
@@ -479,6 +480,31 @@ describe('sift work runtime commands', () => {
       expect(calls).toHaveLength(2);
       expect(calls[1].headers['Idempotency-Key']).toBe(calls[0].headers['Idempotency-Key']);
       expect(JSON.parse(result.stdout)).toMatchObject({applied: false, requestAttempts: 2, control: {id: CONTROL_ID}});
+    });
+
+    it('reports an unconfirmed outcome with the key, as JSON, when every attempt ends in a 5xx', async () => {
+      installApi(call => (call.method === 'POST' ? {status: 503, body: {error: 'unavailable'}} : undefined));
+
+      const result = await runCommand(['work', 'send', WORK_ID, 'Also update the README', '--retry-delay-ms', '0', '--json', ...auth]);
+
+      expect(result.exitCode).toBe(1);
+      expect(calls).toHaveLength(3);
+      const key = calls[0].headers['Idempotency-Key'];
+      expect(calls.every(call => call.headers['Idempotency-Key'] === key)).toBe(true);
+      expect(JSON.parse(result.stdout)).toEqual({
+        version: 1, ok: false, outcome: 'unconfirmed', kind: 'instruction', idempotencyKey: key, requestAttempts: 3, cause: 'http', httpStatus: 503,
+      });
+    });
+
+    it('names the retry key in text when no response could be read', async () => {
+      installApi(call => (call.method === 'POST' ? {status: 201, body: {version: 1, applied: true, control: control()}, bodyError: true} : undefined));
+
+      const result = await runCommand(['work', 'interrupt', WORK_ID, '--retries', '1', '--retry-delay-ms', '0', ...auth]);
+
+      expect(result.exitCode).toBe(1);
+      expect(calls).toHaveLength(2);
+      expect(result.stdout).toContain('Interrupt outcome unknown');
+      expect(result.stdout).toContain(`--idempotency-key ${calls[0].headers['Idempotency-Key']}`);
     });
 
     it('uses a caller-supplied key and does not retry a conflict', async () => {
@@ -989,11 +1015,43 @@ describe('sift work runtime commands', () => {
         instruction: 'Also update the README',
         idempotencyKey: post[0].headers['Idempotency-Key'],
         cause,
+        httpStatus: null,
       });
       expect(tail[1]).toMatchObject({type: 'end', reason: cause});
       expect(records.some(record => record.type === 'control')).toBe(false);
       // The line queued behind the stalled one is never posted once the watch stops.
       expect(notSent).toEqual(['never sent']);
+    });
+
+    describe('attach control failures after retries', () => {
+      const live = {activeSignal: new AbortController().signal, stopCause: null};
+      const api = () => new WorkRuntimeApi({apiUrl: 'https://siftable.io', token: 't'});
+      const send = () => submitAttachControl(api(), WORK_ID, {kind: 'instruction', instruction: 'Also update the README'}, live, {retries: 1, retryDelayMs: 0});
+
+      it.each([
+        ['every attempt answers 503', {status: 503, body: {error: 'unavailable'}}, 'http', 503],
+        ['every attempt answers 408', {status: 408, body: {error: 'timeout'}}, 'http', 408],
+        ['a 4xx has no parseable refusal', {status: 400, body: 'Bad Request'}, 'http', 400],
+        ['no response body can be read', {status: 201, body: {}, bodyError: true}, 'transport', null],
+      ] as const)('keeps the key as control_unconfirmed when %s', async (_label, reply, cause, httpStatus) => {
+        installApi(call => (call.method === 'POST' ? reply as never : undefined));
+
+        const outcome = await send();
+
+        const key = calls[0].headers['Idempotency-Key'];
+        expect(calls.every(call => call.headers['Idempotency-Key'] === key)).toBe(true);
+        expect(outcome).toEqual({
+          status: 'unconfirmed',
+          record: {version: 1, type: 'control_unconfirmed', kind: 'instruction', instruction: 'Also update the README', idempotencyKey: key, cause, httpStatus},
+        });
+      });
+
+      it('reports a parsed 4xx refusal as not accepted', async () => {
+        installApi(call => (call.method === 'POST' ? {status: 409, body: {error: 'This work has no running execution to receive the control'}} : undefined));
+
+        await expect(send()).resolves.toEqual({status: 'refused', httpStatus: 409});
+        expect(calls).toHaveLength(1);
+      });
     });
 
     function attemptEndsDuringScan(before: unknown, after: unknown): void {
@@ -1112,6 +1170,14 @@ describe('sift work runtime commands', () => {
   });
 
   describe('helpers', () => {
+    it('treats only a parsed 4xx refusal as a definite failure', () => {
+      expect(isAmbiguousControlFailure({status: 409, error: '{"error":"conflict"}'})).toBe(false);
+      expect(isAmbiguousControlFailure({status: 429, error: '{"error":"slow down"}'})).toBe(false);
+      for (const failure of [{status: 0, error: ''}, {status: 408, error: '{}'}, {status: 500, error: '{}'}, {status: 404, error: '<html>'}, {status: 400, error: '"text"'}]) {
+        expect(isAmbiguousControlFailure(failure)).toBe(true);
+      }
+    });
+
     it('treats transport failures, 408, 429 and every 5xx as retryable', () => {
       for (const status of [0, 408, 429, 500, 501, 503, 507, 520, 599]) expect(isRetryableControlStatus(status)).toBe(true);
       for (const status of [400, 401, 403, 404, 409, 422, 600]) expect(isRetryableControlStatus(status)).toBe(false);

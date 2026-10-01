@@ -265,6 +265,26 @@ export class WorkRuntimeApi {
 // Runtime controls: send with a stable Idempotency-Key
 
 /** Transport failures, 408, 429 and every 5xx may be retried with the same key. */
+export type ControlUnconfirmedCause = 'signal' | 'timeout' | 'transport' | 'http';
+
+/**
+ * True when a failed control POST may still have been stored: no readable
+ * response, a timeout or server error, or a 4xx without a parseable refusal.
+ * Only a 4xx with a JSON error body is a definite refusal.
+ */
+export function isAmbiguousControlFailure(failure: {status: number; error: string}): boolean {
+  if (failure.status === 0 || failure.status === 408 || failure.status >= 500) return true;
+  if (failure.status >= 400 && failure.status < 500) {
+    try {
+      const parsed = JSON.parse(failure.error) as unknown;
+      return parsed === null || typeof parsed !== 'object';
+    } catch {
+      return true;
+    }
+  }
+  return true;
+}
+
 export function isRetryableControlStatus(status: number): boolean {
   return status === 0 || status === 408 || status === 429 || (status >= 500 && status <= 599);
 }
@@ -532,7 +552,14 @@ export type WatchRecord =
     kind: RuntimeControlKind;
     instruction: string | null;
     idempotencyKey: string;
-    cause: 'signal' | 'timeout';
+    /**
+     * `signal` / `timeout`: the watch stopped mid-send. `transport`: no
+     * readable response after every retry. `http`: retries ended on a status
+     * that does not prove the server refused it (408, 5xx, or an unparsed 4xx).
+     */
+    cause: ControlUnconfirmedCause;
+    /** The last HTTP status, or null when no response was read. */
+    httpStatus: number | null;
   }
   /** The attempt ended but ledger events remain after `afterSequence`: the final read hit its page cap or the timeout. */
   | {version: 1; type: 'drain_incomplete'; cause: 'page_limit' | 'timeout'; afterSequence: number}
@@ -841,11 +868,17 @@ export function renderWatchRecord(record: WatchRecord): string[] {
       return [renderControlLine(record.control)];
     case 'control_unconfirmed': {
       const noun = record.kind === 'interrupt' ? 'Interrupt' : 'Instruction';
-      const cause = record.cause === 'timeout' ? 'the timeout elapsed' : 'you stopped the command';
+      const cause = record.cause === 'timeout'
+        ? 'the timeout elapsed while it was being sent'
+        : record.cause === 'signal'
+          ? 'you stopped the command while it was being sent'
+          : record.cause === 'transport'
+            ? 'no response could be read after every retry'
+            : `retries ended on HTTP ${record.httpStatus ?? '?'}`;
       const retry = record.kind === 'interrupt'
         ? `sift work interrupt <id> --idempotency-key ${record.idempotencyKey}`
         : `sift work send <id> <same text> --idempotency-key ${record.idempotencyKey}`;
-      return [`${noun} outcome unknown: ${cause} while it was being sent, so the server may or may not have queued it. To check or retry without a duplicate: ${retry}`];
+      return [`${noun} outcome unknown: ${cause}, so the server may or may not have queued it. To check or retry without a duplicate: ${retry}`];
     }
     case 'drain_incomplete':
       return [`Stopped before the end of the ledger (${record.cause === 'timeout' ? 'the timeout elapsed' : 'page limit reached'}); events after #${record.afterSequence} were not read.`];
@@ -940,7 +973,22 @@ export async function submitAttachControl(
       retryDelayMs: options.retryDelayMs ?? 500,
       signal,
     });
-    if (!result.ok) return {status: 'refused', httpStatus: result.status};
+    if (!result.ok) {
+      if (!isAmbiguousControlFailure(result)) return {status: 'refused', httpStatus: result.status};
+      // The server may have stored it: keep the key so a resend cannot duplicate it.
+      return {
+        status: 'unconfirmed',
+        record: {
+          version: 1,
+          type: 'control_unconfirmed',
+          kind: input.kind,
+          instruction: input.kind === 'instruction' ? input.instruction : null,
+          idempotencyKey,
+          cause: result.status === 0 ? 'transport' : 'http',
+          httpStatus: result.status === 0 ? null : result.status,
+        },
+      };
+    }
     return {status: 'sent', record: {version: 1, type: 'control', control: result.body.control}};
   } catch (error) {
     if (!isAbortError(error) && !signal.aborted) throw error;
@@ -953,6 +1001,7 @@ export async function submitAttachControl(
         instruction: input.kind === 'instruction' ? input.instruction : null,
         idempotencyKey,
         cause: follower.stopCause ?? 'signal',
+        httpStatus: null,
       },
     };
   }

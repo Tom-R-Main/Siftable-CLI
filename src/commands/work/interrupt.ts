@@ -1,5 +1,5 @@
 import {Args} from '@oclif/core';
-import {type WorkControlOutput, WorkRuntimeCommand} from '../../lib/work-runtime-command.js';
+import {type WorkControlOutput, type WorkControlUnconfirmedOutput, WorkRuntimeCommand} from '../../lib/work-runtime-command.js';
 
 export default class WorkInterrupt extends WorkRuntimeCommand {
   static description = 'Interrupt the current turn of a running work item; the session stays open for further instructions';
@@ -18,7 +18,7 @@ export default class WorkInterrupt extends WorkRuntimeCommand {
     ...WorkRuntimeCommand.controlFlags,
   };
 
-  async run(): Promise<WorkControlOutput> {
+  async run(): Promise<WorkControlOutput | WorkControlUnconfirmedOutput> {
     const {args, flags} = await this.parse(WorkInterrupt);
     return this.sendControl(args.id, {kind: 'interrupt'}, flags);
   }

@@ -1,6 +1,6 @@
 import {readFileSync} from 'node:fs';
 import {Args} from '@oclif/core';
-import {type WorkControlOutput, WorkRuntimeCommand} from '../../lib/work-runtime-command.js';
+import {type WorkControlOutput, type WorkControlUnconfirmedOutput, WorkRuntimeCommand} from '../../lib/work-runtime-command.js';
 import {RUNTIME_INSTRUCTION_MAX_CHARS} from '../../lib/work-runtime.js';
 
 export default class WorkSend extends WorkRuntimeCommand {
@@ -22,7 +22,7 @@ export default class WorkSend extends WorkRuntimeCommand {
     ...WorkRuntimeCommand.controlFlags,
   };
 
-  async run(): Promise<WorkControlOutput> {
+  async run(): Promise<WorkControlOutput | WorkControlUnconfirmedOutput> {
     const {args, flags} = await this.parse(WorkSend);
     const instruction = args.instruction === '-' ? readFileSync(0, 'utf8').trim() : args.instruction;
     if (!instruction.trim()) this.error('Instruction must not be empty.');

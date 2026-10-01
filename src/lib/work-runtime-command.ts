@@ -25,6 +25,7 @@ import {
   resolveAppOrigin,
   runtimeRequestDecisionUrl,
   isAbortError,
+  isAmbiguousControlFailure,
   sendControlWithRetry,
   sleep,
   waitScope,
@@ -63,6 +64,23 @@ export interface WorkDecisionOutput {
   outcome: 'resolved' | 'expired' | 'superseded' | 'timed_out' | 'interrupted';
   /** The request as last read by ID from the server, including any stored resolution and delivery state. */
   request: RuntimeRequest;
+}
+
+/**
+ * `--json` output of `sift work send` and `sift work interrupt` when every
+ * attempt failed without proving the server refused the control. Exit 1.
+ */
+export interface WorkControlUnconfirmedOutput {
+  version: typeof WORK_RUNTIME_OUTPUT_VERSION;
+  ok: false;
+  outcome: 'unconfirmed';
+  kind: 'instruction' | 'interrupt';
+  /** Resend with `--idempotency-key <this>` to get the stored control rather than a duplicate. */
+  idempotencyKey: string;
+  requestAttempts: number;
+  /** `transport`: no readable response. `http`: 408, 5xx, or a 4xx without a parseable refusal. */
+  cause: 'transport' | 'http';
+  httpStatus: number | null;
 }
 
 /** `--json` output of `sift work send` and `sift work interrupt` (version 1). */
@@ -206,7 +224,7 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
       'retry-delay-ms': number;
       'poll-ms': number;
     },
-  ): Promise<WorkControlOutput> {
+  ): Promise<WorkControlOutput | WorkControlUnconfirmedOutput> {
     let idempotencyKey: string;
     try {
       idempotencyKey = flags['idempotency-key']
@@ -221,8 +239,27 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
       retries: flags.retries,
       retryDelayMs: flags['retry-delay-ms'],
     });
-    if (!result.ok && !this.jsonEnabled()) {
-      this.logToStderr(`Retry safely with --idempotency-key ${idempotencyKey}`);
+    if (!result.ok && isAmbiguousControlFailure(result)) {
+      // The server may have stored it. Never drop the key: a resend with it
+      // returns the stored control instead of queueing a second one.
+      const unconfirmed: WorkControlUnconfirmedOutput = {
+        version: WORK_RUNTIME_OUTPUT_VERSION,
+        ok: false,
+        outcome: 'unconfirmed',
+        kind: input.kind,
+        idempotencyKey,
+        requestAttempts,
+        cause: result.status === 0 ? 'transport' : 'http',
+        httpStatus: result.status === 0 ? null : result.status,
+      };
+      if (!this.jsonEnabled()) {
+        const noun = input.kind === 'interrupt' ? 'Interrupt' : 'Instruction';
+        const why = result.status === 0 ? 'no response could be read' : `the server answered HTTP ${result.status}`;
+        this.log(`${noun} outcome unknown: after ${requestAttempts} attempt${requestAttempts === 1 ? '' : 's'}, ${why}. The server may or may not have queued it.`);
+        this.log(`Retry with the same key to avoid a duplicate: --idempotency-key ${idempotencyKey}`);
+      }
+      process.exitCode = 1;
+      return unconfirmed;
     }
     const sent: RuntimeControlResult = this.unwrapApi(result);
     const output: WorkControlOutput = {

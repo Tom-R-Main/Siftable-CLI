@@ -118,7 +118,7 @@ sift work answer "$WORK_ID" "$REQUEST_ID" --no-browser
 | `attempt` | `attempt`, `leaseActive`: the live attempt changed |
 | `request` | `request`: a runtime request appeared or changed state or delivery state |
 | `control` | `control`: a runtime control appeared or changed state |
-| `control_unconfirmed` | attach only. `kind`, `instruction`, `idempotencyKey`, `cause` (`signal` or `timeout`): a typed control whose POST was cut short when the watch stopped. The server may or may not have queued it; resend with the same `--idempotency-key` to get the stored control instead of a duplicate |
+| `control_unconfirmed` | attach only. `kind`, `instruction`, `idempotencyKey`, `cause`, `httpStatus`: a typed control the server may or may not have queued. `cause` is `signal` or `timeout` when the watch stopped mid-send, `transport` when no response could be read after every retry, or `http` when retries ended on 408, a 5xx, or a 4xx without a parseable refusal (`httpStatus` holds the status, else `null`). Resend with the same `--idempotency-key` to get the stored control instead of a duplicate. Only a 4xx with a parsed error body is reported as not accepted |
 | `drain_incomplete` | `cause` (`page_limit` or `timeout`), `afterSequence`: the attempt ended but events after `afterSequence` were not read. The `end` record that follows has reason `drain_incomplete`, and the command exits 1 |
 | `end` | `reason` (`attempt_ended`, `drain_incomplete`, `timeout`, `once`, `signal`), `afterSequence`; pass it to `--after-sequence` to resume |
 
@@ -129,6 +129,14 @@ sift work answer "$WORK_ID" "$REQUEST_ID" --no-browser
 ```json
 {"version": 1, "applied": true, "control": {"id": "…", "kind": "instruction", "state": "queued", "…": "…"}, "idempotencyKey": "cli-instruction-…", "requestAttempts": 1}
 ```
+
+If every attempt fails without proving the server refused the control (no readable response, 408, a 5xx, or a 4xx without a parseable error body), the outcome is unknown. The command exits 1, the text output names the key to retry with, and `--json` prints:
+
+```json
+{"version": 1, "ok": false, "outcome": "unconfirmed", "kind": "instruction", "idempotencyKey": "cli-instruction-…", "requestAttempts": 3, "cause": "http", "httpStatus": 503}
+```
+
+`cause` is `transport` (no readable response; `httpStatus` is `null`) or `http`. Rerun with `--idempotency-key` set to that key: a stored control comes back with `applied: false` instead of a duplicate. A 4xx with a parsed error body is a definite refusal and is reported as a normal error.
 
 `applied: false` means the server returned an existing control: a retry of the same key, or an interrupt that was already open. `control.state` is exactly what the server recorded: `queued`, `dispatching`, `delivered`, `acknowledged`, `cancelled`, `failed`, `expired` or `unconfirmed`. An instruction is delivered only at `delivered`; an interrupt is acknowledged only at `acknowledged`. With `--wait` the command polls until a final state or `--timeout`, adds `settled: boolean`, and exits 1 unless the instruction reached `delivered` or the interrupt reached `acknowledged`. A read still running at the deadline is aborted. When it stops unsettled, `stoppedBy` is `timeout`, or `signal` for Ctrl-C (exit 130), and `control` is the last state the server recorded.
 
