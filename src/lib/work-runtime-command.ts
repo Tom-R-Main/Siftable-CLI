@@ -9,6 +9,7 @@ import {
   type RuntimeRequest,
   type RuntimeRequestKind,
   WORK_RUNTIME_OUTPUT_VERSION,
+  LedgerEndNotFoundError,
   WorkItemFollower,
   type WatchRecord,
   WorkRuntimeApi,
@@ -51,33 +52,13 @@ export interface WorkDecisionOutput {
   kind: RuntimeRequestKind;
   /** The web-app page where a signed-in person decides this request. */
   decisionUrl: string;
-  /** Whether the CLI started the platform URL opener. False with --no-browser or when the request was already closed. */
+  /** Whether the platform URL opener started. False with --no-browser, when the opener failed, or when the request was already closed. */
   browserOpened: boolean;
-  /**
-   * The stored state when the CLI stopped observing. `timed_out`: still pending.
-   * `closed`: the request left the open list but is outside the capped history,
-   * so it was decided or closed and the stored outcome cannot be read here.
-   */
-  outcome: 'resolved' | 'expired' | 'superseded' | 'timed_out' | 'closed';
-  /** False only for `closed`: `request` then carries null resolution and delivery fields. */
-  outcomeAvailable: boolean;
-  /** The request as last read from the server, including any stored resolution and delivery state. */
-  request: RuntimeRequest | ClosedRuntimeRequestView;
+  /** The request's stored state when the CLI stopped observing; `timed_out` means it was still pending. */
+  outcome: 'resolved' | 'expired' | 'superseded' | 'timed_out';
+  /** The request as last read by ID from the server, including any stored resolution and delivery state. */
+  request: RuntimeRequest;
 }
-
-/** A request known to have left the open list whose stored outcome is not readable. */
-export type ClosedRuntimeRequestView = Omit<
-  RuntimeRequest,
-  'state' | 'resolution' | 'resolvedBy' | 'resolvedAt' | 'deliveryState' | 'deliveredAt' | 'deliveryError'
-> & {
-  state: 'closed';
-  resolution: null;
-  resolvedBy: null;
-  resolvedAt: null;
-  deliveryState: null;
-  deliveredAt: null;
-  deliveryError: null;
-};
 
 /** `--json` output of `sift work send` and `sift work interrupt` (version 1). */
 export interface WorkControlOutput {
@@ -174,6 +155,7 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
     },
     backlog: number,
     onFollower?: (follower: WorkItemFollower, signal: AbortSignal, stop: () => void) => void,
+    beforeEnd?: () => Promise<void>,
   ): Promise<void> {
     const controller = new AbortController();
     const onSigint = () => controller.abort();
@@ -188,11 +170,14 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
       exitOnAttemptEnd: !flags['keep-following'],
       signal: controller.signal,
       emit: record => this.emitRecord(record),
+      beforeEnd,
     });
     onFollower?.(follower, controller.signal, onSigint);
     try {
-      await follower.run();
+      const reason = await follower.run();
+      if (reason === 'drain_incomplete') process.exitCode = 1;
     } catch (error) {
+      if (error instanceof LedgerEndNotFoundError) this.error(error.message, {exit: 1});
       if (error instanceof WorkRuntimeApiError) {
         this.handleApiError({statusCode: error.status, error: error.body || `HTTP ${error.status}`});
       }
@@ -279,13 +264,16 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
   ): Promise<WorkDecisionOutput | undefined> {
     const api = this.runtimeApi(flags);
     const noun = kind === 'approval' ? 'approval' : 'question';
-    const lists = this.unwrapApi(await api.listRequestsWithOpen(workItemId));
     let request: RuntimeRequest | undefined;
     if (requestId) {
-      const wanted = requestId.trim().toLowerCase();
-      request = lists.all.find(candidate => candidate.id.toLowerCase() === wanted);
-      if (!request) this.error(`Not found: runtime request ${sanitizeTerminalLine(requestId)} on work item ${sanitizeTerminalLine(workItemId)}.`, {exit: 4});
+      // The exact read is not limited by the list cap, so an older request is addressable.
+      const exact = await api.getRequest(workItemId, requestId.trim());
+      if (!exact.ok && exact.status === 404) {
+        this.error(`Not found: runtime request ${sanitizeTerminalLine(requestId)} on work item ${sanitizeTerminalLine(workItemId)}.`, {exit: 4});
+      }
+      request = this.unwrapApi(exact).request;
     } else {
+      const lists = this.unwrapApi(await api.listRequestsWithOpen(workItemId));
       const open = lists.open.filter(candidate => candidate.state === 'pending' && candidate.kind === kind);
       if (open.length === 0) this.error(`No open ${noun} requests on work item ${sanitizeTerminalLine(workItemId)}.`, {exit: 4});
       if (open.length > 1) {
@@ -316,25 +304,8 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
       decisionUrl,
       browserOpened,
       outcome: current.state === 'pending' ? 'timed_out' : current.state,
-      outcomeAvailable: true,
       request: current,
     });
-    const closedOutput = (last: RuntimeRequest, browserOpened: boolean): WorkDecisionOutput => ({
-      ...output(last, browserOpened),
-      outcome: 'closed',
-      outcomeAvailable: false,
-      request: {
-        ...last,
-        state: 'closed',
-        resolution: null,
-        resolvedBy: null,
-        resolvedAt: null,
-        deliveryState: null,
-        deliveredAt: null,
-        deliveryError: null,
-      },
-    });
-
     if (request.state !== 'pending') {
       if (!this.jsonEnabled()) {
         this.log('This request is already closed; nothing to decide.');
@@ -345,7 +316,7 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
     }
 
     if (!this.jsonEnabled()) for (const line of renderRequestLines(request).slice(0, -1)) this.log(line);
-    const browserOpened = flags['no-browser'] ? false : openUrlInBrowser(decisionUrl);
+    const browserOpened = flags['no-browser'] ? false : await openUrlInBrowser(decisionUrl);
     if (this.jsonEnabled()) {
       const required: WorkDecisionRequiredRecord = {
         version: WORK_RUNTIME_OUTPUT_VERSION,
@@ -358,34 +329,18 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
       };
       console.log(JSON.stringify(required));
     } else {
-      this.log(`${browserOpened ? 'Opened' : 'Open'} ${decisionUrl}`);
+      if (browserOpened) this.log(`Opened ${decisionUrl}`);
+      else if (flags['no-browser']) this.log(`Open ${decisionUrl}`);
+      else this.log(`Could not open a browser. Open this page yourself: ${decisionUrl}`);
       this.log('Decide there with your signed-in session; access tokens cannot answer agent requests. Waiting for the decision...');
     }
 
     const deadline = Date.now() + flags.timeout * 1000;
     let current = request;
-    let leftOpenListUnseen = false;
     while (current.state === 'pending' && Date.now() < deadline) {
       await sleep(Math.min(flags['poll-ms'], Math.max(0, deadline - Date.now())));
-      const lists = this.unwrapApi(await api.listRequestsWithOpen(workItemId));
-      const open = lists.open.find(candidate => candidate.id === current.id);
-      if (open) {
-        current = open;
-        continue;
-      }
-      // No longer open: the general list is capped, so it may not hold the
-      // stored outcome. Stop waiting either way; a pending record outside the
-      // open list belongs to an attempt that has ended.
-      const stored = lists.all.find(candidate => candidate.id === current.id);
-      if (stored && stored.state !== 'pending') current = stored;
-      else leftOpenListUnseen = true;
-      break;
-    }
-    if (leftOpenListUnseen) {
-      if (!this.jsonEnabled()) {
-        this.log('The request is no longer open: it was decided or closed. Its stored outcome is outside the request history the API returns, so it cannot be shown here.');
-      }
-      return this.finishDecision(closedOutput(current, browserOpened));
+      // Read the selected request by ID: its true stored state, never a capped list.
+      current = this.unwrapApi(await api.getRequest(workItemId, current.id)).request;
     }
     const result = output(current, browserOpened);
     if (!this.jsonEnabled()) {

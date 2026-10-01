@@ -211,6 +211,11 @@ export class WorkRuntimeApi {
     });
   }
 
+  /** One request by ID with its true stored state; not limited by the list cap. */
+  getRequest(workItemId: string, requestId: string, signal?: AbortSignal): Promise<ApiResult<{version: 1; request: RuntimeRequest}>> {
+    return this.request('GET', this.workPath(workItemId, `/runtime-requests/${encodeURIComponent(requestId)}`), {signal});
+  }
+
   /**
    * Pending requests and all known requests. The general list is capped and
    * newest first, so an older pending request is read from `?open=true`.
@@ -259,8 +264,10 @@ export class WorkRuntimeApi {
 // ---------------------------------------------------------------------------
 // Runtime controls: send with a stable Idempotency-Key
 
-/** HTTP statuses after which the same request may be retried with the same key. */
-export const RETRYABLE_CONTROL_STATUSES: ReadonlySet<number> = new Set([0, 408, 429, 500, 502, 503, 504]);
+/** Transport failures, 408, 429 and every 5xx may be retried with the same key. */
+export function isRetryableControlStatus(status: number): boolean {
+  return status === 0 || status === 408 || status === 429 || (status >= 500 && status <= 599);
+}
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 export function newControlIdempotencyKey(kind: RuntimeControlKind): string {
@@ -308,7 +315,7 @@ export async function sendControlWithRetry(
   for (;;) {
     requestAttempts += 1;
     const result = await api.sendControl(workItemId, input, options.idempotencyKey, options.signal);
-    if (result.ok || !RETRYABLE_CONTROL_STATUSES.has(result.status) || requestAttempts > options.retries) {
+    if (result.ok || !isRetryableControlStatus(result.status) || requestAttempts > options.retries) {
       return {result, requestAttempts};
     }
     await sleep(options.retryDelayMs * 2 ** (requestAttempts - 1), options.signal);
@@ -395,11 +402,18 @@ export function runtimeRequestDecisionUrl(appOrigin: string, workItemId: string,
   return `${appOrigin}/app${runtimeRequestDecisionPath(workItemId, requestId)}`;
 }
 
+export const BROWSER_OPEN_TIMEOUT_MS = 3_000;
+
 /**
- * Opens an http(s) URL with the platform opener, without a shell. Returns false
- * when the URL is not http(s) or the opener could not be started.
+ * Opens an http(s) URL with the platform opener, without a shell. Resolves true
+ * only when the opener process started; false when the URL is not http(s), the
+ * opener is missing (`error`), or neither outcome arrives within the bound.
  */
-export function openUrlInBrowser(url: string, platform: NodeJS.Platform = process.platform): boolean {
+export async function openUrlInBrowser(
+  url: string,
+  platform: NodeJS.Platform = process.platform,
+  timeoutMs = BROWSER_OPEN_TIMEOUT_MS,
+): Promise<boolean> {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -413,16 +427,26 @@ export function openUrlInBrowser(url: string, platform: NodeJS.Platform = proces
     : platform === 'win32'
       ? ['rundll32', ['url.dll,FileProtocolHandler', target]]
       : ['xdg-open', [target]];
+  let child: ReturnType<typeof spawn>;
   try {
-    const child = spawn(command, args, {stdio: 'ignore', detached: true});
-    child.on('error', () => {
-      // The URL is always printed, so a missing opener is not fatal.
-    });
-    child.unref();
-    return true;
+    child = spawn(command, args, {stdio: 'ignore', detached: true});
   } catch {
     return false;
   }
+  return new Promise<boolean>(resolve => {
+    let settled = false;
+    const finish = (opened: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.unref?.();
+      resolve(opened);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    child.once('spawn', () => finish(true));
+    // A missing opener reports ENOENT here, after spawn() has returned.
+    child.once('error', () => finish(false));
+  });
 }
 
 export function describeResolution(request: Pick<RuntimeRequest, 'resolution'>): string {
@@ -480,7 +504,7 @@ export function renderRequestLines(request: RuntimeRequest): string[] {
 // ---------------------------------------------------------------------------
 // Following the ledger
 
-export type WatchEndReason = 'attempt_ended' | 'timeout' | 'once' | 'signal';
+export type WatchEndReason = 'attempt_ended' | 'drain_incomplete' | 'timeout' | 'once' | 'signal';
 
 export type WatchRecord =
   | {
@@ -497,6 +521,8 @@ export type WatchRecord =
   | {version: 1; type: 'attempt'; attempt: ExecutionAttempt | null; leaseActive: boolean}
   | {version: 1; type: 'request'; request: RuntimeRequest}
   | {version: 1; type: 'control'; control: RuntimeControl}
+  /** The attempt ended but ledger events remain after `afterSequence`: the final read hit its page cap or the timeout. */
+  | {version: 1; type: 'drain_incomplete'; cause: 'page_limit' | 'timeout'; afterSequence: number}
   | {version: 1; type: 'end'; reason: WatchEndReason; afterSequence: number};
 
 export class WorkRuntimeApiError extends Error {
@@ -541,7 +567,18 @@ export interface WatchOptions {
   exitOnAttemptEnd: boolean;
   signal: AbortSignal;
   emit: (record: WatchRecord) => void;
+  /** Awaited before the end record, so work the caller started (attach's controls) settles first. */
+  beforeEnd?: () => Promise<void>;
   now?: () => number;
+}
+
+/** Pages read to find the ledger end when no --after-sequence is given (100 events each). */
+export const MAX_START_PAGES = 1_000;
+
+export class LedgerEndNotFoundError extends Error {
+  constructor(readonly afterSequence: number) {
+    super(`The ledger has more than ${MAX_START_PAGES * EVENT_PAGE_LIMIT} events after the start; its end was not reached at #${afterSequence}. Pass --after-sequence to follow from a known sequence.`);
+  }
 }
 
 /**
@@ -575,7 +612,9 @@ export class WorkItemFollower {
     }
     const tail: LedgerEvent[] = [];
     let after = 0;
-    for (let page = 0; page < 10_000; page += 1) {
+    // The API has no "latest sequence" read, so the end is found by reading
+    // forward. Nothing is reported until a short page confirms the end.
+    for (let page = 0; page < MAX_START_PAGES; page += 1) {
       const result = unwrap(await this.api.listEvents(workItemId, after, EVENT_PAGE_LIMIT, signal));
       for (const event of result.events) {
         if (event.sequence > after) after = event.sequence;
@@ -584,10 +623,12 @@ export class WorkItemFollower {
           if (tail.length > backlog) tail.shift();
         }
       }
-      if (result.events.length < EVENT_PAGE_LIMIT) break;
+      if (result.events.length < EVENT_PAGE_LIMIT) {
+        this.cursor = after;
+        return tail;
+      }
     }
-    this.cursor = after;
-    return tail;
+    throw new LedgerEndNotFoundError(after);
   }
 
   private async refresh(initial: boolean): Promise<WorkExecution> {
@@ -630,25 +671,31 @@ export class WorkItemFollower {
     return execution;
   }
 
-  /** Reads every ledger page after the cursor, bounded, so no event is left behind at the end. */
-  private async drain(): Promise<void> {
+  /**
+   * Reads every ledger page after the cursor so no event is left behind at the
+   * end. Returns the reason it stopped early, or null when it reached the end.
+   */
+  private async drain(deadline: number, now: () => number): Promise<'page_limit' | 'timeout' | null> {
     const {workItemId, signal} = this.options;
     for (let page = 0; page < MAX_DRAIN_PAGES; page += 1) {
+      if (now() >= deadline) return 'timeout';
       const result = unwrap(await this.api.listEvents(workItemId, this.cursor, EVENT_PAGE_LIMIT, signal));
       for (const event of result.events) {
         if (event.sequence <= this.cursor) continue;
         this.cursor = event.sequence;
         this.emit({version: 1, type: 'event', event});
       }
-      if (result.events.length < EVENT_PAGE_LIMIT) return;
+      if (result.events.length < EVENT_PAGE_LIMIT) return null;
     }
+    return 'page_limit';
   }
 
   async run(): Promise<WatchEndReason> {
     const {workItemId, signal, once, exitOnAttemptEnd} = this.options;
     const now = this.options.now ?? Date.now;
     const deadline = this.options.timeoutMs > 0 ? now() + this.options.timeoutMs : Number.POSITIVE_INFINITY;
-    const end = (reason: WatchEndReason): WatchEndReason => {
+    const end = async (reason: WatchEndReason): Promise<WatchEndReason> => {
+      await this.options.beforeEnd?.();
       this.emit({version: 1, type: 'end', reason, afterSequence: this.cursor});
       return reason;
     };
@@ -671,7 +718,11 @@ export class WorkItemFollower {
         const current = await this.refresh(false);
         const live = isLiveAttempt(current.currentAttempt);
         if (exitOnAttemptEnd && this.sawLive && !live) {
-          await this.drain();
+          const incomplete = await this.drain(deadline, now);
+          if (incomplete) {
+            this.emit({version: 1, type: 'drain_incomplete', cause: incomplete, afterSequence: this.cursor});
+            return end('drain_incomplete');
+          }
           return end('attempt_ended');
         }
         if (live) this.sawLive = true;
@@ -696,6 +747,7 @@ export function renderAttemptLine(attempt: ExecutionAttempt | null, leaseActive:
 
 const END_TEXT: Record<WatchEndReason, string> = {
   attempt_ended: 'The execution attempt is no longer live; stopped following.',
+  drain_incomplete: 'The execution attempt ended, but ledger events remain unread.',
   timeout: 'Stopped following: the timeout elapsed.',
   once: 'Printed the current state once.',
   signal: 'Stopped following.',
@@ -721,7 +773,36 @@ export function renderWatchRecord(record: WatchRecord): string[] {
       return renderRequestLines(record.request);
     case 'control':
       return [renderControlLine(record.control)];
+    case 'drain_incomplete':
+      return [`Stopped before the end of the ledger (${record.cause === 'timeout' ? 'the timeout elapsed' : 'page limit reached'}); events after #${record.afterSequence} were not read.`];
     case 'end':
       return [`${END_TEXT[record.reason]} Resume with --after-sequence ${record.afterSequence}.`];
+  }
+}
+
+/**
+ * Sends typed attach lines as controls one at a time, in input order, so the
+ * server queues them in the order the person typed. `idle()` resolves once
+ * every accepted line has been sent and reported.
+ */
+export class ControlInputQueue {
+  private tail: Promise<void> = Promise.resolve();
+  private closed = false;
+
+  constructor(private readonly handle: (line: string) => Promise<void>) {}
+
+  submit(line: string): void {
+    if (this.closed) return;
+    this.tail = this.tail.then(() => this.handle(line)).catch(() => undefined);
+  }
+
+  /** Stops accepting lines and waits for the ones already submitted. */
+  async close(): Promise<void> {
+    this.closed = true;
+    await this.tail;
+  }
+
+  idle(): Promise<void> {
+    return this.tail;
   }
 }

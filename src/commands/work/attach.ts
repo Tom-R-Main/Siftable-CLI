@@ -2,6 +2,7 @@ import * as readline from 'node:readline';
 import {Args, Flags} from '@oclif/core';
 import {WorkRuntimeCommand} from '../../lib/work-runtime-command.js';
 import {
+  ControlInputQueue,
   RUNTIME_INSTRUCTION_MAX_CHARS,
   type WorkItemFollower,
   type WorkRuntimeApi,
@@ -33,18 +34,28 @@ export default class WorkAttach extends WorkRuntimeCommand {
     const api = this.runtimeApi(flags);
     const interactive = Boolean(process.stdin.isTTY) && !flags['no-input'] && !flags.once;
     let input: readline.Interface | undefined;
+    let follower: WorkItemFollower | undefined;
+    let stop: () => void = () => undefined;
+    // Lines are sent one at a time in input order; the follower waits for the
+    // queue before writing its end record, on /quit, EOF or attempt end.
+    const queue = new ControlInputQueue(async line => {
+      if (follower) await this.handleLine(api, args.id, line, follower, stop);
+    });
     try {
-      await this.follow(api, args.id, flags, flags.backlog, (follower, signal, stop) => {
+      await this.follow(api, args.id, flags, flags.backlog, (current, _signal, stopFollowing) => {
+        follower = current;
+        stop = stopFollowing;
         if (!interactive) return;
         if (!this.jsonEnabled()) {
           console.log('Type an instruction and press Enter to queue it. /interrupt stops the current turn; /quit detaches.');
         }
         input = readline.createInterface({input: process.stdin, terminal: false});
-        input.on('line', line => {
-          void this.handleLine(api, args.id, line, follower, signal, stop);
+        input.on('line', line => queue.submit(line));
+        input.on('close', () => {
+          // Lines read before EOF are already queued; detach after they are sent.
+          void queue.idle().then(stopFollowing);
         });
-        input.on('close', stop);
-      });
+      }, () => queue.close());
     } finally {
       input?.close();
     }
@@ -55,7 +66,6 @@ export default class WorkAttach extends WorkRuntimeCommand {
     workItemId: string,
     line: string,
     follower: WorkItemFollower,
-    signal: AbortSignal,
     stop: () => void,
   ): Promise<void> {
     const text = line.trim();
@@ -76,7 +86,6 @@ export default class WorkAttach extends WorkRuntimeCommand {
         idempotencyKey: newControlIdempotencyKey(input.kind),
         retries: 2,
         retryDelayMs: 500,
-        signal,
       });
       if (!result.ok) {
         console.error(`Control was not accepted (HTTP ${result.status}).`);

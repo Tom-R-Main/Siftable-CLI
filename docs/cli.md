@@ -109,7 +109,7 @@ sift work approve "$WORK_ID"                  # opens the web app to decide; wai
 sift work answer "$WORK_ID" "$REQUEST_ID" --no-browser
 ```
 
-**watch / attach.** Reads the ledger from an explicit sequence with `GET /events/wait` (long-poll) and refreshes the execution attempt, runtime requests and runtime controls after each poll window. It never reads or advances a durable consumer cursor. Open requests in the snapshot come from `GET /runtime-requests?open=true`. It stops when an attempt it saw live is no longer live, after reading every remaining ledger page, (`--keep-following` to continue), after `--timeout` seconds, on Ctrl-C, or immediately with `--once`. With `--json` the output is JSON Lines, one record per line, each with `version: 1` and a `type`:
+**watch / attach.** Reads the ledger from an explicit sequence with `GET /events/wait` (long-poll) and refreshes the execution attempt, runtime requests and runtime controls after each poll window. It never reads or advances a durable consumer cursor. Without `--after-sequence` it starts at the ledger's current end. The API has no read for the latest sequence, so the CLI reads pages forward from the start and writes nothing until a short page confirms the end. If 1,000 pages (100,000 events) do not reach the end, it exits 1 and asks for `--after-sequence`. Open requests in the snapshot come from `GET /runtime-requests?open=true`. When an attempt it saw live is no longer live, it reads every remaining ledger page (at most 100 pages, within `--timeout`) and then stops (`--keep-following` to continue). It also stops after `--timeout` seconds, on Ctrl-C, or immediately with `--once`. With `--json` the output is JSON Lines, one record per line, each with `version: 1` and a `type`:
 
 | `type` | Fields |
 |---|---|
@@ -118,11 +118,12 @@ sift work answer "$WORK_ID" "$REQUEST_ID" --no-browser
 | `attempt` | `attempt`, `leaseActive`: the live attempt changed |
 | `request` | `request`: a runtime request appeared or changed state or delivery state |
 | `control` | `control`: a runtime control appeared or changed state |
-| `end` | `reason` (`attempt_ended`, `timeout`, `once`, `signal`), `afterSequence`; pass it to `--after-sequence` to resume |
+| `drain_incomplete` | `cause` (`page_limit` or `timeout`), `afterSequence`: the attempt ended but events after `afterSequence` were not read. The `end` record that follows has reason `drain_incomplete`, and the command exits 1 |
+| `end` | `reason` (`attempt_ended`, `drain_incomplete`, `timeout`, `once`, `signal`), `afterSequence`; pass it to `--after-sequence` to resume |
 
-`attach` reads typed lines only from a terminal, and not with `--no-input` or `--once`: a line queues an instruction, `/interrupt` interrupts the turn, `/quit` detaches.
+`attach` reads typed lines only from a terminal, and not with `--no-input` or `--once`: a line queues an instruction, `/interrupt` interrupts the turn, `/quit` detaches. Lines are sent one at a time in the order typed, so the server queues them in that order. Before writing its `end` record (on `/quit`, end of input or attempt end), `attach` waits until every line already typed has been sent and its `control` record written.
 
-**send / interrupt.** `POST /runtime-controls` with `{kind: "instruction", instruction}` or `{kind: "interrupt"}`. Each invocation generates one `Idempotency-Key` (or uses `--idempotency-key`) and reuses it for its retries after a transport error, 408, 429 or 5xx, so a retry never queues a second control. Output (`--json`):
+**send / interrupt.** `POST /runtime-controls` with `{kind: "instruction", instruction}` or `{kind: "interrupt"}`. Each invocation generates one `Idempotency-Key` (or uses `--idempotency-key`) and reuses it for its retries after a transport error (including a response body cut off mid-read), 408, 429 or any 500–599 status, so a retry never queues a second control. Output (`--json`):
 
 ```json
 {"version": 1, "applied": true, "control": {"id": "…", "kind": "instruction", "state": "queued", "…": "…"}, "idempotencyKey": "cli-instruction-…", "requestAttempts": 1}
@@ -130,7 +131,7 @@ sift work answer "$WORK_ID" "$REQUEST_ID" --no-browser
 
 `applied: false` means the server returned an existing control: a retry of the same key, or an interrupt that was already open. `control.state` is exactly what the server recorded: `queued`, `dispatching`, `delivered`, `acknowledged`, `cancelled`, `failed`, `expired` or `unconfirmed`. An instruction is delivered only at `delivered`; an interrupt is acknowledged only at `acknowledged`. With `--wait` the command polls until a final state or `--timeout`, adds `settled: boolean`, and exits 1 unless the instruction reached `delivered` or the interrupt reached `acknowledged`.
 
-**approve / answer.** The server refuses access tokens (PATs and delegated OAuth) for resolving runtime requests, so the CLI never calls `POST /runtime-requests/:requestId/resolve`. It opens the web app page for the request, where you decide with your signed-in session, then polls `GET /runtime-requests` until the request leaves `pending`. Without a request ID it picks the only open approval (or question). The decision page is:
+**approve / answer.** The server refuses access tokens (PATs and delegated OAuth) for resolving runtime requests, so the CLI never calls `POST /runtime-requests/:requestId/resolve`. It opens the web app page for the request, where you decide with your signed-in session, then reads the request by ID with `GET /runtime-requests/:requestId` until it leaves `pending`. Without a request ID it picks the only open approval (or question) from `GET /runtime-requests?open=true`. The CLI starts the opener and waits up to 3 seconds for it to start. If it cannot start (for example, no `xdg-open` on a headless machine), `browserOpened` is `false` and the text output asks you to open the printed URL yourself. The decision page is:
 
 ```
 <app origin>/app/work/<workItemId>?request=<requestId>
@@ -148,7 +149,7 @@ The last line is the outcome (the only line when the request was already closed)
 {"version": 1, "type": "outcome", "workItemId": "…", "requestId": "…", "kind": "approval", "decisionUrl": "https://siftable.io/app/work/…?request=…", "browserOpened": true, "outcome": "resolved", "request": {"state": "resolved", "resolution": {"decision": "accept"}, "deliveryState": "delivered", "…": "…"}}
 ```
 
-Pending requests are read from `GET /runtime-requests?open=true`, so an older pending request is found even when the general list is full of newer closed ones. `outcome` is `resolved`, `expired`, `superseded`, `timed_out` (still pending after `--timeout` seconds) or `closed`. `closed` means the request left the open list but is not in the general list either, which holds only the newest 100 requests: it was decided or closed, and its stored outcome cannot be read through the API. In that case `outcomeAvailable` is `false`, `request.state` is `closed`, and `request.resolution`, `resolvedBy`, `resolvedAt`, `deliveryState`, `deliveredAt` and `deliveryError` are `null`; check the web app for the decision. `outcomeAvailable` is `true` for every other outcome. The command exits 0 for `resolved` and `closed`, and 1 otherwise. `request.resolution` holds the stored decision, and `request.deliveryState` says whether it reached the agent.
+The exact read is not limited by the 100-request list cap, so an older request and its stored outcome stay readable after newer requests arrive. `outcome` is the request's stored state: `resolved`, `expired` or `superseded` (including `closeReason: "attempt_ended"` when the attempt ended before a decision), or `timed_out` (still pending after `--timeout` seconds). The command exits 0 only for `resolved`. `request.resolution` holds the stored decision, and `request.deliveryState` says whether it reached the agent.
 
 ---
 
