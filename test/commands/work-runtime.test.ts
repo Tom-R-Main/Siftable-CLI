@@ -1,4 +1,5 @@
 import {EventEmitter} from 'node:events';
+import {PassThrough} from 'node:stream';
 import {readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {installIsolatedConfigDirHooks} from '../helpers/config-env';
@@ -412,6 +413,59 @@ describe('sift work runtime commands', () => {
       expect(result.stdout).toContain(`sift work approve ${WORK_ID} ${REQUEST_ID}`);
       expect(result.stdout).toContain('#1  message  worker  hello');
       expectNoProcessStarted();
+    });
+  });
+
+  describe('attach typed controls', () => {
+    const originalStdin = Object.getOwnPropertyDescriptor(process, 'stdin');
+    afterEach(() => {
+      if (originalStdin) Object.defineProperty(process, 'stdin', originalStdin);
+    });
+
+    function typeLines(lines: string[]): void {
+      const stdin = Object.assign(new PassThrough(), {isTTY: true});
+      Object.defineProperty(process, 'stdin', {configurable: true, value: stdin});
+      // Typed after attach starts reading; end of input then detaches.
+      setTimeout(() => {
+        for (const line of lines) stdin.write(`${line}\n`);
+        stdin.end();
+      }, 50);
+    }
+
+    function liveWorkItem(post: () => {status: number; body: unknown}): void {
+      installApi(call => {
+        const path = call.url.pathname;
+        if (call.method === 'POST' && path === `${BASE}/runtime-controls`) return post();
+        if (path === `${BASE}/events`) return {status: 200, body: {version: 1, events: [], nextSequence: null}};
+        // A real long-poll holds until it is aborted; detaching aborts it.
+        if (path === `${BASE}/events/wait`) return STALL;
+        if (path === `${BASE}/execution`) return {status: 200, body: execution('running')};
+        if (path === `${BASE}/runtime-requests`) return {status: 200, body: {version: 1, requests: []}};
+        if (path === `${BASE}/runtime-controls`) return {status: 200, body: {version: 1, controls: [], truncated: false}};
+        return undefined;
+      });
+    }
+
+    it('exits 1 when a typed control ends unconfirmed', async () => {
+      liveWorkItem(() => ({status: 503, body: {error: 'unavailable'}}));
+      typeLines(['Also update the README']);
+
+      const result = await runCommand(['work', 'attach', WORK_ID, '--backlog', '0', '--wait-ms', '1000', '--json', ...auth]);
+
+      expect(result.exitCode).toBe(1);
+      const records = jsonLines(result.stdout);
+      expect(records.find(record => record.type === 'control_unconfirmed')).toMatchObject({cause: 'http', httpStatus: 503});
+      expect(records.at(-1)).toMatchObject({type: 'end', reason: 'signal'});
+    });
+
+    it('exits 0 when every typed control is accepted', async () => {
+      liveWorkItem(() => ({status: 201, body: {version: 1, applied: true, control: control()}}));
+      typeLines(['Also update the README']);
+
+      const result = await runCommand(['work', 'attach', WORK_ID, '--backlog', '0', '--wait-ms', '1000', '--json', ...auth]);
+
+      expect(result.exitCode).toBe(0);
+      expect(jsonLines(result.stdout).some(record => record.type === 'control')).toBe(true);
     });
   });
 

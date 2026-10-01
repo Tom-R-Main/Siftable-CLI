@@ -34,6 +34,9 @@ export default class WorkAttach extends WorkRuntimeCommand {
     let input: readline.Interface | undefined;
     let follower: WorkItemFollower | undefined;
     let stop: () => void = () => undefined;
+    // Typed controls that were refused or whose outcome is unknown make attach
+    // exit 1, as send and interrupt do for the same outcomes.
+    this.failedControls = 0;
     // Lines are sent one at a time in input order; the follower waits for the
     // queue before writing its end record, on /quit, EOF or attempt end.
     const queue = new ControlInputQueue(async line => {
@@ -57,7 +60,10 @@ export default class WorkAttach extends WorkRuntimeCommand {
     } finally {
       input?.close();
     }
+    if (this.failedControls > 0 && !process.exitCode) process.exitCode = 1;
   }
+
+  private failedControls = 0;
 
   private async handleLine(
     api: WorkRuntimeApi,
@@ -82,14 +88,18 @@ export default class WorkAttach extends WorkRuntimeCommand {
     try {
       const outcome = await submitAttachControl(api, workItemId, input, follower);
       if (outcome.status === 'not_sent') {
+        this.failedControls += 1;
         console.error('The watch has stopped; this line was not sent.');
       } else if (outcome.status === 'refused') {
+        this.failedControls += 1;
         console.error(`Control was not accepted (HTTP ${outcome.httpStatus}).`);
       } else {
+        if (outcome.status === 'unconfirmed') this.failedControls += 1;
         if (outcome.record.type === 'control') follower.noteControl(outcome.record.control);
         this.emitRecord(outcome.record);
       }
     } catch (error) {
+      this.failedControls += 1;
       console.error(`Control was not sent: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
