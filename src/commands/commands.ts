@@ -7,6 +7,7 @@ const TOPICS = [
   {topic: 'auth', description: 'Authentication commands'},
   {topic: 'tasks', description: 'Human planning tasks'},
   {topic: 'work', description: 'Executable agent work queue'},
+  {topic: 'compute', description: 'Task-bound managed compute grants (human-approved worker launches)'},
   {topic: 'agents', description: 'Agent aliases and capabilities'},
   {topic: 'projects', description: 'Project management and context'},
   {topic: 'notes', description: 'Knowledge notes'},

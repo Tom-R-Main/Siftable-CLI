@@ -203,6 +203,9 @@
       "work": {
         "description": "Executable agent work queue"
       },
+      "compute": {
+        "description": "Task-bound managed compute grants (human-approved worker launches)"
+      },
       "work:collaboration": {
         "description": "Durable participant mailboxes and event cursors for agent work"
       },
