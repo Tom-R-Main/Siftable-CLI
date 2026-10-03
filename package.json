@@ -13,6 +13,7 @@
     "prebuild": "npm run build --workspace @siftable/mcp-server && npm run build --workspace @siftable/tabular-import",
     "build": "node scripts/clean-dist.mjs && tsc && node -e \"const fs=require('node:fs');fs.mkdirSync('dist/lib/vendor',{recursive:true});for(const name of ['datasetQueryContract','leadDiscovery','leadDiscoveryCommandContract','agentWorkSecrets'])fs.copyFileSync('../shared/dist/types/'+name+'.js','dist/lib/vendor/'+name+'.js')\"",
     "typecheck": "tsc --noEmit && npm run typecheck:tui",
+    "lint": "node ../../scripts/lint/run.mjs project @siftable/cli",
     "typecheck:tui": "tsc --noEmit -p interactive-tui/tsconfig.json",
     "manifest": "npm run build && oclif manifest",
     "interactive:dev": "npm run manifest && (cd interactive-tui && bun run native:build) && SIFT_INTERACTIVE_RUNTIME=source node ./bin/run.js interactive",
@@ -38,6 +39,15 @@
   },
   "nx": {
     "targets": {
+      "lint": {
+        "inputs": [
+          "default",
+          "^default",
+          "{workspaceRoot}/eslint.config.mjs",
+          "{workspaceRoot}/eslint-suppressions.json",
+          "{workspaceRoot}/scripts/lint/**/*"
+        ]
+      },
       "typecheck": {
         "dependsOn": ["build"]
       },
