@@ -8,10 +8,10 @@
 import {mkdtemp, realpath, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {delimiter, dirname, isAbsolute, join} from 'node:path';
-import {existsSync} from 'node:fs';
+import {existsSync, rmSync} from 'node:fs';
 import type {ModelClient, ReviewBudget, ReviewResult, Verdict} from '@siftable/taster';
 import {buildReceipt, failedVerdict, type Receipt} from './receipt.js';
-import {createGitExec, loopbackMcpEndpoint, processRunner} from './ports.js';
+import {createGitExec, killActiveProcessGroups, loopbackMcpEndpoint, processRunner} from './ports.js';
 import type {GitExec, TasterRuntime} from './runtime.js';
 
 export const DEFAULT_MODEL = 'gpt-6.1-sol';
@@ -127,6 +127,20 @@ async function changedFileListBytes(deps: LocalReviewDeps, root: string, from: s
   return deps.runtime.fileListBytes(result.stdout.toString('utf8'));
 }
 
+/** Work directories of reviews in progress (per-call CODEX_HOME and temporary files). */
+const activeWorkDirs = new Set<string>();
+
+/**
+ * Synchronous cleanup for an interrupted review (SIGINT/SIGTERM): kills the
+ * detached codex and git process groups and removes the work directories,
+ * since asynchronous finally blocks do not run when the process exits.
+ */
+export function cleanupInterruptedReview(): void {
+  killActiveProcessGroups();
+  for (const dir of activeWorkDirs) rmSync(dir, {recursive: true, force: true});
+  activeWorkDirs.clear();
+}
+
 export async function runLocalReview(options: LocalReviewOptions, deps: LocalReviewDeps): Promise<LocalReviewOutcome> {
   const now = deps.now ?? (() => new Date());
   const startedAt = now();
@@ -183,6 +197,7 @@ export async function runLocalReview(options: LocalReviewOptions, deps: LocalRev
   });
 
   const workDir = await mkdtemp(join(tmpdir(), 'sift-review-'));
+  activeWorkDirs.add(workDir);
   let session: ModelSession | undefined;
   try {
     session = await deps.modelSession({checkoutRoot: revisions.root, workDir});
@@ -213,6 +228,7 @@ export async function runLocalReview(options: LocalReviewOptions, deps: LocalRev
   } finally {
     await session?.close().catch(() => undefined);
     await rm(workDir, {recursive: true, force: true, maxRetries: 3}).catch(() => undefined);
+    activeWorkDirs.delete(workDir);
   }
 }
 

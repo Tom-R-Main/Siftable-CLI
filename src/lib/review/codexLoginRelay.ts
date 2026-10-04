@@ -9,7 +9,8 @@
 // CODEX_HOME, logged or printed. The relay never refreshes tokens (a refresh
 // rotates them and could sign the user's own codex out); an expired login is
 // reported with a hint to run codex. It accepts only POST <base>/responses for
-// the one configured model, on 127.0.0.1 at an unguessable path.
+// the one configured model, on 127.0.0.1 at an unguessable path, and screens
+// every upstream response for the credential before codex receives it.
 
 import {randomBytes} from 'node:crypto';
 import {readFileSync} from 'node:fs';
@@ -106,6 +107,66 @@ export function readCodexLogin(path = codexAuthPath(), now = new Date()): CodexL
   return parseCodexLogin(text, now);
 }
 
+const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
+
+/** Credential values worth screening for (the originator label is public). */
+function secretValues(headers: Record<string, string>): string[] {
+  const values = new Set<string>();
+  for (const [name, value] of Object.entries(headers)) {
+    if (name === 'originator') continue;
+    values.add(value);
+    const bare = value.replace(/^bearer\s+/iu, '');
+    if (bare.length >= 8) values.add(bare);
+  }
+  return [...values];
+}
+
+/**
+ * True when a response body carries a credential value: in the raw bytes, in
+ * JSON-decoded string values (so escapes cannot hide it), or assembled from
+ * streamed `delta` fragments.
+ */
+export function reflectsCredential(payload: Buffer, headers: Record<string, string>): boolean {
+  const secrets = secretValues(headers);
+  const text = payload.toString('utf8');
+  if (secrets.some(secret => text.includes(secret))) return true;
+  const strings: string[] = [];
+  const deltas: string[] = [];
+  const collect = (value: unknown, depth: number): void => {
+    if (depth > 64) return;
+    if (typeof value === 'string') {
+      strings.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) collect(item, depth + 1);
+      return;
+    }
+    if (value && typeof value === 'object') {
+      for (const [key, item] of Object.entries(value)) {
+        if (key === 'delta' && typeof item === 'string') deltas.push(item);
+        collect(item, depth + 1);
+      }
+    }
+  };
+  for (const line of text.split('\n')) {
+    const data = line.startsWith('data:') ? line.slice(5).trim() : line.trim();
+    if (!data.startsWith('{') && !data.startsWith('[')) continue;
+    try {
+      collect(JSON.parse(data), 0);
+    } catch {
+      // Not JSON.
+    }
+  }
+  try {
+    collect(JSON.parse(text), 0);
+  } catch {
+    // Not a single JSON document.
+  }
+  const decoded = [...strings, deltas.join('')];
+  return decoded.some(value => secrets.some(secret => value.includes(secret)));
+}
+
 export interface RelayStats {
   requests: number;
   /** Upstream HTTP status counts, for diagnosis (e.g. 401 means the login was rejected). */
@@ -113,6 +174,8 @@ export interface RelayStats {
   refused: number;
   /** Exchanges codex closed before the upstream stream ended. */
   clientClosed: number;
+  /** Successful upstream responses withheld (oversized or carrying a credential value). */
+  screened: number;
 }
 
 export interface CodexLoginRelay {
@@ -167,7 +230,7 @@ function refuse(res: ServerResponse, status: number, code: string): void {
 export async function startCodexLoginRelay(options: RelayOptions): Promise<CodexLoginRelay> {
   const doFetch = options.fetch ?? fetch;
   const prefix = `/${randomBytes(18).toString('base64url')}/v1`;
-  const stats: RelayStats = {requests: 0, upstreamStatuses: {}, refused: 0, clientClosed: 0};
+  const stats: RelayStats = {requests: 0, upstreamStatuses: {}, refused: 0, clientClosed: 0, screened: 0};
   const open = new Set<AbortController>();
 
   const server = createServer((req, res) => {
@@ -223,14 +286,31 @@ export async function startCodexLoginRelay(options: RelayOptions): Promise<Codex
           refuse(res, upstream.status >= 400 && upstream.status < 600 ? upstream.status : 502, `upstream_${upstream.status}`);
           return;
         }
-        res.writeHead(200, {'content-type': upstream.headers.get('content-type') ?? 'text/event-stream'});
+        // Buffered, not streamed: an HTTP 200 stream can still carry error events
+        // (response.failed), so the whole body is screened for the credential
+        // before codex sees any of it, as the controller gateway does.
+        const chunks: Uint8Array[] = [];
+        let size = 0;
         const reader = upstream.body.getReader();
         for (;;) {
           const {done, value} = await reader.read();
           if (done) break;
-          if (!res.write(value)) await new Promise<void>(resolveDrain => res.once('drain', () => resolveDrain()));
+          size += value.byteLength;
+          if (size > MAX_RESPONSE_BYTES) {
+            await reader.cancel().catch(() => undefined);
+            stats.screened += 1;
+            refuse(res, 502, 'upstream_response_too_large');
+            return;
+          }
+          chunks.push(value);
         }
-        res.end();
+        const payload = Buffer.concat(chunks);
+        if (reflectsCredential(payload, options.login.headers)) {
+          stats.screened += 1;
+          refuse(res, 502, 'upstream_response_withheld');
+          return;
+        }
+        res.writeHead(200, {'content-type': upstream.headers.get('content-type') ?? 'text/event-stream'}).end(payload);
       } catch {
         if (controller.signal.aborted) {
           // codex closed the exchange (it stops reading once the response is

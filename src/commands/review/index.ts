@@ -7,6 +7,7 @@ import {CodexLoginError} from '../../lib/review/codexLoginRelay.js';
 import {codexSessionFactory} from '../../lib/review/codexSession.js';
 import {
   childPath,
+  cleanupInterruptedReview,
   createGitExec,
   DEFAULT_BUDGET,
   DEFAULT_MODEL,
@@ -81,6 +82,14 @@ export default class Review extends BaseCommand {
   async run(): Promise<unknown> {
     const {flags} = await this.parse(Review);
     let outcome: LocalReviewOutcome;
+    // codex and git run in detached process groups; an interrupt must not leave them behind.
+    const interrupted = (signal: NodeJS.Signals) => {
+      cleanupInterruptedReview();
+      process.stderr.write(`sift review interrupted (${signal}); no receipt was produced.\n`);
+      process.exit(signal === 'SIGINT' ? 130 : 143);
+    };
+    process.once('SIGINT', interrupted);
+    process.once('SIGTERM', interrupted);
     try {
       const deps = this.loadDeps(flags);
       outcome = await runLocalReview({
@@ -98,6 +107,9 @@ export default class Review extends BaseCommand {
     } catch (error) {
       if (error instanceof LocalReviewSetupError || error instanceof CodexLoginError) this.error(error.message, {exit: 2});
       throw error;
+    } finally {
+      process.removeListener('SIGINT', interrupted);
+      process.removeListener('SIGTERM', interrupted);
     }
 
     const {receipt} = outcome;

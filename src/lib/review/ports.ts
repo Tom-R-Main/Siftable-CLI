@@ -10,6 +10,28 @@ import type {GitExec, McpEndpointFactory, ProcessRunner, ProcessRunResult} from 
 
 const MAX_MCP_BODY_BYTES = 1024 * 1024;
 
+/** Process groups started by this module that have not exited yet. */
+const activeGroups = new Set<number>();
+
+/**
+ * Kills every process group this module started and has not reaped. Called
+ * when the review is interrupted (SIGINT/SIGTERM), because the groups are
+ * detached and would otherwise outlive the CLI.
+ */
+export function killActiveProcessGroups(): number {
+  let killed = 0;
+  for (const pid of activeGroups) {
+    try {
+      process.kill(-pid, 'SIGKILL');
+      killed += 1;
+    } catch {
+      // Already gone.
+    }
+  }
+  activeGroups.clear();
+  return killed;
+}
+
 interface CappedResult {
   stdout: Buffer;
   stderr: Buffer;
@@ -51,12 +73,16 @@ function runCapped(request: {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });
+    if (child.pid !== undefined) activeGroups.add(child.pid);
     const killGroup = () => {
       try {
         if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
       } catch {
         // Already gone.
       }
+    };
+    const forget = () => {
+      if (child.pid !== undefined) activeGroups.delete(child.pid);
     };
     const stop = (reason: 'aborted' | 'timeout') => {
       stopped ??= reason;
@@ -98,6 +124,7 @@ function runCapped(request: {
       settled = true;
       cleanup();
       killGroup();
+      forget();
       reject(error);
     });
     child.once('close', (code, signal) => {
@@ -105,6 +132,7 @@ function runCapped(request: {
       settled = true;
       cleanup();
       killGroup();
+      forget();
       resolvePromise({
         stdout: Buffer.concat(stdout),
         stderr: Buffer.concat(stderr),

@@ -70,6 +70,7 @@ export function codexSessionFactory(options: CodexSessionOptions): ModelSessionF
             out.push('the Codex login was rejected; run `codex login` and retry');
           }
           if (relay.stats.refused > 0) out.push(`relay refused ${relay.stats.refused} request(s)`);
+          if (relay.stats.screened > 0) out.push(`relay withheld ${relay.stats.screened} upstream response(s) (oversized or carrying the credential)`);
           return out;
         },
       };

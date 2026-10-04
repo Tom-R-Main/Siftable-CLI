@@ -2,7 +2,7 @@ import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterEach, describe, expect, it} from 'vitest';
-import {CodexLoginError, codexAuthPath, parseCodexLogin, readCodexLogin, startCodexLoginRelay, type CodexLoginRelay} from './codexLoginRelay.js';
+import {CodexLoginError, codexAuthPath, parseCodexLogin, readCodexLogin, reflectsCredential, startCodexLoginRelay, type CodexLoginRelay} from './codexLoginRelay.js';
 
 const ACCOUNT = '00000000-1111-2222-3333-444444444444';
 
@@ -94,7 +94,7 @@ describe('Codex login relay', () => {
     const get = await fetch(`${relay.baseUrl}/responses`);
     expect(get.status).toBe(404);
     expect(upstream.calls).toHaveLength(1);
-    expect(relay.stats).toMatchObject({requests: 1, refused: 3, clientClosed: 0, upstreamStatuses: {200: 1}});
+    expect(relay.stats).toMatchObject({requests: 1, refused: 3, clientClosed: 0, screened: 0, upstreamStatuses: {200: 1}});
   });
 
   it('replaces an upstream error body with fixed text, so nothing upstream reflects reaches codex', async () => {
@@ -106,5 +106,31 @@ describe('Codex login relay', () => {
     const text = await response.text();
     expect(text).toBe(JSON.stringify({error: {type: 'sift_review_relay', code: 'upstream_401'}}));
     expect(relay.stats.upstreamStatuses).toEqual({401: 1});
+  });
+
+  it('withholds an HTTP 200 stream whose error event carries the credential', async () => {
+    const login = parseCodexLogin(chatgptAuth());
+    const token = login.headers.authorization.replace('Bearer ', '');
+    const stream = `event: response.failed\ndata: ${JSON.stringify({type: 'response.failed', response: {error: {message: `bad header ${login.headers.authorization}`}}})}\n\n`;
+    const upstream = fakeUpstream(200, stream);
+    relay = await startCodexLoginRelay({login, model: 'gpt-6.1-sol', fetch: upstream.doFetch});
+    const response = await fetch(`${relay.baseUrl}/responses`, {method: 'POST', body: JSON.stringify({model: 'gpt-6.1-sol', stream: true})});
+    expect(response.status).toBe(502);
+    const text = await response.text();
+    expect(text).not.toContain(token);
+    expect(text).toBe(JSON.stringify({error: {type: 'sift_review_relay', code: 'upstream_response_withheld'}}));
+    expect(relay.stats.screened).toBe(1);
+  });
+});
+
+describe('credential screening', () => {
+  const headers = {authorization: 'Bearer abcdefghijklmnop.qrstuvwxyz', 'chatgpt-account-id': ACCOUNT, originator: 'codex_cli_rs'};
+  it('finds raw, JSON-escaped and delta-fragmented values but ignores the public originator', () => {
+    expect(reflectsCredential(Buffer.from('x abcdefghijklmnop.qrstuvwxyz y'), headers)).toBe(true);
+    expect(reflectsCredential(Buffer.from(`data: {"m":"\\u0061bcdefghijklmnop.qrstuvwxyz"}\n`), headers)).toBe(true);
+    const fragments = ['abcdefgh', 'ijklmnop.', 'qrstuvwxyz'].map(delta => `data: ${JSON.stringify({type: 'response.output_text.delta', delta})}`).join('\n\n');
+    expect(reflectsCredential(Buffer.from(fragments), headers)).toBe(true);
+    expect(reflectsCredential(Buffer.from(`data: {"account":"${ACCOUNT}"}`), headers)).toBe(true);
+    expect(reflectsCredential(Buffer.from('data: {"originator":"codex_cli_rs","text":"fine"}'), headers)).toBe(false);
   });
 });
