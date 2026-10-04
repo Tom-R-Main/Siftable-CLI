@@ -1,0 +1,27 @@
+{
+  "//": "Compiles the Taster runtime `sift review` loads (engine, model clients, policy loader, the runner's trusted pre-pass and prompt budget) into dist/lib/vendor/taster. @siftable/taster is private, so the published CLI carries its own copy. Options match packages/taster/tsconfig.json.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": false,
+    "sourceMap": false,
+    "rootDir": "../../../../taster",
+    "outDir": "../../../dist/lib/vendor/taster"
+  },
+  "files": [
+    "../../../../taster/src/engine/index.ts",
+    "../../../../taster/src/models/index.ts",
+    "../../../../taster/src/node.ts",
+    "../../../../taster/runner/src/prepass/cli.ts",
+    "../../../../taster/runner/src/promptBudget.ts"
+  ]
+}

@@ -12315,6 +12315,133 @@
         "show.js"
       ]
     },
+    "review": {
+      "aliases": [],
+      "args": {},
+      "description": "Review the committed changes of this checkout with Taster before opening a pull request.\nRuns the Taster engine locally (mode local) through your own Codex login and prints confirmed findings\nplus a receipt bound to the reviewed revision, the trusted policy revision and the completion state.\nAn incomplete review is reported as incomplete, never as clean. Uncommitted changes are not reviewed.\nExit status: 0 clean or advisory findings only, 1 blocking (P0-P1) findings, 2 incomplete, skipped or failed.",
+      "examples": [
+        "<%= config.bin %> review",
+        "<%= config.bin %> review --base origin/main --receipt /tmp/taster-receipt.json",
+        "<%= config.bin %> review --json --no-input > /tmp/taster-review.json"
+      ],
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "base": {
+          "description": "Base ref to review against (default: origin/main, then main)",
+          "name": "base",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "model": {
+          "description": "Model for finders and validators",
+          "name": "model",
+          "default": "gpt-6.1-sol",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "codex-bin": {
+          "description": "Absolute path of the codex binary (default: codex on PATH)",
+          "name": "codex-bin",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "finder-passes": {
+          "description": "Finder passes with different file orderings (2 or 3)",
+          "name": "finder-passes",
+          "default": 2,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "max-model-calls": {
+          "description": "Model call ceiling for the whole review",
+          "name": "max-model-calls",
+          "default": 40,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "concurrency": {
+          "description": "Concurrent codex runs",
+          "name": "concurrency",
+          "default": 2,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "max-files": {
+          "description": "Changed files to review; more are skipped and the review is incomplete",
+          "name": "max-files",
+          "default": 60,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "receipt": {
+          "description": "Also write the receipt JSON to this path (attach it as Sift verification evidence)",
+          "name": "receipt",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "review",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "review",
+        "index.js"
+      ]
+    },
     "skills:install": {
       "aliases": [],
       "args": {
