@@ -21,7 +21,7 @@ function toolMessage(name: string, args: Record<string, unknown>, id: string) {
 
 async function fixture(
   respond: (body: ProviderBody, index: number) => Response | Promise<Response>,
-  check: (input: {root: string; bodies: ProviderBody[]; run: (options?: {mode?: Mode; args?: string[]; env?: Record<string, string>; onStdout?: (text: string) => void; onStart?: (sendSignal: (signal: NodeJS.Signals) => void) => void; onControl?: (control: {write: (text: string) => void; end: () => void}) => void}) => Promise<{stdout: string; stderr: string; exit: number}>}) => Promise<void>,
+  check: (input: {root: string; bodies: ProviderBody[]; run: (options?: {mode?: Mode; args?: string[]; env?: Record<string, string>; killAfterMs?: number; onStdout?: (text: string) => void; onStart?: (sendSignal: (signal: NodeJS.Signals) => void) => void; onControl?: (control: {write: (text: string) => void; end: () => void}) => void}) => Promise<{stdout: string; stderr: string; exit: number}>}) => Promise<void>,
 ) {
   const root = await mkdtemp(join(tmpdir(), 'sift-headless-test-'));
   const bodies: ProviderBody[] = [];
@@ -31,7 +31,7 @@ async function fixture(
     return respond(body, bodies.length);
   }});
   try {
-    await check({root, bodies, run: async ({mode = 'source', args = [], env: extraEnv = {}, onStdout, onStart, onControl} = {}) => {
+    await check({root, bodies, run: async ({mode = 'source', args = [], env: extraEnv = {}, killAfterMs = 12_000, onStdout, onStart, onControl} = {}) => {
       const node = process.env.SIFT_TEST_NODE || Bun.which('node');
       if (mode !== 'source' && !node) throw new Error('Node is required for public CLI parity tests.');
       const entry = mode === 'source'
@@ -52,7 +52,7 @@ async function fixture(
       });
       onStart?.(signal => child.kill(signal));
       if (onControl && child.stdin && typeof child.stdin !== 'number') onControl({write: text => { child.stdin.write(text); child.stdin.flush(); }, end: () => { child.stdin.end(); }});
-      const timeout = setTimeout(() => child.kill('SIGKILL'), 12_000);
+      const timeout = setTimeout(() => child.kill('SIGKILL'), killAfterMs);
       const collect = async () => {
         const reader = child.stdout.getReader();
         const decoder = new TextDecoder();
@@ -113,9 +113,16 @@ describe('production headless brain', () => {
         let signal: (signal: NodeJS.Signals) => void;
         let observed = false;
         let aliveDuringHandoff = false;
-        const result = await run({args: ['--approval', 'allow', '--supervisor-handoff', '--handoff-timeout-ms', '5000', '--deadline-ms', '4000'],
+        let sessionSeenAt = 0;
+        const result = await run({args: ['--approval', 'allow', '--supervisor-handoff', '--handoff-timeout-ms', '6000', '--deadline-ms', '4000'],
+          // Startup, a 4 s model deadline, a 6 s handoff window and process
+          // cleanup must all fit before the fixture kills the child.
+          killAfterMs: 20_000,
           onControl: value => { control = value; }, onStart: value => { signal = value; },
           onStdout: stdout => {
+            // The child emits `session` just after arming its model deadline,
+            // so this is a conservative anchor for that deadline.
+            if (!sessionSeenAt && stdout.includes('"type":"session"')) sessionSeenAt = Date.now();
             if (observed) return;
             const lines = stdout.split('\n').filter(line => line.endsWith('}'));
             const ready = lines.map(line => JSON.parse(line)).find(event => event.type === 'handoff.ready');
@@ -124,7 +131,9 @@ describe('production headless brain', () => {
             // Delay valid release beyond the original model deadline: grading
             // has its own finite window and must not launch further requests.
             // The deadline leaves room for the fixture's 2 s job-readiness wait
-            // on a loaded runner; the delay stays inside the 5 s handoff window.
+            // on a loaded runner. Release is timed from the `session` event, so
+            // it lands just after the 4 s deadline and inside the 6 s handoff
+            // window, which opens after the model loop ends.
             setTimeout(() => {
               void readFile(join(root, 'job.pid'), 'utf8').then(text => {
                 try { process.kill(Number(text), 0); aliveDuringHandoff = true; } catch { /* assertion below */ }
@@ -133,7 +142,7 @@ describe('production headless brain', () => {
                 if (outcome === 'wrong-run') control.write(JSON.stringify({type: 'handoff.release', session: ready.session, runId: 'stale-run'}) + '\n');
                 if (outcome === 'signal') signal('SIGINT');
               });
-            }, outcome === 'release' ? 4200 : 0);
+            }, outcome === 'release' ? Math.max(0, sessionSeenAt + 4200 - Date.now()) : 0);
           }});
         expect(observed).toBe(true);
         expect(aliveDuringHandoff).toBe(true);
@@ -146,7 +155,7 @@ describe('production headless brain', () => {
         try { process.kill(pid, 0); } catch (error) { alive = (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
         expect(alive).toBe(false);
       });
-    }, 15_000);
+    }, 25_000);
   }
 
   test('validates bounded options before loading the engine', () => {
