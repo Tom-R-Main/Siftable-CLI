@@ -41,6 +41,15 @@
   "nx": {
     "implicitDependencies": ["@siftable/taster", "@siftable/taster-runner"],
     "targets": {
+      "build": {
+        "inputs": [
+          "production",
+          "^production",
+          "buildEnvironment",
+          "{workspaceRoot}/scripts/ci/ratchetGrowth.mjs",
+          "{workspaceRoot}/scripts/ci/ratchetGrowthRead.mjs"
+        ]
+      },
       "lint": {
         "inputs": [
           "default",
