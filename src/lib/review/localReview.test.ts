@@ -198,9 +198,7 @@ describe('sift review local runs', () => {
   });
 
   it('keeps the verdict incomplete when the trusted pre-pass cannot run', async () => {
-    const broken = {...runtime, runTrustedPrepass: () => {
-      throw new Error('typescript is not installed');
-    }};
+    const broken = {...runtime, prepassScript: join(root, 'missing-prepass.js')};
     const {receipt} = await runLocalReview(options(), {...deps(new ScriptedModels({finder: quietFinder, validator: confirmingValidator})), runtime: broken});
     expect(receipt.status).toBe('incomplete');
     expect(receipt.verdict.stages).toMatchObject({prepass: 'failed'});

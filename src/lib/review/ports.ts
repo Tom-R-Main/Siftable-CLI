@@ -6,7 +6,7 @@ import {spawn} from 'node:child_process';
 import {createServer, type IncomingMessage} from 'node:http';
 import type {AddressInfo} from 'node:net';
 import {randomBytes} from 'node:crypto';
-import type {GitExec, McpEndpointFactory, ProcessRunner, ProcessRunResult} from './runtime.js';
+import type {GitExec, McpEndpointFactory, PrepassOutput, ProcessRunner, ProcessRunResult} from './runtime.js';
 
 const MAX_MCP_BODY_BYTES = 1024 * 1024;
 
@@ -162,6 +162,40 @@ export const processRunner: ProcessRunner = async request => {
 };
 
 const GIT_TIMEOUT_MS = 120_000;
+const PREPASS_TIMEOUT_MS = 600_000;
+
+/**
+ * Runs the runner's trusted pre-pass (prepass/cli.js from the CLI's packaged
+ * copy, never from the checkout) as a tracked child process with its fixed
+ * argument vector, so an interrupt can stop it like any other child.
+ */
+export async function runTrustedPrepassProcess(input: {
+  script: string;
+  repo: string;
+  baseSha: string;
+  mergeBase: string;
+  head: string;
+  ratchetGrowth: string;
+  path: string;
+  home: string;
+}): Promise<PrepassOutput> {
+  const result = await runCapped({
+    command: process.execPath,
+    args: [input.script, '--repo', input.repo, '--base', input.baseSha, '--merge-base', input.mergeBase, '--head', input.head, '--ratchet-growth', input.ratchetGrowth],
+    cwd: '/',
+    env: {PATH: input.path, HOME: input.home},
+    timeoutMs: PREPASS_TIMEOUT_MS,
+    maxStdoutBytes: 64 * 1024 * 1024,
+    maxStderrBytes: 64 * 1024,
+  });
+  if (result.stopped || result.exitCode !== 0 || result.stdoutTruncated) {
+    const why = result.stopped ?? (result.stdoutTruncated ? 'output too large' : `exit ${result.exitCode ?? result.signal ?? 'unknown'}`);
+    throw new Error(`trusted pre-pass failed (${why}): ${result.stderr.toString('utf8').trim().split('\n').slice(-1)[0] ?? ''}`.slice(0, 300));
+  }
+  const parsed = JSON.parse(result.stdout.toString('utf8')) as Partial<PrepassOutput>;
+  if (!Array.isArray(parsed.reports) || !Array.isArray(parsed.problems)) throw new Error('trusted pre-pass printed an unexpected result');
+  return {reports: parsed.reports, problems: parsed.problems.map(String)};
+}
 
 /**
  * GitExec for the engine. The engine passes its hardened git environment

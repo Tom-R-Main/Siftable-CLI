@@ -62,15 +62,6 @@ export interface CodexClientOptions {
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
 }
 
-export interface PrepassInput {
-  repo: string;
-  baseSha: string;
-  mergeBase: string;
-  head: string;
-  ratchetGrowth: string;
-  envPath?: string;
-}
-
 export interface PrepassOutput {
   reports: unknown[];
   problems: string[];
@@ -89,7 +80,8 @@ export interface TasterRuntime {
   GIT_ENV: Readonly<Record<string, string>>;
   loadDefaultPolicyBundle(): PolicyBundle;
   createCodexClient(options: CodexClientOptions): ModelClient;
-  runTrustedPrepass(input: PrepassInput): PrepassOutput;
+  /** The runner's trusted pre-pass entry point (runner/src/prepass/cli.js), run as a child process. */
+  prepassScript: string;
   diffAllowance(parts: PromptParts): number;
   summaryBytes(reports: readonly unknown[]): number;
   /** Bytes of the engine's changed-file list from `git diff --name-status -z -M` output. */
@@ -121,16 +113,17 @@ export function loadTasterRuntime(root = vendoredRuntimeRoot()): TasterRuntime {
   const engine = load('src/engine/index.js');
   const models = load('src/models/index.js');
   const node = load('src/node.js');
-  const prepass = load('runner/src/prepass/cli.js');
   const budget = load('runner/src/promptBudget.js');
   const ratchetGrowthScript = resolve(root, 'trusted', 'scripts', 'ci', 'ratchetGrowth.mjs');
+  const prepassScript = resolve(root, 'runner', 'src', 'prepass', 'cli.js');
+  if (!existsSync(prepassScript)) throw new Error('Packaged Taster runtime is missing the trusted pre-pass. Rebuild @siftable/cli.');
   if (!existsSync(ratchetGrowthScript)) throw new Error('Packaged Taster runtime is missing the ratchet growth detector. Rebuild @siftable/cli.');
   return {
     review: required(engine, 'review', 'engine'),
     GIT_ENV: required(engine, 'GIT_ENV', 'engine'),
     loadDefaultPolicyBundle: required(node, 'loadDefaultPolicyBundle', 'node'),
     createCodexClient: required(models, 'createCodexClient', 'models'),
-    runTrustedPrepass: required(prepass, 'runTrustedPrepass', 'prepass'),
+    prepassScript,
     diffAllowance: required(budget, 'diffAllowance', 'promptBudget'),
     summaryBytes: required(budget, 'summaryBytes', 'promptBudget'),
     fileListBytes: required(budget, 'fileListBytes', 'promptBudget'),

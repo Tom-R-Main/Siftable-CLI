@@ -11,7 +11,7 @@ import {delimiter, dirname, isAbsolute, join} from 'node:path';
 import {existsSync, rmSync} from 'node:fs';
 import type {ModelClient, ReviewBudget, ReviewResult, Verdict} from '@siftable/taster';
 import {buildReceipt, failedVerdict, type Receipt} from './receipt.js';
-import {createGitExec, killActiveProcessGroups, loopbackMcpEndpoint, processRunner} from './ports.js';
+import {createGitExec, killActiveProcessGroups, loopbackMcpEndpoint, processRunner, runTrustedPrepassProcess} from './ports.js';
 import type {GitExec, TasterRuntime} from './runtime.js';
 
 export const DEFAULT_MODEL = 'gpt-6.1-sol';
@@ -168,13 +168,15 @@ export async function runLocalReview(options: LocalReviewOptions, deps: LocalRev
   // Trusted pre-pass from the CLI's own copy of the tools, never from the checkout.
   let reports: unknown[] = [];
   try {
-    const prepass = deps.runtime.runTrustedPrepass({
+    const prepass = await runTrustedPrepassProcess({
+      script: deps.runtime.prepassScript,
       repo: revisions.root,
       baseSha: revisions.base,
       mergeBase: revisions.mergeBase,
       head: revisions.head,
       ratchetGrowth: deps.runtime.ratchetGrowthScript,
-      envPath: deps.path,
+      path: deps.path,
+      home: tmpdir(),
     });
     reports = prepass.reports;
     problems.push(...prepass.problems.map(problem => `pre-pass: ${problem}`));
