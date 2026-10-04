@@ -94,7 +94,7 @@ describe('Codex login relay', () => {
     const get = await fetch(`${relay.baseUrl}/responses`);
     expect(get.status).toBe(404);
     expect(upstream.calls).toHaveLength(1);
-    expect(relay.stats).toMatchObject({requests: 1, refused: 3, upstreamStatuses: {200: 1}});
+    expect(relay.stats).toMatchObject({requests: 1, refused: 3, clientClosed: 0, upstreamStatuses: {200: 1}});
   });
 
   it('replaces an upstream error body with fixed text, so nothing upstream reflects reaches codex', async () => {

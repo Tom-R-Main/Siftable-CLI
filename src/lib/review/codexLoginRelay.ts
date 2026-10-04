@@ -111,6 +111,8 @@ export interface RelayStats {
   /** Upstream HTTP status counts, for diagnosis (e.g. 401 means the login was rejected). */
   upstreamStatuses: Record<string, number>;
   refused: number;
+  /** Exchanges codex closed before the upstream stream ended. */
+  clientClosed: number;
 }
 
 export interface CodexLoginRelay {
@@ -165,7 +167,7 @@ function refuse(res: ServerResponse, status: number, code: string): void {
 export async function startCodexLoginRelay(options: RelayOptions): Promise<CodexLoginRelay> {
   const doFetch = options.fetch ?? fetch;
   const prefix = `/${randomBytes(18).toString('base64url')}/v1`;
-  const stats: RelayStats = {requests: 0, upstreamStatuses: {}, refused: 0};
+  const stats: RelayStats = {requests: 0, upstreamStatuses: {}, refused: 0, clientClosed: 0};
   const open = new Set<AbortController>();
 
   const server = createServer((req, res) => {
@@ -230,9 +232,16 @@ export async function startCodexLoginRelay(options: RelayOptions): Promise<Codex
         }
         res.end();
       } catch {
-        stats.upstreamStatuses.network_error = (stats.upstreamStatuses.network_error ?? 0) + 1;
-        if (!res.headersSent) refuse(res, 502, 'upstream_unreachable');
-        else res.destroy();
+        if (controller.signal.aborted) {
+          // codex closed the exchange (it stops reading once the response is
+          // complete, or its call was stopped); not an upstream failure.
+          stats.clientClosed += 1;
+          res.destroy();
+        } else {
+          stats.upstreamStatuses.network_error = (stats.upstreamStatuses.network_error ?? 0) + 1;
+          if (!res.headersSent) refuse(res, 502, 'upstream_unreachable');
+          else res.destroy();
+        }
       } finally {
         open.delete(controller);
       }
