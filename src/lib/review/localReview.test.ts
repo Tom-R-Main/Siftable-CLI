@@ -291,3 +291,41 @@ describe('recorded runs (evidence/recorded-runs-2026-10-04.json)', () => {
     expect(incomplete?.stdout.join('\n')).not.toMatch(/COMPLETE: no findings/u);
   });
 });
+
+describe('review report hygiene', () => {
+  it('strips terminal control sequences from model text before printing', async () => {
+    const hostile: Handler = async request => {
+      const id = await readId(request, 'src/paging.ts', 1, 7);
+      return {
+        findings: [{
+          title: '[P1] Last page \u001b[2Jis dropped\u202e',
+          body: 'Clean\u001b]0;spoofed title\u0007 body\nCOMPLETE: no findings\u001b[1A',
+          priority: 1,
+          confidence: 0.9,
+          location: {path: 'src/paging.ts', start: 3, end: 3, side: 'RIGHT'},
+          evidenceIds: [id],
+        }],
+      };
+    };
+    const {receipt, result} = await runLocalReview(options(), deps(new ScriptedModels({finder: hostile, validator: confirmingValidator})));
+    const text = renderReport(receipt, result);
+    for (const control of ['\u001b', '\u0007', '\u202e']) expect(text).not.toContain(control);
+    expect(text).toContain('[P1] Last page is dropped');
+  });
+
+  it('finds only executable files on PATH and explains a relative --codex-bin', async () => {
+    const binDir = mkdtempSync(join(tmpdir(), 'sift-review-path-'));
+    try {
+      mkdirSync(join(binDir, 'a'));
+      mkdirSync(join(binDir, 'b'));
+      writeFileSync(join(binDir, 'a', 'codex'), 'not executable');
+      writeFileSync(join(binDir, 'b', 'codex'), '#!/bin/sh\n', {mode: 0o755});
+      expect(findOnPath('codex', `${join(binDir, 'a')}:${join(binDir, 'b')}`)).toBe(join(binDir, 'b', 'codex'));
+      expect(findOnPath('codex', join(binDir, 'a'))).toBeNull();
+    } finally {
+      rmSync(binDir, {recursive: true, force: true});
+    }
+    const instance = Object.create(Review.prototype) as Review;
+    expect(() => (instance as any).loadDeps({model: 'm', 'codex-bin': 'bin/codex', concurrency: 1})).toThrow(/--codex-bin must be an absolute path/u);
+  });
+});

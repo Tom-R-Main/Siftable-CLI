@@ -8,7 +8,7 @@
 import {mkdtemp, realpath, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {delimiter, dirname, isAbsolute, join} from 'node:path';
-import {existsSync, rmSync} from 'node:fs';
+import {accessSync, constants, rmSync, statSync} from 'node:fs';
 import type {ModelClient, ReviewBudget, ReviewResult, Verdict} from '@siftable/taster';
 import {buildReceipt, failedVerdict, type Receipt} from './receipt.js';
 import {createGitExec, killActiveProcessGroups, loopbackMcpEndpoint, processRunner, runTrustedPrepassProcess} from './ports.js';
@@ -239,7 +239,13 @@ export function findOnPath(name: string, pathValue = process.env.PATH ?? ''): st
   for (const entry of pathValue.split(delimiter)) {
     if (!entry || !isAbsolute(entry)) continue;
     const candidate = join(entry, name);
-    if (existsSync(candidate)) return candidate;
+    try {
+      if (!statSync(candidate).isFile()) continue;
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // Missing or not executable: keep looking.
+    }
   }
   return null;
 }

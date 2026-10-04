@@ -7,6 +7,7 @@
 
 import {createHash} from 'node:crypto';
 import type {Finding, ReviewResult, Verdict} from '@siftable/taster';
+import {sanitizeTerminalLine, sanitizeTerminalText} from '../output.js';
 
 export const RECEIPT_FORMAT = 'taster.local-receipt/v1';
 
@@ -180,25 +181,27 @@ export function renderReport(receipt: Receipt, result: Pick<ReviewResult, 'findi
   if (findings.length > 0) {
     lines.push(`Findings (${findings.length}):`, '');
     for (const finding of findings) {
-      const where = `${finding.location.path}:${finding.location.start}${finding.location.end !== finding.location.start ? `-${finding.location.end}` : ''}`;
+      // Finding text, paths and the validator name come from the model or the
+      // reviewed checkout: strip terminal control sequences before printing.
+      const where = `${sanitizeTerminalLine(finding.location.path)}:${finding.location.start}${finding.location.end !== finding.location.start ? `-${finding.location.end}` : ''}`;
       // Model titles often carry their own priority tag; show one, the validated priority.
-      const title = finding.title.replace(/^\s*\[P[0-3]\]\s*/u, '');
-      lines.push(`[P${finding.priority}] ${title}`, `  ${where}  (confidence ${finding.confidence.toFixed(2)}, ${finding.validation.validator})`);
-      for (const bodyLine of finding.body.trim().split('\n').slice(0, 20)) lines.push(`  ${bodyLine}`);
-      if (finding.suggestion) lines.push(`  Suggestion: ${finding.suggestion.trim().split('\n')[0]}`);
+      const title = sanitizeTerminalLine(finding.title).replace(/^\s*\[P[0-3]\]\s*/u, '');
+      lines.push(`[P${finding.priority}] ${title}`, `  ${where}  (confidence ${finding.confidence.toFixed(2)}, ${sanitizeTerminalLine(finding.validation.validator)})`);
+      for (const bodyLine of sanitizeTerminalText(finding.body.trim()).split('\n').slice(0, 20)) lines.push(`  ${bodyLine}`);
+      if (finding.suggestion) lines.push(`  Suggestion: ${sanitizeTerminalLine(finding.suggestion.trim().split('\n')[0])}`);
       lines.push('');
     }
   }
   const v = receipt.verdict;
   lines.push(STATUS_LINE[receipt.status]);
-  if (v.reason) lines.push(`Reason: ${v.reason}`);
+  if (v.reason) lines.push(`Reason: ${sanitizeTerminalLine(v.reason)}`);
   if (receipt.status === 'findings') lines.push(`Blocking (P0-P1): ${v.blocking}  Advisory: ${v.advisory}`);
   if (v.filesInScope !== null) lines.push(`Coverage: ${v.filesReviewed}/${v.filesInScope} files reviewed, ${v.filesSkipped} skipped`);
   if (v.stages) {
     const unfinished = Object.entries(v.stages).filter(([, status]) => status !== 'complete');
     if (unfinished.length > 0) lines.push(`Stages not complete: ${unfinished.map(([name, status]) => `${name}=${status}`).join(', ')}`);
   }
-  for (const problem of receipt.problems.slice(0, 10)) lines.push(`Problem: ${problem}`);
+  for (const problem of receipt.problems.slice(0, 10)) lines.push(`Problem: ${sanitizeTerminalLine(problem)}`);
   lines.push(
     '',
     'Receipt',

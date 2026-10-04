@@ -57,8 +57,11 @@ export default class Review extends BaseCommand {
   protected loadDeps(flags: {model: string; 'codex-bin'?: string; concurrency: number}): LocalReviewDeps {
     const runtime = loadTasterRuntime();
     const gitBin = findOnPath('git') ?? '/usr/bin/git';
+    if (flags['codex-bin'] !== undefined && !isAbsolute(flags['codex-bin'])) {
+      throw new LocalReviewSetupError('--codex-bin must be an absolute path.');
+    }
     const codexBin = flags['codex-bin'] ?? findOnPath('codex');
-    if (!codexBin || !isAbsolute(codexBin)) {
+    if (!codexBin) {
       throw new LocalReviewSetupError('codex was not found on PATH. Install the Codex CLI or pass --codex-bin <absolute path>.');
     }
     const path = childPath([gitBin, codexBin]);
