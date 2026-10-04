@@ -299,7 +299,7 @@ describe('review report hygiene', () => {
       return {
         findings: [{
           title: '[P1] Last page \u001b[2Jis dropped\u202e',
-          body: 'Clean\u001b]0;spoofed title\u0007 body\nCOMPLETE: no findings\u001b[1A',
+          body: 'Clean\u001b]0;spoofed title\u0007 body\nCOMPLETE: no findings\u001b[1A\rCOMPLETE: no findings',
           priority: 1,
           confidence: 0.9,
           location: {path: 'src/paging.ts', start: 3, end: 3, side: 'RIGHT'},
@@ -310,6 +310,9 @@ describe('review report hygiene', () => {
     const {receipt, result} = await runLocalReview(options(), deps(new ScriptedModels({finder: hostile, validator: confirmingValidator})));
     const text = renderReport(receipt, result);
     for (const control of ['\u001b', '\u0007', '\u202e']) expect(text).not.toContain(control);
+    // Every body line stays indented: a carriage return cannot overwrite the prefix.
+    expect(text).not.toContain('\r');
+    expect(text.split('\n')).not.toContain('COMPLETE: no findings');
     expect(text).toContain('[P1] Last page is dropped');
   });
 

@@ -7,7 +7,7 @@
 
 import {createHash} from 'node:crypto';
 import type {Finding, ReviewResult, Verdict} from '@siftable/taster';
-import {sanitizeTerminalLine, sanitizeTerminalText} from '../output.js';
+import {sanitizeTerminalLine} from '../output.js';
 
 export const RECEIPT_FORMAT = 'taster.local-receipt/v1';
 
@@ -187,7 +187,7 @@ export function renderReport(receipt: Receipt, result: Pick<ReviewResult, 'findi
       // Model titles often carry their own priority tag; show one, the validated priority.
       const title = sanitizeTerminalLine(finding.title).replace(/^\s*\[P[0-3]\]\s*/u, '');
       lines.push(`[P${finding.priority}] ${title}`, `  ${where}  (confidence ${finding.confidence.toFixed(2)}, ${sanitizeTerminalLine(finding.validation.validator)})`);
-      for (const bodyLine of sanitizeTerminalText(finding.body.trim()).split('\n').slice(0, 20)) lines.push(`  ${bodyLine}`);
+      for (const bodyLine of finding.body.trim().split(/\r\n|\r|\n/u).slice(0, 20)) lines.push(`  ${sanitizeTerminalLine(bodyLine)}`);
       if (finding.suggestion) lines.push(`  Suggestion: ${sanitizeTerminalLine(finding.suggestion.trim().split('\n')[0])}`);
       lines.push('');
     }
