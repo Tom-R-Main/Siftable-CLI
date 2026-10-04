@@ -113,7 +113,7 @@ describe('production headless brain', () => {
         let signal: (signal: NodeJS.Signals) => void;
         let observed = false;
         let aliveDuringHandoff = false;
-        const result = await run({args: ['--approval', 'allow', '--supervisor-handoff', '--handoff-timeout-ms', '5000', '--deadline-ms', '2000'],
+        const result = await run({args: ['--approval', 'allow', '--supervisor-handoff', '--handoff-timeout-ms', '5000', '--deadline-ms', '4000'],
           onControl: value => { control = value; }, onStart: value => { signal = value; },
           onStdout: stdout => {
             if (observed) return;
@@ -123,6 +123,8 @@ describe('production headless brain', () => {
             observed = true;
             // Delay valid release beyond the original model deadline: grading
             // has its own finite window and must not launch further requests.
+            // The deadline leaves room for the fixture's 2 s job-readiness wait
+            // on a loaded runner; the delay stays inside the 5 s handoff window.
             setTimeout(() => {
               void readFile(join(root, 'job.pid'), 'utf8').then(text => {
                 try { process.kill(Number(text), 0); aliveDuringHandoff = true; } catch { /* assertion below */ }
@@ -131,7 +133,7 @@ describe('production headless brain', () => {
                 if (outcome === 'wrong-run') control.write(JSON.stringify({type: 'handoff.release', session: ready.session, runId: 'stale-run'}) + '\n');
                 if (outcome === 'signal') signal('SIGINT');
               });
-            }, outcome === 'release' ? 2200 : 0);
+            }, outcome === 'release' ? 4200 : 0);
           }});
         expect(observed).toBe(true);
         expect(aliveDuringHandoff).toBe(true);
