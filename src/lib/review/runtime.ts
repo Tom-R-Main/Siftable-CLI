@@ -49,7 +49,10 @@ export interface CodexClientOptions {
   exec: ProcessRunner;
   toolHostEndpoint: McpEndpointFactory;
   model: string;
-  proxyBaseUrl: string;
+  provider?: 'proxy' | 'native';
+  proxyBaseUrl?: string;
+  /** Native mode: path of the user's Codex login, linked into each call's CODEX_HOME; never opened by Taster. */
+  nativeAuthFile?: string;
   sandbox: 'read-only' | 'danger-full-access';
   checkoutRoot: string;
   workDir: string;

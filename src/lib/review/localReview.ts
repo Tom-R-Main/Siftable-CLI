@@ -34,7 +34,7 @@ export interface ModelSession {
   problems(): string[];
 }
 
-/** Creates the model client for a checkout; the real one runs codex through the login relay. */
+/** Creates the model client for a checkout; the real one runs codex with the user's own login (native mode). */
 export type ModelSessionFactory = (context: {checkoutRoot: string; workDir: string}) => Promise<ModelSession>;
 
 export interface LocalReviewDeps {

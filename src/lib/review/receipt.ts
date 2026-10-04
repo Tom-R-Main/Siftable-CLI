@@ -37,7 +37,7 @@ export interface ReceiptBody {
     worktreeDirty: boolean;
   };
   policy: {name: string; revision: string};
-  model: {name: string; provider: 'codex-login'; finderPasses: 2 | 3};
+  model: {name: string; provider: 'codex-native'; finderPasses: 2 | 3};
   verdict: {
     kind: Verdict['kind'];
     reason: string | null;
@@ -129,7 +129,7 @@ export function buildReceipt(context: ReceiptContext, verdict: Verdict, findings
       worktreeDirty: context.worktreeDirty,
     },
     policy: context.policy,
-    model: {name: context.model, provider: 'codex-login', finderPasses: context.finderPasses},
+    model: {name: context.model, provider: 'codex-native', finderPasses: context.finderPasses},
     verdict: {
       kind: verdict.kind,
       reason: 'reason' in verdict ? String(verdict.reason) : null,
@@ -204,7 +204,7 @@ export function renderReport(receipt: Receipt, result: Pick<ReviewResult, 'findi
     'Receipt',
     `  head ${short(receipt.revision.head)}  base ${receipt.revision.baseRef} (${short(receipt.revision.base)})  merge base ${short(receipt.revision.mergeBase)}`,
     `  policy ${receipt.policy.name} ${receipt.policy.revision}`,
-    `  model ${receipt.model.name} via the local Codex login, ${receipt.model.finderPasses} finder passes`,
+    `  model ${receipt.model.name} via codex with your own login, ${receipt.model.finderPasses} finder passes`,
     `  completion ${receipt.completion}  status ${receipt.status}`,
     `  digest ${receipt.digest}`,
   );

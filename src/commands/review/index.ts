@@ -3,7 +3,6 @@ import {writeFileSync} from 'node:fs';
 import {isAbsolute, resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {BaseCommand} from '../../lib/base-command.js';
-import {CodexLoginError} from '../../lib/review/codexLoginRelay.js';
 import {codexSessionFactory} from '../../lib/review/codexSession.js';
 import {
   childPath,
@@ -105,7 +104,7 @@ export default class Review extends BaseCommand {
         },
       }, deps);
     } catch (error) {
-      if (error instanceof LocalReviewSetupError || error instanceof CodexLoginError) this.error(error.message, {exit: 2});
+      if (error instanceof LocalReviewSetupError) this.error(error.message, {exit: 2});
       throw error;
     } finally {
       process.removeListener('SIGINT', interrupted);
