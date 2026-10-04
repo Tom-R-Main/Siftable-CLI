@@ -3,7 +3,7 @@
 // pre-pass and a scripted model session in place of codex.
 
 import {execFileSync} from 'node:child_process';
-import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import {mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
@@ -256,7 +256,7 @@ describe('sift review command', () => {
     const printed = logs.join('\n');
     expect(printed).toContain('[P1] Last page is dropped');
     expect(printed).toContain('Receipt');
-    const written = JSON.parse(execFileSync('cat', [receiptPath], {encoding: 'utf8'})) as Receipt;
+    const written = JSON.parse(readFileSync(receiptPath, 'utf8')) as Receipt;
     expect(written).toEqual(output.receipt);
     expect(verifyReceipt(written)).toBe(true);
     rmSync(receiptPath, {force: true});
@@ -271,5 +271,25 @@ describe('sift review command', () => {
     expect(output.evidence).toEqual({outcome: 'error', exitCode: 2});
     expect(process.exitCode).toBe(2);
     expect(logs).toEqual([]);
+  });
+});
+
+describe('recorded runs (evidence/recorded-runs-2026-10-04.json)', () => {
+  const recorded = JSON.parse(readFileSync(join(__dirname, 'evidence', 'recorded-runs-2026-10-04.json'), 'utf8')) as {
+    runs: {exitCode: number; stdout: string[]; receipt: Receipt}[];
+  };
+
+  it('kept intact receipts whose status matches the printed report and exit status', () => {
+    const [complete, incomplete] = recorded.runs;
+    for (const run of recorded.runs) {
+      expect(verifyReceipt(run.receipt)).toBe(true);
+      expect(run.exitCode).toBe(reviewExitCode(run.receipt));
+      expect(run.stdout).toContain(`  digest ${run.receipt.digest}`);
+    }
+    expect(complete?.receipt).toMatchObject({completion: 'complete', status: 'findings'});
+    expect(complete?.receipt.findings.length).toBeGreaterThan(0);
+    expect(incomplete?.receipt).toMatchObject({completion: 'incomplete', status: 'incomplete'});
+    expect(incomplete?.stdout).toContain('INCOMPLETE: this is not a clean review');
+    expect(incomplete?.stdout.join('\n')).not.toMatch(/COMPLETE: no findings/u);
   });
 });
