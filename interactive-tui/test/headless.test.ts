@@ -98,7 +98,9 @@ describe('production headless brain', () => {
       const code = 'require("fs").writeFileSync("job.pid", String(process.pid)); process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)';
       await fixture(async (body, index) => {
         if (index === 2) {
-          const deadline = Date.now() + 2000;
+          // A cold node start on a loaded runner can take seconds; the model
+          // deadline below is sized to cover this wait.
+          const deadline = Date.now() + 6000;
           while (true) {
             try { await readFile(join(workspace, 'job.pid')); break; }
             catch { if (Date.now() > deadline) throw new Error('Job did not become ready'); await Bun.sleep(10); }
@@ -114,10 +116,10 @@ describe('production headless brain', () => {
         let observed = false;
         let aliveDuringHandoff = false;
         let sessionSeenAt = 0;
-        const result = await run({args: ['--approval', 'allow', '--supervisor-handoff', '--handoff-timeout-ms', '6000', '--deadline-ms', '4000'],
-          // Startup, a 4 s model deadline, a 6 s handoff window and process
+        const result = await run({args: ['--approval', 'allow', '--supervisor-handoff', '--handoff-timeout-ms', '12000', '--deadline-ms', '9000'],
+          // Startup, a 9 s model deadline, a 12 s handoff window and process
           // cleanup must all fit before the fixture kills the child.
-          killAfterMs: 20_000,
+          killAfterMs: 30_000,
           onControl: value => { control = value; }, onStart: value => { signal = value; },
           onStdout: stdout => {
             // The child emits `session` just after arming its model deadline,
@@ -130,10 +132,11 @@ describe('production headless brain', () => {
             observed = true;
             // Delay valid release beyond the original model deadline: grading
             // has its own finite window and must not launch further requests.
-            // The deadline leaves room for the fixture's 2 s job-readiness wait
+            // The deadline leaves room for the fixture's 6 s job-readiness wait
             // on a loaded runner. Release is timed from the `session` event, so
-            // it lands just after the 4 s deadline and inside the 6 s handoff
-            // window, which opens after the model loop ends.
+            // it lands just after the 9 s deadline and inside the 12 s handoff
+            // window, which opens after the model loop ends. The window must
+            // outlast the deadline, because the loop can end well before it.
             setTimeout(() => {
               void readFile(join(root, 'job.pid'), 'utf8').then(text => {
                 try { process.kill(Number(text), 0); aliveDuringHandoff = true; } catch { /* assertion below */ }
@@ -142,7 +145,7 @@ describe('production headless brain', () => {
                 if (outcome === 'wrong-run') control.write(JSON.stringify({type: 'handoff.release', session: ready.session, runId: 'stale-run'}) + '\n');
                 if (outcome === 'signal') signal('SIGINT');
               });
-            }, outcome === 'release' ? Math.max(0, sessionSeenAt + 4200 - Date.now()) : 0);
+            }, outcome === 'release' ? Math.max(0, sessionSeenAt + 9200 - Date.now()) : 0);
           }});
         expect(observed).toBe(true);
         expect(aliveDuringHandoff).toBe(true);
@@ -155,7 +158,7 @@ describe('production headless brain', () => {
         try { process.kill(pid, 0); } catch (error) { alive = (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
         expect(alive).toBe(false);
       });
-    }, 25_000);
+    }, 40_000);
   }
 
   test('validates bounded options before loading the engine', () => {
