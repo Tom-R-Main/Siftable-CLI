@@ -115,8 +115,12 @@ const quietFinder: Handler = async request => {
   return {findings: []};
 };
 
-/** Answers without reading anything: coverage is not proven. */
-const blindFinder: Handler = async () => ({findings: []});
+/**
+ * Returns output the engine's strict schema rejects. The harness makes the
+ * coverage reads itself (taster-review.md section 5.6), so coverage is proven
+ * only through a finder session that ends clean; this one never does.
+ */
+const invalidOutputFinder: Handler = async () => ({findings: [], verdict: 'complete'});
 
 const confirmingValidator: Handler = async request => ({
   outcome: 'confirmed',
@@ -178,7 +182,7 @@ describe('sift review local runs', () => {
   });
 
   it('prints a review without proven coverage as incomplete, never clean', async () => {
-    const {receipt, result} = await runLocalReview(options(), deps(new ScriptedModels({finder: blindFinder, validator: confirmingValidator})));
+    const {receipt, result} = await runLocalReview(options(), deps(new ScriptedModels({finder: invalidOutputFinder, validator: confirmingValidator})));
     expect(result?.findings).toEqual([]);
     expect(receipt.completion).toBe('incomplete');
     expect(receipt.status).toBe('incomplete');
@@ -262,7 +266,7 @@ describe('sift review command', () => {
 
   it('returns an incomplete receipt in JSON mode with exit status 2', async () => {
     vi.spyOn(process, 'cwd').mockReturnValue(root);
-    const {instance, logs} = command(new ScriptedModels({finder: blindFinder, validator: confirmingValidator}));
+    const {instance, logs} = command(new ScriptedModels({finder: invalidOutputFinder, validator: confirmingValidator}));
     (instance as any).jsonEnabled = () => true;
     const output = await instance.run() as {receipt: Receipt; evidence: {outcome: string; exitCode: number}};
     expect(output.receipt.status).toBe('incomplete');
