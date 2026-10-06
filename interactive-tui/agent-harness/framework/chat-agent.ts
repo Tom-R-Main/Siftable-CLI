@@ -42,6 +42,7 @@ import type { ToolExecutionContext } from "./execution-context.js";
 import type { AdapterEvent, ProviderReceipt } from "./adapters/types.js";
 import type { AIAdapter } from "./adapters/types.js";
 import { snapshotToolRegistry, ToolRegistry, type ToolRegistration } from "./registry.js";
+import { abortedTurnReason, isAbortInterruption, throwIfAborted, waitForTurn } from "./turn-abort.js";
 import {
   applyCompactionPlan,
   buildCompactionConfig,
@@ -2395,55 +2396,6 @@ function attachToolEffects(
 
 function errorMessage(error: unknown): string {
   return redactSensitiveText(error instanceof Error ? error.message : String(error));
-}
-
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (!signal?.aborted) return;
-  throw abortError(signal);
-}
-
-function abortError(signal: AbortSignal): Error {
-  if (signal.reason instanceof Error) return signal.reason;
-  const error = new Error(abortedTurnReason(signal));
-  error.name = "AbortError";
-  return error;
-}
-
-function waitForTurn(previous: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
-  if (signal === undefined) return previous;
-  if (signal.aborted) return Promise.reject(abortError(signal));
-  return new Promise<void>((resolve, reject) => {
-    const cleanup = () => signal.removeEventListener("abort", onAbort);
-    const onAbort = () => {
-      cleanup();
-      reject(abortError(signal));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    void previous.then(
-      () => {
-        cleanup();
-        resolve();
-      },
-      (error: unknown) => {
-        cleanup();
-        reject(error);
-      },
-    );
-  });
-}
-
-function isAbortInterruption(error: unknown, signal: AbortSignal | undefined): boolean {
-  return signal?.aborted === true || (error instanceof Error && error.name === "AbortError");
-}
-
-function abortedTurnReason(signal: AbortSignal): string {
-  if (signal.reason instanceof Error && signal.reason.message) {
-    return `chat turn aborted: ${signal.reason.message}`;
-  }
-  if (typeof signal.reason === "string" && signal.reason.trim()) {
-    return `chat turn aborted: ${signal.reason}`;
-  }
-  return "chat turn aborted";
 }
 
 function freezeJson<T>(value: T): T {

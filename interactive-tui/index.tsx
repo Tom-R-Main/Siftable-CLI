@@ -74,7 +74,9 @@ import { orderModelChoices, modelPickerRow, modelPickerWindow } from "./modelPic
 import { copyTextToClipboard, readClipboardContent } from "./clipboard";
 import { isExplicitCopyChord } from "./keybindings";
 import { play as playSound, initSounds, setSoundsEnabled, soundsEnabled, disposeSounds } from "./audio";
-import { analyzePaste, type PasteAnalysis } from "./composerPolicy";
+import { analyzePaste } from "./composerPolicy";
+import { appendTextPart, formatBytes, formatContextTokens, imageMimeFromPath, imagePathFromPastedText, wrapIndex } from "./composerInput";
+import type { ComposerAttachment, ImageAttachment, PasteTextAttachment, QueuedPrompt } from "./composerInput";
 import { estimateTokens } from "./threadEngine";
 import {
   setConfirmCancellationListener,
@@ -128,8 +130,8 @@ import type { ParentMergeView } from "./mergeView";
 import { createSessionContext } from "./sessionContext";
 import { loadPrefs } from "./prefs";
 import { formatChildBar, formatChildBarLine, type ChildBarEntry } from "./childBar";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, extname } from "node:path";
+import { readFileSync } from "node:fs";
+import { basename } from "node:path";
 import {
   theme,
   buildSyntaxStyle,
@@ -187,21 +189,6 @@ type Msg = {
   toolArgs?: Record<string, unknown>;
   explorer?: boolean;
 };
-type PasteTextAttachment = { type: "text"; id: number; label: string; text: string; analysis: PasteAnalysis };
-type ImageAttachment = {
-  type: "image";
-  id: number;
-  label: string;
-  mime: string;
-  dataUrl: string;
-  bytes: number;
-  width: number;
-  height: number;
-  source: string;
-  validatedBy: "zig" | "ts";
-};
-type ComposerAttachment = PasteTextAttachment | ImageAttachment;
-type QueuedPrompt = { sendInput: ChatInput; displayText: string; shellCommand?: string };
 type CrewCreateDraft = {
   scope: "project" | "user";
   templateId: string;
@@ -217,60 +204,7 @@ const SLASH_COMMAND_COLUMN_WIDTH = Math.max(14, ...COMMANDS.map((command) => com
 const WORD = /\w/;
 const MAX_COMPOSER_LINES = 12;
 const THEME_WINDOW = 7; // visible rows in the appearance picker (keeps it short)
-const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
 const STREAMING_TEXT_FLUSH_MS = 33;
-
-function appendTextPart(parts: ChatInputPart[], text: string) {
-  if (!text) return;
-  const last = parts[parts.length - 1];
-  if (last?.type === "text") last.text += text;
-  else parts.push({ type: "text", text });
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-}
-
-function formatContextTokens(tokens: number): string {
-  if (tokens < 1000) return `~${tokens} ctx`;
-  return `~${(tokens / 1000).toFixed(1)}k ctx`;
-}
-
-function wrapIndex(index: number, length: number): number {
-  if (length <= 0) return 0;
-  return ((index % length) + length) % length;
-}
-
-function imageMimeFromPath(path: string): string {
-  switch (extname(path).toLowerCase()) {
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".gif":
-      return "image/gif";
-    case ".webp":
-      return "image/webp";
-    case ".bmp":
-      return "image/bmp";
-    default:
-      return "image/png";
-  }
-}
-
-function imagePathFromPastedText(text: string): string | null {
-  const trimmed = text.trim().replace(/^file:\/\//, "");
-  if (!trimmed || trimmed.includes("\n") || trimmed.includes("\r")) return null;
-  if (!IMAGE_EXTENSIONS.has(extname(trimmed).toLowerCase())) return null;
-  try {
-    if (!existsSync(trimmed)) return null;
-    const stat = statSync(trimmed);
-    return stat.isFile() ? trimmed : null;
-  } catch {
-    return null;
-  }
-}
 
 function App() {
   const renderer = useRenderer();
