@@ -485,6 +485,28 @@ describe('steerActiveTurn — durable steering', () => {
     expect(pendingIds()).toEqual([]);
   });
 
+  it('keeps a rolled-back steering pending even when the kept history has the same text', async () => {
+    const agent = (await getAgent()) as unknown as FakeAgent;
+    const history: unknown[] = [];
+    agent.getHistory.mockImplementation(() => history);
+    agent.chat = async function* (_input: unknown, options: {steering: Steering}) {
+      history.push({role: 'user', content: 'continue'});
+      steerActiveTurn('continue');
+      for (const {id, message} of options.steering.pending()) {
+        history.push({role: 'user', content: message});
+        options.steering.onDelivered?.(id);
+      }
+      history.length = 1; // rollback to the checkpoint before the steering
+      yield* []; // fails before producing any output
+      throw new Error('provider failed');
+    } as unknown as FakeAgent['chat'];
+
+    const result = await agentHarnessAsk('continue', jest.fn());
+
+    expect(result.steeringCarried).toBe(1);
+    expect(pendingIds()).toHaveLength(1);
+  });
+
   it('does not drain the mailbox into a conversation whose turn is running', async () => {
     const agent = (await getAgent()) as unknown as FakeAgent;
     agent.chat = async function* () {

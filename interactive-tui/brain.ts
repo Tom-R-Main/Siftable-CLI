@@ -2765,9 +2765,8 @@ interface ActiveSteering {
   key: string;
   /** Accepted id → text. */
   accepted: Map<string, string>;
-  delivered: Set<string>;
-  /** History length when the turn began; locates what the turn added. */
-  historyStart: number;
+  /** Delivered id → its index in the agent's history when appended. */
+  delivered: Map<string, number>;
 }
 let activeSteering: ActiveSteering | undefined;
 
@@ -3009,8 +3008,7 @@ async function agentHarnessAskTurn(
       emitPostExplorer({ type: 'provider', providerEvent: event });
     }
   };
-  const steering: ActiveSteering = {key: turnKey, accepted: new Map(), delivered: new Set(),
-    historyStart: agent.getHistory?.().length ?? 0};
+  const steering: ActiveSteering = {key: turnKey, accepted: new Map(), delivered: new Map()};
   // If navigation moved the session during setup, run the turn without
   // steering rather than publish corrections to a conversation it isn't in.
   if (agentSessionKey() === turnKey) activeSteering = steering;
@@ -3032,7 +3030,8 @@ async function agentHarnessAskTurn(
           }
         },
         onDelivered: id => {
-          steering.delivered.add(id);
+          // ChatAgent calls this right after appending, so the message is last.
+          steering.delivered.set(id, (agent.getHistory?.().length ?? 0) - 1);
           emitPostExplorer({type: 'status', phase: 'steering', status: 'steering_delivered', steeringId: id});
         },
       },
@@ -3120,10 +3119,12 @@ async function agentHarnessAskTurn(
 /**
  * End a turn's steering window and acknowledge every correction the
  * conversation now holds. A finished turn holds all it delivered. A failed
- * turn may have rolled its history back, so a delivered correction counts
- * only if the history the turn kept still contains it; one that was rolled
- * back stays in the mailbox for the next turn. Acknowledging what survived
- * keeps the next turn's drain from appending it a second time.
+ * turn may have rolled its history back to an earlier prefix, so a delivered
+ * correction counts only if its own position in history still holds it; one
+ * that was rolled back stays in the mailbox for the next turn. Acknowledging
+ * what survived keeps the next turn's drain from appending it a second time.
+ * If history was compacted mid-turn the position check misses, and the
+ * correction is delivered again rather than lost.
  * Returns how many accepted corrections remain pending.
  */
 function settleSteering(
@@ -3132,21 +3133,22 @@ function settleSteering(
   agent: {getHistory?: () => unknown[]},
 ): number {
   if (activeSteering === steering) activeSteering = undefined;
-  let retained: Set<string> | undefined;
+  let history: unknown[] = [];
   if (!finished && steering.delivered.size > 0) {
     try {
-      retained = new Set((agent.getHistory?.() ?? []).slice(steering.historyStart).flatMap(message => {
-        const m = message as {role?: unknown; content?: unknown};
-        return m.role === 'user' && typeof m.content === 'string' ? [m.content] : [];
-      }));
+      history = agent.getHistory?.() ?? [];
     } catch {
-      retained = new Set();
+      history = [];
     }
   }
+  const stillHeld = (index: number, text: string) => {
+    const m = history[index] as {role?: unknown; content?: unknown} | undefined;
+    return m?.role === 'user' && m.content === text;
+  };
   let carried = 0;
   for (const [id, text] of steering.accepted) {
-    const held = steering.delivered.has(id) && (finished || retained!.has(text));
-    if (held) {
+    const index = steering.delivered.get(id);
+    if (index !== undefined && (finished || stillHeld(index, text))) {
       try {
         acknowledgeSessionInstruction(steering.key, id);
         continue;
