@@ -463,6 +463,46 @@ describe('steerActiveTurn — durable steering', () => {
     expect(pendingIds()).toHaveLength(1);
   });
 
+  it('acknowledges steering a failed turn kept, so the next drain cannot append it twice', async () => {
+    const agent = (await getAgent()) as unknown as FakeAgent;
+    const history: unknown[] = [{role: 'user', content: 'earlier'}];
+    agent.getHistory.mockImplementation(() => history);
+    agent.chat = async function* (_input: unknown, options: {steering: Steering}) {
+      history.push({role: 'user', content: 'start'});
+      steerActiveTurn('kept by the checkpoint');
+      for (const {id, message} of options.steering.pending()) {
+        history.push({role: 'user', content: message});
+        options.steering.onDelivered?.(id);
+      }
+      yield* []; // fails before producing any output
+      throw new Error('provider failed after a tool effect');
+    } as unknown as FakeAgent['chat'];
+
+    const result = await agentHarnessAsk('start', jest.fn());
+
+    expect(result.status).toBe('failed');
+    expect(result.steeringCarried).toBeUndefined();
+    expect(pendingIds()).toEqual([]);
+  });
+
+  it('does not drain the mailbox into a conversation whose turn is running', async () => {
+    const agent = (await getAgent()) as unknown as FakeAgent;
+    agent.chat = async function* () {
+      steerActiveTurn('pending during the turn');
+      // An in-turn reader (read_tool_output, inspect) resolves the agent.
+      await getAgent();
+      expect(agent.ingestExternalMessage).not.toHaveBeenCalled();
+      yield {type: 'done', result: {text: 'ok'}} as never;
+    } as unknown as FakeAgent['chat'];
+
+    await agentHarnessAsk('start', jest.fn());
+
+    // Never delivered by the turn: still pending, and the next turn's drain takes it.
+    expect(pendingIds()).toHaveLength(1);
+    await getAgent();
+    expect(agent.ingestExternalMessage).toHaveBeenCalledWith('pending during the turn', expect.anything());
+  });
+
   it('carries steering the turn never read, and reads only its own ids', async () => {
     const key = getWorkspaceRoot();
     enqueueSessionInstruction(key, 'a parent send-back', {rootDir: dirs.sessionMailbox, idFactory: () => 'sendback-1'});

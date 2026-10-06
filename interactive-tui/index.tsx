@@ -715,6 +715,11 @@ function App() {
     }
     if (outcome.accepted === false) return queueDraft(text, outcome.reason);
     clearUsedPasteChips(text);
+    if (!busy()) {
+      // The turn ended while this was being saved; the next turn receives it.
+      push({ role: "system", text: `↳ saved for the next turn: ${text}` });
+      return;
+    }
     // The message row appears where the model receives it, not where it was typed.
     pendingSteers.set(outcome.id, text);
     push({
@@ -903,8 +908,12 @@ function App() {
           }
           if (e.type === "status" && e.status === "steering_carried") {
             const n = Number(e.count) || 0;
+            const undelivered = [...pendingSteers.values()];
             pendingSteers.clear();
-            push({ role: "system", text: `↳ ${n} steering message${n === 1 ? "" : "s"} did not reach this turn — saved for the next one` });
+            push({
+              role: "system",
+              text: `↳ ${n} steering message${n === 1 ? "" : "s"} did not reach this turn — saved for the next one${undelivered.length ? `:\n${undelivered.map((t) => `  • ${t}`).join("\n")}` : ""}`,
+            });
             return;
           }
           if (e.type === "provider") {

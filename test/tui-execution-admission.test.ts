@@ -152,3 +152,17 @@ test('Enter while busy steers when the transport accepts, and queues with the re
   preflight.resolve(undefined);
   await pending;
 });
+
+test('steering saved after the turn ended is reported for the next turn, not as joining this run', async () => {
+  const h = harness();
+  h.sandbox.setBusy(true);
+  h.sandbox.client.steer = jest.fn(async () => {
+    h.sandbox.setBusy(false); // the turn settles while the steer is being saved
+    return { accepted: true, id: 'late', durability: 'confirmed' };
+  });
+  h.sandbox.setText('late correction');
+  h.sandbox.onEnter();
+  await new Promise((done) => setTimeout(done, 0));
+  expect(h.sandbox.pendingSteers.has('late')).toBe(false);
+  expect(h.messages.at(-1)?.text).toBe('↳ saved for the next turn: late correction');
+});

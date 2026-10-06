@@ -1628,6 +1628,10 @@ export async function getAgent(): Promise<AgentHarnessAgent> {
 async function drainSessionMailbox(key: string, agent: AgentHarnessAgent): Promise<void> {
   const prior = mailboxDrains.get(key) ?? Promise.resolve();
   const drain = prior.then(async () => {
+    // During a turn the agent's turn lock is held, so ingesting here would
+    // wait for the turn while an in-turn reader (read_tool_output, inspect)
+    // waits for this drain. The next turn's pre-turn drain delivers instead.
+    if (activeSteering?.key === key) return;
     const pending = listPendingSessionInstructions(key);
     if (pending.length === 0) return;
     if (typeof agent.ingestExternalMessage !== 'function') {
@@ -2759,8 +2763,11 @@ function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolean> {
  */
 interface ActiveSteering {
   key: string;
-  accepted: Set<string>;
+  /** Accepted id → text. */
+  accepted: Map<string, string>;
   delivered: Set<string>;
+  /** History length when the turn began; locates what the turn added. */
+  historyStart: number;
 }
 let activeSteering: ActiveSteering | undefined;
 
@@ -2781,13 +2788,13 @@ export function steerActiveTurn(text: string): SteerResult {
   if (!turn) return {accepted: false, reason: 'no turn is running'};
   try {
     const record = enqueueSessionInstruction(turn.key, message);
-    turn.accepted.add(record.instructionId);
+    turn.accepted.set(record.instructionId, message);
     return {accepted: true, id: record.instructionId, durability: 'confirmed'};
   } catch (error) {
     // Published, but the directory entry may not survive a crash. The turn
     // can still consume it, so it must not be reported as refused.
     if (error instanceof SessionMailboxPublicationIndeterminateError) {
-      turn.accepted.add(error.receipt.instructionId);
+      turn.accepted.set(error.receipt.instructionId, message);
       return {accepted: true, id: error.receipt.instructionId, durability: 'unconfirmed'};
     }
     return {accepted: false, reason: error instanceof Error ? error.message : String(error)};
@@ -2965,9 +2972,13 @@ async function agentHarnessAskTurn(
   }
 
   let agent: Awaited<ReturnType<typeof getAgent>>;
+  // The conversation getAgent() binds. Steering is published to this key's
+  // mailbox, so it must be the conversation the turn actually runs in.
+  let turnKey = '';
   try {
     // Agent construction and the durable session-mailbox drain run before
     // the model loop, so they obey the same pre-turn cancellation rule.
+    turnKey = agentSessionKey();
     const built = await awaitPreTurn(getAgent(), signal, 'agent setup');
     if ('result' in built) return built.result;
     agent = built.value;
@@ -2998,8 +3009,11 @@ async function agentHarnessAskTurn(
       emitPostExplorer({ type: 'provider', providerEvent: event });
     }
   };
-  const steering: ActiveSteering = {key: agentSessionKey(), accepted: new Set(), delivered: new Set()};
-  activeSteering = steering;
+  const steering: ActiveSteering = {key: turnKey, accepted: new Map(), delivered: new Set(),
+    historyStart: agent.getHistory?.().length ?? 0};
+  // If navigation moved the session during setup, run the turn without
+  // steering rather than publish corrections to a conversation it isn't in.
+  if (agentSessionKey() === turnKey) activeSteering = steering;
   let steeringSettled = false;
   try {
     for await (const chunk of agent.chat(preparedInput, { stream: true, signal, onProviderEvent,
@@ -3077,7 +3091,7 @@ async function agentHarnessAskTurn(
     }
     if (!finalResult) {
       steeringSettled = true;
-      const steeringCarried = settleSteering(steering, false);
+      const steeringCarried = settleSteering(steering, false, agent);
       return {text: '', progressText: assembled, verification, status: 'failed', providerReceipts,
         ...(steeringCarried ? {steeringCarried} : {}), error: 'Agent stream ended without a terminal result.'};
     }
@@ -3086,39 +3100,58 @@ async function agentHarnessAskTurn(
     const finalText = finalResult.text ?? '';
     const progressText = lastResponseText !== undefined && lastResponseText.text === finalText ? assembled.slice(0, lastResponseText.start) : assembled;
     steeringSettled = true;
-    const steeringCarried = settleSteering(steering, true);
+    const steeringCarried = settleSteering(steering, true, agent);
     return { text: finalText, progressText, verification, status: limited ? 'limit_reached' : 'completed', result: finalResult, providerReceipts,
       ...(steeringCarried ? {steeringCarried} : {}),
       ...(limited ? {error: 'Agent reached its tool-round limit; task completion is not verified.'} : {}) };
   } catch (err) {
     steeringSettled = true;
-    const steeringCarried = settleSteering(steering, false);
+    const steeringCarried = settleSteering(steering, false, agent);
     return { text: '', progressText: assembled, verification, status: signal?.aborted ? 'interrupted' : 'failed', providerReceipts,
       ...(steeringCarried ? {steeringCarried} : {}),
       ...(err && typeof err === 'object' && 'run' in err ? {run: (err as {run: ChatResult['run']}).run} : {}),
       error: agentHarnessErrorMessage(err) };
   } finally {
-    if (!steeringSettled) settleSteering(steering, false);
+    if (!steeringSettled) settleSteering(steering, false, agent);
     finishExplorerEffectiveness();
   }
 }
 
 /**
- * End a turn's steering window. Acknowledge delivered corrections only when
- * the turn finished: a failed turn may roll its history back, so its steering
- * stays in the mailbox and reaches the next turn (at least once, never lost).
+ * End a turn's steering window and acknowledge every correction the
+ * conversation now holds. A finished turn holds all it delivered. A failed
+ * turn may have rolled its history back, so a delivered correction counts
+ * only if the history the turn kept still contains it; one that was rolled
+ * back stays in the mailbox for the next turn. Acknowledging what survived
+ * keeps the next turn's drain from appending it a second time.
  * Returns how many accepted corrections remain pending.
  */
-function settleSteering(steering: ActiveSteering, finished: boolean): number {
+function settleSteering(
+  steering: ActiveSteering,
+  finished: boolean,
+  agent: {getHistory?: () => unknown[]},
+): number {
   if (activeSteering === steering) activeSteering = undefined;
+  let retained: Set<string> | undefined;
+  if (!finished && steering.delivered.size > 0) {
+    try {
+      retained = new Set((agent.getHistory?.() ?? []).slice(steering.historyStart).flatMap(message => {
+        const m = message as {role?: unknown; content?: unknown};
+        return m.role === 'user' && typeof m.content === 'string' ? [m.content] : [];
+      }));
+    } catch {
+      retained = new Set();
+    }
+  }
   let carried = 0;
-  for (const id of steering.accepted) {
-    if (finished && steering.delivered.has(id)) {
+  for (const [id, text] of steering.accepted) {
+    const held = steering.delivered.has(id) && (finished || retained!.has(text));
+    if (held) {
       try {
         acknowledgeSessionInstruction(steering.key, id);
         continue;
       } catch {
-        // Left pending: the next turn redelivers it.
+        // Left pending: the next turn delivers it again (at least once).
       }
     }
     carried += 1;
