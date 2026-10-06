@@ -41,7 +41,7 @@ import { chatContentToText } from "./adapters/content.js";
 import type { ToolExecutionContext } from "./execution-context.js";
 import type { AdapterEvent, ProviderReceipt } from "./adapters/types.js";
 import type { AIAdapter } from "./adapters/types.js";
-import { ToolRegistry } from "./registry.js";
+import { ToolRegistry, type ToolRegistration } from "./registry.js";
 import {
   applyCompactionPlan,
   buildCompactionConfig,
@@ -56,7 +56,7 @@ import {
 } from "./compaction.js";
 import { appendTurn, loadHistory, persistEnabled, rolloutPathForThread } from "./rollout.js";
 import type { ConnectedProvider } from "./context.js";
-import { connectProvider, contextPrompt } from "./context.js";
+import { connectProviderOwned, contextPrompt } from "./context.js";
 import {
   createConversationMemory,
   createFactMemory,
@@ -178,22 +178,19 @@ export async function createChatAgent(
 
   // 3. Connect context providers
   const connectedProviders: ConnectedProvider[] = [];
-  // Track which tool names each provider added so destroy() can clean
-  // them out of the registry. Without this, long-lived processes that
-  // create and destroy agents accumulate ghost tools.
-  const providerToolNames: string[] = [];
+  // Each provider's tool registration, so destroy() removes exactly what it
+  // installed. Without this, long-lived processes that create and destroy
+  // agents accumulate ghost tools.
+  const providerRegistrations: ToolRegistration[] = [];
   let contextBlock: string | undefined;
 
   if (config.providers && config.providers.length > 0) {
     const resolved = await resolveContextProviders(config.providers);
     for (const provider of resolved) {
       try {
-        const before = new Set(agentRegistry.listNames());
-        const connected = await connectProvider(provider, agentRegistry);
+        const { connected, registration } = await connectProviderOwned(provider, agentRegistry);
         connectedProviders.push(connected);
-        for (const name of agentRegistry.listNames()) {
-          if (!before.has(name)) providerToolNames.push(name);
-        }
+        providerRegistrations.push(registration);
       } catch (error) {
         const name = provider.metadata.name;
         const msg = errorMessage(error);
@@ -244,7 +241,7 @@ export async function createChatAgent(
       conversationMemory,
       factMemory,
       connectedProviders,
-      providerToolNames,
+      providerRegistrations,
       threadId,
       threadIdExplicit,
       maxToolRounds: config.maxToolRounds ?? 10,
@@ -262,6 +259,7 @@ export async function createChatAgent(
       },
     });
   } catch (error) {
+    for (const registration of providerRegistrations) registration.dispose();
     await Promise.allSettled(
       connectedProviders.map((provider) => provider.disconnect?.()),
     );
@@ -294,7 +292,7 @@ interface ChatAgentInternals {
   conversationMemory?: ConversationMemory;
   factMemory?: FactMemory;
   connectedProviders: ConnectedProvider[];
-  providerToolNames: string[];
+  providerRegistrations: ToolRegistration[];
   threadId: string;
   threadIdExplicit: boolean;
   maxToolRounds: number;
@@ -320,7 +318,7 @@ class ChatAgentImpl implements ChatAgent {
   private conversationMemory?: ConversationMemory;
   private factMemory?: FactMemory;
   private connectedProviders: ConnectedProvider[];
-  private providerToolNames: string[];
+  private providerRegistrations: ToolRegistration[];
   private threadId: string;
   private pinnedThreadId?: string;
   private maxToolRounds: number;
@@ -348,7 +346,7 @@ class ChatAgentImpl implements ChatAgent {
     this.conversationMemory = internals.conversationMemory;
     this.factMemory = internals.factMemory;
     this.connectedProviders = internals.connectedProviders;
-    this.providerToolNames = internals.providerToolNames;
+    this.providerRegistrations = internals.providerRegistrations;
     this.threadId = internals.threadId;
     this.pinnedThreadId = internals.threadIdExplicit
       ? internals.threadId
@@ -2121,6 +2119,12 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
   }
 
   private async disconnectProviders(): Promise<void> {
+    // Withdraw the tools before disconnecting, so nothing can dispatch into
+    // a provider that is shutting down.
+    for (const registration of this.providerRegistrations) {
+      registration.dispose();
+    }
+    this.providerRegistrations = [];
     for (const provider of this.connectedProviders) {
       try {
         await provider.disconnect?.();
@@ -2128,10 +2132,6 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
         // Best-effort cleanup
       }
     }
-    for (const name of this.providerToolNames) {
-      this.registry.unregister(name);
-    }
-    this.providerToolNames = [];
     this.connectedProviders = [];
   }
 
@@ -2425,6 +2425,8 @@ function abortedTurnReason(signal: AbortSignal): string {
  * Per-request tool set. Under a denying approval policy, approval-gated tools
  * are omitted so the model never sees them; the journaled request envelope and
  * the adapter both read this snapshot, so the omission is durable evidence.
+ * Each entry stays bound to the source definition it copied: once that is
+ * withdrawn or replaced, dispatch from this snapshot is refused.
  */
 function snapshotToolRegistry(source: ToolRegistry, policy?: "ask" | "deny" | "allow"): ToolRegistry {
   const snapshot = new ToolRegistry();
@@ -2434,7 +2436,7 @@ function snapshotToolRegistry(source: ToolRegistry, policy?: "ask" | "deny" | "a
       ...tool,
       inputSchema: snapshotJson(tool.inputSchema) as typeof tool.inputSchema,
       ...(tool.tags ? {tags: [...tool.tags]} : {}),
-    }));
+    }), {live: source.liveness(tool.name)});
   }
   return snapshot;
 }

@@ -32,7 +32,7 @@
  */
 
 import type { ToolDefinition } from "./types.js";
-import { ToolRegistry } from "./registry.js";
+import { ToolRegistry, type ToolRegistration } from "./registry.js";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -173,10 +173,22 @@ export async function connectProvider(
   registry: ToolRegistry,
   config?: Record<string, unknown>,
 ): Promise<ConnectedProvider> {
+  return (await connectProviderOwned(provider, registry, config)).connected;
+}
+
+/**
+ * connectProvider, plus the registration that owns the provider's tools.
+ * Disposing it removes only the tools this provider installed: a user tool
+ * that won a name collision is never touched.
+ */
+export async function connectProviderOwned(
+  provider: ContextProvider,
+  registry: ToolRegistry,
+  config?: Record<string, unknown>,
+): Promise<{ connected: ConnectedProvider; registration: ToolRegistration }> {
   const { id, name } = provider.metadata;
 
   const connected = await provider.connect(config);
-  const before = new Set(registry.listNames());
   try {
     const tools = connected.createTools();
     const taggedTools = tools.map((tool) => ({
@@ -190,16 +202,15 @@ export async function connectProvider(
 
     // User tools win on name collision — provider tools should not silently
     // shadow them. Skip and warn instead of overwrite.
-    registry.registerAll(taggedTools, { overwrite: false });
+    const registration = registry.registerOwned(`context provider ${id}`, taggedTools, {
+      onCollision: "keep-existing",
+    });
 
     console.log(
-      `🔗 ${name}: connected (${taggedTools.length} tool${taggedTools.length === 1 ? "" : "s"} registered)`,
+      `🔗 ${name}: connected (${registration.names.length} tool${registration.names.length === 1 ? "" : "s"} registered)`,
     );
-    return connected;
+    return { connected, registration };
   } catch (error) {
-    for (const registeredName of registry.listNames()) {
-      if (!before.has(registeredName)) registry.unregister(registeredName);
-    }
     await connected.disconnect?.().catch(() => undefined);
     throw error;
   }
