@@ -138,7 +138,7 @@ import {
   SCHEMES,
   type SchemeName,
 } from "./theme";
-import { ApprovalOverlay } from "./views";
+import { ApprovalOverlay, AssistantReply } from "./views";
 import {createCrewFromTemplate, listCrewDefinitions, type SiftCrewDefinition} from "./crewRegistry";
 
 // The markdown/code highlight theme is derived from the active palette inside
@@ -2189,20 +2189,12 @@ function App() {
                   <text fg={theme.text}>{m.text}</text>
                 </Match>
                 <Match when={m.role === "assistant"}>
-                  <text fg={theme.accentStrong}>siftable</text>
-                  <Show
-                    when={!m.streaming}
-                    fallback={<text fg={theme.text}>{m.text || "…"}</text>}
-                  >
-                    <markdown
-                      content={m.text || "…"}
-                      streaming={false}
-                      syntaxStyle={syntaxStyle()}
-                      internalBlockMode="top-level"
-                      fg={theme.text}
-                      bg={theme.bg}
-                    />
-                  </Show>
+                  <AssistantReply
+                    text={m.text}
+                    streaming={!!m.streaming}
+                    syntaxStyle={syntaxStyle()}
+                    theme={theme}
+                  />
                 </Match>
               </Switch>
               </box>
