@@ -43,6 +43,7 @@ import type { AdapterEvent, ProviderReceipt } from "./adapters/types.js";
 import type { AIAdapter } from "./adapters/types.js";
 import { snapshotToolRegistry, ToolRegistry, type ToolRegistration } from "./registry.js";
 import { abortedTurnReason, isAbortInterruption, throwIfAborted, waitForTurn } from "./turn-abort.js";
+import { cancelRun, completeRun, errorMessage, failRun } from "./run-lifecycle.js";
 import {
   applyCompactionPlan,
   buildCompactionConfig,
@@ -2284,55 +2285,6 @@ function createRunManifest(input: CreateRunManifestInput): RunRecord {
   };
 }
 
-function requireRunning(run: RunRecord): void {
-  if (run.status !== "running") {
-    throw new Error(
-      `Run "${run.manifest.runId}" is already terminal (${run.status}).`,
-    );
-  }
-}
-
-function completeRun(
-  run: RunRecord,
-  options: { limitReached?: boolean } = {},
-): RunRecord {
-  requireRunning(run);
-  return {
-    ...run,
-    status: options.limitReached ? "limit_reached" : "completed",
-    completedAt: new Date().toISOString(),
-    stopReason: options.limitReached ? "max_rounds" : "model_response",
-  };
-}
-
-function failRun(run: RunRecord, error: unknown): RunRecord {
-  requireRunning(run);
-  const normalized = error instanceof Error
-    ? { name: redactSensitiveText(error.name), message: errorMessage(error) }
-    : { name: "Error", message: errorMessage(error) };
-  return {
-    ...run,
-    status: "failed",
-    completedAt: new Date().toISOString(),
-    stopReason: "error",
-    error: normalized,
-  };
-}
-
-function cancelRun(
-  run: RunRecord,
-  cancellation: NonNullable<RunRecord["cancellation"]>,
-): RunRecord {
-  requireRunning(run);
-  return {
-    ...run,
-    status: "cancelled",
-    completedAt: new Date().toISOString(),
-    stopReason: "cancelled",
-    cancellation: { ...cancellation },
-  };
-}
-
 function createOutcomeClaim(run: RunRecord, output: string): OutcomeClaim {
   if (run.status !== "completed") {
     throw new Error(
@@ -2413,10 +2365,6 @@ function attachToolEffects(
         : {}),
     },
   };
-}
-
-function errorMessage(error: unknown): string {
-  return redactSensitiveText(error instanceof Error ? error.message : String(error));
 }
 
 function freezeJson<T>(value: T): T {
