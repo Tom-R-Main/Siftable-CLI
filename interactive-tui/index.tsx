@@ -18,7 +18,9 @@
  *   ↑/↓            prompt history         Shift+Enter  newline
  *   /              command palette (Tab-complete)   @  (todo) entity ref
  *   !cmd           run a shell command, drop output into the transcript
- *   Enter while busy → queue the message; it runs when the turn finishes
+ *   Enter while busy → steer: the message joins the running turn after its
+ *                      in-flight tools settle (queues if the engine can't)
+ *   Tab while busy   → queue the message; it runs when the turn finishes
  *
  * Launched by the oclif `sift interactive` command, which resolves the token
  * and sets SIFT_LOCAL_BRAIN=1 + SIFT_PAT/SIFT_API_URL. The local brain uses the
@@ -39,6 +41,7 @@ import {
   type ChatInputPart,
   type CompactionReport,
   type ControlTransport,
+  type SteerOutcome,
   type RunningAgent,
   type SseEvent,
 } from "./controlClient";
@@ -71,7 +74,9 @@ import { orderModelChoices, modelPickerRow, modelPickerWindow } from "./modelPic
 import { copyTextToClipboard, readClipboardContent } from "./clipboard";
 import { isExplicitCopyChord } from "./keybindings";
 import { play as playSound, initSounds, setSoundsEnabled, soundsEnabled, disposeSounds } from "./audio";
-import { analyzePaste, type PasteAnalysis } from "./composerPolicy";
+import { analyzePaste } from "./composerPolicy";
+import { appendTextPart, formatBytes, formatContextTokens, imageMimeFromPath, imagePathFromPastedText, wrapIndex } from "./composerInput";
+import type { ComposerAttachment, ImageAttachment, PasteTextAttachment, QueuedPrompt } from "./composerInput";
 import { estimateTokens } from "./threadEngine";
 import {
   setConfirmCancellationListener,
@@ -125,8 +130,8 @@ import type { ParentMergeView } from "./mergeView";
 import { createSessionContext } from "./sessionContext";
 import { loadPrefs } from "./prefs";
 import { formatChildBar, formatChildBarLine, type ChildBarEntry } from "./childBar";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, extname } from "node:path";
+import { readFileSync } from "node:fs";
+import { basename } from "node:path";
 import {
   theme,
   buildSyntaxStyle,
@@ -138,7 +143,7 @@ import {
   SCHEMES,
   type SchemeName,
 } from "./theme";
-import { ApprovalOverlay } from "./views";
+import { ApprovalOverlay, AssistantReply } from "./views";
 import {createCrewFromTemplate, listCrewDefinitions, type SiftCrewDefinition} from "./crewRegistry";
 
 // The markdown/code highlight theme is derived from the active palette inside
@@ -184,21 +189,6 @@ type Msg = {
   toolArgs?: Record<string, unknown>;
   explorer?: boolean;
 };
-type PasteTextAttachment = { type: "text"; id: number; label: string; text: string; analysis: PasteAnalysis };
-type ImageAttachment = {
-  type: "image";
-  id: number;
-  label: string;
-  mime: string;
-  dataUrl: string;
-  bytes: number;
-  width: number;
-  height: number;
-  source: string;
-  validatedBy: "zig" | "ts";
-};
-type ComposerAttachment = PasteTextAttachment | ImageAttachment;
-type QueuedPrompt = { sendInput: ChatInput; displayText: string; shellCommand?: string };
 type CrewCreateDraft = {
   scope: "project" | "user";
   templateId: string;
@@ -214,60 +204,7 @@ const SLASH_COMMAND_COLUMN_WIDTH = Math.max(14, ...COMMANDS.map((command) => com
 const WORD = /\w/;
 const MAX_COMPOSER_LINES = 12;
 const THEME_WINDOW = 7; // visible rows in the appearance picker (keeps it short)
-const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
 const STREAMING_TEXT_FLUSH_MS = 33;
-
-function appendTextPart(parts: ChatInputPart[], text: string) {
-  if (!text) return;
-  const last = parts[parts.length - 1];
-  if (last?.type === "text") last.text += text;
-  else parts.push({ type: "text", text });
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-}
-
-function formatContextTokens(tokens: number): string {
-  if (tokens < 1000) return `~${tokens} ctx`;
-  return `~${(tokens / 1000).toFixed(1)}k ctx`;
-}
-
-function wrapIndex(index: number, length: number): number {
-  if (length <= 0) return 0;
-  return ((index % length) + length) % length;
-}
-
-function imageMimeFromPath(path: string): string {
-  switch (extname(path).toLowerCase()) {
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".gif":
-      return "image/gif";
-    case ".webp":
-      return "image/webp";
-    case ".bmp":
-      return "image/bmp";
-    default:
-      return "image/png";
-  }
-}
-
-function imagePathFromPastedText(text: string): string | null {
-  const trimmed = text.trim().replace(/^file:\/\//, "");
-  if (!trimmed || trimmed.includes("\n") || trimmed.includes("\r")) return null;
-  if (!IMAGE_EXTENSIONS.has(extname(trimmed).toLowerCase())) return null;
-  try {
-    if (!existsSync(trimmed)) return null;
-    const stat = statSync(trimmed);
-    return stat.isFile() ? trimmed : null;
-  } catch {
-    return null;
-  }
-}
 
 function App() {
   const renderer = useRenderer();
@@ -675,10 +612,7 @@ function App() {
       return;
     }
     if (busy()) {
-      setQueued((q) => [...q, { sendInput: buildChatInput(text), displayText: text,
-        ...(text.startsWith("!") ? {shellCommand: text.slice(1).trim()} : {}) }]);
-      clearUsedPasteChips(text);
-      push({ role: "system", text: `↳ queued (${queued().length}) — runs when this turn finishes` });
+      void steerOrQueue(text);
       return;
     }
     if (text.startsWith("!")) {
@@ -688,6 +622,44 @@ function App() {
     const sendInput = buildChatInput(text);
     clearUsedPasteChips(text);
     void submitOne(sendInput, text);
+  }
+
+  // Accepted steering by id, shown in the transcript once it is delivered.
+  const pendingSteers = new Map<string, string>();
+
+  function queueDraft(text: string, note?: string) {
+    setQueued((q) => [...q, { sendInput: buildChatInput(text), displayText: text,
+      ...(text.startsWith("!") ? {shellCommand: text.slice(1).trim()} : {}) }]);
+    clearUsedPasteChips(text);
+    push({ role: "system", text: `↳ queued (${queued().length}) — runs when this turn finishes${note ? ` (${note})` : ""}` });
+  }
+
+  // Enter while busy. Steering is acknowledged only after the brain has
+  // published it durably; anything it cannot carry becomes the next task.
+  async function steerOrQueue(text: string) {
+    const sendInput = buildChatInput(text);
+    if (text.startsWith("!")) return queueDraft(text);
+    if (typeof sendInput !== "string") return queueDraft(text, "images can't steer a running turn");
+    if (!client.steer) return queueDraft(text, "this connection can't steer a running turn");
+    let outcome: SteerOutcome;
+    try {
+      outcome = await client.steer(sendInput);
+    } catch (err) {
+      outcome = { accepted: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+    if (outcome.accepted === false) return queueDraft(text, outcome.reason);
+    clearUsedPasteChips(text);
+    if (!busy()) {
+      // The turn ended while this was being saved; the next turn receives it.
+      push({ role: "system", text: `↳ saved for the next turn: ${text}` });
+      return;
+    }
+    // The message row appears where the model receives it, not where it was typed.
+    pendingSteers.set(outcome.id, text);
+    push({
+      role: "system",
+      text: `↳ steering saved — joins this run after the tools in flight${outcome.durability === "unconfirmed" ? " (not confirmed crash-safe)" : ""}`,
+    });
   }
 
   function drainNextQueued() {
@@ -858,6 +830,24 @@ function App() {
         (e) => {
           if (e.type === "status" && e.status === "stopping") {
             setStatus("stopping… waiting for active work to settle");
+            return;
+          }
+          if (e.type === "status" && e.status === "steering_delivered") {
+            flushStreamingText();
+            const id = String(e.steeringId ?? "");
+            push({ role: "you", text: pendingSteers.get(id) ?? "(steering)" });
+            pendingSteers.delete(id);
+            assistantIdx = null; // the reply to the steering opens a fresh bubble below it
+            return;
+          }
+          if (e.type === "status" && e.status === "steering_carried") {
+            const n = Number(e.count) || 0;
+            const undelivered = [...pendingSteers.values()];
+            pendingSteers.clear();
+            push({
+              role: "system",
+              text: `↳ ${n} steering message${n === 1 ? "" : "s"} did not reach this turn — saved for the next one${undelivered.length ? `:\n${undelivered.map((t) => `  • ${t}`).join("\n")}` : ""}`,
+            });
             return;
           }
           if (e.type === "provider") {
@@ -1932,13 +1922,23 @@ function App() {
         return;
       }
 
-      // Slash-completion (no menu, but a lone "/foo" prefix).
+      // Slash-completion (no menu, but a lone "/foo" prefix). While a turn
+      // runs, Tab otherwise queues the draft as the next task.
       if (key.name === "tab") {
         const m = slashMatches();
         if (m.length) {
           key.preventDefault?.();
           key.stopPropagation?.();
           setText(`/${m[0].name} `);
+        } else if (busy() && input().trim() && !input().trim().startsWith("/")) {
+          key.preventDefault?.();
+          key.stopPropagation?.();
+          const text = input().trim();
+          setTranscriptSelected(false);
+          setText("");
+          history.push(text);
+          histIndex = history.length;
+          queueDraft(text);
         }
         return;
       }
@@ -2189,20 +2189,12 @@ function App() {
                   <text fg={theme.text}>{m.text}</text>
                 </Match>
                 <Match when={m.role === "assistant"}>
-                  <text fg={theme.accentStrong}>siftable</text>
-                  <Show
-                    when={!m.streaming}
-                    fallback={<text fg={theme.text}>{m.text || "…"}</text>}
-                  >
-                    <markdown
-                      content={m.text || "…"}
-                      streaming={false}
-                      syntaxStyle={syntaxStyle()}
-                      internalBlockMode="top-level"
-                      fg={theme.text}
-                      bg={theme.bg}
-                    />
-                  </Show>
+                  <AssistantReply
+                    text={m.text}
+                    streaming={!!m.streaming}
+                    syntaxStyle={syntaxStyle()}
+                    theme={theme}
+                  />
                 </Match>
               </Switch>
               </box>

@@ -24,6 +24,7 @@ import {
   resetActiveThread,
   setAgentConversationKey,
   setBrainModel,
+  steerActiveTurn,
   __resetBrainAgentsForTests,
 } from '../interactive-tui/brain';
 import {getWorkspaceRoot, setSessionCwd} from '../interactive-tui/navigation';
@@ -373,6 +374,7 @@ describe('getAgent — per-session keyed agents', () => {
     setSessionCwd(dirs.parent);
     const agent = (await getAgent()) as unknown as FakeAgent;
     agent.chat = async function* () {
+      yield* []; // fails before producing any output
       throw Object.assign(new Error('injected tool/result append failure'), {
         toolEffects: {
           state: 'partial',
@@ -396,5 +398,156 @@ describe('getAgent — per-session keyed agents', () => {
       if (priorExplorerMode === undefined) delete process.env.SIFT_EXPLORER_MODE;
       else process.env.SIFT_EXPLORER_MODE = priorExplorerMode;
     }
+  });
+});
+
+describe('steerActiveTurn — durable steering', () => {
+  type Steering = {pending: () => {id: string; message: string}[]; onDelivered?: (id: string) => void};
+  let priorExplorerMode: string | undefined;
+
+  beforeEach(() => {
+    priorExplorerMode = process.env.SIFT_EXPLORER_MODE;
+    process.env.SIFT_EXPLORER_MODE = 'off';
+    setBrainModel({provider: 'openrouter', model: 'google/gemini-3.8-flash'});
+    setSessionCwd(dirs.parent);
+  });
+  afterEach(() => {
+    if (priorExplorerMode === undefined) delete process.env.SIFT_EXPLORER_MODE;
+    else process.env.SIFT_EXPLORER_MODE = priorExplorerMode;
+  });
+
+  const pendingIds = () => listPendingSessionInstructions(getWorkspaceRoot(), {rootDir: dirs.sessionMailbox}).map(i => i.instructionId);
+
+  it('refuses when no turn is running', () => {
+    expect(steerActiveTurn('change course')).toEqual({accepted: false, reason: 'no turn is running'});
+  });
+
+  it('publishes before acknowledging, delivers mid-turn, and acknowledges after the turn completes', async () => {
+    const agent = (await getAgent()) as unknown as FakeAgent;
+    const seenDuringTurn: string[][] = [];
+    agent.chat = async function* (_input: unknown, options: {steering: Steering}) {
+      const outcome = steerActiveTurn('use the other file');
+      expect(outcome).toMatchObject({accepted: true, durability: 'confirmed'});
+      seenDuringTurn.push(pendingIds());
+      for (const {id, message} of options.steering.pending()) {
+        expect(message).toBe('use the other file');
+        options.steering.onDelivered?.(id);
+      }
+      yield {type: 'done', result: {text: 'ok'}} as never;
+    } as unknown as FakeAgent['chat'];
+    const events: Array<Record<string, unknown>> = [];
+
+    const result = await agentHarnessAsk('start', e => events.push(e as Record<string, unknown>));
+
+    expect(result.status).toBe('completed');
+    expect(result.steeringCarried).toBeUndefined();
+    expect(seenDuringTurn[0]).toHaveLength(1);
+    expect(events).toContainEqual(expect.objectContaining({type: 'status', status: 'steering_delivered'}));
+    expect(pendingIds()).toEqual([]);
+    expect(steerActiveTurn('after the turn')).toEqual({accepted: false, reason: 'no turn is running'});
+  });
+
+  it('keeps delivered steering pending when the turn fails, for the next turn', async () => {
+    const agent = (await getAgent()) as unknown as FakeAgent;
+    agent.chat = async function* (_input: unknown, options: {steering: Steering}) {
+      steerActiveTurn('retry with logging');
+      for (const {id} of options.steering.pending()) options.steering.onDelivered?.(id);
+      yield* []; // fails before producing any output
+      throw new Error('provider failed');
+    } as unknown as FakeAgent['chat'];
+
+    const result = await agentHarnessAsk('start', jest.fn());
+
+    expect(result.status).toBe('failed');
+    expect(result.steeringCarried).toBe(1);
+    expect(pendingIds()).toHaveLength(1);
+  });
+
+  it('acknowledges steering a failed turn kept, so the next drain cannot append it twice', async () => {
+    const agent = (await getAgent()) as unknown as FakeAgent;
+    const history: unknown[] = [{role: 'user', content: 'earlier'}];
+    agent.getHistory.mockImplementation(() => history);
+    agent.chat = async function* (_input: unknown, options: {steering: Steering}) {
+      history.push({role: 'user', content: 'start'});
+      steerActiveTurn('kept by the checkpoint');
+      for (const {id, message} of options.steering.pending()) {
+        history.push({role: 'user', content: message});
+        options.steering.onDelivered?.(id);
+      }
+      yield* []; // fails before producing any output
+      throw new Error('provider failed after a tool effect');
+    } as unknown as FakeAgent['chat'];
+
+    const result = await agentHarnessAsk('start', jest.fn());
+
+    expect(result.status).toBe('failed');
+    expect(result.steeringCarried).toBeUndefined();
+    expect(pendingIds()).toEqual([]);
+  });
+
+  it('keeps a rolled-back steering pending even when the kept history has the same text', async () => {
+    const agent = (await getAgent()) as unknown as FakeAgent;
+    const history: unknown[] = [];
+    agent.getHistory.mockImplementation(() => history);
+    agent.chat = async function* (_input: unknown, options: {steering: Steering}) {
+      history.push({role: 'user', content: 'continue'});
+      steerActiveTurn('continue');
+      for (const {id, message} of options.steering.pending()) {
+        history.push({role: 'user', content: message});
+        options.steering.onDelivered?.(id);
+      }
+      history.length = 1; // rollback to the checkpoint before the steering
+      yield* []; // fails before producing any output
+      throw new Error('provider failed');
+    } as unknown as FakeAgent['chat'];
+
+    const result = await agentHarnessAsk('continue', jest.fn());
+
+    expect(result.steeringCarried).toBe(1);
+    expect(pendingIds()).toHaveLength(1);
+  });
+
+  it('does not drain the mailbox into a conversation whose turn is running', async () => {
+    const agent = (await getAgent()) as unknown as FakeAgent;
+    agent.chat = async function* () {
+      steerActiveTurn('pending during the turn');
+      // An in-turn reader (read_tool_output, inspect) resolves the agent.
+      await getAgent();
+      expect(agent.ingestExternalMessage).not.toHaveBeenCalled();
+      yield {type: 'done', result: {text: 'ok'}} as never;
+    } as unknown as FakeAgent['chat'];
+
+    await agentHarnessAsk('start', jest.fn());
+
+    // Never delivered by the turn: still pending, and the next turn's drain takes it.
+    expect(pendingIds()).toHaveLength(1);
+    await getAgent();
+    expect(agent.ingestExternalMessage).toHaveBeenCalledWith('pending during the turn', expect.anything());
+  });
+
+  it('carries steering the turn never read, and reads only its own ids', async () => {
+    const key = getWorkspaceRoot();
+    enqueueSessionInstruction(key, 'a parent send-back', {rootDir: dirs.sessionMailbox, idFactory: () => 'sendback-1'});
+    const agent = (await getAgent()) as unknown as FakeAgent;
+    // getAgent drained the send-back before the turn.
+    expect(pendingIds()).toEqual([]);
+    let offered: string[] = [];
+    agent.chat = async function* (_input: unknown, options: {steering: Steering}) {
+      enqueueSessionInstruction(key, 'arrived mid-turn from elsewhere', {rootDir: dirs.sessionMailbox, idFactory: () => 'sendback-2'});
+      steerActiveTurn('steer one');
+      offered = options.steering.pending().map(s => s.message);
+      yield {type: 'done', result: {text: 'ok'}} as never;
+    } as unknown as FakeAgent['chat'];
+
+    const result = await agentHarnessAsk('start', jest.fn());
+
+    expect(offered).toEqual(['steer one']);
+    expect(result.steeringCarried).toBe(1);
+    expect(pendingIds()).toHaveLength(2);
+  });
+
+  it('refuses steering for the Codex engine', () => {
+    setBrainModel({provider: 'codex'});
+    expect(steerActiveTurn('anything')).toEqual({accepted: false, reason: 'the Codex engine does not take steering'});
   });
 });

@@ -93,7 +93,17 @@ export interface ControlTransport {
   codexSetActive?(active: boolean): Promise<{ provider: string; model: string }>;
   /** Force a context compaction now. Optional: only the local brain implements it. */
   compact?(): Promise<CompactionReport>;
+  /**
+   * Send a correction into the running turn; it joins after the in-flight tool
+   * batch settles. Optional: transports without it, or a refusal, mean the
+   * caller queues the input as the next task instead.
+   */
+  steer?(text: string): Promise<SteerOutcome>;
 }
+
+export type SteerOutcome =
+  | { accepted: true; id: string; durability: "confirmed" | "unconfirmed" }
+  | { accepted: false; reason: string };
 
 export class ControlClient implements ControlTransport {
   constructor(

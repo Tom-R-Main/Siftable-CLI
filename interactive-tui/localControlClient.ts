@@ -16,6 +16,7 @@
  */
 import {
   agentHarnessAsk,
+  steerActiveTurn,
   setBrainModel,
   getBrainModel,
   compactActiveThread,
@@ -37,6 +38,7 @@ import type {
   ControlState,
   ControlTransport,
   SseEvent,
+  SteerOutcome,
 } from "./controlClient";
 
 export interface LocalBrainDeps {
@@ -51,6 +53,8 @@ export interface LocalBrainDeps {
   getCodexAccount: typeof getCodexAccount;
   /** Force a context compaction on the active session's agent. */
   compact: typeof compactActiveThread;
+  /** Publish a correction into the running turn's durable mailbox. */
+  steer: typeof steerActiveTurn;
 }
 
 const defaultDeps: LocalBrainDeps = {
@@ -68,6 +72,7 @@ const defaultDeps: LocalBrainDeps = {
   },
   getCodexAccount,
   compact: compactActiveThread,
+  steer: steerActiveTurn,
 };
 
 export class LocalControlClient implements ControlTransport {
@@ -159,6 +164,7 @@ export class LocalControlClient implements ControlTransport {
     try {
       const result = await this.deps.ask(input, (event) => onEvent(event as SseEvent), signal);
       const run = result.run ?? result.result?.run;
+      if (result.steeringCarried) onEvent({type: "status", status: "steering_carried", count: result.steeringCarried});
       if (signal?.aborted || result.status === 'interrupted') {
         onEvent({type: 'interrupted', status: 'interrupted', run, providerReceipts: result.providerReceipts});
         const uncertainty = run?.toolEffects?.verificationRequired ?? run?.cancellation?.verificationRequired;
@@ -174,6 +180,10 @@ export class LocalControlClient implements ControlTransport {
     } finally {
       signal?.removeEventListener("abort", onAbort);
     }
+  }
+
+  async steer(text: string): Promise<SteerOutcome> {
+    return this.deps.steer(text);
   }
 }
 

@@ -7,7 +7,7 @@ import ts from 'typescript';
 // Importing index.tsx itself starts OpenTUI's native renderer; AST extraction
 // keeps these lifecycle tests deterministic without copying implementation.
 const source = ts.createSourceFile('index.tsx', readFileSync(join(__dirname, '../interactive-tui/index.tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-const names = new Set(['onEnter', 'drainNextQueued', 'runShell', 'submitOne']);
+const names = new Set(['onEnter', 'steerOrQueue', 'queueDraft', 'drainNextQueued', 'runShell', 'submitOne']);
 const definitions: string[] = [];
 function visit(node: ts.Node): void {
   if (ts.isFunctionDeclaration(node) && node.name && names.has(node.name.text)) definitions.push(node.getText(source));
@@ -53,6 +53,7 @@ function harness() {
     client: { send: jest.fn(async () => undefined) },
     autoRenderMermaid: jest.fn(), STREAMING_TEXT_FLUSH_MS: 5,
     runSupervisedShell: jest.fn(),
+    pendingSteers: new Map(),
   };
   const context = createContext(sandbox);
   runInContext(code, context);
@@ -125,4 +126,43 @@ test('queued human commands retain shell dispatch rather than becoming model pro
   expect(h.sandbox.runSupervisedShell).toHaveBeenCalledWith('echo ok', '/workspace', expect.any(Object));
   expect(h.sandbox.client.send).not.toHaveBeenCalled();
   expect(h.queue()).toHaveLength(0);
+});
+
+test('Enter while busy steers when the transport accepts, and queues with the reason when it refuses', async () => {
+  const h = harness();
+  const preflight = deferred<undefined>();
+  h.sandbox.ensureExplorerProviderKey.mockReturnValue(preflight.promise);
+  const pending = h.sandbox.submitOne('first');
+  h.sandbox.client.steer = jest.fn(async () => ({ accepted: true, id: 'steer-1', durability: 'confirmed' }));
+  h.sandbox.setText('use the other file');
+  h.sandbox.onEnter();
+  await new Promise((done) => setTimeout(done, 0));
+  expect(h.sandbox.client.steer).toHaveBeenCalledWith('use the other file');
+  expect(h.queue()).toEqual([]);
+  expect(h.sandbox.pendingSteers.get('steer-1')).toBe('use the other file');
+
+  h.sandbox.client.steer = jest.fn(async () => ({ accepted: false, reason: 'no turn is running' }));
+  h.sandbox.setText('then this');
+  h.sandbox.onEnter();
+  await new Promise((done) => setTimeout(done, 0));
+  expect(h.queue()).toEqual([{ sendInput: 'then this', displayText: 'then this' }]);
+  expect(h.messages.at(-1)?.text).toContain('no turn is running');
+
+  h.sandbox.abortController.abort();
+  preflight.resolve(undefined);
+  await pending;
+});
+
+test('steering saved after the turn ended is reported for the next turn, not as joining this run', async () => {
+  const h = harness();
+  h.sandbox.setBusy(true);
+  h.sandbox.client.steer = jest.fn(async () => {
+    h.sandbox.setBusy(false); // the turn settles while the steer is being saved
+    return { accepted: true, id: 'late', durability: 'confirmed' };
+  });
+  h.sandbox.setText('late correction');
+  h.sandbox.onEnter();
+  await new Promise((done) => setTimeout(done, 0));
+  expect(h.sandbox.pendingSteers.has('late')).toBe(false);
+  expect(h.messages.at(-1)?.text).toBe('↳ saved for the next turn: late correction');
 });

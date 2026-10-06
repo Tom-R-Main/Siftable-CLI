@@ -346,6 +346,13 @@ export interface AIAdapter {
   readonly sessionStateKey?: string;
 
   /**
+   * The output-token cap this adapter actually sends, when it sets one itself
+   * (for example a provider default that depends on reasoning effort).
+   * Compaction reserves room for it.
+   */
+  readonly maxOutputTokens?: number;
+
+  /**
    * Send a conversation to the AI with tools available.
    * Returns either a text response or a tool call request.
    */

@@ -57,8 +57,17 @@ export function compactionEnabled(): boolean {
 // masquerading as a model-specific one.
 let invalidOverrideWarned = false;
 
-/** Budget config; window is resolved per-model (SIFT_CONTEXT_WINDOW overrides). */
-export function buildCompactionConfig(modelId?: string): CompactionConfig & { contextWindowSource: ContextWindowSource } {
+/** Residual token-estimate drift kept free beyond the route's output cap. */
+const RESERVE_DRIFT_TOKENS = 8_000;
+
+/**
+ * Budget config; window is resolved per-model (SIFT_CONTEXT_WINDOW overrides).
+ * `maxOutputTokens` is the route's configured output cap, when it has one.
+ */
+export function buildCompactionConfig(
+  modelId?: string,
+  route: { maxOutputTokens?: number } = {},
+): CompactionConfig & { contextWindowSource: ContextWindowSource } {
   const rawOverride = process.env.SIFT_CONTEXT_WINDOW;
   const override = parseContextWindowOverride(rawOverride);
   if (rawOverride !== undefined && rawOverride !== "" && override === null && !invalidOverrideWarned) {
@@ -73,7 +82,16 @@ export function buildCompactionConfig(modelId?: string): CompactionConfig & { co
   // punctuation-surcharge calibration eliminated the dangerous code under-count
   // (validated vs DeepSeek's real tokenizer: code went -13% -> ~0%), so the 32k
   // safety band-aid is reduced to a 24k buffer for output + minor residual drift.
-  const reserved = 24_000;
+  // A route configured for longer output needs that much room plus the same
+  // drift margin; the floor stays 24k for routes on provider defaults.
+  const routeOutput = route.maxOutputTokens;
+  const requestedReserve = typeof routeOutput === "number" && Number.isFinite(routeOutput) && routeOutput > 0
+    ? Math.max(24_000, Math.ceil(routeOutput) + RESERVE_DRIFT_TOKENS)
+    : 24_000;
+  // Never reserve more than half the window. The native planner and this
+  // config then agree on the usable input budget, and a large cap cannot
+  // shrink that budget toward zero.
+  const reserved = Math.min(requestedReserve, Math.floor(contextWindow / 2));
   const usable = Math.max(contextWindow - reserved, Math.floor(contextWindow / 2));
   const preserveRecentTokens = Math.min(8_000, Math.max(2_000, Math.floor(usable * 0.25)));
   return {

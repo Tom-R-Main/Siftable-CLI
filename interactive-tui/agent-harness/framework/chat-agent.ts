@@ -41,7 +41,9 @@ import { chatContentToText } from "./adapters/content.js";
 import type { ToolExecutionContext } from "./execution-context.js";
 import type { AdapterEvent, ProviderReceipt } from "./adapters/types.js";
 import type { AIAdapter } from "./adapters/types.js";
-import { ToolRegistry } from "./registry.js";
+import { snapshotToolRegistry, ToolRegistry, type ToolRegistration } from "./registry.js";
+import { abortedTurnReason, isAbortInterruption, throwIfAborted, waitForTurn } from "./turn-abort.js";
+import { cancelRun, completeRun, errorMessage, failRun } from "./run-lifecycle.js";
 import {
   applyCompactionPlan,
   buildCompactionConfig,
@@ -56,7 +58,7 @@ import {
 } from "./compaction.js";
 import { appendTurn, loadHistory, persistEnabled, rolloutPathForThread } from "./rollout.js";
 import type { ConnectedProvider } from "./context.js";
-import { connectProvider, contextPrompt } from "./context.js";
+import { connectProviderOwned, contextPrompt } from "./context.js";
 import {
   createConversationMemory,
   createFactMemory,
@@ -178,22 +180,19 @@ export async function createChatAgent(
 
   // 3. Connect context providers
   const connectedProviders: ConnectedProvider[] = [];
-  // Track which tool names each provider added so destroy() can clean
-  // them out of the registry. Without this, long-lived processes that
-  // create and destroy agents accumulate ghost tools.
-  const providerToolNames: string[] = [];
+  // Each provider's tool registration, so destroy() removes exactly what it
+  // installed. Without this, long-lived processes that create and destroy
+  // agents accumulate ghost tools.
+  const providerRegistrations: ToolRegistration[] = [];
   let contextBlock: string | undefined;
 
   if (config.providers && config.providers.length > 0) {
     const resolved = await resolveContextProviders(config.providers);
     for (const provider of resolved) {
       try {
-        const before = new Set(agentRegistry.listNames());
-        const connected = await connectProvider(provider, agentRegistry);
+        const { connected, registration } = await connectProviderOwned(provider, agentRegistry);
         connectedProviders.push(connected);
-        for (const name of agentRegistry.listNames()) {
-          if (!before.has(name)) providerToolNames.push(name);
-        }
+        providerRegistrations.push(registration);
       } catch (error) {
         const name = provider.metadata.name;
         const msg = errorMessage(error);
@@ -244,7 +243,7 @@ export async function createChatAgent(
       conversationMemory,
       factMemory,
       connectedProviders,
-      providerToolNames,
+      providerRegistrations,
       threadId,
       threadIdExplicit,
       maxToolRounds: config.maxToolRounds ?? 10,
@@ -262,6 +261,7 @@ export async function createChatAgent(
       },
     });
   } catch (error) {
+    for (const registration of providerRegistrations) registration.dispose();
     await Promise.allSettled(
       connectedProviders.map((provider) => provider.disconnect?.()),
     );
@@ -294,7 +294,7 @@ interface ChatAgentInternals {
   conversationMemory?: ConversationMemory;
   factMemory?: FactMemory;
   connectedProviders: ConnectedProvider[];
-  providerToolNames: string[];
+  providerRegistrations: ToolRegistration[];
   threadId: string;
   threadIdExplicit: boolean;
   maxToolRounds: number;
@@ -320,7 +320,7 @@ class ChatAgentImpl implements ChatAgent {
   private conversationMemory?: ConversationMemory;
   private factMemory?: FactMemory;
   private connectedProviders: ConnectedProvider[];
-  private providerToolNames: string[];
+  private providerRegistrations: ToolRegistration[];
   private threadId: string;
   private pinnedThreadId?: string;
   private maxToolRounds: number;
@@ -348,7 +348,7 @@ class ChatAgentImpl implements ChatAgent {
     this.conversationMemory = internals.conversationMemory;
     this.factMemory = internals.factMemory;
     this.connectedProviders = internals.connectedProviders;
-    this.providerToolNames = internals.providerToolNames;
+    this.providerRegistrations = internals.providerRegistrations;
     this.threadId = internals.threadId;
     this.pinnedThreadId = internals.threadIdExplicit
       ? internals.threadId
@@ -574,7 +574,9 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     if (!compactionEnabled()) return unchanged("compaction is disabled (SIFT_CONTEXT_COMPACTION=0)");
     if (history.length === 0) return unchanged("no conversation to compact yet");
 
-    const config = buildCompactionConfig(this.model);
+    // The configured cap, else the cap the adapter applies on its own.
+    const routeOutput = this.requestOptions?.maxOutputTokens ?? this.adapter.maxOutputTokens;
+    const config = buildCompactionConfig(this.model, typeof routeOutput === "number" ? { maxOutputTokens: routeOutput } : {});
     if (config.contextWindowSource === "fallback") this.noteContextWindowFallback();
     const outcome = planCompaction(toPlanMessages(history), {
       ...config,
@@ -589,6 +591,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
 
     let summaryText: string | null = null;
     const summarizeEnd = plan.summarizeRange[1];
+    const sourceHistory = this.session.getHistory();
     if (summarizeEnd > 0) {
       const transcript = buildSummarizeTranscript(history, summarizeEnd);
       const auxiliaryContext: SessionEventContext = { correlationId: randomUUID() };
@@ -633,7 +636,24 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     }
 
     throwIfAborted(signal);
-    const compacted = applyCompactionPlan(history, plan, summaryText);
+    // The plan and summary describe the history read above. If it moved
+    // while the summary was prepared, applying them would discard the change.
+    // History is replaced, never mutated in place, so identity detects a move.
+    if (this.session.getHistory() !== sourceHistory) {
+      return unchanged("history changed while the summary was prepared; nothing was replaced");
+    }
+    let compacted = applyCompactionPlan(history, plan, summaryText);
+    // A replacement that is not smaller makes no progress. A summary longer
+    // than what it replaces still leaves the plan's pruning, which may help.
+    if (summaryText != null && estimateHistoryTokens(compacted) >= before) {
+      summaryText = null;
+      compacted = applyCompactionPlan(history, plan, null);
+    }
+    if (estimateHistoryTokens(compacted) >= before) {
+      return unchanged(summarizeEnd > 0 && summaryText == null
+        ? "no usable summary and nothing to prune; nothing was replaced"
+        : "compaction would not shrink the history; nothing was replaced");
+    }
     this.session.replaceHistoryAndClearAdapterStates(compacted, "compaction_applied");
     return {
       ran: true,
@@ -813,7 +833,8 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
         ceilingBytes: Math.min(requestByteCeiling(this.provider), Math.floor(estimateRequestBytes(history, systemPrompt, overheadBytes) * 0.6)),
       } : {}),
     });
-    if (outcome.pruned.length === 0) return false;
+    // A retry is only worth sending if pruning made the request smaller.
+    if (outcome.pruned.length === 0 || outcome.afterBytes >= outcome.beforeBytes) return false;
     this.session.replaceHistory(outcome.history, "in_turn_tool_results_pruned", context);
     this.session.append({ type: "model/request-pruned", data: { reason, beforeBytes: outcome.beforeBytes, afterBytes: outcome.afterBytes, ceilingBytes: outcome.ceilingBytes, prunedCalls: outcome.pruned.length }, ...context });
     return true;
@@ -1203,6 +1224,22 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
       // One feedback round per turn: a second user-directed answer fails the run.
       let settlementFeedbackGiven = false;
       let activeStepId: string | undefined;
+      // Steering is appended only between steps, never while a step or tool
+      // is open; the journal rejects a user message there.
+      const steeredIds = new Set<string>();
+      const deliverSteering = (): number => {
+        const source = options?.steering;
+        if (!source) return 0;
+        let delivered = 0;
+        for (const {id, message} of source.pending()) {
+          if (steeredIds.has(id) || !message.trim()) continue;
+          steeredIds.add(id);
+          this.session.appendMessage({role: "user", content: message}, baseContext);
+          delivered += 1;
+          source.onDelivered?.(id);
+        }
+        return delivered;
+      };
       let turnStarted = false;
       let terminalRecorded = false;
       let interruptionReason: string | undefined;
@@ -1290,6 +1327,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
         let tooLargeRetried = false;
         while (maxRounds-- > 0) {
           throwIfAborted(options?.signal);
+          deliverSteering();
           // Between steps: keep the request inside the lane's byte ceiling (CLI-046).
           if (this.fitRequestBudget(prompt, baseContext, "preemptive") && toolEffectsCheckpointed) effectHistoryCheckpoint = this.currentHistory();
           rounds += 1;
@@ -1623,6 +1661,15 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
               if (maxRounds <= 0) { maxRounds = -1; break; }
               continue;
             }
+          }
+          // A correction that arrived while the model was answering would
+          // otherwise wait for the next turn. Give the model a step to act on it.
+          if (maxRounds > 0 && deliverSteering() > 0) {
+            assistantTurnComplete = false;
+            finalText = "";
+            effectHistoryCheckpoint = this.currentHistory();
+            effectStateCheckpoint = this.snapshotAdapterSessionState();
+            continue;
           }
           break;
         }
@@ -2121,6 +2168,12 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
   }
 
   private async disconnectProviders(): Promise<void> {
+    // Withdraw the tools before disconnecting, so nothing can dispatch into
+    // a provider that is shutting down.
+    for (const registration of this.providerRegistrations) {
+      registration.dispose();
+    }
+    this.providerRegistrations = [];
     for (const provider of this.connectedProviders) {
       try {
         await provider.disconnect?.();
@@ -2128,10 +2181,6 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
         // Best-effort cleanup
       }
     }
-    for (const name of this.providerToolNames) {
-      this.registry.unregister(name);
-    }
-    this.providerToolNames = [];
     this.connectedProviders = [];
   }
 
@@ -2236,55 +2285,6 @@ function createRunManifest(input: CreateRunManifestInput): RunRecord {
   };
 }
 
-function requireRunning(run: RunRecord): void {
-  if (run.status !== "running") {
-    throw new Error(
-      `Run "${run.manifest.runId}" is already terminal (${run.status}).`,
-    );
-  }
-}
-
-function completeRun(
-  run: RunRecord,
-  options: { limitReached?: boolean } = {},
-): RunRecord {
-  requireRunning(run);
-  return {
-    ...run,
-    status: options.limitReached ? "limit_reached" : "completed",
-    completedAt: new Date().toISOString(),
-    stopReason: options.limitReached ? "max_rounds" : "model_response",
-  };
-}
-
-function failRun(run: RunRecord, error: unknown): RunRecord {
-  requireRunning(run);
-  const normalized = error instanceof Error
-    ? { name: redactSensitiveText(error.name), message: errorMessage(error) }
-    : { name: "Error", message: errorMessage(error) };
-  return {
-    ...run,
-    status: "failed",
-    completedAt: new Date().toISOString(),
-    stopReason: "error",
-    error: normalized,
-  };
-}
-
-function cancelRun(
-  run: RunRecord,
-  cancellation: NonNullable<RunRecord["cancellation"]>,
-): RunRecord {
-  requireRunning(run);
-  return {
-    ...run,
-    status: "cancelled",
-    completedAt: new Date().toISOString(),
-    stopReason: "cancelled",
-    cancellation: { ...cancellation },
-  };
-}
-
 function createOutcomeClaim(run: RunRecord, output: string): OutcomeClaim {
   if (run.status !== "completed") {
     throw new Error(
@@ -2365,78 +2365,6 @@ function attachToolEffects(
         : {}),
     },
   };
-}
-
-function errorMessage(error: unknown): string {
-  return redactSensitiveText(error instanceof Error ? error.message : String(error));
-}
-
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (!signal?.aborted) return;
-  throw abortError(signal);
-}
-
-function abortError(signal: AbortSignal): Error {
-  if (signal.reason instanceof Error) return signal.reason;
-  const error = new Error(abortedTurnReason(signal));
-  error.name = "AbortError";
-  return error;
-}
-
-function waitForTurn(previous: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
-  if (signal === undefined) return previous;
-  if (signal.aborted) return Promise.reject(abortError(signal));
-  return new Promise<void>((resolve, reject) => {
-    const cleanup = () => signal.removeEventListener("abort", onAbort);
-    const onAbort = () => {
-      cleanup();
-      reject(abortError(signal));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    void previous.then(
-      () => {
-        cleanup();
-        resolve();
-      },
-      (error: unknown) => {
-        cleanup();
-        reject(error);
-      },
-    );
-  });
-}
-
-function isAbortInterruption(error: unknown, signal: AbortSignal | undefined): boolean {
-  return signal?.aborted === true || (error instanceof Error && error.name === "AbortError");
-}
-
-function abortedTurnReason(signal: AbortSignal): string {
-  if (signal.reason instanceof Error && signal.reason.message) {
-    return `chat turn aborted: ${signal.reason.message}`;
-  }
-  if (typeof signal.reason === "string" && signal.reason.trim()) {
-    return `chat turn aborted: ${signal.reason}`;
-  }
-  return "chat turn aborted";
-}
-
-/** Bind the exact advertised definitions through one model request and its effects. */
-/**
- * Per-request tool set. Under a denying approval policy, approval-gated tools
- * are omitted so the model never sees them; the journaled request envelope and
- * the adapter both read this snapshot, so the omission is durable evidence.
- */
-function snapshotToolRegistry(source: ToolRegistry, policy?: "ask" | "deny" | "allow"): ToolRegistry {
-  const snapshot = new ToolRegistry();
-  for (const tool of source.getAll()) {
-    if (tool.approval && policy === "deny") continue;
-    snapshot.register(Object.freeze({
-      ...tool,
-      inputSchema: snapshotJson(tool.inputSchema) as typeof tool.inputSchema,
-      ...(tool.tags ? {tags: [...tool.tags]} : {}),
-    }));
-  }
-  return snapshot;
 }
 
 function freezeJson<T>(value: T): T {

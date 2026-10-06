@@ -384,6 +384,14 @@ export interface ChatAgentChatOptions {
   /** Cancel queued or in-flight harness work at safe execution boundaries. */
   signal?: AbortSignal;
 
+  /**
+   * Corrections the user sent while this turn runs. Read before each model
+   * step, after the previous step's tool batch has settled, and once more
+   * before the turn would end. Each id is appended to history at most once
+   * per turn; the caller owns durability and acknowledgement.
+   */
+  steering?: SteeringSource;
+
   /** Override system prompt for this turn only */
   systemPrompt?: string;
 
@@ -397,6 +405,19 @@ export interface ChatAgentChatOptions {
 export interface ChatAgentResetOptions {
   /** Stable logical thread identity to retain after clearing history. */
   threadId?: string;
+}
+
+export interface SteeringMessage {
+  /** Caller-owned id, stable across retries of the same correction. */
+  id: string;
+  message: string;
+}
+
+export interface SteeringSource {
+  /** Corrections accepted so far and not yet acknowledged, oldest first. */
+  pending(): readonly SteeringMessage[];
+  /** Called after the correction is durably appended to this turn's history. */
+  onDelivered?(id: string): void;
 }
 
 export interface ExternalMessageOptions {

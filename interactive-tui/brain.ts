@@ -90,11 +90,16 @@ import { discoverSkills, formatSkillsForPrompt, loadSkill, type SkillInfo } from
 import type { ChildSessionController } from './childSessionController';
 import { formatReadyProofDecision } from './workProof';
 import type { CompactionReport } from './controlClient';
+import { sessionJournalIdForConversation } from './sessionMailbox';
+import { agentHarnessErrorMessage } from './brainErrors';
 import {
-  acknowledgeSessionInstruction,
-  listPendingSessionInstructions,
-  sessionJournalIdForConversation,
-} from './sessionMailbox';
+  beginTurnSteering,
+  drainSessionMailbox,
+  pendingMailboxDrains,
+  resetBrainSteeringForTests,
+  steerTurn,
+  type SteerResult,
+} from './brainSteering';
 import * as bundledAgentHarness from './agent-harness';
 import type { AdapterEvent, ProviderReceipt } from './agent-harness/framework/adapters/types';
 import type { ChatResult, ChatAgentChatOptions } from './agent-harness/framework/chat-agent-types';
@@ -113,6 +118,11 @@ export interface BrainEvent {
 export interface BrainAskResult {
   /** Terminal answer only; intermediate or failed partial text is separate. */
   text: string;
+  /**
+   * Steering accepted during this turn that the turn did not settle. It stays
+   * in the durable session mailbox and reaches the model at the next turn.
+   */
+  steeringCarried?: number;
   progressText?: string;
   verification?: CandidateVerificationReceipt;
   status?: "completed" | "failed" | "interrupted" | "limit_reached";
@@ -251,7 +261,6 @@ type AgentHarnessAgent = {
 };
 const agents = new Map<string, Promise<AgentHarnessAgent>>();
 const agentRetirements = new Map<string, Promise<void>>();
-const mailboxDrains = new Map<string, Promise<void>>();
 let activeConversationKey: string | undefined;
 
 function retireAgentsAfterCurrentTurns(): void {
@@ -1618,37 +1627,11 @@ export async function getAgent(): Promise<AgentHarnessAgent> {
   return agent;
 }
 
-async function drainSessionMailbox(key: string, agent: AgentHarnessAgent): Promise<void> {
-  const prior = mailboxDrains.get(key) ?? Promise.resolve();
-  const drain = prior.then(async () => {
-    const pending = listPendingSessionInstructions(key);
-    if (pending.length === 0) return;
-    if (typeof agent.ingestExternalMessage !== 'function') {
-      throw new Error(
-        'This agent harness cannot consume durable session instructions; update the bundled harness.',
-      );
-    }
-    for (const instruction of pending) {
-      // ingestExternalMessage records instructionId in the append-only journal
-      // before acknowledgement. A crash between these operations redelivers,
-      // the journal deduplicates it, and the next drain safely removes the file.
-      await agent.ingestExternalMessage(instruction.instruction, {id: instruction.instructionId});
-      acknowledgeSessionInstruction(key, instruction.instructionId);
-    }
-  });
-  mailboxDrains.set(key, drain);
-  try {
-    await drain;
-  } finally {
-    if (mailboxDrains.get(key) === drain) mailboxDrains.delete(key);
-  }
-}
-
 /** Test seam: drop all cached per-session agents (e.g. between unit tests). */
 export function __resetBrainAgentsForTests(): void {
   agents.clear();
   agentRetirements.clear();
-  mailboxDrains.clear();
+  resetBrainSteeringForTests();
   activeConversationKey = undefined;
   releaseAllSessionJournalLeases();
 }
@@ -2647,36 +2630,6 @@ async function withTimeout<T>(operation: (signal: AbortSignal) => Promise<T>, ti
   }
 }
 
-/**
- * Ask the Siftable agent harness. Emits relay-compatible events to onEvent and
- * resolves with the assembled reply text. Returns {error} (never throws) so the
- * caller can render a degraded state instead of crashing the TUI.
- */
-function agentHarnessErrorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  if (!error || typeof error !== 'object' || !('toolEffects' in error)) return message;
-
-  const effects = (error as {toolEffects?: unknown}).toolEffects;
-  if (!effects || typeof effects !== 'object' || Array.isArray(effects)) return message;
-
-  const {
-    certainty,
-    receipts,
-    verificationRequired,
-  } = effects as {
-    certainty?: unknown;
-    receipts?: unknown;
-    verificationRequired?: unknown;
-  };
-  const mayHaveOccurred = certainty === 'unknown'
-    || (Array.isArray(receipts) && receipts.length > 0)
-    || verificationRequired === true
-    || (typeof verificationRequired === 'string' && verificationRequired.length > 0);
-  if (!mayHaveOccurred) return message;
-
-  return `${message}\n\nTool side effects may have occurred; verify state before retrying.`;
-}
-
 /** Bound on waiting for pre-turn preparation to end after a cancel. */
 let preTurnStopBoundMs = 10_000;
 // Null means the live `buildExplorerReport` import, resolved at call time.
@@ -2744,6 +2697,25 @@ function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolean> {
   });
 }
 
+export type { SteerResult };
+
+/**
+ * Send a correction into the running turn. It joins the run after the tool
+ * batch in flight settles. Refused when no local-harness turn is running or
+ * the engine cannot take steering; callers queue the input instead.
+ */
+export function steerActiveTurn(text: string): SteerResult {
+  const message = text.trim();
+  if (!message) return {accepted: false, reason: 'nothing to send'};
+  if (currentProvider === CODEX_PROVIDER) return {accepted: false, reason: 'the Codex engine does not take steering'};
+  return steerTurn(message);
+}
+
+/**
+ * Ask the Siftable agent harness. Emits relay-compatible events to onEvent and
+ * resolves with the assembled reply text. Returns {error} (never throws) so the
+ * caller can render a degraded state instead of crashing the TUI.
+ */
 export async function agentHarnessAsk(
   input: ChatInput,
   onEvent: (event: BrainEvent) => void,
@@ -2915,9 +2887,13 @@ async function agentHarnessAskTurn(
   }
 
   let agent: Awaited<ReturnType<typeof getAgent>>;
+  // The conversation getAgent() binds. Steering is published to this key's
+  // mailbox, so it must be the conversation the turn actually runs in.
+  let turnKey = '';
   try {
     // Agent construction and the durable session-mailbox drain run before
     // the model loop, so they obey the same pre-turn cancellation rule.
+    turnKey = agentSessionKey();
     const built = await awaitPreTurn(getAgent(), signal, 'agent setup');
     if ('result' in built) return built.result;
     agent = built.value;
@@ -2948,10 +2924,15 @@ async function agentHarnessAskTurn(
       emitPostExplorer({ type: 'provider', providerEvent: event });
     }
   };
+  // If navigation moved the session during setup, run the turn without
+  // steering rather than publish corrections to a conversation it isn't in.
+  const steering = beginTurnSteering(turnKey, agentSessionKey() === turnKey, agent, id =>
+    emitPostExplorer({type: 'status', phase: 'steering', status: 'steering_delivered', steeringId: id}));
   try {
     for await (const chunk of agent.chat(preparedInput, { stream: true, signal, onProviderEvent,
       completionVerification: options?.completionVerification,
       noninteractive: options?.noninteractive,
+      steering: steering.source,
       onVerification: receipt => {
         verification = structuredClone(receipt);
         if (!receipt.completedAt) emitPostExplorer({type: 'status', phase: 'verification', status: 'verifying'});
@@ -3005,18 +2986,27 @@ async function agentHarnessAskTurn(
         });
       }
     }
-    if (!finalResult) return {text: '', progressText: assembled, verification, status: 'failed', providerReceipts, error: 'Agent stream ended without a terminal result.'};
+    if (!finalResult) {
+      const steeringCarried = steering.settle(false);
+      return {text: '', progressText: assembled, verification, status: 'failed', providerReceipts,
+        ...(steeringCarried ? {steeringCarried} : {}), error: 'Agent stream ended without a terminal result.'};
+    }
     const limited = finalResult?.run?.status === 'limit_reached';
     // A legacy done result may carry no text; only strip the final answer when it was actually observed as a response.
     const finalText = finalResult.text ?? '';
     const progressText = lastResponseText !== undefined && lastResponseText.text === finalText ? assembled.slice(0, lastResponseText.start) : assembled;
+    const steeringCarried = steering.settle(true);
     return { text: finalText, progressText, verification, status: limited ? 'limit_reached' : 'completed', result: finalResult, providerReceipts,
+      ...(steeringCarried ? {steeringCarried} : {}),
       ...(limited ? {error: 'Agent reached its tool-round limit; task completion is not verified.'} : {}) };
   } catch (err) {
+    const steeringCarried = steering.settle(false);
     return { text: '', progressText: assembled, verification, status: signal?.aborted ? 'interrupted' : 'failed', providerReceipts,
+      ...(steeringCarried ? {steeringCarried} : {}),
       ...(err && typeof err === 'object' && 'run' in err ? {run: (err as {run: ChatResult['run']}).run} : {}),
       error: agentHarnessErrorMessage(err) };
   } finally {
+    steering.settle(false);
     finishExplorerEffectiveness();
   }
 }
@@ -3046,7 +3036,7 @@ export async function closeBrain(): Promise<void> {
     bounded(codexClose, 'Codex engine'),
     ...cached.map((pending) => bounded((async () => (await pending).close?.())(), 'Agent session', true)),
     ...[...agentRetirements.values()].map((retirement) => bounded(retirement, 'Agent retirement', true)),
-    ...[...mailboxDrains.values()].map((drain) => bounded(drain, 'Session mailbox drain', true)),
+    ...pendingMailboxDrains().map((drain) => bounded(drain, 'Session mailbox drain', true)),
   ]);
   // A failed bounded cleanup is not release of process ownership. Preserve the
   // manager so another shutdown attempt can reconcile and retry its jobs.
