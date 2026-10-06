@@ -59,6 +59,7 @@ export function createAnthropicAdapter(config?: Partial<AdapterConfig>): AIAdapt
   return {
     name: config?.name ?? "Claude",
     model,
+    maxOutputTokens: maxTokens,
 
     async chat(messages: ChatMessage[], registry: ToolRegistry, options?: ChatOptions): Promise<AdapterResponse> {
       // Convert messages to Anthropic format

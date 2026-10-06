@@ -573,7 +573,8 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     if (!compactionEnabled()) return unchanged("compaction is disabled (SIFT_CONTEXT_COMPACTION=0)");
     if (history.length === 0) return unchanged("no conversation to compact yet");
 
-    const routeOutput = this.requestOptions?.maxOutputTokens;
+    // The configured cap, else the cap the adapter applies on its own.
+    const routeOutput = this.requestOptions?.maxOutputTokens ?? this.adapter.maxOutputTokens;
     const config = buildCompactionConfig(this.model, typeof routeOutput === "number" ? { maxOutputTokens: routeOutput } : {});
     if (config.contextWindowSource === "fallback") this.noteContextWindowFallback();
     const outcome = planCompaction(toPlanMessages(history), {
@@ -589,7 +590,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
 
     let summaryText: string | null = null;
     const summarizeEnd = plan.summarizeRange[1];
-    const sourceDigest = digestJson(history);
+    const sourceHistory = this.session.getHistory();
     if (summarizeEnd > 0) {
       const transcript = buildSummarizeTranscript(history, summarizeEnd);
       const auxiliaryContext: SessionEventContext = { correlationId: randomUUID() };
@@ -604,7 +605,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
           history: {
             throughSeq: this.session.getEventCount(),
             messageCount: history.length,
-            sha256: sourceDigest,
+            sha256: digestJson(history),
           },
           input: auxiliaryInput,
           inputSha256: digestJson(auxiliaryInput),
@@ -636,14 +637,21 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     throwIfAborted(signal);
     // The plan and summary describe the history read above. If it moved
     // while the summary was prepared, applying them would discard the change.
-    if (digestJson(this.currentHistory()) !== sourceDigest) {
+    // History is replaced, never mutated in place, so identity detects a move.
+    if (this.session.getHistory() !== sourceHistory) {
       return unchanged("history changed while the summary was prepared; nothing was replaced");
     }
-    const compacted = applyCompactionPlan(history, plan, summaryText);
-    // A replacement that is not smaller (for example a summary longer than
-    // what it replaces) makes no progress: keep the original history.
+    let compacted = applyCompactionPlan(history, plan, summaryText);
+    // A replacement that is not smaller makes no progress. A summary longer
+    // than what it replaces still leaves the plan's pruning, which may help.
+    if (summaryText != null && estimateHistoryTokens(compacted) >= before) {
+      summaryText = null;
+      compacted = applyCompactionPlan(history, plan, null);
+    }
     if (estimateHistoryTokens(compacted) >= before) {
-      return unchanged("compaction would not shrink the history; nothing was replaced");
+      return unchanged(summarizeEnd > 0 && summaryText == null
+        ? "no usable summary and nothing to prune; nothing was replaced"
+        : "compaction would not shrink the history; nothing was replaced");
     }
     this.session.replaceHistoryAndClearAdapterStates(compacted, "compaction_applied");
     return {

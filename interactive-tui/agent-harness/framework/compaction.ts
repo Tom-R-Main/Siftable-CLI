@@ -85,9 +85,13 @@ export function buildCompactionConfig(
   // A route configured for longer output needs that much room plus the same
   // drift margin; the floor stays 24k for routes on provider defaults.
   const routeOutput = route.maxOutputTokens;
-  const reserved = typeof routeOutput === "number" && Number.isFinite(routeOutput) && routeOutput > 0
+  const requestedReserve = typeof routeOutput === "number" && Number.isFinite(routeOutput) && routeOutput > 0
     ? Math.max(24_000, Math.ceil(routeOutput) + RESERVE_DRIFT_TOKENS)
     : 24_000;
+  // Never reserve more than half the window. The native planner and this
+  // config then agree on the usable input budget, and a large cap cannot
+  // shrink that budget toward zero.
+  const reserved = Math.min(requestedReserve, Math.floor(contextWindow / 2));
   const usable = Math.max(contextWindow - reserved, Math.floor(contextWindow / 2));
   const preserveRecentTokens = Math.min(8_000, Math.max(2_000, Math.floor(usable * 0.25)));
   return {

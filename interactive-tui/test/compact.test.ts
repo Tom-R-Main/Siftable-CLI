@@ -57,6 +57,17 @@ describe("buildCompactionConfig output reserve", () => {
     expect(buildCompactionConfig("mock-1", { maxOutputTokens: 64_000 }).reserved).toBe(72_000);
   });
 
+  it("never reserves more than half the window", () => {
+    const prior = process.env.SIFT_CONTEXT_WINDOW;
+    process.env.SIFT_CONTEXT_WINDOW = "128000";
+    try {
+      expect(buildCompactionConfig("mock-1", { maxOutputTokens: 119_000 }).reserved).toBe(64_000);
+    } finally {
+      if (prior === undefined) delete process.env.SIFT_CONTEXT_WINDOW;
+      else process.env.SIFT_CONTEXT_WINDOW = prior;
+    }
+  });
+
   it("ignores a nonsensical cap", () => {
     expect(buildCompactionConfig("mock-1", { maxOutputTokens: Number.NaN }).reserved).toBe(24_000);
     expect(buildCompactionConfig("mock-1", { maxOutputTokens: -1 }).reserved).toBe(24_000);
@@ -113,8 +124,27 @@ describe.serial("ChatAgent.compact() (manual /compact)", () => {
     const outcome = await agent.compact({ force: true });
 
     expect(outcome.ran).toBe(false);
-    expect(outcome.reason).toContain("would not shrink");
+    expect(outcome.reason).toContain("nothing was replaced");
     expect(agent.getHistory()).toEqual(before);
+  });
+
+  it("budgets for the output cap the adapter applies on its own", async () => {
+    const prior = process.env.SIFT_CONTEXT_WINDOW;
+    process.env.SIFT_CONTEXT_WINDOW = "100000";
+    try {
+      // A 30k-token reply plus drift (38k) leaves 62k of a 100k window, so a
+      // ~69k-token thread must compact; with the old fixed 24k reserve (76k
+      // usable) it would not have.
+      const adapter: AIAdapter = { ...mockAdapter(), maxOutputTokens: 30_000 };
+      const agent = await createChatAgent({ name: "t", adapter, persistKey: `${KEY}_cap`, memory: false, tools: [] });
+      for (let i = 0; i < 6; i += 1) await agent.chat(`question ${i} ${"detail ".repeat(11_500)}`);
+      const outcome = await agent.compact({ force: false });
+      expect(outcome.ran).toBe(true);
+      expect(outcome.afterTokens).toBeLessThan(outcome.beforeTokens);
+    } finally {
+      if (prior === undefined) delete process.env.SIFT_CONTEXT_WINDOW;
+      else process.env.SIFT_CONTEXT_WINDOW = prior;
+    }
   });
 
   it("reports a clean no-op when compaction is disabled", async () => {
