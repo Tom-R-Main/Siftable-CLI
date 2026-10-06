@@ -7,9 +7,9 @@
  * Run with: bun test   (from packages/exf-cli/interactive-tui)
  */
 import { describe, expect, it } from "bun:test";
-import { ToolRegistry } from "../agent-harness/framework/registry";
+import { snapshotToolRegistry, ToolRegistry } from "../agent-harness/framework/registry";
 import { connectProviderOwned, type ContextProvider } from "../agent-harness/framework/context";
-import { createChatAgent, snapshotToolRegistry } from "../agent-harness/framework/chat-agent";
+import { createChatAgent } from "../agent-harness/framework/chat-agent";
 import { InMemorySessionEventStore } from "../agent-harness/framework/session";
 import type { AIAdapter } from "../agent-harness/framework/adapters/types";
 import type { ToolDefinition } from "../agent-harness/framework/types";

@@ -20,6 +20,7 @@ import type {
 import { validateParams, formatValidationErrors } from "./validate.js";
 import { redactSensitiveText } from "./redaction.js";
 import { assertExecutionActive, currentExecutionContext, withExecutionContext, type ToolExecutionContext } from './execution-context.js';
+import { snapshotJson } from './session.js';
 
 /**
  * What an owned registration does when one of its names is already taken.
@@ -336,6 +337,27 @@ export class ToolRegistry {
       },
     }));
   }
+}
+
+/**
+ * Per-request tool set, bound to the exact advertised definitions through one
+ * model request and its effects. Under a denying approval policy, approval-gated tools
+ * are omitted so the model never sees them; the journaled request envelope and
+ * the adapter both read this snapshot, so the omission is durable evidence.
+ * Each entry stays bound to the source definition it copied: once that is
+ * withdrawn or replaced, dispatch from this snapshot is refused.
+ */
+export function snapshotToolRegistry(source: ToolRegistry, policy?: "ask" | "deny" | "allow"): ToolRegistry {
+  const snapshot = new ToolRegistry();
+  for (const tool of source.getAll()) {
+    if (tool.approval && policy === "deny") continue;
+    snapshot.register(Object.freeze({
+      ...tool,
+      inputSchema: snapshotJson(tool.inputSchema) as typeof tool.inputSchema,
+      ...(tool.tags ? {tags: [...tool.tags]} : {}),
+    }), {live: source.liveness(tool.name)});
+  }
+  return snapshot;
 }
 
 /** Global registry instance — import this to register and access tools */

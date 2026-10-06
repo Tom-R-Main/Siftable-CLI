@@ -41,7 +41,7 @@ import { chatContentToText } from "./adapters/content.js";
 import type { ToolExecutionContext } from "./execution-context.js";
 import type { AdapterEvent, ProviderReceipt } from "./adapters/types.js";
 import type { AIAdapter } from "./adapters/types.js";
-import { ToolRegistry, type ToolRegistration } from "./registry.js";
+import { snapshotToolRegistry, ToolRegistry, type ToolRegistration } from "./registry.js";
 import {
   applyCompactionPlan,
   buildCompactionConfig,
@@ -2418,27 +2418,6 @@ function abortedTurnReason(signal: AbortSignal): string {
     return `chat turn aborted: ${signal.reason}`;
   }
   return "chat turn aborted";
-}
-
-/** Bind the exact advertised definitions through one model request and its effects. */
-/**
- * Per-request tool set. Under a denying approval policy, approval-gated tools
- * are omitted so the model never sees them; the journaled request envelope and
- * the adapter both read this snapshot, so the omission is durable evidence.
- * Each entry stays bound to the source definition it copied: once that is
- * withdrawn or replaced, dispatch from this snapshot is refused.
- */
-export function snapshotToolRegistry(source: ToolRegistry, policy?: "ask" | "deny" | "allow"): ToolRegistry {
-  const snapshot = new ToolRegistry();
-  for (const tool of source.getAll()) {
-    if (tool.approval && policy === "deny") continue;
-    snapshot.register(Object.freeze({
-      ...tool,
-      inputSchema: snapshotJson(tool.inputSchema) as typeof tool.inputSchema,
-      ...(tool.tags ? {tags: [...tool.tags]} : {}),
-    }), {live: source.liveness(tool.name)});
-  }
-  return snapshot;
 }
 
 function freezeJson<T>(value: T): T {
