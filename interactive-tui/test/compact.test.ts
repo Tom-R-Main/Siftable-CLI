@@ -16,6 +16,7 @@ import {
   SessionKernel,
 } from "../agent-harness/framework/session";
 import type { AIAdapter } from "../agent-harness/framework/adapters/types";
+import { buildCompactionConfig } from "../agent-harness/framework/compaction";
 
 const KEY = `__sift_test_compact_${process.pid}`;
 const PATH = rolloutPathForKey(homedir(), KEY);
@@ -46,6 +47,22 @@ function mockAdapter(): AIAdapter {
   };
 }
 
+describe("buildCompactionConfig output reserve", () => {
+  it("keeps the 24k floor for routes on provider defaults or small caps", () => {
+    expect(buildCompactionConfig("mock-1").reserved).toBe(24_000);
+    expect(buildCompactionConfig("mock-1", { maxOutputTokens: 4_096 }).reserved).toBe(24_000);
+  });
+
+  it("reserves the route's output cap plus drift when it exceeds the floor", () => {
+    expect(buildCompactionConfig("mock-1", { maxOutputTokens: 64_000 }).reserved).toBe(72_000);
+  });
+
+  it("ignores a nonsensical cap", () => {
+    expect(buildCompactionConfig("mock-1", { maxOutputTokens: Number.NaN }).reserved).toBe(24_000);
+    expect(buildCompactionConfig("mock-1", { maxOutputTokens: -1 }).reserved).toBe(24_000);
+  });
+});
+
 describe.serial("ChatAgent.compact() (manual /compact)", () => {
   it("forces a within-budget thread to summarize older turns and reports savings", async () => {
     const agent = await createChatAgent({
@@ -71,6 +88,33 @@ describe.serial("ChatAgent.compact() (manual /compact)", () => {
     const headText = typeof head.content === "string" ? head.content : JSON.stringify(head.content);
     expect(headText).toContain("Earlier conversation summarized");
     expect(headText).toContain("SUMMARY: earlier work");
+  });
+
+  it("keeps the original history when the summary would not shrink it", async () => {
+    const adapter: AIAdapter = {
+      name: "verbose-mock",
+      model: "mock-1",
+      chat: async (_messages, _registry, options) => {
+        // A "summary" far longer than everything it replaces.
+        if (options?.oneShot) return { text: "SUMMARY ".repeat(5_000) };
+        return { text: "ok" };
+      },
+    };
+    const agent = await createChatAgent({
+      name: "t",
+      adapter,
+      persistKey: `${KEY}_verbose`,
+      memory: false,
+      tools: [],
+    });
+    for (let i = 0; i < 5; i += 1) await agent.chat(`question ${i} ${"detail ".repeat(20)}`);
+    const before = structuredClone(agent.getHistory());
+
+    const outcome = await agent.compact({ force: true });
+
+    expect(outcome.ran).toBe(false);
+    expect(outcome.reason).toContain("would not shrink");
+    expect(agent.getHistory()).toEqual(before);
   });
 
   it("reports a clean no-op when compaction is disabled", async () => {

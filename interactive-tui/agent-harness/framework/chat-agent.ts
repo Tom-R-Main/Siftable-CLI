@@ -573,7 +573,8 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     if (!compactionEnabled()) return unchanged("compaction is disabled (SIFT_CONTEXT_COMPACTION=0)");
     if (history.length === 0) return unchanged("no conversation to compact yet");
 
-    const config = buildCompactionConfig(this.model);
+    const routeOutput = this.requestOptions?.maxOutputTokens;
+    const config = buildCompactionConfig(this.model, typeof routeOutput === "number" ? { maxOutputTokens: routeOutput } : {});
     if (config.contextWindowSource === "fallback") this.noteContextWindowFallback();
     const outcome = planCompaction(toPlanMessages(history), {
       ...config,
@@ -588,6 +589,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
 
     let summaryText: string | null = null;
     const summarizeEnd = plan.summarizeRange[1];
+    const sourceDigest = digestJson(history);
     if (summarizeEnd > 0) {
       const transcript = buildSummarizeTranscript(history, summarizeEnd);
       const auxiliaryContext: SessionEventContext = { correlationId: randomUUID() };
@@ -602,7 +604,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
           history: {
             throughSeq: this.session.getEventCount(),
             messageCount: history.length,
-            sha256: digestJson(history),
+            sha256: sourceDigest,
           },
           input: auxiliaryInput,
           inputSha256: digestJson(auxiliaryInput),
@@ -632,7 +634,17 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
     }
 
     throwIfAborted(signal);
+    // The plan and summary describe the history read above. If it moved
+    // while the summary was prepared, applying them would discard the change.
+    if (digestJson(this.currentHistory()) !== sourceDigest) {
+      return unchanged("history changed while the summary was prepared; nothing was replaced");
+    }
     const compacted = applyCompactionPlan(history, plan, summaryText);
+    // A replacement that is not smaller (for example a summary longer than
+    // what it replaces) makes no progress: keep the original history.
+    if (estimateHistoryTokens(compacted) >= before) {
+      return unchanged("compaction would not shrink the history; nothing was replaced");
+    }
     this.session.replaceHistoryAndClearAdapterStates(compacted, "compaction_applied");
     return {
       ran: true,
@@ -812,7 +824,8 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
         ceilingBytes: Math.min(requestByteCeiling(this.provider), Math.floor(estimateRequestBytes(history, systemPrompt, overheadBytes) * 0.6)),
       } : {}),
     });
-    if (outcome.pruned.length === 0) return false;
+    // A retry is only worth sending if pruning made the request smaller.
+    if (outcome.pruned.length === 0 || outcome.afterBytes >= outcome.beforeBytes) return false;
     this.session.replaceHistory(outcome.history, "in_turn_tool_results_pruned", context);
     this.session.append({ type: "model/request-pruned", data: { reason, beforeBytes: outcome.beforeBytes, afterBytes: outcome.afterBytes, ceilingBytes: outcome.ceilingBytes, prunedCalls: outcome.pruned.length }, ...context });
     return true;
