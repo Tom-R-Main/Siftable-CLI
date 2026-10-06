@@ -61,56 +61,70 @@ describe("ApprovalOverlay frame", () => {
 
 describe("AssistantReply streaming", () => {
   const VISIBLE = "Response remains visible";
+  // Each tail, and text that is on screen only once that tail has rendered.
   const TAILS = {
-    paragraph: "\n\nmore text",
-    fence: "\n\n```ts\nconst x = 1\n```\n",
-    table: "\n\n| a | b |\n|---|---|\n| 1 | 2 |",
-  };
+    paragraph: ["\n\nmore text", "more text"],
+    fence: ["\n\n```ts\nconst x = 1\n```\n", "const x = 1"],
+    table: ["\n\n| a | b |\n|---|---|\n| 1 | 2 |", "1"],
+  } as const;
   const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
 
-  // Renders one reply driven by signals, settles it, then records every frame
-  // produced while `change` runs. Code blocks highlight asynchronously, so each
-  // settle step yields to the parser between renders.
+  // Renders one reply driven by signals, waits until `ready` text is on screen,
+  // then records every frame produced while `change` runs and until `done`
+  // text is on screen. Code blocks highlight asynchronously, so fixed render
+  // counts are not enough under load; each wait polls with a deadline.
   async function framesDuring(
     initial: string,
     change: (set: { text: (t: string) => void; streaming: (s: boolean) => void }) => void,
+    done: string,
   ): Promise<string[]> {
     const [text, setText] = createSignal(initial);
     const [streaming, setStreaming] = createSignal(true);
     const style = buildSyntaxStyle(theme);
-    const { renderer, renderOnce } = await testRender(
+    const { renderer, renderOnce, captureCharFrame } = await testRender(
       () => <AssistantReply text={text()} streaming={streaming()} syntaxStyle={style} theme={theme} />,
       { width: 40, height: 12 },
     );
-    const settle = async () => {
+    const settleUntil = async (needle: string) => {
+      const deadline = Date.now() + 5_000;
+      for (;;) {
+        await renderOnce();
+        await tick();
+        if (captureCharFrame().includes(needle)) return;
+        if (Date.now() > deadline) throw new Error(`"${needle}" never rendered:\n${captureCharFrame()}`);
+      }
+    };
+    try {
+      await settleUntil(VISIBLE);
+      const recorder = new TestRecorder(renderer);
+      recorder.rec();
+      change({ text: setText, streaming: setStreaming });
+      await settleUntil(done);
+      // A completion can re-render after `done` first appears; keep recording.
       for (let i = 0; i < 3; i += 1) {
         await renderOnce();
         await tick();
       }
-    };
-    await settle();
-    const recorder = new TestRecorder(renderer);
-    recorder.rec();
-    change({ text: setText, streaming: setStreaming });
-    await settle();
-    recorder.stop();
-    const frames = recorder.recordedFrames.map((f) => f.frame);
-    renderer.destroy();
-    return frames;
+      recorder.stop();
+      return recorder.recordedFrames.map((f) => f.frame);
+    } finally {
+      renderer.destroy();
+    }
   }
 
-  for (const [name, tail] of Object.entries(TAILS)) {
+  for (const [name, [tail, marker]] of Object.entries(TAILS)) {
     it(`keeps earlier blocks on screen while a ${name} streams in`, async () => {
       const head = `# Hello\n\n${VISIBLE}`;
-      const frames = await framesDuring(head, (set) => set.text(head + tail));
+      const frames = await framesDuring(head, (set) => set.text(head + tail), marker);
       expect(frames.length).toBeGreaterThan(0);
       expect(frames.every((f) => f.includes(VISIBLE))).toBe(true);
     });
 
     it(`shows the settled ${name} after the stream completes`, async () => {
       const full = `# Hello\n\n${VISIBLE}${tail}`;
-      const frames = await framesDuring(full, (set) => set.streaming(false));
+      const frames = await framesDuring(full, (set) => set.streaming(false), VISIBLE);
       expect(frames.at(-1)).toContain(VISIBLE);
+      expect(frames.at(-1)).toContain(marker);
     });
   }
 
@@ -119,8 +133,8 @@ describe("AssistantReply streaming", () => {
   // upstream in opentui #1469 (c45f25ed). When the dependency upgrade lands
   // this starts passing and `it.failing` turns red: switch it to `it`.
   it.failing("never blanks the reply on stream completion", async () => {
-    const full = `# Hello\n\n${VISIBLE}${TAILS.paragraph}`;
-    const frames = await framesDuring(full, (set) => set.streaming(false));
+    const full = `# Hello\n\n${VISIBLE}${TAILS.paragraph[0]}`;
+    const frames = await framesDuring(full, (set) => set.streaming(false), VISIBLE);
     expect(frames.every((f) => f.includes(VISIBLE))).toBe(true);
   });
 });

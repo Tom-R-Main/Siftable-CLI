@@ -2428,7 +2428,7 @@ function abortedTurnReason(signal: AbortSignal): string {
  * Each entry stays bound to the source definition it copied: once that is
  * withdrawn or replaced, dispatch from this snapshot is refused.
  */
-function snapshotToolRegistry(source: ToolRegistry, policy?: "ask" | "deny" | "allow"): ToolRegistry {
+export function snapshotToolRegistry(source: ToolRegistry, policy?: "ask" | "deny" | "allow"): ToolRegistry {
   const snapshot = new ToolRegistry();
   for (const tool of source.getAll()) {
     if (tool.approval && policy === "deny") continue;

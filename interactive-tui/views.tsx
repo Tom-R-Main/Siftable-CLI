@@ -15,7 +15,9 @@ import type { Theme } from "./theme";
  * streams and after it settles: opentui parses incrementally and keeps the
  * trailing block unstable until `streaming` turns false. Swapping a plain
  * <text> for a freshly mounted <markdown> on completion blanked the reply for
- * several frames while the new instance parsed.
+ * several frames while the new instance parsed. Pass a `syntaxStyle` that
+ * keeps its identity across renders (index.tsx memoizes it): a new style
+ * object makes opentui rebuild every block and blanks the reply again.
  */
 export function AssistantReply(props: {
   text: string;

@@ -9,6 +9,9 @@
 import { describe, expect, it } from "bun:test";
 import { ToolRegistry } from "../agent-harness/framework/registry";
 import { connectProviderOwned, type ContextProvider } from "../agent-harness/framework/context";
+import { createChatAgent, snapshotToolRegistry } from "../agent-harness/framework/chat-agent";
+import { InMemorySessionEventStore } from "../agent-harness/framework/session";
+import type { AIAdapter } from "../agent-harness/framework/adapters/types";
 import type { ToolDefinition } from "../agent-harness/framework/types";
 
 function tool(name: string, calls: string[] = [], label = name): ToolDefinition<any, any> {
@@ -74,11 +77,17 @@ describe("registerOwned", () => {
 });
 
 describe("snapshot liveness", () => {
-  function snapshotOf(source: ToolRegistry): ToolRegistry {
-    const snapshot = new ToolRegistry();
-    for (const t of source.getAll()) snapshot.register(Object.freeze({ ...t }), { live: source.liveness(t.name) });
-    return snapshot;
-  }
+  // The per-request snapshot ChatAgent hands to the adapter and dispatches from.
+  const snapshotOf = (source: ToolRegistry) => snapshotToolRegistry(source);
+
+  it("omits approval-gated tools under deny while binding the rest", async () => {
+    const source = new ToolRegistry();
+    const owned = source.registerOwned("ext", [tool("read"), { ...tool("write"), approval: "required" }]);
+    const snapshot = snapshotToolRegistry(source, "deny");
+    expect(snapshot.listNames()).toEqual(["read"]);
+    owned.dispose();
+    expect(await snapshot.execute("read", {})).toMatchObject({ success: false, executionOutcome: "failed" });
+  });
 
   it("dispatches while the source definition is live", async () => {
     const calls: string[] = [];
@@ -123,8 +132,7 @@ describe("snapshot liveness", () => {
   });
 });
 
-describe("connectProviderOwned", () => {
-  function provider(names: string[], disconnects: string[] = []): ContextProvider {
+function provider(names: string[], disconnects: string[] = []): ContextProvider {
     return {
       metadata: { id: "p", name: "Provider", description: "fixture" },
       async connect() {
@@ -136,8 +144,9 @@ describe("connectProviderOwned", () => {
         } as any;
       },
     } as ContextProvider;
-  }
+}
 
+describe("connectProviderOwned", () => {
   it("leaves a user tool that won the collision in place after dispose", async () => {
     const registry = new ToolRegistry();
     const user = tool("search");
@@ -156,5 +165,35 @@ describe("connectProviderOwned", () => {
     await expect(connectProviderOwned(provider(["dup", "dup"], disconnects), registry)).rejects.toThrow(/more than once/);
     expect(registry.listNames()).toEqual([]);
     expect(disconnects).toEqual(["p"]);
+  });
+});
+
+describe("ChatAgent provider teardown", () => {
+  it("withdraws only the provider's own tools on close", async () => {
+    const offered: string[][] = [];
+    const adapter: AIAdapter = {
+      name: "recording",
+      model: "test",
+      async chat(_messages, registry) {
+        offered.push(registry.getAll().map((t) => t.description));
+        return { text: "ok" };
+      },
+    };
+    const disconnects: string[] = [];
+    const agent = await createChatAgent({
+      adapter,
+      memory: false,
+      tools: [tool("search", [], "user-search")],
+      providers: [provider(["search", "p_only"], disconnects)],
+      session: { id: "teardown", store: new InMemorySessionEventStore() },
+    });
+    await agent.chat("before");
+    await agent.close();
+    expect(disconnects).toEqual(["p"]);
+    await agent.chat("after");
+    expect(offered).toEqual([
+      ["user-search fixture", "provider-p_only fixture"],
+      ["user-search fixture"],
+    ]);
   });
 });
