@@ -1201,6 +1201,22 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
       // One feedback round per turn: a second user-directed answer fails the run.
       let settlementFeedbackGiven = false;
       let activeStepId: string | undefined;
+      // Steering is appended only between steps, never while a step or tool
+      // is open; the journal rejects a user message there.
+      const steeredIds = new Set<string>();
+      const deliverSteering = (): number => {
+        const source = options?.steering;
+        if (!source) return 0;
+        let delivered = 0;
+        for (const {id, message} of source.pending()) {
+          if (steeredIds.has(id) || !message.trim()) continue;
+          steeredIds.add(id);
+          this.session.appendMessage({role: "user", content: message}, baseContext);
+          delivered += 1;
+          source.onDelivered?.(id);
+        }
+        return delivered;
+      };
       let turnStarted = false;
       let terminalRecorded = false;
       let interruptionReason: string | undefined;
@@ -1288,6 +1304,7 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
         let tooLargeRetried = false;
         while (maxRounds-- > 0) {
           throwIfAborted(options?.signal);
+          deliverSteering();
           // Between steps: keep the request inside the lane's byte ceiling (CLI-046).
           if (this.fitRequestBudget(prompt, baseContext, "preemptive") && toolEffectsCheckpointed) effectHistoryCheckpoint = this.currentHistory();
           rounds += 1;
@@ -1621,6 +1638,15 @@ The assistant has reached the tool-calling round limit for this turn. Do not cal
               if (maxRounds <= 0) { maxRounds = -1; break; }
               continue;
             }
+          }
+          // A correction that arrived while the model was answering would
+          // otherwise wait for the next turn. Give the model a step to act on it.
+          if (maxRounds > 0 && deliverSteering() > 0) {
+            assistantTurnComplete = false;
+            finalText = "";
+            effectHistoryCheckpoint = this.currentHistory();
+            effectStateCheckpoint = this.snapshotAdapterSessionState();
+            continue;
           }
           break;
         }

@@ -92,7 +92,9 @@ import { formatReadyProofDecision } from './workProof';
 import type { CompactionReport } from './controlClient';
 import {
   acknowledgeSessionInstruction,
+  enqueueSessionInstruction,
   listPendingSessionInstructions,
+  SessionMailboxPublicationIndeterminateError,
   sessionJournalIdForConversation,
 } from './sessionMailbox';
 import * as bundledAgentHarness from './agent-harness';
@@ -113,6 +115,11 @@ export interface BrainEvent {
 export interface BrainAskResult {
   /** Terminal answer only; intermediate or failed partial text is separate. */
   text: string;
+  /**
+   * Steering accepted during this turn that the turn did not settle. It stays
+   * in the durable session mailbox and reaches the model at the next turn.
+   */
+  steeringCarried?: number;
   progressText?: string;
   verification?: CandidateVerificationReceipt;
   status?: "completed" | "failed" | "interrupted" | "limit_reached";
@@ -2744,6 +2751,49 @@ function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolean> {
   });
 }
 
+/**
+ * The local-harness turn now running, if any. Steering is published to the
+ * conversation's durable mailbox before it is acknowledged to the user, and
+ * the turn reads only the ids accepted here: other mailbox instructions keep
+ * their between-turn delivery.
+ */
+interface ActiveSteering {
+  key: string;
+  accepted: Set<string>;
+  delivered: Set<string>;
+}
+let activeSteering: ActiveSteering | undefined;
+
+export type SteerResult =
+  | { accepted: true; id: string; durability: 'confirmed' | 'unconfirmed' }
+  | { accepted: false; reason: string };
+
+/**
+ * Send a correction into the running turn. It joins the run after the tool
+ * batch in flight settles. Refused when no local-harness turn is running or
+ * the engine cannot take steering; callers queue the input instead.
+ */
+export function steerActiveTurn(text: string): SteerResult {
+  const message = text.trim();
+  if (!message) return {accepted: false, reason: 'nothing to send'};
+  if (currentProvider === CODEX_PROVIDER) return {accepted: false, reason: 'the Codex engine does not take steering'};
+  const turn = activeSteering;
+  if (!turn) return {accepted: false, reason: 'no turn is running'};
+  try {
+    const record = enqueueSessionInstruction(turn.key, message);
+    turn.accepted.add(record.instructionId);
+    return {accepted: true, id: record.instructionId, durability: 'confirmed'};
+  } catch (error) {
+    // Published, but the directory entry may not survive a crash. The turn
+    // can still consume it, so it must not be reported as refused.
+    if (error instanceof SessionMailboxPublicationIndeterminateError) {
+      turn.accepted.add(error.receipt.instructionId);
+      return {accepted: true, id: error.receipt.instructionId, durability: 'unconfirmed'};
+    }
+    return {accepted: false, reason: error instanceof Error ? error.message : String(error)};
+  }
+}
+
 export async function agentHarnessAsk(
   input: ChatInput,
   onEvent: (event: BrainEvent) => void,
@@ -2948,10 +2998,30 @@ async function agentHarnessAskTurn(
       emitPostExplorer({ type: 'provider', providerEvent: event });
     }
   };
+  const steering: ActiveSteering = {key: agentSessionKey(), accepted: new Set(), delivered: new Set()};
+  activeSteering = steering;
+  let steeringSettled = false;
   try {
     for await (const chunk of agent.chat(preparedInput, { stream: true, signal, onProviderEvent,
       completionVerification: options?.completionVerification,
       noninteractive: options?.noninteractive,
+      steering: {
+        pending: () => {
+          if (steering.accepted.size === 0) return [];
+          try {
+            return listPendingSessionInstructions(steering.key)
+              .filter(instruction => steering.accepted.has(instruction.instructionId))
+              .map(instruction => ({id: instruction.instructionId, message: instruction.instruction}));
+          } catch {
+            // An unreadable mailbox leaves steering pending for the next turn.
+            return [];
+          }
+        },
+        onDelivered: id => {
+          steering.delivered.add(id);
+          emitPostExplorer({type: 'status', phase: 'steering', status: 'steering_delivered', steeringId: id});
+        },
+      },
       onVerification: receipt => {
         verification = structuredClone(receipt);
         if (!receipt.completedAt) emitPostExplorer({type: 'status', phase: 'verification', status: 'verifying'});
@@ -3005,20 +3075,55 @@ async function agentHarnessAskTurn(
         });
       }
     }
-    if (!finalResult) return {text: '', progressText: assembled, verification, status: 'failed', providerReceipts, error: 'Agent stream ended without a terminal result.'};
+    if (!finalResult) {
+      steeringSettled = true;
+      const steeringCarried = settleSteering(steering, false);
+      return {text: '', progressText: assembled, verification, status: 'failed', providerReceipts,
+        ...(steeringCarried ? {steeringCarried} : {}), error: 'Agent stream ended without a terminal result.'};
+    }
     const limited = finalResult?.run?.status === 'limit_reached';
     // A legacy done result may carry no text; only strip the final answer when it was actually observed as a response.
     const finalText = finalResult.text ?? '';
     const progressText = lastResponseText !== undefined && lastResponseText.text === finalText ? assembled.slice(0, lastResponseText.start) : assembled;
+    steeringSettled = true;
+    const steeringCarried = settleSteering(steering, true);
     return { text: finalText, progressText, verification, status: limited ? 'limit_reached' : 'completed', result: finalResult, providerReceipts,
+      ...(steeringCarried ? {steeringCarried} : {}),
       ...(limited ? {error: 'Agent reached its tool-round limit; task completion is not verified.'} : {}) };
   } catch (err) {
+    steeringSettled = true;
+    const steeringCarried = settleSteering(steering, false);
     return { text: '', progressText: assembled, verification, status: signal?.aborted ? 'interrupted' : 'failed', providerReceipts,
+      ...(steeringCarried ? {steeringCarried} : {}),
       ...(err && typeof err === 'object' && 'run' in err ? {run: (err as {run: ChatResult['run']}).run} : {}),
       error: agentHarnessErrorMessage(err) };
   } finally {
+    if (!steeringSettled) settleSteering(steering, false);
     finishExplorerEffectiveness();
   }
+}
+
+/**
+ * End a turn's steering window. Acknowledge delivered corrections only when
+ * the turn finished: a failed turn may roll its history back, so its steering
+ * stays in the mailbox and reaches the next turn (at least once, never lost).
+ * Returns how many accepted corrections remain pending.
+ */
+function settleSteering(steering: ActiveSteering, finished: boolean): number {
+  if (activeSteering === steering) activeSteering = undefined;
+  let carried = 0;
+  for (const id of steering.accepted) {
+    if (finished && steering.delivered.has(id)) {
+      try {
+        acknowledgeSessionInstruction(steering.key, id);
+        continue;
+      } catch {
+        // Left pending: the next turn redelivers it.
+      }
+    }
+    carried += 1;
+  }
+  return carried;
 }
 
 /** Drain this process's cached sessions without deleting durable evidence. */

@@ -18,7 +18,9 @@
  *   ↑/↓            prompt history         Shift+Enter  newline
  *   /              command palette (Tab-complete)   @  (todo) entity ref
  *   !cmd           run a shell command, drop output into the transcript
- *   Enter while busy → queue the message; it runs when the turn finishes
+ *   Enter while busy → steer: the message joins the running turn after its
+ *                      in-flight tools settle (queues if the engine can't)
+ *   Tab while busy   → queue the message; it runs when the turn finishes
  *
  * Launched by the oclif `sift interactive` command, which resolves the token
  * and sets SIFT_LOCAL_BRAIN=1 + SIFT_PAT/SIFT_API_URL. The local brain uses the
@@ -39,6 +41,7 @@ import {
   type ChatInputPart,
   type CompactionReport,
   type ControlTransport,
+  type SteerOutcome,
   type RunningAgent,
   type SseEvent,
 } from "./controlClient";
@@ -675,10 +678,7 @@ function App() {
       return;
     }
     if (busy()) {
-      setQueued((q) => [...q, { sendInput: buildChatInput(text), displayText: text,
-        ...(text.startsWith("!") ? {shellCommand: text.slice(1).trim()} : {}) }]);
-      clearUsedPasteChips(text);
-      push({ role: "system", text: `↳ queued (${queued().length}) — runs when this turn finishes` });
+      void steerOrQueue(text);
       return;
     }
     if (text.startsWith("!")) {
@@ -688,6 +688,39 @@ function App() {
     const sendInput = buildChatInput(text);
     clearUsedPasteChips(text);
     void submitOne(sendInput, text);
+  }
+
+  // Accepted steering by id, shown in the transcript once it is delivered.
+  const pendingSteers = new Map<string, string>();
+
+  function queueDraft(text: string, note?: string) {
+    setQueued((q) => [...q, { sendInput: buildChatInput(text), displayText: text,
+      ...(text.startsWith("!") ? {shellCommand: text.slice(1).trim()} : {}) }]);
+    clearUsedPasteChips(text);
+    push({ role: "system", text: `↳ queued (${queued().length}) — runs when this turn finishes${note ? ` (${note})` : ""}` });
+  }
+
+  // Enter while busy. Steering is acknowledged only after the brain has
+  // published it durably; anything it cannot carry becomes the next task.
+  async function steerOrQueue(text: string) {
+    const sendInput = buildChatInput(text);
+    if (text.startsWith("!")) return queueDraft(text);
+    if (typeof sendInput !== "string") return queueDraft(text, "images can't steer a running turn");
+    if (!client.steer) return queueDraft(text, "this connection can't steer a running turn");
+    let outcome: SteerOutcome;
+    try {
+      outcome = await client.steer(sendInput);
+    } catch (err) {
+      outcome = { accepted: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+    if (outcome.accepted === false) return queueDraft(text, outcome.reason);
+    clearUsedPasteChips(text);
+    // The message row appears where the model receives it, not where it was typed.
+    pendingSteers.set(outcome.id, text);
+    push({
+      role: "system",
+      text: `↳ steering saved — joins this run after the tools in flight${outcome.durability === "unconfirmed" ? " (not confirmed crash-safe)" : ""}`,
+    });
   }
 
   function drainNextQueued() {
@@ -858,6 +891,20 @@ function App() {
         (e) => {
           if (e.type === "status" && e.status === "stopping") {
             setStatus("stopping… waiting for active work to settle");
+            return;
+          }
+          if (e.type === "status" && e.status === "steering_delivered") {
+            flushStreamingText();
+            const id = String(e.steeringId ?? "");
+            push({ role: "you", text: pendingSteers.get(id) ?? "(steering)" });
+            pendingSteers.delete(id);
+            assistantIdx = null; // the reply to the steering opens a fresh bubble below it
+            return;
+          }
+          if (e.type === "status" && e.status === "steering_carried") {
+            const n = Number(e.count) || 0;
+            pendingSteers.clear();
+            push({ role: "system", text: `↳ ${n} steering message${n === 1 ? "" : "s"} did not reach this turn — saved for the next one` });
             return;
           }
           if (e.type === "provider") {
@@ -1932,13 +1979,23 @@ function App() {
         return;
       }
 
-      // Slash-completion (no menu, but a lone "/foo" prefix).
+      // Slash-completion (no menu, but a lone "/foo" prefix). While a turn
+      // runs, Tab otherwise queues the draft as the next task.
       if (key.name === "tab") {
         const m = slashMatches();
         if (m.length) {
           key.preventDefault?.();
           key.stopPropagation?.();
           setText(`/${m[0].name} `);
+        } else if (busy() && input().trim() && !input().trim().startsWith("/")) {
+          key.preventDefault?.();
+          key.stopPropagation?.();
+          const text = input().trim();
+          setTranscriptSelected(false);
+          setText("");
+          history.push(text);
+          histIndex = history.length;
+          queueDraft(text);
         }
         return;
       }

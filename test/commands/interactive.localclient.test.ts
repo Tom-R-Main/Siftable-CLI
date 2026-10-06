@@ -24,6 +24,22 @@ describe('LocalControlClient (in-process transport)', () => {
     resetBypass();
   });
 
+  describe('steering', () => {
+    it('reports steering the turn did not settle so the UI can say where it went', async () => {
+      const client = new LocalControlClient({ask: fakeAsk([], {text: 'ok', status: 'completed', steeringCarried: 2})});
+      const received: SseEvent[] = [];
+      await client.send('hi', (e) => received.push(e));
+      expect(received).toContainEqual({type: 'status', status: 'steering_carried', count: 2});
+    });
+
+    it('passes steering through to the brain and returns its outcome unchanged', async () => {
+      const steer = jest.fn(() => ({accepted: false as const, reason: 'no turn is running'}));
+      const client = new LocalControlClient({steer});
+      await expect(client.steer('change course')).resolves.toEqual({accepted: false, reason: 'no turn is running'});
+      expect(steer).toHaveBeenCalledWith('change course');
+    });
+  });
+
   describe('send() event translation', () => {
     it('forwards token / tool_call / tool_result / done events unchanged to the TUI', async () => {
       const stream: BrainEvent[] = [
