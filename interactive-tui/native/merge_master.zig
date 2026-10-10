@@ -113,7 +113,7 @@ fn allowedTransition(from: Status, to: Status) bool {
 
 fn Text(comptime cap: usize) type {
     return struct {
-        bytes: [cap]u8 = [_]u8{0} ** cap,
+        bytes: [cap]u8 = @splat(0),
         len: usize = 0,
 
         const Self = @This();
@@ -186,7 +186,7 @@ const Writer = struct {
 
     fn appendFmt(self: *Writer, comptime fmt: []const u8, args: anytype) void {
         var scratch: [256]u8 = undefined;
-        const rendered = std.fmt.bufPrint(&scratch, fmt, args) catch {
+        const rendered = std.mem.print(&scratch, fmt, args) catch {
             self.overflow = true;
             self.needed += scratch.len;
             return;
@@ -224,7 +224,7 @@ const Writer = struct {
     }
 };
 
-var sessions: [MAX_SESSIONS]Session = [_]Session{.{}} ** MAX_SESSIONS;
+var sessions: [MAX_SESSIONS]Session = @splat(.{});
 var next_session_id: u32 = 1;
 
 fn inputSlice(ptr: [*]const u8, len: u32) []const u8 {
@@ -265,8 +265,8 @@ fn ensureConversationKey(session: *Session) void {
     if (session.conversation_key.len != 0) return;
     var buf: [MAX_PATH_BYTES]u8 = undefined;
     const text = switch (session.role) {
-        .parent => std.fmt.bufPrint(&buf, "{s} parent", .{session.repo_root.slice()}),
-        .child => std.fmt.bufPrint(&buf, "{s} child {s} {d}", .{
+        .parent => std.mem.print(&buf, "{s} parent", .{session.repo_root.slice()}),
+        .child => std.mem.print(&buf, "{s} child {s} {d}", .{
             session.repo_root.slice(),
             session.branch.slice(),
             session.id,
@@ -276,7 +276,7 @@ fn ensureConversationKey(session: *Session) void {
 }
 
 pub export fn sift_mm_reset() void {
-    sessions = [_]Session{.{}} ** MAX_SESSIONS;
+    sessions = @splat(.{});
     next_session_id = 1;
 }
 
@@ -528,7 +528,7 @@ fn createParentForTest() u32 {
     const repo = "/Users/dev/projects/widgets";
     const launch = "/Users/dev";
     const branch = "main";
-    const head = "a" ** 40;
+    const head = &@as([40]u8, @splat('a'));
     const key = "/Users/dev/projects/widgets parent";
     return sift_mm_create_parent(
         repo.ptr,
@@ -552,8 +552,8 @@ fn createWriteChildForTest(parent_id: u32) u32 {
     const cwd = worktree;
     const branch = "sift/feature-abc123";
     const base_branch = "main";
-    const base_commit = "a" ** 40;
-    const head = "b" ** 40;
+    const base_commit = &@as([40]u8, @splat('a'));
+    const head = &@as([40]u8, @splat('b'));
     const key = "child-key";
     return sift_mm_create_child(
         parent_id,
@@ -602,8 +602,8 @@ test "read-only child may share the parent worktree, write child may not" {
     const parent_id = createParentForTest();
     const repo = "/Users/dev/projects/widgets";
     const base_branch = "main";
-    const base_commit = "a" ** 40;
-    const head = "a" ** 40;
+    const base_commit = &@as([40]u8, @splat('a'));
+    const head = &@as([40]u8, @splat('a'));
     const key = "ro-child";
     // read_only sharing the parent worktree is allowed.
     const ro_child = sift_mm_create_child(
@@ -656,24 +656,24 @@ test "status transitions honor the lifecycle and terminal states" {
     const child_id = createWriteChildForTest(parent_id);
 
     // running -> ready_to_merge -> merged is legal.
-    try testing.expectEqual(STATUS_OK, sift_mm_set_status(child_id, @intFromEnum(Status.ready_to_merge), 300));
-    try testing.expectEqual(STATUS_OK, sift_mm_set_status(child_id, @intFromEnum(Status.merged), 400));
+    try testing.expectEqual(STATUS_OK, sift_mm_set_status(child_id, @backingInt(Status.ready_to_merge), 300));
+    try testing.expectEqual(STATUS_OK, sift_mm_set_status(child_id, @backingInt(Status.merged), 400));
     // merged is terminal — no further moves.
-    try testing.expectEqual(STATUS_ILLEGAL_TRANSITION, sift_mm_set_status(child_id, @intFromEnum(Status.running), 500));
+    try testing.expectEqual(STATUS_ILLEGAL_TRANSITION, sift_mm_set_status(child_id, @backingInt(Status.running), 500));
 
     // running -> merged directly is illegal (must pass the gate).
     const child2 = createWriteChildForTest(parent_id);
-    try testing.expectEqual(STATUS_ILLEGAL_TRANSITION, sift_mm_set_status(child2, @intFromEnum(Status.merged), 600));
+    try testing.expectEqual(STATUS_ILLEGAL_TRANSITION, sift_mm_set_status(child2, @backingInt(Status.merged), 600));
     // merge_blocked is recoverable back to running.
-    try testing.expectEqual(STATUS_OK, sift_mm_set_status(child2, @intFromEnum(Status.merge_blocked), 700));
-    try testing.expectEqual(STATUS_OK, sift_mm_set_status(child2, @intFromEnum(Status.running), 800));
+    try testing.expectEqual(STATUS_OK, sift_mm_set_status(child2, @backingInt(Status.merge_blocked), 700));
+    try testing.expectEqual(STATUS_OK, sift_mm_set_status(child2, @backingInt(Status.running), 800));
 }
 
 test "parent carries no lifecycle and unknown sessions are not found" {
     sift_mm_reset();
     const parent_id = createParentForTest();
-    try testing.expectEqual(STATUS_CONFLICT, sift_mm_set_status(parent_id, @intFromEnum(Status.merged), 300));
-    try testing.expectEqual(STATUS_NOT_FOUND, sift_mm_set_status(9999, @intFromEnum(Status.running), 300));
+    try testing.expectEqual(STATUS_CONFLICT, sift_mm_set_status(parent_id, @backingInt(Status.merged), 300));
+    try testing.expectEqual(STATUS_NOT_FOUND, sift_mm_set_status(9999, @backingInt(Status.running), 300));
 }
 
 test "list sessions reports parent and children" {
@@ -713,7 +713,7 @@ test "session snapshot nests git state under \"git\"" {
     try testing.expect(std.mem.indexOf(u8, json, "\"git\":{\"repoRoot\":\"/Users/dev/projects/widgets\"") != null);
     try testing.expect(std.mem.indexOf(u8, json, "\"worktreePath\":\"/Users/dev/.siftable/worktrees/widgets-abc/feature\"") != null);
     try testing.expect(std.mem.indexOf(u8, json, "\"branch\":\"sift/feature-abc123\"") != null);
-    try testing.expect(std.mem.indexOf(u8, json, "\"headCommit\":\"" ++ ("b" ** 40) ++ "\"}") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"headCommit\":\"" ++ (&@as([40]u8, @splat('b'))) ++ "\"}") != null);
 }
 
 test "empty conversation key is derived to match conversationKeyForSession" {
@@ -723,8 +723,8 @@ test "empty conversation key is derived to match conversationKeyForSession" {
     const worktree = "/Users/dev/.siftable/worktrees/widgets-abc/feature";
     const branch = "sift/feature-abc123";
     const base_branch = "main";
-    const base_commit = "a" ** 40;
-    const head = "b" ** 40;
+    const base_commit = &@as([40]u8, @splat('a'));
+    const head = &@as([40]u8, @splat('b'));
     const empty = "";
     const child_id = sift_mm_create_child(
         parent_id,
@@ -752,6 +752,6 @@ test "empty conversation key is derived to match conversationKeyForSession" {
     try testing.expectEqual(STATUS_OK, sift_mm_snapshot_session(child_id, &out, out.len, &written, &needed));
     const json = out[0..written];
     var expected_buf: [256]u8 = undefined;
-    const expected = try std.fmt.bufPrint(&expected_buf, "\"conversationKey\":\"{s} child {s} {d}\"", .{ repo, branch, child_id });
+    const expected = try std.mem.print(&expected_buf, "\"conversationKey\":\"{s} child {s} {d}\"", .{ repo, branch, child_id });
     try testing.expect(std.mem.indexOf(u8, json, expected) != null);
 }

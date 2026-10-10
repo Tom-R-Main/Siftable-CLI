@@ -3,10 +3,16 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+zig_version="$(zig version)"
+if [ "$zig_version" != "0.17.0" ]; then
+  echo "error: native TUI builds require Zig 0.17.0; found $zig_version" >&2
+  exit 1
+fi
+
 suffix="$(bun -e 'import { suffix } from "bun:ffi"; console.log(suffix)')"
 
 zig build test
-zig build native -Doptimize=ReleaseSafe -p .
+zig build native -Doptimize=safe -p .
 
 echo "built native/libcomposer_policy.${suffix}"
 echo "built native/libfs_engine.${suffix}"
@@ -23,7 +29,7 @@ echo "built native/libskill_meta.${suffix}"
 # build break.
 cell_render_src="${SIFT_IMAGE_TO_ASCII_DIR:-$HOME/projects/image-to-ascii}"
 if [ -d "$cell_render_src" ]; then
-  if (cd "$cell_render_src" && zig build -Doptimize=ReleaseSafe); then
+  if (cd "$cell_render_src" && zig build -Doptimize=safe); then
     cp "$cell_render_src/zig-out/bin/cell-render" native/cell-render
     chmod +x native/cell-render
     echo "vendored native/cell-render from $cell_render_src"
