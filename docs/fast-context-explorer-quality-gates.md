@@ -362,7 +362,7 @@ bun run native:bench
 ```
 
 Pass criteria:
-- Correctness passes in Debug/ReleaseSafe lanes before benchmark claims.
+- Correctness passes in debug/safe lanes before benchmark claims.
 - Any speedup claim includes before/after `native:bench` numbers.
 - Native path can be disabled without changing behavior.
 
