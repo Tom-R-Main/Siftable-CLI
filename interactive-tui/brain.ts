@@ -45,6 +45,7 @@ import { assertFileVersion, fileVersion } from './fileObservation';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { normalizeMetaModel } from './metaModels';
+import {CODEX_PROVIDER, DEFAULT_AGENT_HARNESS_MODEL, initialBrainModel} from './initialBrainModel';
 import {
   attachRepoExplorerScout,
   attachRepoExplorerFanout,
@@ -367,16 +368,7 @@ function sessionJournalConfig(of: AgentHarnessModule, key: string): Record<strin
   };
 }
 
-/** Provider id that routes the brain to the Codex app-server engine. */
-const CODEX_PROVIDER = 'codex';
-/** Local harness default model — used to decide when to pass a model override to Codex. */
-const DEFAULT_AGENT_HARNESS_MODEL = 'google/gemini-3.8-flash';
-
-let currentProvider = process.env.EXECUTERM_MODEL_PROVIDER || (process.env.EXECUTERM_MODEL ? 'openrouter' : CODEX_PROVIDER);
-let currentBaseUrl: string | undefined = process.env.SIFT_MODEL_BASE_URL;
-let currentModel = process.env.EXECUTERM_MODEL || (currentProvider === CODEX_PROVIDER ? 'gpt-6.1-sol' : DEFAULT_AGENT_HARNESS_MODEL);
-if (currentProvider.toLowerCase() === 'meta') currentModel = normalizeMetaModel(process.env.EXECUTERM_MODEL);
-let currentEffort: string | undefined = process.env.EXECUTERM_MODEL_EFFORT || undefined;
+let {provider: currentProvider, model: currentModel, baseUrl: currentBaseUrl, effort: currentEffort} = initialBrainModel();
 
 const SCOUT_PROMPT =
   'You are a read-only repo explorer scout. Given a deterministic <repo_explorer_report> and the user request, refine the map only. ' +
