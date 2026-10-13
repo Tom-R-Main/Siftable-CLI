@@ -26,8 +26,14 @@ describe('fresh interactive model defaults', () => {
       .toEqual({provider: 'openrouter', model: 'google/gemini-3.8-flash'});
   });
 
-  it('preserves an explicit personal Meta provider/model override', () => {
+  it('migrates a retired Contributor override to standard Spark', () => {
     expect(initialModel({EXECUTERM_MODEL_PROVIDER: 'meta', EXECUTERM_MODEL: 'muse-spark-1.3-contributor'}))
-      .toEqual({provider: 'meta', model: 'muse-spark-1.3-contributor'});
+      .toEqual({provider: 'meta', model: 'muse-spark-1.3'});
+  });
+  it('defaults explicit Meta to Wonder and retains its exact model override', () => {
+    for (const model of [undefined, 'muse-wonder-1.0']) {
+      expect(initialModel({EXECUTERM_MODEL_PROVIDER: 'meta', ...(model ? {EXECUTERM_MODEL: model} : {})}))
+        .toEqual({provider: 'meta', model: 'muse-wonder-1.0'});
+    }
   });
 });

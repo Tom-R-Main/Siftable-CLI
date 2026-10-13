@@ -450,7 +450,7 @@ describe('model catalog + reasoning effort', () => {
     }
   });
 
-  it('routes standard and Contributor Muse to distinct Meta model IDs', async () => {
+  it('routes standard Spark and Wonder to distinct Meta model IDs', async () => {
     const config = jest.fn(async (input: {provider?: string; model?: string; effort?: string}) => ({
       provider: input.provider ?? 'meta',
       model: input.model ?? 'x',
@@ -462,22 +462,22 @@ describe('model catalog + reasoning effort', () => {
       provider: 'meta',
       model: 'muse-spark-1.3',
     });
-    expect(findModelChoice('muse')?.id).toBe('meta/muse-spark-1.3');
-    expect(findModelChoice('muse-contributor')?.id).toBe('meta/muse-spark-1.3-contributor');
-    expect(findModelChoice('meta/muse-spark-1.3-contributor')?.label).toBe('Muse Spark 1.3 Contributor');
+    expect(findModelChoice('muse')?.id).toBe('meta/muse-wonder-1.0');
+    expect(findModelChoice('wonder')?.id).toBe('meta/muse-wonder-1.0');
+    expect(findModelChoice('meta/muse-wonder-1.0')?.label).toBe('Muse Wonder 1.0');
     expect(findModelChoice('muse')?.reasoningEfforts).toContain('max');
-    expect(findModelChoice('muse-contributor')?.reasoningEfforts).not.toContain('max');
+    expect(findModelChoice('wonder')?.reasoningEfforts).toContain('max');
 
     process.env.META_API_KEY = 'test-meta-key';
     try {
       await runInteractiveCommand(ctx, '/model spark max');
-      await runInteractiveCommand(ctx, '/model muse-contributor high');
+      await runInteractiveCommand(ctx, '/model wonder high');
     } finally {
       delete process.env.META_API_KEY;
     }
     expect(config).toHaveBeenCalledWith({provider: 'meta', model: 'muse-spark-1.3', effort: 'max'});
-    expect(config).toHaveBeenCalledWith({provider: 'meta', model: 'muse-spark-1.3-contributor', effort: 'high'});
-    expect(messages.at(-1)?.text).toContain('meta/muse-spark-1.3-contributor');
+    expect(config).toHaveBeenCalledWith({provider: 'meta', model: 'muse-wonder-1.0', effort: 'high'});
+    expect(messages.at(-1)?.text).toContain('meta/muse-wonder-1.0');
   });
 
   it('catalogues GPT-6.1 Sol and preserves retained Codex tiers', async () => {
@@ -631,7 +631,7 @@ describe('model catalog + reasoning effort', () => {
   it.each([
     ['/model sol ultra', 'GPT-6.1 Sol', 'Supported efforts: low, medium, high, xhigh, max.'],
     ['/model codex/gpt-5.6-terra ultra', 'GPT-5.6 Terra', 'Supported efforts: low, medium, high, xhigh, max.'],
-    ['/model muse-contributor max', 'Muse Spark 1.3 Contributor', 'Supported efforts: minimal, low, medium, high, xhigh.'],
+    ['/model wonder none', 'Muse Wonder 1.0', 'Supported efforts: minimal, low, medium, high, xhigh, max.'],
     ['/model morph high', 'Morph v3 Large', 'This model does not offer configurable reasoning effort.'],
   ])('rejects an effort outside the selected catalog model: %s', async (command, label, guidance) => {
     const config = jest.fn(async () => ({provider: 'codex', model: 'gpt-6.1-sol'}));

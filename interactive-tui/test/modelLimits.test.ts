@@ -15,6 +15,8 @@ import {
 } from "../modelLimits";
 import { buildCompactionConfig } from "../agent-harness/framework/compaction";
 
+import {META_DEFAULT_MODEL, META_SPARK_MODEL, normalizeMetaModel} from '../metaModels';
+
 const ENV_KEY = "SIFT_CONTEXT_WINDOW";
 const savedEnv = process.env[ENV_KEY];
 
@@ -35,8 +37,9 @@ describe("resolveContextWindow", () => {
       .toEqual({ window: 1_000_000, source: "model" });
     expect(resolveContextWindow("z-ai/glm-5.2"))
       .toEqual({ window: 1_000_000, source: "model" });
-    expect(resolveContextWindow("muse-spark-1.3-contributor"))
-      .toEqual({ window: 1_000_000, source: "model" });
+    for (const model of ["muse-wonder-1.0", "muse-spark-1.3"]) {
+      expect(resolveContextWindow(model)).toEqual({ window: 1_048_576, source: "model" });
+    }
   });
 
   it("resolves the current Claude models to their exact 1M window", () => {
@@ -106,5 +109,43 @@ describe.serial("buildCompactionConfig window resolution", () => {
     const config = buildCompactionConfig("x-ai/grok-4.6");
     expect(config.contextWindow).toBe(FALLBACK_CONTEXT_WINDOW);
     expect(config.contextWindowSource).toBe("fallback");
+  });
+});
+
+
+const prefixes = ['', 'meta:', 'meta/'];
+
+describe('Meta model normalization', () => {
+  it('defaults the provider to Wonder', () => {
+    expect(normalizeMetaModel()).toBe(META_DEFAULT_MODEL);
+    expect(normalizeMetaModel('  ')).toBe(META_DEFAULT_MODEL);
+  });
+
+  for (const prefix of prefixes) {
+    for (const version of ['1.1', '1.2', '1.3', '1-1', '1-2', '1-3']) {
+      for (const suffix of ['', '-contributor']) {
+        const model = `${prefix}muse-spark-${version}${suffix}`;
+        it(`migrates ${model} to standard Spark`, () => {
+          expect(normalizeMetaModel(model)).toBe(META_SPARK_MODEL);
+          expect(normalizeMetaModel(`  ${model.toUpperCase()}  `)).toBe(META_SPARK_MODEL);
+        });
+      }
+    }
+    it(`normalizes Wonder aliases with prefix ${prefix || '(bare)'}`, () => {
+      for (const alias of ['meta', 'muse', 'wonder', 'muse-wonder', 'muse-wonder-1.0', 'muse-wonder-1-0']) {
+        expect(normalizeMetaModel(prefix + alias)).toBe(META_DEFAULT_MODEL);
+      }
+    });
+    it(`normalizes Spark aliases with prefix ${prefix || '(bare)'}`, () => {
+      for (const alias of ['spark', 'muse-spark', 'muse-contributor', 'spark-contributor']) {
+        expect(normalizeMetaModel(prefix + alias)).toBe(META_SPARK_MODEL);
+      }
+    });
+  }
+
+  it('retains unknown model names while removing the direct provider prefix', () => {
+    expect(normalizeMetaModel('meta:future-model')).toBe('future-model');
+    expect(normalizeMetaModel('meta/Future-Model')).toBe('Future-Model');
+    expect(normalizeMetaModel('other/future-model')).toBe('other/future-model');
   });
 });

@@ -5,6 +5,7 @@ import {existsSync, readFileSync, rmSync} from "node:fs";
 import {isAbsolute, join} from "node:path";
 import {rolloutPathForKey} from "./threadEngine";
 import {SiftClient} from "@siftable/mcp-server/dist/exfClient.js";
+import { normalizeMetaModel } from './metaModels';
 import {doneFallbackText, eventTextDelta, type CompactionReport, type ControlTransport, type RunningAgent} from "./controlClient";
 import {collectDailyReviewContext, collectGitRecapSummary, collectLocalGitSummary, type DailyReviewContext} from "../dist/lib/daily-review-context.js";
 import {loadPrefs, savePrefs} from "./prefs";
@@ -382,35 +383,28 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     defaultEffort: "high",
   },
   {
-    // Meta documents max reasoning for the standard tier only:
-    // https://dev.meta.ai/docs/reasoning
-    id: "meta/muse-spark-1.3",
+    id: "meta/muse-wonder-1.0",
     provider: "meta",
-    model: "muse-spark-1.3",
-    label: "Muse Spark 1.3",
-    description: "direct Meta API · standard tier",
-    aliases: ["muse", "spark", "muse-spark", "muse-spark-1.3", "meta"],
+    model: "muse-wonder-1.0",
+    label: "Muse Wonder 1.0",
+    description: "direct Meta API · 1M context",
+    aliases: ["muse", "meta", "wonder", "muse-wonder", "muse-wonder-1.0"],
     auth: "api-key",
     requiredEnv: "META_API_KEY",
     keyHint: "/key meta <key>",
     reasoningEfforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
   },
   {
-    id: "meta/muse-spark-1.3-contributor",
+    id: "meta/muse-spark-1.3",
     provider: "meta",
-    model: "muse-spark-1.3-contributor",
-    label: "Muse Spark 1.3 Contributor",
-    description: "direct Meta API · contributor tier",
-    aliases: [
-      "muse-contributor",
-      "spark-contributor",
-      "muse-spark-1.3-contributor",
-      "meta/muse-spark-1.3-contributor",
-    ],
+    model: "muse-spark-1.3",
+    label: "Muse Spark 1.3",
+    description: "direct Meta API · standard tier",
+    aliases: ["spark", "muse-spark", "muse-spark-1.3"],
     auth: "api-key",
     requiredEnv: "META_API_KEY",
     keyHint: "/key meta <key>",
-    reasoningEfforts: ["minimal", "low", "medium", "high", "xhigh"],
+    reasoningEfforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
   },
   {
     id: "openrouter/x-ai/grok-4.6",
@@ -844,8 +838,9 @@ function modelChoiceText(choice: InteractiveModelChoice): string {
 }
 
 function resolveModelChoice(raw: string): InteractiveModelChoice | null {
-  const id = raw.trim().toLowerCase();
-  if (!id) return null;
+  const rawId = raw.trim().toLowerCase();
+  if (!rawId) return null;
+  const id = normalizeMetaModel(rawId);
   return INTERACTIVE_MODEL_CHOICES.find((choice) => {
     const keys = [choice.id, choice.model, choice.label, choice.provider, ...(choice.aliases ?? [])];
     return keys.some((key) => key.toLowerCase() === id);

@@ -116,6 +116,6 @@ describe('/model recall wiring', () => {
     const { ctx, config } = context();
     await runInteractiveCommand(ctx, '/model muse');
     expect(process.env.META_API_KEY).toBe('remembered-meta');
-    expect(config).toHaveBeenCalledWith({ provider: 'meta', model: 'muse-spark-1.3', effort: '' });
+    expect(config).toHaveBeenCalledWith({ provider: 'meta', model: 'muse-wonder-1.0', effort: '' });
   });
 });

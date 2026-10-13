@@ -1449,7 +1449,7 @@ describe('interactive repo explorer preflight', () => {
       else delete process.env.OPENROUTER_API_KEY;
       if (metaKey) process.env.META_API_KEY = 'test-sentinel';
       else delete process.env.META_API_KEY;
-      setBrainModel({provider: 'meta', model: 'muse-spark-1.3-contributor'});
+      setBrainModel({provider: 'meta', model: 'muse-wonder-1.0'});
       const events: BrainEvent[] = [];
       await agentHarnessAsk('scour this repo and explain how local search works', event => events.push(event));
       const result = events.find(event => event.toolResult?.name === 'repo_explorer_fanout')?.toolResult;
@@ -1464,9 +1464,9 @@ describe('interactive repo explorer preflight', () => {
         expect(configured).toHaveLength(4);
         expect(configured.every(route => route.provider === expected)).toBe(true);
         expect(configured.every(route => route.model === (expected === 'meta'
-          ? 'muse-spark-1.3-contributor' : 'google/gemini-3.1-flash-lite'))).toBe(true);
+          ? 'muse-wonder-1.0' : 'google/gemini-3.1-flash-lite'))).toBe(true);
         expect(result?.success).toBe(true);
-        if (expected === 'meta') expect(result?.output).toContain('using active model meta/muse-spark-1.3-contributor');
+        if (expected === 'meta') expect(result?.output).toContain('using active model meta/muse-wonder-1.0');
         else expect(result?.output).not.toContain('using active model');
       }
     } finally {

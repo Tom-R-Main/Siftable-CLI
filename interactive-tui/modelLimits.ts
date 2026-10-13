@@ -37,7 +37,8 @@ export const CONTEXT_WINDOW_OVERRIDE_MAX = 100_000_000;
  * answer.
  */
 const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
-  "muse-spark-1.3-contributor": 1_000_000,
+  "muse-wonder-1.0": 1_048_576,
+  "muse-spark-1.3": 1_048_576,
   "moonshotai/kimi-k3": 1_000_000,
   "kimi-k3": 1_000_000,
   "z-ai/glm-5.2": 1_000_000,

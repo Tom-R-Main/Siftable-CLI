@@ -7,6 +7,7 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
+import { normalizeMetaModel } from "../../metaModels.js";
 import type { AIAdapter, AdapterConfig } from "./adapters/types.js";
 import { createGeminiAdapter } from "./adapters/gemini.js";
 import { createOpenAIAdapter, createOpenRouterAdapter, createChatCompletionsAdapter } from "./adapters/openai.js";
@@ -34,7 +35,7 @@ const PROVIDER_MAP: Record<string, AdapterFactory> = {
     ...config,
     name: "Meta",
     apiKey: config?.apiKey || process.env.META_API_KEY || "",
-    model: config?.model || "muse-spark-1.3-contributor",
+    model: normalizeMetaModel(config?.model),
     baseUrl: config?.baseUrl || "https://api.meta.ai/v1",
   }),
   xai: createXAIAdapter,

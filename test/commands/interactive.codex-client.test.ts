@@ -1450,7 +1450,7 @@ describe('owned Codex sidecar drain', () => {
     const {client, proc} = await readyClient();
     const prior = getBrainModel();
     __setCodexClientForTests(client);
-    setBrainModel({provider: 'meta', model: 'muse-spark-1.3-contributor'});
+    setBrainModel({provider: 'meta', model: 'muse-wonder-1.0'});
     try {
       let closed = false;
       const closing = closeBrain().then(() => { closed = true; });

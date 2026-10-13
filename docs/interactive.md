@@ -101,7 +101,7 @@ Git-native parent/child sessions, each in its own worktree.
 
 The model picker (`/model`) is a two-stage overlay: choose a **model** (↑/↓), then a **reasoning effort** (←/→). Press `f` or `*` on a model to star it as a favorite — starred models float to the top with a `★` marker. Rows adapt to terminal width and height, preserving a gap between model names and descriptions. Your choice and favorites persist to `~/.siftable/prefs.json` and are restored on the next launch. Older `model-favorites.json` favorites are restored only when shared preferences have no favorites list; the next save writes them into `prefs.json`.
 
-**Muse Spark 1.3** and **Muse Spark 1.3 Contributor** are available through the direct Meta adapter: `/model muse` selects the standard tier; `/model muse-contributor` selects Contributor. It requires `META_API_KEY`; `/key meta <key>` sets the key and remembers it in the system keychain for the next launch. The selection is restored on the next launch.
+**Muse Wonder 1.0** and **Muse Spark 1.3** are available through the direct Meta adapter: `/model muse` (or `/model wonder`) selects Wonder; `/model spark` selects standard Spark. Retired Contributor selections resolve to standard Spark. It requires `META_API_KEY`; `/key meta <key>` sets the key and remembers it in the system keychain for the next launch. The selection is restored on the next launch.
 
 New installations start with **GPT-6.1 Sol through Codex**. A saved model selection takes precedence on subsequent launches, including a personal Muse selection. Older GPT-5.6 Sol and GPT-6 Sol selections resolve to GPT-6.1 Sol.
 
@@ -112,8 +112,8 @@ The catalog includes:
 - **Claude Opus 5.5** — two routes: **Door A** via OpenRouter (`openrouter/anthropic/claude-opus-5.5`), and **Door B** direct to the Anthropic API (`anthropic/claude-opus-5-5`, needs `ANTHROPIC_API_KEY`; alias `claude-api`). Adaptive-thinking efforts: low/medium/high/xhigh/max, default medium. Saved Claude Opus 5 selections and `claude-opus-5` aliases resolve here.
 - **Claude Fable 5.1** — via OpenRouter (`openrouter/anthropic/claude-fable-5.1`) or direct (`anthropic/claude-fable-5-1`). Efforts: low/medium/high/xhigh/max.
 - **Claude Sonnet 5.5** — via OpenRouter (`openrouter/anthropic/claude-sonnet-5.5`) or direct (`anthropic/claude-sonnet-5-5`); alias `sonnet`. Efforts: low/medium/high/xhigh/max. Older Sonnet selections resolve here.
-- **Muse Spark 1.3** — direct to the Meta API (`meta/muse-spark-1.3`, needs `META_API_KEY`; aliases `spark`, `muse`). Efforts: minimal/low/medium/high/xhigh/max.
-- **Muse Spark 1.3 Contributor** — separate Meta tier (`meta/muse-spark-1.3-contributor`; aliases `spark-contributor`, `muse-contributor`). Efforts: minimal/low/medium/high/xhigh.
+- **Muse Spark 1.3** — direct to the Meta API (`meta/muse-spark-1.3`, needs `META_API_KEY`; alias `spark`). Efforts: minimal/low/medium/high/xhigh/max.
+- **Muse Wonder 1.0** — direct Meta API (`meta/muse-wonder-1.0`, needs `META_API_KEY`; aliases `wonder`, `muse`, `meta`). Context: 1,048,576 tokens. Efforts: minimal/low/medium/high/xhigh/max.
 - **GPT-6 Astra** — through the Codex engine (`codex/gpt-6-astra`; alias `astra`). Efforts include ultra.
 - **Claude Haiku 4.5**, **Gemini 3.x Flash / Flash-Lite**, **GPT-5.4 mini / nano** — available via OpenRouter or first-party keys; the Flash/Haiku/mini/nano models are used as Explorer scouts.
 - **Morph v3 Large** — apply-only (fast edit application); not a conversational brain.

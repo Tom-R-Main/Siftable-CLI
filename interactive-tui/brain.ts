@@ -44,6 +44,7 @@ import { ProcessJobManager } from './processJobs';
 import { assertFileVersion, fileVersion } from './fileObservation';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { normalizeMetaModel } from './metaModels';
 import {
   attachRepoExplorerScout,
   attachRepoExplorerFanout,
@@ -374,6 +375,7 @@ const DEFAULT_AGENT_HARNESS_MODEL = 'google/gemini-3.8-flash';
 let currentProvider = process.env.EXECUTERM_MODEL_PROVIDER || (process.env.EXECUTERM_MODEL ? 'openrouter' : CODEX_PROVIDER);
 let currentBaseUrl: string | undefined = process.env.SIFT_MODEL_BASE_URL;
 let currentModel = process.env.EXECUTERM_MODEL || (currentProvider === CODEX_PROVIDER ? 'gpt-6.1-sol' : DEFAULT_AGENT_HARNESS_MODEL);
+if (currentProvider.toLowerCase() === 'meta') currentModel = normalizeMetaModel(process.env.EXECUTERM_MODEL);
 let currentEffort: string | undefined = process.env.EXECUTERM_MODEL_EFFORT || undefined;
 
 const SCOUT_PROMPT =
@@ -498,7 +500,7 @@ export function setBrainModel(input: {
   if (input.provider && input.provider !== currentProvider && input.baseUrl === undefined) currentBaseUrl = undefined;
   if (input.provider) currentProvider = input.provider;
   if (input.baseUrl !== undefined) currentBaseUrl = input.baseUrl || undefined;
-  if (input.model) currentModel = input.model;
+  if (input.model) currentModel = currentProvider.toLowerCase() === 'meta' ? normalizeMetaModel(input.model) : input.model;
   // effort is explicitly settable to "" to clear it back to provider default.
   if (input.effort !== undefined) currentEffort = input.effort || undefined;
   if (input.apiKey && input.provider) {

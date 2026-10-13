@@ -12,9 +12,21 @@ const messages: ChatMessage[] = [{ role: "user", content: "hello" }];
 const completion = (content = "hello") => ({ id: "response-1", model: "served-model", usage: { prompt_tokens: 12, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 4 } }, choices: [{ finish_reason: "stop", message: { role: "assistant", content } }] });
 const json = (value: unknown, status = 200, headers: Record<string, string> = {}) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json", ...headers } });
 const sse = (events: unknown[], done = true) => new Response(events.map(event => `data: ${JSON.stringify(event)}\r\n\r\n`).join("") + (done ? "data: [DONE]\r\n\r\n" : ""), { headers: { "content-type": "text/event-stream", "x-request-id": "upstream-id" } });
-const adapter = (fetchImpl: typeof fetch, events: AdapterEvent[], extra = {}) => createChatCompletionsAdapter({ name: "Meta", model: "muse-spark-1.3-contributor", apiKey: "secret-never-log", baseUrl: "https://api.meta.ai/v1/", fetchImpl, onEvent: event => events.push(event), retry: { baseDelayMs: 0, maxDelayMs: 20 }, ...extra });
+const adapter = (fetchImpl: typeof fetch, events: AdapterEvent[], extra = {}) => createChatCompletionsAdapter({ name: "Meta", model: "muse-wonder-1.0", apiKey: "secret-never-log", baseUrl: "https://api.meta.ai/v1/", fetchImpl, onEvent: event => events.push(event), retry: { baseDelayMs: 0, maxDelayMs: 20 }, ...extra });
 
 describe("provider transport reliability", () => {
+  it.each(['muse-spark-1.3-contributor', 'meta:muse-spark-1.3-contributor', 'meta/muse-spark-1.2-contributor', 'muse-spark-1-2-contributor'])('normalizes retired Contributor %s when the generic Meta adapter is called directly', async retiredModel => {
+    const events: AdapterEvent[] = [];
+    let sentModel: string | undefined;
+    const fetchImpl = async (_url: string | URL | Request, init?: RequestInit) => {
+      sentModel = JSON.parse(String(init?.body)).model;
+      return new Response(JSON.stringify({choices: [{finish_reason: 'stop', message: {role: 'assistant', content: 'ok'}}]}), {headers: {'content-type': 'application/json'}});
+    };
+    const client = adapter(fetchImpl as typeof fetch, events, {model: retiredModel});
+    await client.chat([{role: 'user', content: 'hello'}], new ToolRegistry(), {stream: false});
+    expect(client.model).toBe('muse-spark-1.3');
+    expect(sentModel).toBe('muse-spark-1.3');
+  });
   it("defaults GPT-6.1 Sol to medium reasoning through Responses", async () => {
     const client = createOpenAIAdapter({ apiKey: "test", fetchImpl: (async (url, init) => {
       expect(String(url)).toBe("https://api.openai.com/v1/responses");
@@ -215,7 +227,7 @@ describe("provider transport reliability", () => {
     expect(events.filter(event => event.type === "provider.attempt")).toHaveLength(3);
     expect(events.filter(event => event.type === "provider.retry")).toHaveLength(2);
     expect(events.filter(event => event.type === "provider.attempt").every(event => event.oneShot)).toBe(true);
-    expect(result.providerReceipts?.[0]).toMatchObject({ provider: "Meta", requestedModel: "muse-spark-1.3-contributor", servedModel: "served-model", providerRequestId: "upstream-123", responseId: "response-1", attempts: 3, mode: "buffered", outcome: "completed", usage: { inputTokens: 12, outputTokens: 5, cachedInputTokens: 4 } });
+    expect(result.providerReceipts?.[0]).toMatchObject({ provider: "Meta", requestedModel: "muse-wonder-1.0", servedModel: "served-model", providerRequestId: "upstream-123", responseId: "response-1", attempts: 3, mode: "buffered", outcome: "completed", usage: { inputTokens: 12, outputTokens: 5, cachedInputTokens: 4 } });
     expect(JSON.stringify(events)).not.toContain("secret-never-log");
   });
 

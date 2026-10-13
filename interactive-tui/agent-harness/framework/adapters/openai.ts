@@ -8,6 +8,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { normalizeMetaModel } from "../../../metaModels.js";
 import { compatibleBaseUrl, outputTokenLimit, providerTransport, readProviderResponse, responsesVisibleOutput, ProviderHttpError, ProviderIncompleteError } from "./transport.js";
 import type {
   AIAdapter,
@@ -261,7 +262,12 @@ export interface ChatCompletionsConfig extends Partial<AdapterConfig> {
  * Used by OpenRouter and any other compatible provider.
  */
 export function createChatCompletionsAdapter(config: ChatCompletionsConfig): AIAdapter {
-  const { name, model, apiKey, reasoningEffort, provider } = config;
+  const { name, apiKey, reasoningEffort, provider } = config;
+  const isMeta = name.toLowerCase() === "meta";
+  const model = isMeta ? normalizeMetaModel(config.model) : config.model;
+  if (isMeta && reasoningEffort === "none") {
+    throw new Error("Meta Muse models do not support reasoning effort none; use minimal, low, medium, high, xhigh, or max.");
+  }
   const baseUrl = compatibleBaseUrl(config.baseUrl);
   const maxOutputTokens = outputTokenLimit(config.maxOutputTokens);
   const sysPrompt = config.systemPrompt ?? "You are a helpful assistant with access to tools. Use tools when they're relevant.";

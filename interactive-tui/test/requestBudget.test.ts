@@ -14,7 +14,7 @@ function toolMessage(id: string, bytes: number): ChatMessage {
 
 test('lane ceilings: Meta is tight, others generous, env overrides', () => {
   expect(requestByteCeiling('Meta')).toBe(200_000);
-  expect(requestByteCeiling('muse-spark-1.3-contributor')).toBe(200_000);
+  expect(requestByteCeiling('muse-wonder-1.0')).toBe(200_000);
   expect(requestByteCeiling('openai')).toBe(800_000);
   process.env.SIFT_REQUEST_BYTE_CEILING = '1234';
   try { expect(requestByteCeiling('Meta')).toBe(1234); } finally { delete process.env.SIFT_REQUEST_BYTE_CEILING; }
@@ -53,7 +53,7 @@ async function harness(script: Array<AdapterResponse | Error>, opts: {provider?:
   const requests: ChatMessage[][] = [];
   const agent = await createChatAgent({memory: false, maxToolRounds: 12, session: {id: 'request-budget'}, executionContext: () => ({workspaceRoot: root, sessionCwd: root}),
     tools: [defineTool({name: 'read_file', description: 'Read a file for the test', inputSchema: {type: 'object', properties: {}}, handler: async () => ok('y'.repeat(opts.big ?? 60_000))})],
-    adapter: {name: opts.provider ?? 'Meta', model: 'muse-spark-1.3-contributor', chat: async (history) => {
+    adapter: {name: opts.provider ?? 'Meta', model: 'muse-wonder-1.0', chat: async (history) => {
       requests.push(structuredClone(history));
       const next = script.shift(); if (!next) throw new Error('Unexpected extra model request');
       if (next instanceof Error) throw next; return next;

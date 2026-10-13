@@ -6,7 +6,7 @@ import {resolveAdapter} from '../../interactive-tui/agent-harness/framework/chat
 import {ToolRegistry} from '../../interactive-tui/agent-harness/framework/registry';
 
 
-const model = 'muse-spark-1.3-contributor';
+const model = 'muse-wonder-1.0';
 const id = `meta/${model}`;
 const originalKey = process.env.META_API_KEY;
 const originalOpenAIKey = process.env.OPENAI_API_KEY;
@@ -40,17 +40,60 @@ function context() {
 }
 
 describe('direct Meta Muse model selection', () => {
+  it('removes Contributor from the picker and migrates retained aliases to Spark', () => {
+    expect(modelSuggestions().some(choice => /contributor/i.test(choice.id + choice.label))).toBe(false);
+    for (const alias of ['muse-contributor', 'spark-contributor', 'muse-spark-1.3-contributor', 'meta/muse-spark-1.3-contributor']) {
+      expect(findModelChoice(alias)).toMatchObject({provider: 'meta', model: 'muse-spark-1.3'});
+    }
+  });
+
+  it.each(['meta/muse-spark-1.3-contributor', 'meta:muse-spark-1.3-contributor', 'meta/muse-spark-1.2-contributor'])('restores persisted Contributor ID %s as standard Spark with its saved effort', async retiredId => {
+    jest.mocked(prefs.loadPrefs).mockReturnValueOnce({model: {id: retiredId, effort: 'high'}});
+    const {ctx, config} = context();
+    await restoreSavedModel(ctx);
+    expect(config).toHaveBeenCalledWith({provider: 'meta', model: 'muse-spark-1.3', effort: 'high'});
+  });
+
+  it('normalizes direct brain Contributor configuration before creating agents', () => {
+    const prior = getBrainModel();
+    try {
+      expect(setBrainModel({provider: 'meta', model: 'muse-spark-1.3-contributor', effort: ''}))
+        .toEqual({provider: 'meta', model: 'muse-spark-1.3', effort: undefined});
+    } finally {
+      setBrainModel({...prior, effort: prior.effort ?? ''});
+    }
+  });
+
+  it.each([undefined, 'muse-spark-1.3-contributor', 'meta/muse-spark-1.3-contributor', 'meta:muse-spark-1.3-contributor', 'meta:muse-spark-1.2-contributor'])('routes Meta adapter selection %s to an active model', async selectedModel => {
+    process.env.META_API_KEY = 'fixture-meta-key';
+    const fetchImpl = jest.fn(async () => new Response(JSON.stringify({
+      choices: [{finish_reason: 'stop', message: {role: 'assistant', content: 'ok'}}],
+    }), {headers: {'content-type': 'application/json'}}));
+    const adapter = resolveAdapter({provider: 'meta', model: selectedModel, adapterConfig: {fetchImpl: fetchImpl as unknown as typeof fetch}});
+    await adapter.chat([{role: 'user', content: 'hello'}], new ToolRegistry(), {stream: false});
+    const [, init] = (fetchImpl.mock.calls as unknown as Array<[string, RequestInit]>)[0]!;
+    expect(JSON.parse(String(init.body)).model).toBe(selectedModel ? 'muse-spark-1.3' : model);
+  });
+
+  it('rejects none through the Meta adapter before fetching', () => {
+    process.env.META_API_KEY = 'fixture-meta-key';
+    const fetchImpl = jest.fn();
+    expect(() => resolveAdapter({provider: 'meta', model, reasoningEffort: 'none', adapterConfig: {fetchImpl}}))
+      .toThrow('do not support reasoning effort none');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('exposes the exact model and aliases in the picker', () => {
-    for (const alias of [id, model, 'muse-contributor', 'spark-contributor']) {
+    for (const alias of [id, model, 'muse', 'meta', 'muse-wonder', 'wonder']) {
       expect(findModelChoice(alias)).toMatchObject({id, provider: 'meta', model, requiredEnv: 'META_API_KEY'});
     }
-    expect(modelSuggestions('muse')).toContainEqual(expect.objectContaining({id, label: 'Muse Spark 1.3 Contributor'}));
+    expect(modelSuggestions('muse')).toContainEqual(expect.objectContaining({id, label: 'Muse Wonder 1.0'}));
   });
 
   it('selects and persists the Meta route with its own key', async () => {
     process.env.META_API_KEY = 'fixture-meta-key';
     const {ctx, config} = context();
-    await runInteractiveCommand(ctx, '/model muse-contributor');
+    await runInteractiveCommand(ctx, '/model muse-wonder');
     expect(config).toHaveBeenCalledWith({provider: 'meta', model, effort: ''});
     expect(prefs.savePrefs).toHaveBeenCalledWith({model: {id}});
   });
@@ -81,7 +124,7 @@ describe('direct Meta Muse model selection', () => {
       setBrainModel(initial);
       try {
         if (provider === 'meta') {
-          await runInteractiveCommand(ctx, '/model muse-contributor');
+          await runInteractiveCommand(ctx, '/model muse-wonder');
           expect(config).not.toHaveBeenCalled();
         }
         await runInteractiveCommand(ctx, `/key ${provider} fixture-provider-key`);
@@ -89,7 +132,7 @@ describe('direct Meta Muse model selection', () => {
         expect(process.env[`${provider.toUpperCase()}_API_KEY`]).toBe('fixture-provider-key');
         expect(JSON.stringify(push.mock.calls)).not.toContain('fixture-provider-key');
         if (provider === 'meta') {
-          await runInteractiveCommand(ctx, '/model muse-contributor');
+          await runInteractiveCommand(ctx, '/model muse-wonder');
           expect(getBrainModel()).toEqual({provider: 'meta', model, effort: undefined});
         }
       } finally {
@@ -126,7 +169,7 @@ describe('direct Meta Muse model selection', () => {
       config.mockImplementation(async input => setBrainModel(input));
       setBrainModel({provider: 'codex', model: 'gpt-5.6-sol', effort: 'xhigh'});
       try {
-        if (selection === 'command') await runInteractiveCommand(ctx, '/model muse-contributor');
+        if (selection === 'command') await runInteractiveCommand(ctx, '/model muse-wonder');
         else {
           jest.mocked(prefs.loadPrefs).mockReturnValueOnce({model: {id}});
           await restoreSavedModel(ctx);

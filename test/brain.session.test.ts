@@ -175,14 +175,14 @@ describe('getAgent — per-session keyed agents', () => {
     const prior = getBrainModel();
     const priorKey = process.env.META_API_KEY;
     setSessionCwd(dirs.parent);
-    setBrainModel({provider: 'meta', model: 'muse-spark-1.3-contributor', effort: 'medium'});
+    setBrainModel({provider: 'meta', model: 'muse-wonder-1.0', effort: 'medium'});
     try {
       const before = (await getAgent()) as unknown as FakeAgent;
       setBrainModel({provider: 'meta', apiKey: 'fixture-refreshed-key'});
       const after = (await getAgent()) as unknown as FakeAgent;
       expect(after).not.toBe(before);
       expect(before.close).toHaveBeenCalledTimes(1);
-      expect(after.__config).toMatchObject({provider: 'meta', model: 'muse-spark-1.3-contributor', reasoningEffort: 'medium'});
+      expect(after.__config).toMatchObject({provider: 'meta', model: 'muse-wonder-1.0', reasoningEffort: 'medium'});
       expect(process.env.META_API_KEY).toBe('fixture-refreshed-key');
     } finally {
       if (priorKey === undefined) delete process.env.META_API_KEY;
