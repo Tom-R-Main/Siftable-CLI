@@ -366,7 +366,7 @@ export function createChatCompletionsAdapter(config: ChatCompletionsConfig): AIA
 
       const receipts: NonNullable<AdapterResponse["providerReceipts"]> = [];
       const call = async (requestBody: Record<string, unknown>) => {
-        const transport = providerTransport(config, options);
+        const transport = providerTransport({...config, model}, options);
         try {
           const response = await transport.fetch(`${baseUrl}/chat/completions`, {
             method: "POST",

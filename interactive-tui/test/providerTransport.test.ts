@@ -23,10 +23,41 @@ describe("provider transport reliability", () => {
       return new Response(JSON.stringify({choices: [{finish_reason: 'stop', message: {role: 'assistant', content: 'ok'}}]}), {headers: {'content-type': 'application/json'}});
     };
     const client = adapter(fetchImpl as typeof fetch, events, {model: retiredModel});
-    await client.chat([{role: 'user', content: 'hello'}], new ToolRegistry(), {stream: false});
+    const result = await client.chat([{role: 'user', content: 'hello'}], new ToolRegistry(), {stream: false});
     expect(client.model).toBe('muse-spark-1.3');
     expect(sentModel).toBe('muse-spark-1.3');
+    expect(events.filter(event => event.type === 'provider.attempt')).toEqual([
+      expect.objectContaining({requestedModel: sentModel}),
+    ]);
+    expect(events.filter(event => event.type === 'provider.response')).toEqual([
+      expect.objectContaining({receipt: expect.objectContaining({requestedModel: sentModel, outcome: 'completed'})}),
+    ]);
+    expect(result.providerReceipts).toEqual([
+      expect.objectContaining({requestedModel: sentModel, outcome: 'completed'}),
+    ]);
   });
+  it.each([
+    {name: 'OpenRouter', model: 'muse-spark-1.3-contributor'},
+    {name: 'Meta', model: 'future-muse-model'},
+  ])('preserves $name model $model in requests and transport evidence', async selection => {
+    const events: AdapterEvent[] = [];
+    let sentModel: string | undefined;
+    const fetchImpl = async (_url: string | URL | Request, init?: RequestInit) => {
+      sentModel = JSON.parse(String(init?.body)).model;
+      return json(completion());
+    };
+    const client = adapter(fetchImpl as typeof fetch, events, selection);
+    const result = await client.chat(messages, registry, {stream: false});
+    expect(client.model).toBe(selection.model);
+    expect(sentModel).toBe(selection.model);
+    expect(events.filter(event => event.type === 'provider.attempt')).toEqual([
+      expect.objectContaining({requestedModel: selection.model}),
+    ]);
+    expect(result.providerReceipts).toEqual([
+      expect.objectContaining({requestedModel: selection.model, outcome: 'completed'}),
+    ]);
+  });
+
   it("defaults GPT-6.1 Sol to medium reasoning through Responses", async () => {
     const client = createOpenAIAdapter({ apiKey: "test", fetchImpl: (async (url, init) => {
       expect(String(url)).toBe("https://api.openai.com/v1/responses");
