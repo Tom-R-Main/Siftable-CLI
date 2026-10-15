@@ -69,7 +69,7 @@ export function redactCollaborationPreviewSecrets(value: string): string {
  * is measured on the source text, so redaction cannot pull later text into the
  * preview; the returned prefix still contains every straddling credential whole.
  */
-export function collaborationPreviewCut(value: string, limit: number): number {
+function collaborationPreviewCut(value: string, limit: number): number {
   let cut = limit;
   for (let extended = true; extended;) {
     extended = false;
@@ -84,6 +84,18 @@ export function collaborationPreviewCut(value: string, limit: number): number {
     }
   }
   return cut;
+}
+
+/**
+ * A redacted, terminal-safe preview of about `limit` characters. The cut is
+ * taken on the source text and extended only through a credential that
+ * straddles it, so redaction never pulls later text into the preview.
+ */
+export function redactedPreview(value: string, limit: number): string {
+  if (value.length <= limit) return sanitizeTerminalLine(redactCollaborationPreviewSecrets(value));
+  const cut = collaborationPreviewCut(value, limit - 1);
+  const preview = sanitizeTerminalLine(redactCollaborationPreviewSecrets(value.slice(0, cut)));
+  return cut < value.length ? `${preview}…` : preview;
 }
 
 export function normalizeCollaborationIdempotencyKey(value: string): string {
