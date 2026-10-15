@@ -42,7 +42,7 @@ function redactPreviewAssignment(
 }
 
 /** Redact high-confidence credential shapes from human-only event previews. */
-function redactCollaborationPreviewSecrets(value: string): string {
+export function redactCollaborationPreviewSecrets(value: string): string {
   return value
     .replace(
       /-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/giu,
