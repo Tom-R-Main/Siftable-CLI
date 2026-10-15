@@ -29,6 +29,7 @@ export default class WorkAttach extends WorkRuntimeCommand {
 
   async run(): Promise<void> {
     const {args, flags} = await this.parse(WorkAttach);
+    this.renderOptions = {fullDetail: flags['full-detail']};
     const api = this.runtimeApi(flags);
     const interactive = Boolean(process.stdin.isTTY) && !flags['no-input'] && !flags.once;
     let input: readline.Interface | undefined;

@@ -22,6 +22,7 @@ export default class WorkWatch extends WorkRuntimeCommand {
 
   async run(): Promise<void> {
     const {args, flags} = await this.parse(WorkWatch);
+    this.renderOptions = {fullDetail: flags['full-detail']};
     await this.follow(this.runtimeApi(flags), args.id, flags, flags.backlog);
   }
 }

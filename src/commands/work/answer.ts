@@ -21,6 +21,7 @@ export default class WorkAnswer extends WorkRuntimeCommand {
 
   async run(): Promise<WorkDecisionOutput | undefined> {
     const {args, flags} = await this.parse(WorkAnswer);
+    this.renderOptions = {fullDetail: flags['full-detail']};
     return this.decideInBrowser('user_input', args.id, args.requestId, flags);
   }
 }

@@ -1,6 +1,8 @@
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {sanitizeTerminalLine, truncate} from './output.js';
+import {renderRequestDetail, type RequestRenderOptions, type RuntimeRequestDetail} from './work-runtime-detail.js';
+export {REQUEST_TEXT_PREVIEW, type RequestRenderOptions, type RuntimePatchFile, type RuntimeQuestion, type RuntimeRequestDetail} from './work-runtime-detail.js';
 import {renderCollaborationEventLine} from './work-collaboration.js';
 
 /*
@@ -30,16 +32,6 @@ export const MAX_EVENT_WAIT_MS = 30_000;
 /** Pages read after an attempt ends before the watch stops (100 events each). */
 export const MAX_DRAIN_PAGES = 100;
 
-export interface RuntimeQuestion {
-  id: string;
-  header: string;
-  question: string;
-  options: Array<{label: string; description: string; value?: string}>;
-  optionsOmitted?: number;
-  allowCustomAnswer?: boolean;
-  multiSelect?: boolean;
-}
-
 export interface RuntimeRequest {
   id: string;
   workItemId: string;
@@ -51,7 +43,7 @@ export interface RuntimeRequest {
   blocking: boolean;
   category: string | null;
   summary: string;
-  detail: {text?: string; questions?: RuntimeQuestion[]} | null;
+  detail: RuntimeRequestDetail | null;
   state: RuntimeRequestState;
   resolution: {decision: string} | {answers: Record<string, string | string[]>} | null;
   resolvedBy: string | null;
@@ -512,13 +504,13 @@ export function requestCommandHint(request: Pick<RuntimeRequest, 'kind' | 'workI
   return `sift work ${verb} ${sanitizeTerminalLine(request.workItemId)} ${sanitizeTerminalLine(request.id)}`;
 }
 
-export function renderRequestLines(request: RuntimeRequest): string[] {
+export function renderRequestLines(request: RuntimeRequest, options: RequestRenderOptions = {}): string[] {
   const id = sanitizeTerminalLine(request.id);
   const summary = truncate(sanitizeTerminalLine(request.summary), 300);
   if (request.state === 'pending') {
     const label = request.kind === 'approval' ? 'Approval needed' : 'Question';
     const lines = [`[request ${id}] ${label}: ${summary}`];
-    if (request.detail?.text) lines.push(`  ${truncate(sanitizeTerminalLine(request.detail.text), 500)}`);
+    if (request.detail) lines.push(...renderRequestDetail(request.detail, options));
     for (const question of request.detail?.questions ?? []) {
       lines.push(`  ${sanitizeTerminalLine(question.header)}: ${truncate(sanitizeTerminalLine(question.question), 300)}`);
       for (const option of question.options) lines.push(`    - ${sanitizeTerminalLine(option.label)}`);
@@ -887,7 +879,7 @@ const END_TEXT: Record<WatchEndReason, string> = {
   signal: 'Stopped following.',
 };
 
-export function renderWatchRecord(record: WatchRecord): string[] {
+export function renderWatchRecord(record: WatchRecord, options: RequestRenderOptions = {}): string[] {
   switch (record.type) {
     case 'snapshot': {
       const lines = [
@@ -895,7 +887,7 @@ export function renderWatchRecord(record: WatchRecord): string[] {
         renderAttemptLine(record.attempt, record.leaseActive),
       ];
       if (record.openRequests.length === 0) lines.push('No open runtime requests.');
-      for (const request of record.openRequests) lines.push(...renderRequestLines(request));
+      for (const request of record.openRequests) lines.push(...renderRequestLines(request, options));
       for (const control of record.openControls) lines.push(renderControlLine(control));
       return lines;
     }
@@ -904,7 +896,7 @@ export function renderWatchRecord(record: WatchRecord): string[] {
     case 'attempt':
       return [renderAttemptLine(record.attempt, record.leaseActive)];
     case 'request':
-      return renderRequestLines(record.request);
+      return renderRequestLines(record.request, options);
     case 'control':
       return [renderControlLine(record.control)];
     case 'control_unconfirmed': {

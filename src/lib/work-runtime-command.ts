@@ -6,6 +6,7 @@ import {
   type ApiResult,
   type RuntimeControl,
   type RuntimeControlResult,
+  type RequestRenderOptions,
   type RuntimeRequest,
   type RuntimeRequestKind,
   WORK_RUNTIME_OUTPUT_VERSION,
@@ -116,6 +117,7 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
   };
 
   static decisionFlags = {
+    'full-detail': Flags.boolean({description: 'Print the whole stored request text instead of a 500-character preview'}),
     'no-browser': Flags.boolean({description: 'Print the decision URL instead of opening it'}),
     'app-url': Flags.string({
       description: 'Web app origin for the decision page (default: SIFT_APP_URL, else derived from --api-url)',
@@ -126,6 +128,7 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
   };
 
   static watchFlags = {
+    'full-detail': Flags.boolean({description: 'Print the whole stored request text instead of a 500-character preview'}),
     'after-sequence': Flags.integer({description: 'Follow from after this ledger sequence instead of the current end', min: 0}),
     'wait-ms': Flags.integer({
       description: 'Long-poll window per ledger request; runtime requests and controls refresh after each window',
@@ -137,6 +140,9 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
     once: Flags.boolean({description: 'Print the current state (and backlog) once, then exit'}),
     'keep-following': Flags.boolean({description: 'Keep following after the live execution attempt ends'}),
   };
+
+  /** How requests render as text; commands with --full-detail set it from the flag. */
+  protected renderOptions: RequestRenderOptions = {};
 
   protected runtimeApi(flags: ApiContextFlags): WorkRuntimeApi {
     const token = flags.token || envValue('SIFT_TOKEN', 'EXF_TOKEN') || resolveToken();
@@ -164,7 +170,7 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
       console.log(JSON.stringify(record));
       return;
     }
-    for (const line of renderWatchRecord(record)) console.log(line);
+    for (const line of renderWatchRecord(record, this.renderOptions)) console.log(line);
   }
 
   protected async follow(
@@ -368,13 +374,13 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
     if (request.state !== 'pending') {
       if (!this.jsonEnabled()) {
         this.log('This request is already closed; nothing to decide.');
-        for (const line of renderRequestLines(request)) this.log(line);
+        for (const line of renderRequestLines(request, this.renderOptions)) this.log(line);
       }
       if (request.state !== 'resolved') process.exitCode = 1;
       return this.finishDecision(output(request, false));
     }
 
-    if (!this.jsonEnabled()) for (const line of renderRequestLines(request).slice(0, -1)) this.log(line);
+    if (!this.jsonEnabled()) for (const line of renderRequestLines(request, this.renderOptions).slice(0, -1)) this.log(line);
     const browserOpened = flags['no-browser'] ? false : await openUrlInBrowser(decisionUrl);
     if (this.jsonEnabled()) {
       const required: WorkDecisionRequiredRecord = {
@@ -414,7 +420,7 @@ export abstract class WorkRuntimeCommand extends BaseCommand {
     if (!this.jsonEnabled()) {
       if (result.outcome === 'interrupted') this.log('Stopped waiting; the request is still pending. Run this command again to keep waiting.');
       else if (current.state === 'pending') this.log(`Still pending after ${flags.timeout}s. Run this command again to keep waiting.`);
-      else for (const line of renderRequestLines(current)) this.log(line);
+      else for (const line of renderRequestLines(current, this.renderOptions)) this.log(line);
     }
     if (result.outcome !== 'resolved') process.exitCode = result.outcome === 'interrupted' ? 130 : 1;
     return this.finishDecision(result);

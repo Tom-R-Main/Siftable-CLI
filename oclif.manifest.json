@@ -16045,6 +16045,12 @@
           "multiple": false,
           "type": "option"
         },
+        "full-detail": {
+          "description": "Print the whole stored request text instead of a 500-character preview",
+          "name": "full-detail",
+          "allowNo": false,
+          "type": "boolean"
+        },
         "no-browser": {
           "description": "Print the decision URL instead of opening it",
           "name": "no-browser",
@@ -16262,6 +16268,12 @@
           "multiple": false,
           "type": "option"
         },
+        "full-detail": {
+          "description": "Print the whole stored request text instead of a 500-character preview",
+          "name": "full-detail",
+          "allowNo": false,
+          "type": "boolean"
+        },
         "no-browser": {
           "description": "Print the decision URL instead of opening it",
           "name": "no-browser",
@@ -16474,6 +16486,12 @@
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
+        },
+        "full-detail": {
+          "description": "Print the whole stored request text instead of a 500-character preview",
+          "name": "full-detail",
+          "allowNo": false,
+          "type": "boolean"
         },
         "after-sequence": {
           "description": "Follow from after this ledger sequence instead of the current end",
@@ -19883,6 +19901,12 @@
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
+        },
+        "full-detail": {
+          "description": "Print the whole stored request text instead of a 500-character preview",
+          "name": "full-detail",
+          "allowNo": false,
+          "type": "boolean"
         },
         "after-sequence": {
           "description": "Follow from after this ledger sequence instead of the current end",

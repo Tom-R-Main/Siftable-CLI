@@ -15,6 +15,9 @@ import {
   type WatchRecord,
   describeControlState,
   isRetryableControlStatus,
+  REQUEST_TEXT_PREVIEW,
+  renderRequestLines,
+  type RuntimeRequest,
   resolveAppOrigin,
   runtimeRequestDecisionUrl,
 } from '../../src/lib/work-runtime';
@@ -1464,5 +1467,57 @@ describe('sift work runtime commands', () => {
         }
       }
     });
+  });
+});
+
+describe('approval detail in text output', () => {
+  const pending = (detail: unknown) => request({detail}) as unknown as RuntimeRequest;
+
+  it('renders a request stored before truncation fields existed exactly as before', () => {
+    expect(renderRequestLines(pending({text: 'npm test'}))).toEqual([
+      `[request ${REQUEST_ID}] Approval needed: Run npm test`,
+      '  npm test',
+      `  Decide in the browser: sift work approve ${WORK_ID} ${REQUEST_ID}`,
+    ]);
+  });
+
+  it('says when the preview cuts the stored text and offers --full-detail', () => {
+    const text = 'x'.repeat(1_200);
+    const lines = renderRequestLines(pending({text}));
+    expect(lines[1]).toHaveLength(2 + REQUEST_TEXT_PREVIEW);
+    expect(lines[2]).toBe(`  (Showing ${REQUEST_TEXT_PREVIEW} of 1200 stored characters. Add --full-detail to print all of it.)`);
+    const full = renderRequestLines(pending({text: `line one\n${text}`}), {fullDetail: true});
+    expect(full.slice(1, 3)).toEqual(['  line one', `  ${text}`]);
+    expect(full.join('\n')).not.toContain('--full-detail');
+  });
+
+  it('says when the agent text was cut before it reached Sift', () => {
+    const lines = renderRequestLines(pending({text: 'npm run build…', textTruncated: true, textOriginalLength: 96_000}));
+    expect(lines).toContain("  (The agent's text was cut to 14 of 96000 characters before it reached Sift. The rest is only in the agent session.)");
+  });
+
+  it('lists patch files, quotes paths with edge spaces, and counts omitted files', () => {
+    const lines = renderRequestLines(pending({
+      text: '[Withheld because it may contain credentials. Review it in the agent session.]',
+      files: [{path: 'src/app.ts', added: 2, removed: 1}, {path: 'report.txt ', added: 0, removed: 0}, {path: '[withheld]', added: 1, removed: 0}],
+      filesOmitted: 4,
+    }));
+    expect(lines).toEqual(expect.arrayContaining([
+      '  Files (7):', '    src/app.ts +2 -1', '    "report.txt " +0 -0', '    [withheld] +1 -0', '    and 4 more not listed',
+    ]));
+    expect(lines.some(line => line.includes('was cut'))).toBe(false);
+  });
+
+  it('shows the file count when every path was too long to list', () => {
+    const lines = renderRequestLines(pending({text: 'apply patch', filesOmitted: 3}));
+    expect(lines).toEqual(expect.arrayContaining(['  Files (3):', '    3 not listed']));
+  });
+
+  it('strips terminal control sequences from full text and paths', () => {
+    const lines = renderRequestLines(pending({text: 'ok\u001b[31mred\u202e', files: [{path: 'a\u001b[2Jb.ts', added: 1, removed: 0}]}), {fullDetail: true});
+    expect(lines.join('\n')).not.toContain('\u001b');
+    expect(lines.join('\n')).not.toContain('\u202e');
+    expect(lines).toContain('  okred');
+    expect(lines).toContain('    ab.ts +1 -0');
   });
 });
