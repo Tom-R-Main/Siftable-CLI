@@ -47,7 +47,8 @@ export function renderRequestDetail(detail: RuntimeRequestDetail, options: Reque
   const text = detail.text;
   if (text) {
     if (options.fullDetail) {
-      for (const line of sanitizeTerminalText(text).split(/\r?\n/)) lines.push(`  ${line}`);
+      // A lone CR is a line break too; printed raw it would move the cursor and let text overwrite a line.
+      for (const line of sanitizeTerminalText(text).split(/\r\n|\r|\n/)) lines.push(`  ${line}`);
     } else {
       const flat = sanitizeTerminalLine(text);
       lines.push(`  ${truncate(flat, REQUEST_TEXT_PREVIEW)}`);

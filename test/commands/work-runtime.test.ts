@@ -1520,4 +1520,10 @@ describe('approval detail in text output', () => {
     expect(lines).toContain('  okred');
     expect(lines).toContain('    ab.ts +1 -0');
   });
+
+  it('treats a lone carriage return in full text as a line break', () => {
+    const lines = renderRequestLines(pending({text: 'run tests\r  Approved: yes\r\nnext'}), {fullDetail: true});
+    expect(lines.join('\n')).not.toContain('\r');
+    expect(lines).toEqual(expect.arrayContaining(['  run tests', '    Approved: yes', '  next']));
+  });
 });
