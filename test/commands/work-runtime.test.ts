@@ -1521,6 +1521,16 @@ describe('sift work runtime commands', () => {
       expect(line).not.toContain(PREVIEW_SECRET.slice(0, 6));
     });
 
+    it('keeps the source cut when redaction shortens an early long credential', () => {
+      const instruction = `API_KEY="${'x'.repeat(200)}" then run with --password=Later${PREVIEW_SECRET}`;
+
+      const line = renderControlLine(control({instruction}) as RuntimeControl);
+
+      expect(line).toContain('"API_KEY="[REDACTED]"…"');
+      expect(line).not.toContain('then run');
+      expect(line).not.toContain(PREVIEW_SECRET.slice(0, 6));
+    });
+
     it('redacts bearer tokens and multi-line credential headers in an instruction preview', () => {
       const line = renderControlLine(control({instruction: `curl it\nAuthorization: Bearer ${PREVIEW_SECRET}`}) as RuntimeControl);
 

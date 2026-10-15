@@ -1,7 +1,7 @@
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {sanitizeTerminalLine, truncate} from './output.js';
-import {redactCollaborationPreviewSecrets, renderCollaborationEventLine} from './work-collaboration.js';
+import {collaborationPreviewCut, redactCollaborationPreviewSecrets, renderCollaborationEventLine} from './work-collaboration.js';
 
 /*
  * Client side of following and steering a running work item through the Sift
@@ -395,9 +395,25 @@ export function describeControlState(control: Pick<RuntimeControl, 'kind' | 'sta
   }
 }
 
+const INSTRUCTION_PREVIEW_CHARS = 120;
+
+/**
+ * The first 120 characters of an instruction, redacted. The cut is taken on the
+ * source text and extended only through a credential that straddles it, so
+ * redaction never pulls later text into the preview.
+ */
+function previewInstruction(instruction: string): string {
+  if (instruction.length <= INSTRUCTION_PREVIEW_CHARS) {
+    return sanitizeTerminalLine(redactCollaborationPreviewSecrets(instruction));
+  }
+  const cut = collaborationPreviewCut(instruction, INSTRUCTION_PREVIEW_CHARS - 1);
+  const preview = sanitizeTerminalLine(redactCollaborationPreviewSecrets(instruction.slice(0, cut)));
+  return cut < instruction.length ? `${preview}…` : preview;
+}
+
 export function renderControlLine(control: RuntimeControl): string {
   const text = control.kind === 'instruction' && control.instruction
-    ? ` "${truncate(sanitizeTerminalLine(redactCollaborationPreviewSecrets(control.instruction)), 120)}"`
+    ? ` "${previewInstruction(control.instruction)}"`
     : '';
   return `[control ${sanitizeTerminalLine(control.id)}] ${control.kind} ${sanitizeTerminalLine(control.state)}${text} — ${describeControlState(control)}`;
 }
