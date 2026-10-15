@@ -3,7 +3,7 @@ import {randomUUID} from 'node:crypto';
 import {sanitizeTerminalLine, truncate} from './output.js';
 import {renderRequestDetail, type RequestRenderOptions, type RuntimeRequestDetail} from './work-runtime-detail.js';
 export {REQUEST_TEXT_PREVIEW, type RequestRenderOptions, type RuntimePatchFile, type RuntimeQuestion, type RuntimeRequestDetail} from './work-runtime-detail.js';
-import {renderCollaborationEventLine} from './work-collaboration.js';
+import {redactedPreview, renderCollaborationEventLine} from './work-collaboration.js';
 
 /*
  * Client side of following and steering a running work item through the Sift
@@ -389,7 +389,7 @@ export function describeControlState(control: Pick<RuntimeControl, 'kind' | 'sta
 
 export function renderControlLine(control: RuntimeControl): string {
   const text = control.kind === 'instruction' && control.instruction
-    ? ` "${truncate(sanitizeTerminalLine(control.instruction), 120)}"`
+    ? ` "${redactedPreview(control.instruction, 120)}"`
     : '';
   return `[control ${sanitizeTerminalLine(control.id)}] ${control.kind} ${sanitizeTerminalLine(control.state)}${text} — ${describeControlState(control)}`;
 }

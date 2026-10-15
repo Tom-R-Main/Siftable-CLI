@@ -41,35 +41,61 @@ function redactPreviewAssignment(
   return `${prefix}${quote}${key}${quote}${separator}${replacement}`;
 }
 
+const PRIVATE_KEY_BLOCK = /-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/giu;
+const BEARER_VALUE = /(bearer\s+)[^\s,;]+/giu;
+const URL_SECRET_PARAM = /([?&](?:token|key|secret|signature|credential|password)=)[^&\s]+/giu;
+const ASSIGNMENT = /(^|[\s,{;])(["']?)([A-Za-z][A-Za-z0-9_.-]*)\2(\s*[:=]\s*)("(?:\\[^\r\n]|[^"\\\r\n])*"|'(?:\\[^\r\n]|[^'\\\r\n])*'|[^\s,;]+)/gimu;
+const CREDENTIAL_HEADER = /(^\s*(?:authorization|proxy[-_ ]authorization|cookie|set[-_ ]cookie)\s*:\s*).*$/gimu;
+const TOKEN_SHAPE = /\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|sift_pat_[A-Za-z0-9_-]{16,}|sk-(?:proj-)?[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16})\b/gu;
+const JWT_SHAPE = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/gu;
+const URL_USERINFO = /(https?:\/\/[^\s/:@]+:)[^\s/@]+@/giu;
+
 /** Redact high-confidence credential shapes from human-only event previews. */
-function redactCollaborationPreviewSecrets(value: string): string {
+export function redactCollaborationPreviewSecrets(value: string): string {
   return value
-    .replace(
-      /-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/giu,
-      REDACTED,
-    )
-    .replace(/(bearer\s+)[^\s,;]+/giu, `$1${REDACTED}`)
-    .replace(
-      /([?&](?:token|key|secret|signature|credential|password)=)[^&\s]+/giu,
-      `$1${REDACTED}`,
-    )
-    .replace(
-      /(^|[\s,{;])(["']?)([A-Za-z][A-Za-z0-9_.-]*)\2(\s*[:=]\s*)("(?:\\[^\r\n]|[^"\\\r\n])*"|'(?:\\[^\r\n]|[^'\\\r\n])*'|[^\s,;]+)/gimu,
-      redactPreviewAssignment,
-    )
-    .replace(
-      /(^\s*(?:authorization|proxy[-_ ]authorization|cookie|set[-_ ]cookie)\s*:\s*).*$/gimu,
-      `$1${REDACTED}`,
-    )
-    .replace(
-      /\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|sift_pat_[A-Za-z0-9_-]{16,}|sk-(?:proj-)?[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16})\b/gu,
-      REDACTED,
-    )
-    .replace(
-      /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/gu,
-      REDACTED,
-    )
-    .replace(/(https?:\/\/[^\s/:@]+:)[^\s/@]+@/giu, `$1${REDACTED}@`);
+    .replace(PRIVATE_KEY_BLOCK, REDACTED)
+    .replace(BEARER_VALUE, `$1${REDACTED}`)
+    .replace(URL_SECRET_PARAM, `$1${REDACTED}`)
+    .replace(ASSIGNMENT, redactPreviewAssignment)
+    .replace(CREDENTIAL_HEADER, `$1${REDACTED}`)
+    .replace(TOKEN_SHAPE, REDACTED)
+    .replace(JWT_SHAPE, REDACTED)
+    .replace(URL_USERINFO, `$1${REDACTED}@`);
+}
+
+/**
+ * Where to cut `value` for a preview of about `limit` characters: at `limit`,
+ * or later only to the end of a credential that starts before the cut. The cut
+ * is measured on the source text, so redaction cannot pull later text into the
+ * preview; the returned prefix still contains every straddling credential whole.
+ */
+function collaborationPreviewCut(value: string, limit: number): number {
+  let cut = limit;
+  for (let extended = true; extended;) {
+    extended = false;
+    for (const pattern of [PRIVATE_KEY_BLOCK, BEARER_VALUE, URL_SECRET_PARAM, ASSIGNMENT, CREDENTIAL_HEADER, TOKEN_SHAPE, JWT_SHAPE, URL_USERINFO]) {
+      for (const match of value.matchAll(pattern)) {
+        const end = match.index + match[0].length;
+        if (match.index >= cut || end <= cut) continue;
+        if (pattern === ASSIGNMENT && !isSensitivePreviewKey(match[3] ?? '')) continue;
+        cut = end;
+        extended = true;
+      }
+    }
+  }
+  return cut;
+}
+
+/**
+ * A redacted, terminal-safe preview of about `limit` characters. The cut is
+ * taken on the source text and extended only through a credential that
+ * straddles it, so redaction never pulls later text into the preview.
+ */
+export function redactedPreview(value: string, limit: number): string {
+  if (value.length <= limit) return sanitizeTerminalLine(redactCollaborationPreviewSecrets(value));
+  const cut = collaborationPreviewCut(value, limit - 1);
+  const preview = sanitizeTerminalLine(redactCollaborationPreviewSecrets(value.slice(0, cut)));
+  return cut < value.length ? `${preview}…` : preview;
 }
 
 export function normalizeCollaborationIdempotencyKey(value: string): string {

@@ -12,10 +12,12 @@ import {
   submitAttachControl,
   WorkItemFollower,
   WorkRuntimeApi,
+  type RuntimeControl,
   type WatchRecord,
   describeControlState,
   isRetryableControlStatus,
   REQUEST_TEXT_PREVIEW,
+  renderControlLine,
   renderRequestLines,
   type RuntimeRequest,
   resolveAppOrigin,
@@ -237,6 +239,11 @@ function endlessLedgerForApi(): void {
 
 const auth = ['--token', 'sift_pat_test'];
 
+/** A fixture value, not a credential; its first characters must never reach a preview. */
+const PREVIEW_SECRET = 'Zq9fixtureValue7Lm2Np4Rs6Tv8Xw0Yb3';
+/** The value starts before character 120 and ends after it. */
+const STRADDLING_INSTRUCTION = `${'a'.repeat(100)} API_KEY=${PREVIEW_SECRET} then run the tests and report back`;
+
 describe('sift work runtime commands', () => {
   it('publishes the six runtime command IDs in the generated manifest', () => {
     const manifest = JSON.parse(readFileSync(resolve(process.cwd(), 'oclif.manifest.json'), 'utf8')) as {commands?: Record<string, unknown>};
@@ -417,6 +424,53 @@ describe('sift work runtime commands', () => {
       expect(result.stdout).toContain(`sift work approve ${WORK_ID} ${REQUEST_ID}`);
       expect(result.stdout).toContain('#1  message  worker  hello');
       expectNoProcessStarted();
+    });
+
+    describe('instruction previews', () => {
+      function workItemWithInstruction(instruction: string): void {
+        installApi(call => {
+          const path = call.url.pathname;
+          if (path === `${BASE}/events`) return {status: 200, body: {version: 1, events: [], nextSequence: null}};
+          if (path === `${BASE}/execution`) return {status: 200, body: execution('running')};
+          if (path === `${BASE}/runtime-requests`) return {status: 200, body: {version: 1, requests: []}};
+          if (path === `${BASE}/runtime-controls`) return {status: 200, body: {version: 1, controls: [control({instruction})], truncated: false}};
+          return undefined;
+        });
+      }
+
+      const commands: Array<[string, string[]]> = [
+        ['watch', ['work', 'watch', WORK_ID, '--once', ...auth]],
+        ['attach', ['work', 'attach', WORK_ID, '--once', '--no-input', ...auth]],
+      ];
+
+      it.each(commands)('%s redacts a credential-shaped assignment in an open instruction', async (_name, argv) => {
+        workItemWithInstruction(`Deploy with API_KEY=${PREVIEW_SECRET} and password: "${PREVIEW_SECRET}"`);
+
+        const result = await runCommand(argv);
+
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toContain('Deploy with API_KEY=[REDACTED] and password: "[REDACTED]"');
+        expect(result.stdout).not.toContain(PREVIEW_SECRET.slice(0, 6));
+      });
+
+      it.each(commands)('%s redacts a credential that straddles the preview cut', async (_name, argv) => {
+        workItemWithInstruction(STRADDLING_INSTRUCTION);
+
+        const result = await runCommand(argv);
+
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toContain(' API_KEY=[REDACTED]…"');
+        expect(result.stdout).not.toContain(PREVIEW_SECRET.slice(0, 6));
+      });
+
+      it.each(commands)('%s prints an ordinary instruction unchanged', async (_name, argv) => {
+        workItemWithInstruction('Set retries=3, mode: fast, then update the README');
+
+        const result = await runCommand(argv);
+
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toContain(`[control ${CONTROL_ID}] instruction queued "Set retries=3, mode: fast, then update the README"`);
+      });
     });
   });
 
@@ -1457,6 +1511,38 @@ describe('sift work runtime commands', () => {
       expect(resolveAppOrigin('http://localhost:8080', 'http://localhost:5173/')).toBe('http://localhost:5173');
       expect(() => resolveAppOrigin('https://siftable.io', 'javascript:alert(1)')).toThrow();
       expect(runtimeRequestDecisionUrl('https://siftable.io', 'w/1', 'r&2')).toBe('https://siftable.io/app/work/w%2F1?request=r%262');
+    });
+
+    it('redacts an instruction preview before truncating it', () => {
+      const secretStart = STRADDLING_INSTRUCTION.indexOf(PREVIEW_SECRET);
+      expect(secretStart).toBeLessThan(120);
+      expect(secretStart + PREVIEW_SECRET.length).toBeGreaterThan(120);
+
+      const line = renderControlLine(control({instruction: STRADDLING_INSTRUCTION}) as RuntimeControl);
+
+      expect(line).toContain(`"${'a'.repeat(100)} API_KEY=[REDACTED]…"`);
+      expect(line).not.toContain(PREVIEW_SECRET.slice(0, 6));
+    });
+
+    it('keeps the source cut when redaction shortens an early long credential', () => {
+      const instruction = `API_KEY="${'x'.repeat(200)}" then run with --password=Later${PREVIEW_SECRET}`;
+
+      const line = renderControlLine(control({instruction}) as RuntimeControl);
+
+      expect(line).toContain('"API_KEY="[REDACTED]"…"');
+      expect(line).not.toContain('then run');
+      expect(line).not.toContain(PREVIEW_SECRET.slice(0, 6));
+    });
+
+    it('redacts bearer tokens and multi-line credential headers in an instruction preview', () => {
+      const line = renderControlLine(control({instruction: `curl it\nAuthorization: Bearer ${PREVIEW_SECRET}`}) as RuntimeControl);
+
+      expect(line).toContain('"curl it Authorization: [REDACTED]"');
+      expect(line).not.toContain(PREVIEW_SECRET.slice(0, 6));
+    });
+
+    it('leaves an ordinary instruction preview unchanged', () => {
+      expect(renderControlLine(control({instruction: 'Also update the README'}) as RuntimeControl)).toContain('"Also update the README"');
     });
 
     it('never describes an unsettled control as delivered or acknowledged', () => {
