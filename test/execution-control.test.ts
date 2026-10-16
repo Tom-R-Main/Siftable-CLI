@@ -103,7 +103,10 @@ test('shell interrupts a running process group including its child', async () =>
 });
 
 posixTest('shell deadline escalates when TERM is ignored; a confirmed-dead timeout is a known failure (CLI-048)', async () => {
-  const result = await runSupervisedShell("trap '' TERM; while :; do :; done", process.cwd(), { timeoutMs: 40, killGraceMs: 30 });
+  // The deadline starts at spawn, so it must outlast sh reaching the trap; with
+  // 40 ms a loaded CI box sometimes delivered TERM first and sh died of SIGTERM.
+  const result = await runSupervisedShell("trap '' TERM; echo armed; while :; do :; done", process.cwd(), { timeoutMs: 1_000, killGraceMs: 30 });
+  expect(result.output).toContain('armed');
   expect(result).toMatchObject({ timedOut: true, started: true, executionOutcome: 'failed', terminationConfirmed: true, signal: 'SIGKILL' });
 });
 
