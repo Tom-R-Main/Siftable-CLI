@@ -189,6 +189,8 @@ describe('sift review codex session', () => {
     expect(classifyModelFailure('Input exceeds the context window of this model')).toBe('context_length');
     expect(classifyModelFailure('The model `gpt-x` does not exist or you do not have access to it')).toBe('model_unavailable');
     expect(classifyModelFailure("The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.")).toBe('model_unavailable');
+    expect(classifyModelFailure('The model `gpt-6.1-sol` does not exist or you do not have access to it.')).toBe('model_unavailable');
+    expect(classifyModelFailure('Model loaded. Request not found.')).toBe('other');
     expect(classifyModelFailure(METADATA_NOTICE.item.message)).toBe('other');
     expect(classifyModelFailure('unexpected status 503 Service Unavailable')).toBe('server_error');
     expect(classifyModelFailure('stream disconnected before completion')).toBe('network');

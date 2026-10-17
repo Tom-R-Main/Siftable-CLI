@@ -46,8 +46,9 @@ const FAILURE_PATTERNS: ReadonlyArray<readonly [ModelFailureClass, RegExp]> = [
   ['rate_limit', /\b429\b|rate[ _-]?limit|too many requests/iu],
   ['auth', /\b40[13]\b|unauthori[sz]ed|forbidden|not (?:signed|logged) in|authenticat|invalid api key|(?:token|session) (?:has )?expired|refresh token/iu],
   ['context_length', /context (?:window|length)|maximum context|too many tokens|token limit/iu],
+  // Within one sentence (a dot followed by a non-space, as in `gpt-6.1-sol`, does not end it).
   // Not codex's "Model metadata for `x` not found" notice: 0.159 emits it on calls that succeed.
-  ['model_unavailable', /\b404\b|model(?! metadata)[^.]*(?:not found|does not exist|not supported|unavailable)|unsupported model/iu],
+  ['model_unavailable', /\b404\b|model(?! metadata)(?:[^.]|\.(?=\S))*?(?:not found|does not exist|not supported|unavailable)|unsupported model/iu],
   ['server_error', /\b50[0-4]\b|overloaded|internal server error|service unavailable|bad gateway|server error/iu],
   ['network', /stream disconnected|connection (?:reset|refused|closed)|timed? ?out|ECONN|ENOTFOUND|EAI_AGAIN|network|dns/iu],
 ];
