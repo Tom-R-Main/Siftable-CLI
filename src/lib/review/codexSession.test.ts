@@ -49,15 +49,22 @@ process.stdout.write(${JSON.stringify(`${events}\n`)});
   return bin;
 }
 
+const METADATA_NOTICE = {type: 'item.completed', item: {id: 'w', type: 'error', message: 'Model metadata for `gpt-6.1-sol` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.'}};
+
 /** Runs one finder call `calls` times against a codex whose turn fails with `message`; returns problems(). */
 async function failedTurnProblems(message: string, calls: number): Promise<string[]> {
-  const bin = join(dir, 'codex-failing');
-  const events = [
+  return failingCodexProblems([
     {type: 'thread.started', thread_id: 't'},
     {type: 'turn.started'},
     {type: 'turn.failed', error: {message}},
-  ].map(event => JSON.stringify(event)).join('\n');
-  writeFileSync(bin, `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(`${events}\n`)});\n`);
+  ], 0, 'turn_failed', calls);
+}
+
+/** Runs one finder call `calls` times against a codex that prints `events` and exits `exitCode`; returns problems(). */
+async function failingCodexProblems(events: object[], exitCode: number, code: string, calls: number): Promise<string[]> {
+  const bin = join(dir, 'codex-failing');
+  const out = `${events.map(event => JSON.stringify(event)).join('\n')}\n`;
+  writeFileSync(bin, `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(out)}, () => process.exit(${exitCode}));\n`);
   chmodSync(bin, 0o755);
   const session = await codexSessionFactory({
     runtime,
@@ -77,7 +84,7 @@ async function failedTurnProblems(message: string, calls: number): Promise<strin
       outputSchema: '{}',
       toolHost: {tools: ['read_file'], call: async () => ({ok: false, error: 'unused'})},
       signal: AbortSignal.timeout(20_000),
-    })).rejects.toMatchObject({code: 'turn_failed'});
+    })).rejects.toMatchObject({code});
   }
   await session.close();
   return session.problems();
@@ -151,6 +158,27 @@ describe('sift review codex session', () => {
     for (const word of message.split(' ')) expect(reported).not.toContain(word);
   });
 
+  it('gives no class to a completed turn whose output is invalid, despite an informational warning', async () => {
+    const problems = await failingCodexProblems([
+      {type: 'thread.started', thread_id: 't'},
+      {type: 'turn.started'},
+      METADATA_NOTICE,
+      {type: 'item.completed', item: {id: 'm', type: 'agent_message', text: 'not json'}},
+      {type: 'turn.completed', usage: {input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0}},
+    ], 0, 'invalid_output', 1);
+    expect(problems).toEqual(['model call failed (finder invalid_output) x1']);
+  });
+
+  it('classifies a process that ended without a terminal event by its last stream error', async () => {
+    const problems = await failingCodexProblems([
+      {type: 'thread.started', thread_id: 't'},
+      {type: 'turn.started'},
+      METADATA_NOTICE,
+      {type: 'error', message: 'stream disconnected before completion'},
+    ], 1, 'process_failed', 1);
+    expect(problems).toEqual(['model call failed (finder process_failed:network) x1']);
+  });
+
   it('classifies codex failure messages into a fixed set', () => {
     expect(classifyModelFailure(undefined)).toBeUndefined();
     expect(classifyModelFailure('  ')).toBeUndefined();
@@ -160,6 +188,8 @@ describe('sift review codex session', () => {
     expect(classifyModelFailure('Not logged in')).toBe('auth');
     expect(classifyModelFailure('Input exceeds the context window of this model')).toBe('context_length');
     expect(classifyModelFailure('The model `gpt-x` does not exist or you do not have access to it')).toBe('model_unavailable');
+    expect(classifyModelFailure("The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.")).toBe('model_unavailable');
+    expect(classifyModelFailure(METADATA_NOTICE.item.message)).toBe('other');
     expect(classifyModelFailure('unexpected status 503 Service Unavailable')).toBe('server_error');
     expect(classifyModelFailure('stream disconnected before completion')).toBe('network');
     expect(classifyModelFailure('turn failed')).toBe('other');
