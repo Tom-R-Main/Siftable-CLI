@@ -30,7 +30,48 @@ export function codexAuthPath(env: NodeJS.ProcessEnv = process.env): string {
   return join(home, 'auth.json');
 }
 
-/** Records how model calls failed, by error code, without any model output. */
+export type ModelFailureClass =
+  | 'usage_limit'
+  | 'rate_limit'
+  | 'auth'
+  | 'context_length'
+  | 'model_unavailable'
+  | 'server_error'
+  | 'network'
+  | 'other';
+
+// Checked in order: a usage-limit message can also carry a 429 status.
+const FAILURE_PATTERNS: ReadonlyArray<readonly [ModelFailureClass, RegExp]> = [
+  ['usage_limit', /usage limit|quota|insufficient[_ ]credits?|billing|plan limit/iu],
+  ['rate_limit', /\b429\b|rate[ _-]?limit|too many requests/iu],
+  ['auth', /\b40[13]\b|unauthori[sz]ed|forbidden|not (?:signed|logged) in|authenticat|invalid api key|(?:token|session) (?:has )?expired|refresh token/iu],
+  ['context_length', /context (?:window|length)|maximum context|too many tokens|token limit/iu],
+  ['model_unavailable', /\b404\b|model[^.]*(?:not found|does not exist|not supported|unavailable)|unsupported model/iu],
+  ['server_error', /\b50[0-4]\b|overloaded|internal server error|service unavailable|bad gateway|server error/iu],
+  ['network', /stream disconnected|connection (?:reset|refused|closed)|timed? ?out|ECONN|ENOTFOUND|EAI_AGAIN|network|dns/iu],
+];
+
+/**
+ * Maps codex's failure message to a fixed class. Only the class is ever
+ * reported: the message is codex's own text and may name accounts or URLs.
+ */
+export function classifyModelFailure(message: string | undefined): ModelFailureClass | undefined {
+  if (message === undefined || message.trim() === '') return undefined;
+  for (const [failureClass, pattern] of FAILURE_PATTERNS) {
+    if (pattern.test(message)) return failureClass;
+  }
+  return 'other';
+}
+
+function failureMessage(error: unknown): string | undefined {
+  const telemetry = (error as {telemetry?: {failure?: unknown; warnings?: unknown}}).telemetry;
+  if (typeof telemetry?.failure === 'string') return telemetry.failure;
+  // A process that died without a turn.failed event may still have logged a stream error.
+  const warnings = Array.isArray(telemetry?.warnings) ? telemetry.warnings.filter(w => typeof w === 'string') : [];
+  return warnings.at(-1);
+}
+
+/** Records how model calls failed, by error code and failure class, without any model output or message text. */
 function recordingClient(inner: ModelClient, failures: Map<string, number>): ModelClient {
   return {
     async run(request: ModelRequest): Promise<ModelResponse> {
@@ -38,7 +79,8 @@ function recordingClient(inner: ModelClient, failures: Map<string, number>): Mod
         return await inner.run(request);
       } catch (error) {
         const code = (error as {code?: unknown}).code;
-        const key = `${request.role} ${typeof code === 'string' ? code : 'error'}`;
+        const failureClass = classifyModelFailure(failureMessage(error));
+        const key = `${request.role} ${typeof code === 'string' ? code : 'error'}${failureClass ? `:${failureClass}` : ''}`;
         failures.set(key, (failures.get(key) ?? 0) + 1);
         throw error;
       }
@@ -71,8 +113,8 @@ export function codexSessionFactory(options: CodexSessionOptions): ModelSessionF
       close: async () => undefined,
       problems: () => {
         const out = [...failures.entries()].map(([key, count]) => `model call failed (${key}) x${count}`);
-        if ([...failures.keys()].some(key => key.endsWith('turn_failed') || key.endsWith('process_failed'))) {
-          out.push('if codex is not signed in, run `codex login` (file-based credential storage) and retry');
+        if ([...failures.keys()].some(key => key.endsWith(':auth'))) {
+          out.push('codex reported an authentication failure: run `codex login` (file-based credential storage) and retry');
         }
         return out;
       },

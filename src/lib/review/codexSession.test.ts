@@ -6,7 +6,7 @@ import {chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync} f
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
-import {codexAuthPath, codexSessionFactory} from './codexSession.js';
+import {classifyModelFailure, codexAuthPath, codexSessionFactory} from './codexSession.js';
 import {loadTasterRuntime} from './runtime.js';
 
 const runtime = loadTasterRuntime();
@@ -47,6 +47,40 @@ process.stdout.write(${JSON.stringify(`${events}\n`)});
 `);
   chmodSync(bin, 0o755);
   return bin;
+}
+
+/** Runs one finder call `calls` times against a codex whose turn fails with `message`; returns problems(). */
+async function failedTurnProblems(message: string, calls: number): Promise<string[]> {
+  const bin = join(dir, 'codex-failing');
+  const events = [
+    {type: 'thread.started', thread_id: 't'},
+    {type: 'turn.started'},
+    {type: 'turn.failed', error: {message}},
+  ].map(event => JSON.stringify(event)).join('\n');
+  writeFileSync(bin, `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(`${events}\n`)});\n`);
+  chmodSync(bin, 0o755);
+  const session = await codexSessionFactory({
+    runtime,
+    codexBin: bin,
+    model: 'gpt-6.1-sol',
+    path: `/usr/bin:/bin`,
+    concurrency: 1,
+    callTimeoutMs: 20_000,
+    authFile: join(dir, 'auth.json'),
+  })({checkoutRoot: mkdtempSync(join(dir, 'checkout-')), workDir: mkdtempSync(join(dir, 'work-'))});
+  for (let i = 0; i < calls; i++) {
+    await expect(session.models.run({
+      role: 'finder',
+      callId: `c${i}`,
+      instructions: 'Find defects.',
+      data: [],
+      outputSchema: '{}',
+      toolHost: {tools: ['read_file'], call: async () => ({ok: false, error: 'unused'})},
+      signal: AbortSignal.timeout(20_000),
+    })).rejects.toMatchObject({code: 'turn_failed'});
+  }
+  await session.close();
+  return session.problems();
 }
 
 describe('sift review codex session', () => {
@@ -90,6 +124,45 @@ describe('sift review codex session', () => {
     // The user's file is untouched and still unreadable; the per-call home is gone.
     const after = statSync(authFile);
     expect([after.mode & 0o777, after.size, after.mtimeMs]).toEqual([0, before.size, before.mtimeMs]);
+  });
+
+  it('reports a failed turn by class and never echoes codex\'s message', async () => {
+    const marker = `acct-${Math.random().toString(36).slice(2)}`;
+    const problems = await failedTurnProblems(`You've hit your usage limit for ${marker}. Try again later.`, 2);
+    expect(problems).toEqual(['model call failed (finder turn_failed:usage_limit) x2']);
+    expect(JSON.stringify(problems)).not.toContain(marker);
+  });
+
+  it('suggests signing in only when codex reported an authentication failure', async () => {
+    const problems = await failedTurnProblems('unexpected status 401 Unauthorized: Your session has expired', 1);
+    expect(problems).toEqual([
+      'model call failed (finder turn_failed:auth) x1',
+      'codex reported an authentication failure: run `codex login` (file-based credential storage) and retry',
+    ]);
+    expect(JSON.stringify(problems)).not.toContain('session has expired');
+  });
+
+  it('reports an unrecognised failure as other, with no part of its text', async () => {
+    // Fixed text: a random marker could happen to contain a pattern such as "dns".
+    const message = 'frobnicator zqvellum declined politely';
+    const problems = await failedTurnProblems(message, 1);
+    expect(problems).toEqual(['model call failed (finder turn_failed:other) x1']);
+    const reported = JSON.stringify(problems);
+    for (const word of message.split(' ')) expect(reported).not.toContain(word);
+  });
+
+  it('classifies codex failure messages into a fixed set', () => {
+    expect(classifyModelFailure(undefined)).toBeUndefined();
+    expect(classifyModelFailure('  ')).toBeUndefined();
+    expect(classifyModelFailure("You've hit your usage limit. Upgrade to Pro")).toBe('usage_limit');
+    expect(classifyModelFailure('exceeded retry limit, last status: 429 Too Many Requests')).toBe('rate_limit');
+    expect(classifyModelFailure('unexpected status 401 Unauthorized: token expired')).toBe('auth');
+    expect(classifyModelFailure('Not logged in')).toBe('auth');
+    expect(classifyModelFailure('Input exceeds the context window of this model')).toBe('context_length');
+    expect(classifyModelFailure('The model `gpt-x` does not exist or you do not have access to it')).toBe('model_unavailable');
+    expect(classifyModelFailure('unexpected status 503 Service Unavailable')).toBe('server_error');
+    expect(classifyModelFailure('stream disconnected before completion')).toBe('network');
+    expect(classifyModelFailure('turn failed')).toBe('other');
   });
 
   it('locates the login under CODEX_HOME or ~/.codex without touching it', () => {
