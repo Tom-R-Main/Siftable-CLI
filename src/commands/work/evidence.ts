@@ -24,8 +24,10 @@ type AttemptEvidence = {
     requests: Array<{kind: string; summary: string; state: string; resolution: {decision?: string} | null; resolvedAt: string | null; deliveryState: string}>;
     truncated: boolean;
   };
-  verification: {boundToAttempt: false; attempts: Array<{outcome: string; attemptId: string; ranAt: string}>; truncated: boolean};
+  verification: {attempt: VerificationList; workItem: VerificationList};
 };
+
+type VerificationList = {attempts: Array<{outcome: string; attemptId: string; ranAt: string}>; truncated: boolean};
 
 /** One line on how much of the diff the server holds; a cut or withheld patch is never shown as whole. */
 export function describePatch(patch: PatchDisclosure): string {
@@ -72,8 +74,11 @@ export default class WorkEvidence extends BaseCommand {
         const decision = request.resolution?.decision ?? (request.resolution ? 'answered' : request.state);
         this.log(`  ${request.kind} · ${request.summary} · ${decision}${request.resolvedAt ? ` at ${request.resolvedAt}` : ''} · delivery ${request.deliveryState}`);
       }
-      this.log(`Verification (work item scope, not bound to this attempt): ${verification.attempts.length}${verification.truncated ? ' (older ones not shown)' : ''}`);
-      for (const receipt of verification.attempts) this.log(`  ${receipt.outcome} · ${receipt.attemptId} · ${receipt.ranAt}`);
+      for (const [label, list] of [['Verification of this attempt', verification.attempt],
+        ['Unbound work-item verification (not tied to any attempt)', verification.workItem]] as const) {
+        this.log(`${label}: ${list.attempts.length}${list.truncated ? ' (older ones not shown)' : ''}`);
+        for (const receipt of list.attempts) this.log(`  ${receipt.outcome} · ${receipt.attemptId} · ${receipt.ranAt}`);
+      }
     }
     return evidence;
   }

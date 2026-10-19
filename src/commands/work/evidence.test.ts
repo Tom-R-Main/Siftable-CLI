@@ -11,7 +11,10 @@ const evidence = (result: unknown) => ({
   attempt: {id: 'attempt-1', state: 'ended', endReason: 'terminated', harness: 'codex', model: 'gpt-6.1', host: 'mbp', startedAt: '2026-10-18T10:00:00Z', endedAt: '2026-10-18T10:05:00Z'},
   result,
   decisions: {requests: [{kind: 'approval', summary: 'Run tests', state: 'resolved', resolution: {decision: 'acceptForSession'}, resolvedAt: '2026-10-18T10:01:00Z', deliveryState: 'delivered'}], truncated: false},
-  verification: {boundToAttempt: false, attempts: [{outcome: 'passed', attemptId: 'taster-abc', ranAt: '2026-10-18T10:06:00Z'}], truncated: true},
+  verification: {
+    attempt: {attempts: [{outcome: 'passed', attemptId: 'taster-abc', ranAt: '2026-10-18T10:06:00Z'}], truncated: false},
+    workItem: {attempts: [{outcome: 'failed', attemptId: 'manual-1', ranAt: '2026-10-17T09:00:00Z'}], truncated: true},
+  },
 });
 
 async function runWith(body: unknown, json: boolean) {
@@ -39,7 +42,9 @@ describe('work evidence', () => {
     const {lines} = await runWith(evidence({status: 'missing'}), false);
     expect(lines).toContain('Result: MISSING. The attempt is no longer live and recorded no result; it cannot record one now.');
     expect(lines).toContain('  approval · Run tests · acceptForSession at 2026-10-18T10:01:00Z · delivery delivered');
-    expect(lines).toContain('Verification (work item scope, not bound to this attempt): 1 (older ones not shown)');
+    expect(lines).toContain('Verification of this attempt: 1');
+    expect(lines).toContain('  passed · taster-abc · 2026-10-18T10:06:00Z');
+    expect(lines).toContain('Unbound work-item verification (not tied to any attempt): 1 (older ones not shown)');
   });
 
   it('says a live attempt\'s result is pending', async () => {
