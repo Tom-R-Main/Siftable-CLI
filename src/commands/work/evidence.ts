@@ -27,6 +27,11 @@ type AttemptEvidence = {
   verification: {attempt: VerificationList; workItem: VerificationList};
   /** Absent from servers older than the V482 effect ledger. */
   effects?: Record<'completed' | 'unfinished' | 'inFlight' | 'uncertain', Effect[]> & {truncated: boolean};
+  /** Absent from servers older than V483 accepted input. */
+  input?: {
+    accepted: {workItemRevision: number; payloadSha256: string; payloadBytes: number} | null;
+    resume: {fromAttemptId: string; status: 'same' | 'changed' | 'unknown'} | null;
+  };
 };
 
 type Effect = {effectKey: string; domain: string; state: string; settlement: {observed: string} | null};
@@ -41,7 +46,7 @@ export function describePatch(patch: PatchDisclosure): string {
 }
 
 export default class WorkEvidence extends BaseCommand {
-  static description = 'Show what the server retains about one execution attempt: result, patch, decisions, verification and effects';
+  static description = 'Show what the server retains about one execution attempt: result, patch, decisions, verification, effects and accepted input';
 
   static examples = ['<%= config.bin %> work evidence <work-item-id> --attempt <attempt-id> --json'];
 
@@ -89,6 +94,14 @@ export default class WorkEvidence extends BaseCommand {
           + `${effects.inFlight.length} in flight, ${effects.uncertain.length} uncertain${effects.truncated ? ' (more not shown)' : ''}`);
         // Uncertain effects block any new effect until an observation settles them.
         for (const effect of effects.uncertain) this.log(`  UNCERTAIN: ${effect.effectKey} · ${effect.domain} · ${effect.state}`);
+      }
+      const {input} = evidence;
+      if (input) {
+        const {accepted, resume} = input;
+        this.log(accepted
+          ? `Accepted input: revision ${accepted.workItemRevision} · ${accepted.payloadBytes} bytes · sha256 ${accepted.payloadSha256.slice(0, 12)}`
+          : 'Accepted input: none recorded');
+        if (resume) this.log(`  Resumed from ${resume.fromAttemptId}: input ${resume.status}`);
       }
     }
     return evidence;

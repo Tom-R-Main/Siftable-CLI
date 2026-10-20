@@ -22,6 +22,10 @@ const evidence = (result: unknown) => ({
     uncertain: [{effectKey: 'patch/1', domain: 'workspace_patch', state: 'dispatching', settlement: null}],
     truncated: false,
   },
+  input: {
+    accepted: {workItemRevision: 3, payloadSha256: 'ab'.repeat(32), payloadBytes: 812},
+    resume: {fromAttemptId: 'attempt-0', status: 'changed'},
+  },
 });
 
 async function runWith(body: unknown, json: boolean) {
@@ -54,12 +58,15 @@ describe('work evidence', () => {
     expect(lines).toContain('Unbound work-item verification (not tied to any attempt): 1 (older ones not shown)');
     expect(lines).toContain('Effects: 1 completed, 0 unfinished, 0 in flight, 1 uncertain');
     expect(lines).toContain('  UNCERTAIN: patch/1 · workspace_patch · dispatching');
+    expect(lines).toContain('Accepted input: revision 3 · 812 bytes · sha256 abababababab');
+    expect(lines).toContain('  Resumed from attempt-0: input changed');
   });
 
-  it('prints no effects line for a server that predates the effect ledger', async () => {
-    const {effects: _effects, ...older} = evidence({status: 'pending'});
+  it('prints no effects or input line for a server that predates them', async () => {
+    const {effects: _effects, input: _input, ...older} = evidence({status: 'pending'});
     const {lines} = await runWith(older, false);
     expect(lines.some((line) => line.startsWith('Effects:'))).toBe(false);
+    expect(lines.some((line) => line.startsWith('Accepted input:'))).toBe(false);
   });
 
   it('says a live attempt\'s result is pending', async () => {
