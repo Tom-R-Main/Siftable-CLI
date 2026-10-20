@@ -15,6 +15,13 @@ const evidence = (result: unknown) => ({
     attempt: {attempts: [{outcome: 'passed', attemptId: 'taster-abc', ranAt: '2026-10-18T10:06:00Z'}], truncated: false},
     workItem: {attempts: [{outcome: 'failed', attemptId: 'manual-1', ranAt: '2026-10-17T09:00:00Z'}], truncated: true},
   },
+  effects: {
+    completed: [{effectKey: 'checkpoint/1', domain: 'workspace_checkpoint', state: 'confirmed', settlement: null}],
+    unfinished: [],
+    inFlight: [],
+    uncertain: [{effectKey: 'patch/1', domain: 'workspace_patch', state: 'dispatching', settlement: null}],
+    truncated: false,
+  },
 });
 
 async function runWith(body: unknown, json: boolean) {
@@ -45,6 +52,14 @@ describe('work evidence', () => {
     expect(lines).toContain('Verification of this attempt: 1');
     expect(lines).toContain('  passed · taster-abc · 2026-10-18T10:06:00Z');
     expect(lines).toContain('Unbound work-item verification (not tied to any attempt): 1 (older ones not shown)');
+    expect(lines).toContain('Effects: 1 completed, 0 unfinished, 0 in flight, 1 uncertain');
+    expect(lines).toContain('  UNCERTAIN: patch/1 · workspace_patch · dispatching');
+  });
+
+  it('prints no effects line for a server that predates the effect ledger', async () => {
+    const {effects: _effects, ...older} = evidence({status: 'pending'});
+    const {lines} = await runWith(older, false);
+    expect(lines.some((line) => line.startsWith('Effects:'))).toBe(false);
   });
 
   it('says a live attempt\'s result is pending', async () => {

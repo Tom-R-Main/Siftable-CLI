@@ -25,7 +25,11 @@ type AttemptEvidence = {
     truncated: boolean;
   };
   verification: {attempt: VerificationList; workItem: VerificationList};
+  /** Absent from servers older than the V482 effect ledger. */
+  effects?: Record<'completed' | 'unfinished' | 'inFlight' | 'uncertain', Effect[]> & {truncated: boolean};
 };
+
+type Effect = {effectKey: string; domain: string; state: string; settlement: {observed: string} | null};
 
 type VerificationList = {attempts: Array<{outcome: string; attemptId: string; ranAt: string}>; truncated: boolean};
 
@@ -37,7 +41,7 @@ export function describePatch(patch: PatchDisclosure): string {
 }
 
 export default class WorkEvidence extends BaseCommand {
-  static description = 'Show what the server retains about one execution attempt: result, patch, decisions and verification';
+  static description = 'Show what the server retains about one execution attempt: result, patch, decisions, verification and effects';
 
   static examples = ['<%= config.bin %> work evidence <work-item-id> --attempt <attempt-id> --json'];
 
@@ -78,6 +82,13 @@ export default class WorkEvidence extends BaseCommand {
         ['Unbound work-item verification (not tied to any attempt)', verification.workItem]] as const) {
         this.log(`${label}: ${list.attempts.length}${list.truncated ? ' (older ones not shown)' : ''}`);
         for (const receipt of list.attempts) this.log(`  ${receipt.outcome} · ${receipt.attemptId} · ${receipt.ranAt}`);
+      }
+      const {effects} = evidence;
+      if (effects) {
+        this.log(`Effects: ${effects.completed.length} completed, ${effects.unfinished.length} unfinished, `
+          + `${effects.inFlight.length} in flight, ${effects.uncertain.length} uncertain${effects.truncated ? ' (more not shown)' : ''}`);
+        // Uncertain effects block any new effect until an observation settles them.
+        for (const effect of effects.uncertain) this.log(`  UNCERTAIN: ${effect.effectKey} · ${effect.domain} · ${effect.state}`);
       }
     }
     return evidence;
