@@ -6,6 +6,15 @@ import {consumeMobileDispatch, withMobileRunnerRequestTimeout} from '../../lib/m
 import {listenForMobileWork} from '../../lib/mobile-work-listener.js';
 import {resolveWorkspaceTenantId} from '../../lib/workspace-context.js';
 
+/** The checkpoint executable's whole environment. SIFT_CONTROL_ID is the
+ * control's durable ID: a redelivered control carries the same one, so an
+ * idempotent executable (the agent runtime's checkpoint bridge) can replay
+ * instead of checkpointing twice. */
+export function checkpointEnvironment(workItem: Record<string, unknown>, controlId: string): NodeJS.ProcessEnv {
+  return {PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR,
+    SIFT_WORK_ITEM_ID: String(workItem.id), SIFT_CONTROL_ID: controlId};
+}
+
 export default class WorkerListen extends BaseCommand {
   static description = 'Receive reviewed mobile launches on a host-configured local worker';
   static flags = {
@@ -40,11 +49,11 @@ export default class WorkerListen extends BaseCommand {
           executable: flags.executable, args: flags.arg, cwd: resolve(flags.cwd),
           receiptDirectory: resolve(flags.receipts),
           refreshRunner,
-          checkpoint: flags['checkpoint-executable'] ? (workItem, signal) => new Promise<void>((resolveCheckpoint, rejectCheckpoint) => {
+          checkpoint: flags['checkpoint-executable'] ? (workItem, signal, controlId) => new Promise<void>((resolveCheckpoint, rejectCheckpoint) => {
             signal.throwIfAborted();
             const child = spawn(flags['checkpoint-executable']!, flags['checkpoint-arg'], {
               cwd: resolve(flags.cwd), shell: false, stdio: 'ignore', detached: true,
-              env: {PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, SIFT_WORK_ITEM_ID: String(workItem.id)},
+              env: checkpointEnvironment(workItem, controlId),
             });
             const stop = () => { if (child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} } };
             const timeout = setTimeout(stop, 8000);

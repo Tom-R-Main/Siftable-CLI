@@ -647,9 +647,10 @@ describe('mobile host runner', () => {
 
   it('runs a configured checkpoint once even when delivery is repeated', async () => {
     const f = await fixture('checkpoint');
-    let checkpoints = 0;
-    expect(await consumeMobileDispatch({...f.options, checkpoint: async () => { checkpoints += 1; }})).toBe('reviewed');
-    expect(checkpoints).toBe(1);
+    const controlIds: string[] = [];
+    expect(await consumeMobileDispatch({...f.options, checkpoint: async (_work, _signal, id) => { controlIds.push(id); }})).toBe('reviewed');
+    // The durable control ID reaches the executable, so an idempotent one can replay.
+    expect(controlIds).toEqual([controlId]);
     expect(f.calls.find(call => call.path.endsWith('/controls/ack'))?.body.state).toBe('acknowledged');
   });
 
