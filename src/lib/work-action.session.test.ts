@@ -8,6 +8,7 @@ import WorkCancel from '../commands/work/cancel.js';
 import WorkClaim from '../commands/work/claim.js';
 import WorkComplete from '../commands/work/complete.js';
 import WorkHeartbeat from '../commands/work/heartbeat.js';
+import WorkRelease from '../commands/work/release.js';
 import {readWorkLeaseSession, writeWorkLeaseSession, type WorkLeaseSession} from './work-lease-session.js';
 
 // Every session in this suite lives under a fresh SIFT_CONFIG_DIR in the OS temp directory.
@@ -20,7 +21,7 @@ const EXPLICIT_TOKEN = 'synthetic-explicit-claim-token-never-render';
 const FUTURE = '2099-01-01T00:00:00.000Z';
 const MEMORY = '{"decision":"skip","rationale":"fixture"}';
 
-type CommandClass = typeof WorkClaim | typeof WorkComplete | typeof WorkBlock | typeof WorkCancel | typeof WorkHeartbeat;
+type CommandClass = typeof WorkClaim | typeof WorkComplete | typeof WorkBlock | typeof WorkCancel | typeof WorkHeartbeat | typeof WorkRelease;
 type Prepared = {
   command: {run(): Promise<unknown>} & Record<string, any>;
   transitionWorkItem: ReturnType<typeof vi.fn>;
@@ -247,6 +248,22 @@ describe('lease-owned work actions resolve the claim token from the saved lease 
     expect(error?.message).toContain(`The saved lease session for work item ${WORK_ID} expired`);
     expect(complete.transitionWorkItem).not.toHaveBeenCalled();
     expectNoToken(rendered);
+  });
+
+  it('releases an expired claim with the saved credentials', async () => {
+    await writeWorkLeaseSession(session({expiresAt: '2020-01-01T00:00:00.000Z'}));
+    const release = prepare(WorkRelease, {id: WORK_ID}, {}, 'queued');
+    const {error, rendered} = await runAndCapture(release);
+
+    expect(error).toBeUndefined();
+    expect(release.transitionWorkItem).toHaveBeenCalledWith(
+      WORK_ID,
+      'release',
+      expect.objectContaining({claimOwner: OWNER, claimToken: STORED_TOKEN}),
+      expect.anything(),
+    );
+    expectNoToken(rendered);
+    await expect(readWorkLeaseSession(WORK_ID)).resolves.toBeNull();
   });
 
   it('cancels blocked work in the saved scope without sending an expired saved lease', async () => {

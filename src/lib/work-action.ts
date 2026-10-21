@@ -171,11 +171,13 @@ export abstract class WorkActionCommand extends BaseCommand {
         ? `${action} requires both --owner and --claim-token from the active claim, and ${found} to supply the missing one. ${claim}`
         : `${action} needs the active claim, but ${found}. ${claim}`);
     }
-    // The API rejects an expired lease, so its credentials are never sent. Complete, review and
-    // cancel without explicit credentials fall through to the claim-free path (approving
-    // needs_review work, cancelling queued or blocked work) in the lease's recorded scope, and the
-    // API decides whether a live claim is required.
-    const expired = lookup.state === 'expired';
+    // The API rejects an expired lease for every lease-owned transition except release, which lets
+    // the owner return an expired claim to the queue, so release still sends the saved credentials.
+    // Otherwise expired credentials are never sent: complete, review and cancel without explicit
+    // credentials fall through to the claim-free path (approving needs_review work, cancelling
+    // queued or blocked work) in the lease's recorded scope, and the API decides whether a live
+    // claim is required.
+    const expired = lookup.state === 'expired' && action !== 'release';
     if (expired && (options.credentialsRequired || options.partialCredentials)) {
       this.error(`The saved lease session for work item ${workItemId} expired at ${lookup.session.expiresAt}. ${reclaim}`);
     }
