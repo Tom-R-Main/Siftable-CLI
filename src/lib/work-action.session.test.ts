@@ -19,6 +19,7 @@ const OWNER = 'codex:session-test';
 const STORED_TOKEN = 'synthetic-stored-claim-token-never-render';
 const EXPLICIT_TOKEN = 'synthetic-explicit-claim-token-never-render';
 const FUTURE = '2099-01-01T00:00:00.000Z';
+const STALE = '2020-01-01T00:00:00.000Z';
 const MEMORY = '{"decision":"skip","rationale":"fixture"}';
 
 type CommandClass = typeof WorkClaim | typeof WorkComplete | typeof WorkBlock | typeof WorkCancel | typeof WorkHeartbeat | typeof WorkRelease;
@@ -230,28 +231,57 @@ describe('lease-owned work actions resolve the claim token from the saved lease 
     expectNoToken(rendered);
   });
 
-  it('refuses an expired session for a lease-owned action', async () => {
-    await writeWorkLeaseSession(session({expiresAt: '2020-01-01T00:00:00.000Z'}));
-    const block = prepare(WorkBlock, {id: WORK_ID}, {reason: 'waiting'});
+  it('sends the saved credentials past the cached deadline and lets the server decide', async () => {
+    await writeWorkLeaseSession(session({expiresAt: STALE}));
+    const block = prepare(WorkBlock, {id: WORK_ID}, {reason: 'waiting'}, 'blocked');
     const {error, rendered} = await runAndCapture(block);
 
-    expect(error?.message).toContain(`The saved lease session for work item ${WORK_ID} expired at 2020-01-01T00:00:00.000Z`);
-    expect(block.transitionWorkItem).not.toHaveBeenCalled();
+    expect(error).toBeUndefined();
+    expect(block.transitionWorkItem).toHaveBeenCalledWith(
+      WORK_ID,
+      'block',
+      expect.objectContaining({claimOwner: OWNER, claimToken: STORED_TOKEN, blockedReason: 'waiting'}),
+      expect.anything(),
+    );
     expectNoToken(rendered);
   });
 
-  it('refuses complete with --owner alone when the saved session has expired', async () => {
-    await writeWorkLeaseSession(session({expiresAt: '2020-01-01T00:00:00.000Z'}));
+  it('reports the server refusal of a lease that really expired without rendering the token', async () => {
+    await writeWorkLeaseSession(session({expiresAt: STALE}));
+    const heartbeat = prepare(WorkHeartbeat, {id: WORK_ID}, {});
+    heartbeat.transitionWorkItem.mockResolvedValueOnce({
+      statusCode: 409,
+      error: JSON.stringify({error: 'The work item lease has expired'}),
+    } as never);
+    const {error, rendered} = await runAndCapture(heartbeat);
+
+    expect(heartbeat.transitionWorkItem).toHaveBeenCalledWith(
+      WORK_ID,
+      'heartbeat',
+      expect.objectContaining({claimOwner: OWNER, claimToken: STORED_TOKEN}),
+      expect.anything(),
+    );
+    expect(error?.message).toContain('The work item lease has expired');
+    expectNoToken(rendered);
+  });
+
+  it('completes with --owner alone past the cached deadline using the saved token', async () => {
+    await writeWorkLeaseSession(session({expiresAt: STALE}));
     const complete = prepare(WorkComplete, {id: WORK_ID}, {owner: OWNER, 'memory-decision': MEMORY});
     const {error, rendered} = await runAndCapture(complete);
 
-    expect(error?.message).toContain(`The saved lease session for work item ${WORK_ID} expired`);
-    expect(complete.transitionWorkItem).not.toHaveBeenCalled();
+    expect(error).toBeUndefined();
+    expect(complete.transitionWorkItem).toHaveBeenCalledWith(
+      WORK_ID,
+      'complete',
+      expect.objectContaining({claimOwner: OWNER, claimToken: STORED_TOKEN}),
+      expect.anything(),
+    );
     expectNoToken(rendered);
   });
 
-  it('releases an expired claim with the saved credentials', async () => {
-    await writeWorkLeaseSession(session({expiresAt: '2020-01-01T00:00:00.000Z'}));
+  it('releases a claim past the cached deadline with the saved credentials', async () => {
+    await writeWorkLeaseSession(session({expiresAt: STALE}));
     const release = prepare(WorkRelease, {id: WORK_ID}, {}, 'queued');
     const {error, rendered} = await runAndCapture(release);
 
@@ -266,8 +296,8 @@ describe('lease-owned work actions resolve the claim token from the saved lease 
     await expect(readWorkLeaseSession(WORK_ID)).resolves.toBeNull();
   });
 
-  it('cancels blocked work in the saved scope without sending an expired saved lease', async () => {
-    await writeWorkLeaseSession(session({expiresAt: '2020-01-01T00:00:00.000Z', workspaceId: 'workspace-a'}));
+  it('cancels blocked work in the saved scope past the cached deadline', async () => {
+    await writeWorkLeaseSession(session({expiresAt: STALE, workspaceId: 'workspace-a'}));
     const cancel = prepare(WorkCancel, {id: WORK_ID}, {}, 'cancelled');
     const {error, rendered} = await runAndCapture(cancel);
 
@@ -276,11 +306,36 @@ describe('lease-owned work actions resolve the claim token from the saved lease 
     expect(cancel.transitionWorkItem).toHaveBeenCalledWith(
       WORK_ID,
       'cancel',
-      expect.objectContaining({claimOwner: undefined, claimToken: undefined}),
+      expect.objectContaining({claimOwner: OWNER, claimToken: STORED_TOKEN}),
       expect.anything(),
     );
     expectNoToken(rendered);
     await expect(readWorkLeaseSession(WORK_ID)).resolves.toBeNull();
+  });
+
+  it('approves needs_review work past the cached deadline without a local memory-decision refusal', async () => {
+    await writeWorkLeaseSession(session({expiresAt: STALE}));
+    const complete = prepare(WorkComplete, {id: WORK_ID}, {summary: 'approved'});
+    const {error, rendered} = await runAndCapture(complete);
+
+    expect(error).toBeUndefined();
+    expect(complete.transitionWorkItem).toHaveBeenCalledWith(
+      WORK_ID,
+      'complete',
+      expect.objectContaining({resultSummary: 'approved'}),
+      expect.anything(),
+    );
+    expectNoToken(rendered);
+  });
+
+  it('still requires --memory-decision locally for complete under a current saved claim', async () => {
+    await writeWorkLeaseSession(session());
+    const complete = prepare(WorkComplete, {id: WORK_ID}, {summary: 'done'});
+    const {error, rendered} = await runAndCapture(complete);
+
+    expect(error?.message).toContain('complete under an active claim requires --memory-decision');
+    expect(complete.transitionWorkItem).not.toHaveBeenCalled();
+    expectNoToken(rendered);
   });
 
   it('refuses a session that records a different work item', async () => {

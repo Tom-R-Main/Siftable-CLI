@@ -79,7 +79,8 @@ export async function writeWorkLeaseSession(session: WorkLeaseSession): Promise<
 
 /**
  * Result of looking up the saved lease for one work item. Only `active` and `expired` carry the
- * session; callers must never render `session.claimToken`.
+ * session; callers must never render `session.claimToken`. `expired` compares the cached
+ * `expiresAt` with the local clock, so it is advisory: the API holds the authoritative deadline.
  */
 export type WorkLeaseSessionLookup =
   | {state: 'missing'}
