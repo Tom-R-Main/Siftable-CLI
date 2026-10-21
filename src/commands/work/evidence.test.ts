@@ -23,7 +23,7 @@ const evidence = (result: unknown) => ({
     truncated: false,
   },
   input: {
-    accepted: {workItemRevision: 3, payloadSha256: 'ab'.repeat(32), payloadBytes: 812},
+    accepted: {projectionVersion: 2, workItemRevision: 3, payloadSha256: 'ab'.repeat(32), payloadBytes: 812},
     resume: {fromAttemptId: 'attempt-0', status: 'changed'},
   },
 });
@@ -58,7 +58,7 @@ describe('work evidence', () => {
     expect(lines).toContain('Unbound work-item verification (not tied to any attempt): 1 (older ones not shown)');
     expect(lines).toContain('Effects: 1 completed, 0 unfinished, 0 in flight, 1 uncertain');
     expect(lines).toContain('  UNCERTAIN: patch/1 · workspace_patch · dispatching');
-    expect(lines).toContain('Accepted input: revision 3 · 812 bytes · sha256 abababababab');
+    expect(lines).toContain('Accepted input: projection v2 · revision 3 · 812 bytes · sha256 abababababab');
     expect(lines).toContain('  Resumed from attempt-0: input changed');
   });
 

@@ -29,7 +29,7 @@ type AttemptEvidence = {
   effects?: Record<'completed' | 'unfinished' | 'inFlight' | 'uncertain', Effect[]> & {truncated: boolean};
   /** Absent from servers older than V483 accepted input. */
   input?: {
-    accepted: {workItemRevision: number; payloadSha256: string; payloadBytes: number} | null;
+    accepted: {projectionVersion?: number; workItemRevision: number; payloadSha256: string; payloadBytes: number} | null;
     resume: {fromAttemptId: string; status: 'same' | 'changed' | 'unknown'} | null;
   };
 };
@@ -99,7 +99,8 @@ export default class WorkEvidence extends BaseCommand {
       if (input) {
         const {accepted, resume} = input;
         this.log(accepted
-          ? `Accepted input: revision ${accepted.workItemRevision} · ${accepted.payloadBytes} bytes · sha256 ${accepted.payloadSha256.slice(0, 12)}`
+          ? `Accepted input: ${accepted.projectionVersion ? `projection v${accepted.projectionVersion} · ` : ''}revision ${accepted.workItemRevision}`
+            + ` · ${accepted.payloadBytes} bytes · sha256 ${accepted.payloadSha256.slice(0, 12)}`
           : 'Accepted input: none recorded');
         if (resume) this.log(`  Resumed from ${resume.fromAttemptId}: input ${resume.status}`);
       }
