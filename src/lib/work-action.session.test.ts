@@ -7,6 +7,7 @@ import WorkBlock from '../commands/work/block.js';
 import WorkCancel from '../commands/work/cancel.js';
 import WorkClaim from '../commands/work/claim.js';
 import WorkComplete from '../commands/work/complete.js';
+import WorkHeartbeat from '../commands/work/heartbeat.js';
 import {readWorkLeaseSession, writeWorkLeaseSession, type WorkLeaseSession} from './work-lease-session.js';
 
 // Every session in this suite lives under a fresh SIFT_CONFIG_DIR in the OS temp directory.
@@ -19,7 +20,7 @@ const EXPLICIT_TOKEN = 'synthetic-explicit-claim-token-never-render';
 const FUTURE = '2099-01-01T00:00:00.000Z';
 const MEMORY = '{"decision":"skip","rationale":"fixture"}';
 
-type CommandClass = typeof WorkClaim | typeof WorkComplete | typeof WorkBlock | typeof WorkCancel;
+type CommandClass = typeof WorkClaim | typeof WorkComplete | typeof WorkBlock | typeof WorkCancel | typeof WorkHeartbeat;
 type Prepared = {
   command: {run(): Promise<unknown>} & Record<string, any>;
   transitionWorkItem: ReturnType<typeof vi.fn>;
@@ -53,11 +54,12 @@ function prepare(
   args: Record<string, unknown>,
   flags: Record<string, unknown>,
   transitionStatus = 'done',
+  responseToken: string | null = STORED_TOKEN,
 ): Prepared {
   const command = Object.create(CommandClass.prototype) as Prepared['command'];
   const transitionWorkItem = vi.fn(async (id: string) => ({
     statusCode: 200,
-    data: {workItem: {id, status: transitionStatus, claimToken: STORED_TOKEN}},
+    data: {workItem: {id, status: transitionStatus, claimToken: responseToken}},
   }));
   const claimWorkItem = vi.fn(async () => ({
     statusCode: 200,
@@ -174,6 +176,22 @@ describe('lease-owned work actions resolve the claim token from the saved lease 
     expectNoToken(rendered);
   });
 
+  it('saves the explicit --claim-token when renewing the session', async () => {
+    await writeWorkLeaseSession(session());
+    const heartbeat = prepare(WorkHeartbeat, {id: WORK_ID}, {'claim-token': EXPLICIT_TOKEN}, 'running', null);
+    const {error, rendered} = await runAndCapture(heartbeat);
+
+    expect(error).toBeUndefined();
+    expect(heartbeat.transitionWorkItem).toHaveBeenCalledWith(
+      WORK_ID,
+      'heartbeat',
+      expect.objectContaining({claimOwner: OWNER, claimToken: EXPLICIT_TOKEN}),
+      expect.anything(),
+    );
+    expectNoToken(rendered);
+    expect((await readWorkLeaseSession(WORK_ID))?.claimToken).toBe(EXPLICIT_TOKEN);
+  });
+
   it('uses explicit --owner and --claim-token without reading the session', async () => {
     await writeWorkLeaseSession(session({apiUrl: 'https://other.test'}));
     const complete = prepare(WorkComplete, {id: WORK_ID}, {
@@ -231,12 +249,13 @@ describe('lease-owned work actions resolve the claim token from the saved lease 
     expectNoToken(rendered);
   });
 
-  it('cancels blocked work without sending an expired saved lease', async () => {
-    await writeWorkLeaseSession(session({expiresAt: '2020-01-01T00:00:00.000Z'}));
+  it('cancels blocked work in the saved scope without sending an expired saved lease', async () => {
+    await writeWorkLeaseSession(session({expiresAt: '2020-01-01T00:00:00.000Z', workspaceId: 'workspace-a'}));
     const cancel = prepare(WorkCancel, {id: WORK_ID}, {}, 'cancelled');
     const {error, rendered} = await runAndCapture(cancel);
 
     expect(error).toBeUndefined();
+    expect(cancel.command.client).toHaveBeenCalledWith(expect.objectContaining({workspace: 'workspace-a'}));
     expect(cancel.transitionWorkItem).toHaveBeenCalledWith(
       WORK_ID,
       'cancel',
