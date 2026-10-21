@@ -29,7 +29,7 @@ import {closeBrain, setBrainModel, getBrainModel, agentHarnessAsk, __setExplorer
   __resetBrainAgentsForTests, setAgentConversationKey, __setProcessJobsForTests} from '../../interactive-tui/brain';
 import {enqueueSessionInstruction, sessionJournalIdForConversation} from '../../interactive-tui/sessionMailbox';
 import * as bundledHarness from '../../interactive-tui/agent-harness';
-import {SessionServer, WireEventLog, type SessionEngine} from '../../interactive-tui/sessionServer';
+import {SessionServer, WireEventLog} from '../../interactive-tui/sessionServer';
 import {JsonlSessionEventStore} from '../../interactive-tui/agent-harness/framework/session';
 import * as confirmGateModule from '../../interactive-tui/confirmGate';
 import * as questionGateModule from '../../interactive-tui/questionGate';
@@ -62,26 +62,30 @@ async function readyClient(): Promise<{ client: CodexClient; proc: FakeCodexProc
   return { client, proc };
 }
 
-// The cancellation tests below never assert elapsed time. Each holds the slow
+// The cancellation tests below never assert elapsed time. They hold the slow
 // work open (a stalled request, a child that ignores kill, or a promise the
-// test settles itself) and checks what happens while it is still held. The
-// waits here expire only when an expected event never arrives; they are set
-// well under the 30 s test timeout so that a missing event reports what was seen.
+// test settles itself) and fake setTimeout, the only timer the stop bounds use,
+// so a bound fires exactly when the test advances fake time past it. Date,
+// setImmediate, streams and file I/O stay real.
+//
+// The waits below run on real time and expire only when an expected event never
+// arrives. They are set well under the 30 s test timeout, so that a missing
+// event still reports what was seen.
 const EVENT_WAIT_MS = 10_000;
 
-/**
- * Stop bound for tests whose stop is confirmed by work the test settles. The
- * bound only has to outlast that hold, which is a few event-loop turns, so
- * the timer path (always unconfirmed) cannot produce the confirmed result.
- */
-const RELEASE_BOUND_MS = 10_000;
+/** The stop bound every cancellation test configures. */
+const STOP_BOUND_MS = 60;
 
-/** Poll until `condition` holds; fail only if it never does. */
+// Captured before any test fakes timers.
+const realSetTimeout = globalThis.setTimeout;
+const realDelay = (ms: number) => new Promise<void>((resolve) => { realSetTimeout(resolve, ms); });
+
+/** Poll on real time until `condition` holds; fail only if it never does. */
 async function until(condition: () => boolean, what: () => string): Promise<void> {
   const deadline = Date.now() + EVENT_WAIT_MS;
   while (!condition()) {
     if (Date.now() >= deadline) throw new Error(`timed out waiting for ${what()}`);
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await realDelay(5);
   }
 }
 
@@ -89,7 +93,35 @@ async function until(condition: () => boolean, what: () => string): Promise<void
  * Let work settled after a cancel run its continuations. Only negative checks
  * follow this wait, so a slow machine cannot make correct code fail them.
  */
-const lateSettlement = () => new Promise((resolve) => setTimeout(resolve, 100));
+const lateSettlement = () => realDelay(100);
+
+/** Fake only setTimeout and clearTimeout. Run it before the code under test starts any timer. */
+function fakeTimeouts(): void {
+  jest.useFakeTimers({doNotFake: ['Date', 'hrtime', 'nextTick', 'performance', 'queueMicrotask', 'requestAnimationFrame',
+    'cancelAnimationFrame', 'requestIdleCallback', 'cancelIdleCallback', 'setImmediate', 'clearImmediate', 'setInterval',
+    'clearInterval']});
+}
+
+/**
+ * Advance fake time by `ms`, firing every timer that falls due, then give what
+ * fired time to finish on the real event loop (stream reads, log flushes).
+ */
+async function advance(ms: number): Promise<void> {
+  await jest.advanceTimersByTimeAsync(ms);
+  await lateSettlement();
+}
+
+/**
+ * One real macrotask: every microtask queued so far has run. A bound that a
+ * cancel schedules through promise continuations alone is registered after this.
+ */
+const nextMacrotask = () => new Promise<void>((resolve) => { setImmediate(resolve); });
+
+/** The id of the first request written for `method`, polled on real time. */
+async function sentId(proc: FakeCodexProc, method: string): Promise<number> {
+  await until(() => proc.sent.some((m) => m.method === method), () => `"${method}" to be written to the child`);
+  return proc.sent.find((m) => m.method === method)!.id as number;
+}
 
 describe('CodexClient handshake', () => {
   it('drives initialize → initialized and resolves ensureReady', async () => {
@@ -579,6 +611,7 @@ describe('codexAsk cancellation during app-server setup (AGENT-RUNTIME-31)', () 
   }
 
   afterEach(() => {
+    jest.useRealTimers();
     shutdownCodex();
     __setCodexClientForTests(null);
   });
@@ -592,46 +625,55 @@ describe('codexAsk cancellation during app-server setup (AGENT-RUNTIME-31)', () 
     expect(proc.sent.some((m) => m.method === 'turn/start')).toBe(false);
   }
 
+  /** Start a cancellable codexAsk under fake timeouts; `settled` reports whether it has returned. */
+  function askUnderFakeTime(stopTimeoutMs: number) {
+    fakeTimeouts();
+    const controller = new AbortController();
+    const events: unknown[] = [];
+    let settled = false;
+    const result = codexAsk('continue', (event) => events.push(event), { signal: controller.signal, stopTimeoutMs });
+    void result.then(() => { settled = true; });
+    return { controller, events, result, settled: () => settled };
+  }
+
   for (const stage of ['initialize', 'thread/start'] as const) {
     it(`a cancel while app-server stalls at ${stage} is bounded and confirmed once the child is gone`, async () => {
       const proc = fakeProc(true);
       await install(proc, stage);
-      const controller = new AbortController();
-      const events: unknown[] = [];
-      // The timer path always reports stopConfirmed: false, so with a bound
-      // this long a confirmed stop can only come from draining the child.
-      const result = codexAsk('continue', (event) => events.push(event), { signal: controller.signal, stopTimeoutMs: RELEASE_BOUND_MS });
-      const stalledId = await waitForSent(proc, stage);
-      controller.abort();
-      // The stalled request is still unanswered: the cancel did not wait for it.
-      await expect(result).resolves.toEqual({ text: '', status: 'interrupted', stopConfirmed: true });
+      const ask = askUnderFakeTime(STOP_BOUND_MS);
+      const stalledId = await sentId(proc, stage);
+      ask.controller.abort();
+      // No fake time passes, so the bound cannot fire: the drain alone
+      // confirms the stop, while the stalled request is still unanswered.
+      await until(ask.settled, () => 'the cancelled ask to return');
+      await expect(ask.result).resolves.toEqual({ text: '', status: 'interrupted', stopConfirmed: true });
       expect(proc.killed).toBe(true);
       expect(codexChildAlive()).toBe(false);
       await answerLate(proc, stage, stalledId);
-      expect(events).toEqual([]);
+      expect(ask.events).toEqual([]);
     });
 
     it(`a cancel while app-server stalls at ${stage} and ignores kill is unconfirmed within the bound`, async () => {
       const proc = fakeProc(false);
       await install(proc, stage);
-      const controller = new AbortController();
-      const events: unknown[] = [];
-      const result = codexAsk('continue', (event) => events.push(event), { signal: controller.signal, stopTimeoutMs: 60 });
-      const stalledId = await waitForSent(proc, stage);
-      controller.abort();
-      const outcome = await result;
-      // Read in the microtask run that settled the stop, before any later
-      // timer: the drain had sent SIGTERM but not its SIGKILL escalation.
-      const signalAtStop = proc.killSignal;
+      const ask = askUnderFakeTime(STOP_BOUND_MS);
+      const stalledId = await sentId(proc, stage);
+      ask.controller.abort();
+      // The kill and the bound are scheduled in the same synchronous step.
+      await until(() => proc.killed, () => 'the drain to signal the child');
+      // The stop waits out the bound: not 1 ms early, and settled once it elapses.
+      await advance(STOP_BOUND_MS - 1);
+      expect(ask.settled()).toBe(false);
+      await advance(1);
+      await until(ask.settled, () => 'the cancelled ask to return at the bound');
+      const outcome = await ask.result;
       expect(outcome).toMatchObject({ status: 'interrupted', stopConfirmed: false });
-      // The 60 ms bound ended the wait while the drain was still pending:
-      // the child has not exited.
       expect(outcome.error).toContain('Codex setup');
-      expect(outcome.error).toContain('within 60 ms');
-      expect(signalAtStop).toBe('SIGTERM');
+      expect(outcome.error).toContain(`within ${STOP_BOUND_MS} ms`);
+      // The drain is still pending: the child has not exited.
       expect(codexChildAlive()).toBe(true);
       await answerLate(proc, stage, stalledId);
-      expect(events).toEqual([]);
+      expect(ask.events).toEqual([]);
     });
   }
 
@@ -743,32 +785,29 @@ describe('codexAsk cancellation during app-server setup (AGENT-RUNTIME-31)', () 
     try {
       const proc = fakeProc(false);
       await install(proc, 'initialize');
+      fakeTimeouts();
       const lines: Array<Record<string, any>> = [];
       const log = new WireEventLog({rootDir: root, session: 'codex-setup', leaseStore: dir => new JsonlSessionEventStore({rootDir: dir})});
-      let signalAtStop: NodeJS.Signals | number | undefined;
-      const ask: SessionEngine['ask'] = async (input, onEvent, signal) => {
-        const result = await codexAsk(input, onEvent, {signal, stopTimeoutMs: 60});
-        // Read in the microtask run that settled the stop, before any later
-        // timer: the drain had sent SIGTERM but not its SIGKILL escalation.
-        signalAtStop = proc.killSignal;
-        return result;
-      };
       const server = new SessionServer({session: 'codex-setup', provider: 'codex', model: 'gpt', cwd: root, deadlineMs: 60_000, log,
         write: line => { lines.push(JSON.parse(line)); }, gates: {...confirmGateModule, ...questionGateModule},
-        engine: {kind: 'codex', ask, close: () => closeCodex()}});
+        engine: {kind: 'codex', ask: (input, onEvent, signal) => codexAsk(input, onEvent, {signal, stopTimeoutMs: STOP_BOUND_MS}), close: () => closeCodex()}});
       await server.handleLine(JSON.stringify({id: 1, type: 'initialize', protocolVersion: 1}));
       await server.handleLine(JSON.stringify({id: 2, type: 'prompt', input: 'hello'}));
-      const initializeId = await waitForSent(proc, 'initialize');
+      const initializeId = await sentId(proc, 'initialize');
       await server.handleLine(JSON.stringify({id: 3, type: 'cancel'}));
       const terminals = () => lines.filter(line => String(line.type).startsWith('turn.') && line.type !== 'turn.started');
+      // The kill and the bound are scheduled in the same synchronous step.
+      await until(() => proc.killed, () => 'the drain to signal the child');
+      // The stop waits out the bound: no terminal 1 ms early, one once it elapses.
+      await advance(STOP_BOUND_MS - 1);
+      expect(terminals()).toEqual([]);
+      await advance(1);
       await until(() => lines.some(line => String(line.type).startsWith('turn.stop')),
         () => `a stop terminal; saw ${JSON.stringify(lines.map(line => line.type))}`);
       expect(terminals()).toHaveLength(1);
       expect(terminals()[0]).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false, reason: 'client'});
-      // The 60 ms bound produced the terminal while the stubborn child was
-      // still undrained, so the cancel did not wait for the handshake or drain.
-      expect(terminals()[0].error).toContain('within 60 ms');
-      expect(signalAtStop).toBe('SIGTERM');
+      expect(terminals()[0].error).toContain(`within ${STOP_BOUND_MS} ms`);
+      // The stubborn child is still undrained: the cancel did not wait for the handshake or the drain.
       expect(codexChildAlive()).toBe(true);
       // A late initialize answer neither resumes the turn nor adds a terminal.
       const seenLines = lines.length;
@@ -777,9 +816,10 @@ describe('codexAsk cancellation during app-server setup (AGENT-RUNTIME-31)', () 
       await lateSettlement();
       expect(lines.slice(seenLines)).toEqual([]);
       expect(proc.sent.slice(seenSent)).toEqual([]);
-      // Shutdown drains the stubborn child within closeCodex's bounded grace.
-      const exitCode = await server.shutdown('client');
-      expect(exitCode).toBe(1);
+      // Shutdown fails once closeCodex's grace runs out: SIGKILL after 1 s, failure after 2 s.
+      const exitCode = server.shutdown('client');
+      await advance(2_000);
+      expect(await exitCode).toBe(1);
       expect(lines.at(-1)).toMatchObject({type: 'session.closed'});
       expect(terminals()).toHaveLength(1);
     } finally {
@@ -798,6 +838,7 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
     previous = getBrainModel();
   });
   afterEach(async () => {
+    jest.useRealTimers();
     __setExplorerReportBuilderForTests(null);
     __setPreTurnStopBoundForTests(null);
     setBrainModel({provider: previous.provider, model: previous.model});
@@ -823,6 +864,25 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
       return waitFor(line => line.type === 'response' && line.id === id);
     };
     const terminals = () => lines.filter(line => String(line.type).startsWith('turn.') && line.type !== 'turn.started');
+    const isStop = (turnId: string) => (line: Record<string, any>) => line.turnId === turnId && String(line.type).startsWith('turn.stop');
+    /**
+     * After a cancel, under fake timeouts: no stop is reported while the work
+     * is held, even 1 ms short of the bound. A pre-turn cancel schedules its
+     * bound through promise continuations only, so one macrotask registers it.
+     */
+    const heldShortOfBound = async (turnId: string) => {
+      await nextMacrotask();
+      await advance(STOP_BOUND_MS - 1);
+      expect(lines.some(isStop(turnId))).toBe(false);
+    };
+    /** ...and exactly one stop is reported once the bound elapses. */
+    const stopAtBound = async (turnId: string) => {
+      await heldShortOfBound(turnId);
+      await advance(1);
+      const terminal = await waitFor(isStop(turnId));
+      expect(terminals().filter(line => line.turnId === turnId)).toHaveLength(1);
+      return terminal;
+    };
     /** Settle held work after a turn's terminal: nothing more may appear for that turn. */
     const releaseLate = async (turnId: string, release: () => void) => {
       const seen = lines.length;
@@ -830,7 +890,7 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
       await lateSettlement();
       expect(lines.slice(seen).filter(line => line.turnId === turnId)).toEqual([]);
     };
-    return {server, lines, send, waitFor, terminals, releaseLate};
+    return {server, lines, send, waitFor, terminals, isStop, heldShortOfBound, stopAtBound, releaseLate};
   }
 
   /** An explorer that stalls until cancelled, then ends shortly after. */
@@ -856,13 +916,14 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
     setBrainModel({provider: 'codex', model: 'gpt-5.6-sol'});
     const explorer = heldExplorer();
     __setExplorerReportBuilderForTests(explorer.builder);
-    __setPreTurnStopBoundForTests(RELEASE_BOUND_MS);
+    __setPreTurnStopBoundForTests(STOP_BOUND_MS);
     const proc = new FakeCodexProc();
     const client = new CodexClient(proc.asSpawnFn());
     const ready = client.ensureReady();
     await completeHandshake(proc);
     await ready;
     __setCodexClientForTests(client, { type: 'chatgpt', email: 'test@example.com' });
+    fakeTimeouts();
     const s = session('codex');
     await s.send({type: 'initialize', protocolVersion: 1});
     const turn = await s.send({type: 'prompt', input: CODE_PROMPT});
@@ -871,8 +932,8 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
     // confirmed until the explorer has ended.
     expect(await s.send({type: 'cancel'})).toMatchObject({ok: true, status: 'stopping'});
     expect(explorer.aborted()).toBe(true);
-    await lateSettlement();
-    expect(s.terminals()).toEqual([]);
+    await s.heldShortOfBound(turn.turnId);
+    // Fake time stays short of the bound, so only the explorer ending can confirm the stop.
     explorer.end('abort');
     const terminal = await s.waitFor(line => line.turnId === turn.turnId && line.type === 'turn.stopped');
     expect(terminal).toMatchObject({confirmed: true, reason: 'client'});
@@ -884,9 +945,9 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
     // The stop was confirmed, so the session takes the next prompt, which reaches Codex.
     const followUp = await s.send({type: 'prompt', input: 'say hello'});
     expect(followUp).toMatchObject({ok: true});
-    proc.reply(await waitForSent(proc, 'thread/start'), { thread: { id: 'thread-follow' } });
-    proc.reply(await waitForSent(proc, 'turn/start'), { turn: { id: 'turn-follow' } });
-    await new Promise(r => setTimeout(r, 5));
+    proc.reply(await sentId(proc, 'thread/start'), { thread: { id: 'thread-follow' } });
+    proc.reply(await sentId(proc, 'turn/start'), { turn: { id: 'turn-follow' } });
+    await realDelay(5);
     proc.notify('item/agentMessage/delta', { threadId: 'thread-follow', turnId: 'turn-follow', itemId: 'i', delta: 'hello' });
     proc.notify('turn/completed', { threadId: 'thread-follow', turn: { id: 'turn-follow', status: 'completed' } });
     expect(await s.waitFor(line => line.turnId === followUp.turnId && line.type === 'turn.completed')).toMatchObject({text: 'hello'});
@@ -897,17 +958,17 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
     setBrainModel({provider: 'codex', model: 'gpt-5.6-sol'});
     const explorer = heldExplorer();
     __setExplorerReportBuilderForTests(explorer.builder);
-    __setPreTurnStopBoundForTests(60);
+    __setPreTurnStopBoundForTests(STOP_BOUND_MS);
+    fakeTimeouts();
     const s = session('codex');
     await s.send({type: 'initialize', protocolVersion: 1});
     const turn = await s.send({type: 'prompt', input: CODE_PROMPT});
     await s.waitFor(line => line.type === 'tool_call' && line.toolCall?.name === 'repo_explorer');
     await s.send({type: 'cancel'});
-    const terminal = await s.waitFor(line => line.turnId === turn.turnId && String(line.type).startsWith('turn.stop'));
+    // The explorer is still running when the bound produces the one terminal.
+    const terminal = await s.stopAtBound(turn.turnId);
     expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
-    // The 60 ms bound produced the terminal while the explorer was still running.
-    expect(terminal.error).toContain('explorer preparation; it did not stop within 60 ms');
-    expect(s.terminals()).toHaveLength(1);
+    expect(terminal.error).toContain(`explorer preparation; it did not stop within ${STOP_BOUND_MS} ms`);
     expect(await s.send({type: 'prompt', input: 'say hello'})).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
     // A report that arrives after the terminal does not resume the turn.
     await s.releaseLate(turn.turnId, () => explorer.end('report'));
@@ -940,6 +1001,8 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
       chatCalls = 0;
       setAgentConversationKey(key);
       setBrainModel({provider: 'meta', model: 'fixture'});
+      __setPreTurnStopBoundForTests(STOP_BOUND_MS);
+      fakeTimeouts();
     });
     afterEach(() => {
       __setProcessJobsForTests(undefined);
@@ -973,22 +1036,24 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
 
     /**
      * Prompt, wait until setup stalls, cancel, and return the turn's single
-     * terminal. With `confirmBy`, the stop must wait for that settlement: no
-     * terminal while setup is held, then a terminal once it settles. Without
-     * it, setup stays held and the terminal must arrive anyway.
+     * terminal. Either way, no terminal appears while setup is held, even 1 ms
+     * short of the bound. With `confirmBy`, the test then settles setup before
+     * the bound and the stop is confirmed. Without it, setup stays held and the
+     * terminal arrives once the bound elapses.
      */
     async function cancelDuringSetup(s: ReturnType<typeof session>, stalled: () => boolean, confirmBy?: () => void) {
       await s.send({type: 'initialize', protocolVersion: 1});
       const turn = await s.send({type: 'prompt', input: 'say hello'});
       await until(stalled, () => 'agent setup to stall');
       expect(await s.send({type: 'cancel'})).toMatchObject({ok: true, status: 'stopping'});
-      const isTerminal = (line: Record<string, any>) => line.turnId === turn.turnId && String(line.type).startsWith('turn.stop');
+      let terminal: Record<string, any>;
       if (confirmBy) {
-        await lateSettlement();
-        expect(s.lines.some(isTerminal)).toBe(false);
+        await s.heldShortOfBound(turn.turnId);
         confirmBy();
+        terminal = await s.waitFor(s.isStop(turn.turnId));
+      } else {
+        terminal = await s.stopAtBound(turn.turnId);
       }
-      const terminal = await s.waitFor(isTerminal);
       // Let any late settlement run: one terminal, and the cancelled turn never reaches the model loop.
       await lateSettlement();
       expect(s.terminals()).toHaveLength(1);
@@ -1004,7 +1069,6 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
     }
 
     it('a cancel during a stalled getAgent() is confirmed once construction settles; the next prompt runs', async () => {
-      __setPreTurnStopBoundForTests(RELEASE_BOUND_MS);
       const built = later<unknown>();
       let constructing = false;
       (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: () => { constructing = true; return built.promise; }};
@@ -1017,22 +1081,19 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
     });
 
     it('a getAgent() that never settles is unconfirmed within the bound', async () => {
-      __setPreTurnStopBoundForTests(60);
       const built = later<unknown>();
       let constructing = false;
       (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: () => { constructing = true; return built.promise; }};
       const s = session('harness');
       const terminal = await cancelDuringSetup(s, () => constructing);
       expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
-      // The 60 ms bound produced the terminal while construction was still held.
-      expect(terminal.error).toContain('agent setup; it did not stop within 60 ms');
+      expect(terminal.error).toContain(`agent setup; it did not stop within ${STOP_BOUND_MS} ms`);
       expect(await s.send({type: 'prompt', input: 'say hello'})).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
       await settleLate(s, terminal, () => built.resolve(fakeAgent()));
       await s.server.shutdown('client');
     });
 
     it('a cancel during a stalled mailbox drain is confirmed once the drain settles', async () => {
-      __setPreTurnStopBoundForTests(RELEASE_BOUND_MS);
       enqueueSessionInstruction(key, 'queued instruction');
       const ingested = later<boolean>();
       let draining = false;
@@ -1044,7 +1105,6 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
     });
 
     it('a process-job cleanup that never settles is unconfirmed within the bound, and shutdown completes', async () => {
-      __setPreTurnStopBoundForTests(60);
       let stopCalls = 0;
       const cleanup = later<void>();
       __setProcessJobsForTests({stopSession: () => { stopCalls += 1; return cleanup.promise; }, close: async () => {}} as never);
@@ -1062,11 +1122,12 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
       const turn = await s.send({type: 'prompt', input: 'say hello'});
       await until(() => inLoop, () => 'the model loop to start');
       await s.send({type: 'cancel'});
-      const terminal = await s.waitFor(line => line.turnId === turn.turnId && String(line.type).startsWith('turn.stop'));
+      // Cleanup starts and its bound is scheduled in the same synchronous step.
+      await until(() => stopCalls === 1, () => 'process-job cleanup to start');
+      // Cleanup is still held when the bound produces the one terminal.
+      const terminal = await s.stopAtBound(turn.turnId);
       expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false, jobCleanup: 'unknown'});
-      // The 60 ms bound produced the terminal while job cleanup was still held.
-      expect(terminal.error).toContain('Process job cleanup did not finish within 60 ms');
-      expect(s.terminals()).toHaveLength(1);
+      expect(terminal.error).toContain(`Process job cleanup did not finish within ${STOP_BOUND_MS} ms`);
       expect(stopCalls).toBe(1);
       expect(await s.send({type: 'prompt', input: 'say hello'})).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
       // Cleanup finishing after the terminal adds nothing for the stopped turn.
@@ -1078,7 +1139,6 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
     });
 
     it('shutdown after an unconfirmed stop is bounded despite stalled agent setup and a hung job close', async () => {
-      __setPreTurnStopBoundForTests(60);
       const jobsClosed = later<void>();
       __setProcessJobsForTests({stopSession: async () => {}, close: () => jobsClosed.promise} as never);
       const built = later<unknown>();
@@ -1087,15 +1147,23 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
       const s = session('harness', () => closeBrain());
       const terminal = await cancelDuringSetup(s, () => constructing);
       expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed'});
-      await s.server.handleLine(JSON.stringify({id: 'bye', type: 'shutdown'}));
+      // closeBrain schedules every close bound synchronously, before shutdown awaits them.
+      const bye = s.server.handleLine(JSON.stringify({id: 'bye', type: 'shutdown'}));
+      const answered = () => s.lines.some(line => line.type === 'response' && line.id === 'bye');
+      await nextMacrotask();
+      // Shutdown waits out the close bounds: no answer 1 ms early, one once they elapse.
+      await advance(STOP_BOUND_MS - 1);
+      expect(answered()).toBe(false);
+      await advance(1);
       const response = await s.waitFor(line => line.type === 'response' && line.id === 'bye');
+      await bye;
       expect(response).toMatchObject({ok: true, status: 'closed', exitCode: 1});
       const closed = s.lines.filter(line => line.type === 'session.closed');
       expect(closed).toHaveLength(1);
       // Both closes were still held when shutdown answered; each was cut off by
-      // its own 60 ms bound, not by the session's shutdown bound.
-      expect(closed[0].error).toContain('Process jobs did not close within 60 ms');
-      expect(closed[0].error).toContain('Agent session did not close within 60 ms');
+      // its own bound, not by the session's shutdown bound.
+      expect(closed[0].error).toContain(`Process jobs did not close within ${STOP_BOUND_MS} ms`);
+      expect(closed[0].error).toContain(`Agent session did not close within ${STOP_BOUND_MS} ms`);
       expect(closed[0].error).not.toContain('the engine did not close within');
       // Settling both after shutdown adds no terminal, no second close, and no model loop.
       await settleLate(s, terminal, () => { jobsClosed.resolve(); built.resolve(fakeAgent()); });
@@ -1103,7 +1171,6 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
     });
 
     it('shutdown keeps the journal lease while a timed-out mailbox drain can still write', async () => {
-      __setPreTurnStopBoundForTests(60);
       enqueueSessionInstruction(key, 'queued instruction');
       const ingested = later<boolean>();
       let draining = false;
@@ -1112,7 +1179,12 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
       const s = session('harness', () => closeBrain());
       const terminal = await cancelDuringSetup(s, () => draining);
       expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed'});
-      const response = await s.send({type: 'shutdown'});
+      // Shutdown answers once the drain's close bound elapses.
+      const bye = s.server.handleLine(JSON.stringify({id: 'bye', type: 'shutdown'}));
+      await nextMacrotask();
+      await advance(STOP_BOUND_MS);
+      const response = await s.waitFor(line => line.type === 'response' && line.id === 'bye');
+      await bye;
       expect(response).toMatchObject({exitCode: 1});
       expect(s.lines.find(line => line.type === 'session.closed')?.error).toContain('session journal lease retained');
       // Another process must not be able to take the journal the drain may still append to.
@@ -1124,7 +1196,6 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
     });
 
     it('a mailbox drain that never settles is unconfirmed within the bound', async () => {
-      __setPreTurnStopBoundForTests(60);
       enqueueSessionInstruction(key, 'queued instruction');
       const ingested = later<boolean>();
       let draining = false;
@@ -1132,8 +1203,7 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
       const s = session('harness');
       const terminal = await cancelDuringSetup(s, () => draining);
       expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
-      // The 60 ms bound produced the terminal while the drain was still held.
-      expect(terminal.error).toContain('agent setup; it did not stop within 60 ms');
+      expect(terminal.error).toContain(`agent setup; it did not stop within ${STOP_BOUND_MS} ms`);
       await settleLate(s, terminal, () => ingested.resolve(true));
       await s.server.shutdown('client');
     });
@@ -1143,17 +1213,17 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
     setBrainModel({provider: 'meta', model: 'fixture'});
     const explorer = heldExplorer();
     __setExplorerReportBuilderForTests(explorer.builder);
-    __setPreTurnStopBoundForTests(60);
+    __setPreTurnStopBoundForTests(STOP_BOUND_MS);
+    fakeTimeouts();
     const s = session('harness');
     await s.send({type: 'initialize', protocolVersion: 1});
     const turn = await s.send({type: 'prompt', input: CODE_PROMPT});
     await s.waitFor(line => line.type === 'tool_call' && line.toolCall?.name === 'repo_explorer');
     await s.send({type: 'cancel'});
-    const terminal = await s.waitFor(line => line.turnId === turn.turnId && String(line.type).startsWith('turn.stop'));
+    // The explorer is still running when the bound produces the one terminal.
+    const terminal = await s.stopAtBound(turn.turnId);
     expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
-    // The 60 ms bound produced the terminal while the explorer was still running.
-    expect(terminal.error).toContain('explorer preparation; it did not stop within 60 ms');
-    expect(s.terminals()).toHaveLength(1);
+    expect(terminal.error).toContain(`explorer preparation; it did not stop within ${STOP_BOUND_MS} ms`);
     // A report that arrives after the terminal does not resume the turn.
     await s.releaseLate(turn.turnId, () => explorer.end('report'));
     expect(s.terminals()).toHaveLength(1);
