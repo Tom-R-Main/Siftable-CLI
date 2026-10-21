@@ -211,14 +211,40 @@ describe('lease-owned work actions resolve the claim token from the saved lease 
     expectNoToken(rendered);
   });
 
-  it('refuses an expired session', async () => {
+  it('refuses an expired session for a lease-owned action', async () => {
     await writeWorkLeaseSession(session({expiresAt: '2020-01-01T00:00:00.000Z'}));
-    const complete = prepare(WorkComplete, {id: WORK_ID}, {'memory-decision': MEMORY});
-    const {error, rendered} = await runAndCapture(complete);
+    const block = prepare(WorkBlock, {id: WORK_ID}, {reason: 'waiting'});
+    const {error, rendered} = await runAndCapture(block);
 
     expect(error?.message).toContain(`The saved lease session for work item ${WORK_ID} expired at 2020-01-01T00:00:00.000Z`);
+    expect(block.transitionWorkItem).not.toHaveBeenCalled();
+    expectNoToken(rendered);
+  });
+
+  it('refuses complete with --owner alone when the saved session has expired', async () => {
+    await writeWorkLeaseSession(session({expiresAt: '2020-01-01T00:00:00.000Z'}));
+    const complete = prepare(WorkComplete, {id: WORK_ID}, {owner: OWNER, 'memory-decision': MEMORY});
+    const {error, rendered} = await runAndCapture(complete);
+
+    expect(error?.message).toContain(`The saved lease session for work item ${WORK_ID} expired`);
     expect(complete.transitionWorkItem).not.toHaveBeenCalled();
     expectNoToken(rendered);
+  });
+
+  it('cancels blocked work without sending an expired saved lease', async () => {
+    await writeWorkLeaseSession(session({expiresAt: '2020-01-01T00:00:00.000Z'}));
+    const cancel = prepare(WorkCancel, {id: WORK_ID}, {}, 'cancelled');
+    const {error, rendered} = await runAndCapture(cancel);
+
+    expect(error).toBeUndefined();
+    expect(cancel.transitionWorkItem).toHaveBeenCalledWith(
+      WORK_ID,
+      'cancel',
+      expect.objectContaining({claimOwner: undefined, claimToken: undefined}),
+      expect.anything(),
+    );
+    expectNoToken(rendered);
+    await expect(readWorkLeaseSession(WORK_ID)).resolves.toBeNull();
   });
 
   it('refuses a session that records a different work item', async () => {

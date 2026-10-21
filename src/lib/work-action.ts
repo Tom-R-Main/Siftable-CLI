@@ -140,7 +140,8 @@ export abstract class WorkActionCommand extends BaseCommand {
   /**
    * Load the private lease session that `sift work claim` saved for this work item. Refusals name
    * the work item and the remedy, never the token. Returns null only when no credentials are needed
-   * and no session exists (for example, approving needs_review work or cancelling queued work).
+   * and no usable session exists (for example, approving needs_review work or cancelling queued or
+   * blocked work).
    */
   private async resolveLeaseSession(
     workItemId: string,
@@ -156,6 +157,10 @@ export abstract class WorkActionCommand extends BaseCommand {
     const reclaim = `Reclaim it with \`sift work claim ${workItemId} --owner <owner>\`, or pass --owner and --claim-token explicitly.`;
     const lookup = await lookupWorkLeaseSession(workItemId);
     if (lookup.state === 'expired') {
+      // The API rejects an expired lease, so never send one. Complete, review and cancel without
+      // explicit credentials fall through to the claim-free path (approving needs_review work,
+      // cancelling queued or blocked work) and the API decides whether a live claim is required.
+      if (!options.credentialsRequired && !options.partialCredentials) return null;
       this.error(`The saved lease session for work item ${workItemId} expired at ${lookup.session.expiresAt}. ${reclaim}`);
     }
     if (lookup.state === 'mismatched') {
