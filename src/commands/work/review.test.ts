@@ -7,6 +7,7 @@ import type {GitReader} from '../../lib/work-coverage/bind.js';
 
 vi.mock('../../lib/work-lease-session.js', () => ({
   readWorkLeaseSession: vi.fn(async () => null),
+  lookupWorkLeaseSession: vi.fn(async () => ({state: 'missing'})),
   deleteWorkLeaseSession: vi.fn(async () => undefined),
   writeWorkLeaseSession: vi.fn(async () => undefined),
 }));

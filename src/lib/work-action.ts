@@ -5,7 +5,7 @@ import {createGitReader, type GitReader} from './work-coverage/bind.js';
 import {autoSavePath, runCoverageShadow} from './work-coverage/run.js';
 import {
   deleteWorkLeaseSession,
-  readWorkLeaseSession,
+  lookupWorkLeaseSession,
   writeWorkLeaseSession,
   type WorkLeaseSession,
 } from './work-lease-session.js';
@@ -27,8 +27,8 @@ export abstract class WorkActionCommand extends BaseCommand {
 
   static baseActionFlags = {
     ...BaseCommand.baseFlags,
-    owner: Flags.string({description: 'Claim owner identity (required for lease-owned transitions)'}),
-    'claim-token': Flags.string({description: 'Claim token returned by work claim (required for lease-owned transitions)'}),
+    owner: Flags.string({description: 'Claim owner identity (defaults to the lease session saved by work claim)'}),
+    'claim-token': Flags.string({description: 'Claim token override (defaults to the lease session saved by work claim)'}),
     lease: Flags.integer({description: 'Lease seconds'}),
     summary: Flags.string({description: 'Result summary'}),
     artifacts: Flags.string({description: 'Artifact refs JSON array'}),
@@ -48,44 +48,39 @@ export abstract class WorkActionCommand extends BaseCommand {
     const optionalSessionActions = new Set(['complete', 'review', 'cancel']);
     const hasExplicitOwner = typeof flags.owner === 'string' && flags.owner.length > 0;
     const hasExplicitToken = typeof flags['claim-token'] === 'string' && flags['claim-token'].length > 0;
-    if (hasExplicitOwner !== hasExplicitToken) {
-      if (action === 'release') {
-        this.error('release requires both --owner and --claim-token from the active claim.');
-      }
-      if (action === 'cancel') {
-        this.error('cancel requires --owner and --claim-token together for active work; omit both only for queued/blocked cancellation.');
-      }
-      this.error(`${action} requires --owner and --claim-token together.`);
-    }
-    let session: WorkLeaseSession | null = null;
-    if (!hasExplicitOwner
-      && (ownerBoundActions.has(action) || action === 'release' || optionalSessionActions.has(action))) {
-      session = await readWorkLeaseSession(args.id);
-      if (session && session.apiUrl !== flags['api-url']) {
-        this.error('The saved work lease belongs to a different API URL. Pass explicit lease credentials only after verifying the target service.');
-      }
-      if (session && flags.workspace
-        && resolveWorkspaceTenantId(flags.workspace) !== session.workspaceId) {
-        this.error('The saved work lease belongs to a different workspace. Omit --workspace to resume its recorded scope, or pass explicit lease credentials after verifying the target workspace.');
-      }
-    }
+    const leaseActions = ownerBoundActions.has(action) || action === 'release' || optionalSessionActions.has(action);
+    const lease = leaseActions && !(hasExplicitOwner && hasExplicitToken)
+      ? await this.resolveLeaseSession(args.id, action, {
+        apiUrl: flags['api-url'],
+        workspace: flags.workspace,
+        explicitOwner: hasExplicitOwner ? flags.owner : undefined,
+        partialCredentials: hasExplicitOwner || hasExplicitToken,
+        credentialsRequired: ownerBoundActions.has(action) || action === 'release',
+      })
+      : null;
+    const session = lease?.session ?? null;
+    const scopedFlags = session ? {...flags, workspace: session.workspaceId} : flags;
+    // Explicit flags win; the saved lease from `sift work claim` fills whatever was omitted.
+    // The token is only ever sent in the transition request body below.
     const claimOwner = hasExplicitOwner ? flags.owner : session?.claimOwner;
     const claimToken = hasExplicitToken ? flags['claim-token'] : session?.claimToken;
     if (ownerBoundActions.has(action) && (!claimOwner || !claimToken)) {
-      this.error(`${action} requires both --owner and --claim-token from the active claim.`);
+      this.error(`${action} requires the active claim: run it after \`sift work claim ${args.id}\`, or pass --owner and --claim-token.`);
     }
     if (action === 'release' && (!claimOwner || !claimToken)) {
-      this.error('release requires both --owner and --claim-token from the active claim.');
+      this.error(`release requires the active claim: run it after \`sift work claim ${args.id}\`, or pass --owner and --claim-token.`);
     }
     if (action === 'cancel' && Boolean(claimOwner) !== Boolean(claimToken)) {
       this.error('cancel requires --owner and --claim-token together for active work; omit both only for queued/blocked cancellation.');
     }
-    if ((action === 'complete' || action === 'review') && claimOwner && claimToken && !flags['memory-decision']) {
+    // A session past its cached deadline may belong to work that is no longer claimed (for example a
+    // human approving needs_review work), so the API, which requires the decision only under a live
+    // lease, enforces it in that case.
+    if ((action === 'complete' || action === 'review') && claimOwner && claimToken && !lease?.pastCachedDeadline
+      && !flags['memory-decision']) {
       this.error(`${action} under an active claim requires --memory-decision JSON (store or skip with rationale).`);
     }
-    const client = await this.client(session
-      ? {...flags, workspace: session.workspaceId}
-      : flags);
+    const client = await this.client(scopedFlags);
     const response = await client.transitionWorkItem(args.id, action, {
       claimOwner,
       claimToken,
@@ -115,7 +110,7 @@ export abstract class WorkActionCommand extends BaseCommand {
     } else if (session) {
       const updatedSession = {
         ...session,
-        claimToken: typeof workItem.claimToken === 'string' ? workItem.claimToken : session.claimToken,
+        claimToken: typeof workItem.claimToken === 'string' ? workItem.claimToken : claimToken ?? session.claimToken,
         expiresAt: typeof workItem.claimExpiresAt === 'string'
           ? workItem.claimExpiresAt
           : session.expiresAt,
@@ -140,10 +135,60 @@ export abstract class WorkActionCommand extends BaseCommand {
     if (action === 'review') {
       await this.runReviewCoverageShadow(
         typeof workItem.id === 'string' && workItem.id ? workItem.id : args.id,
-        session ? {...flags, workspace: session.workspaceId} : flags,
+        scopedFlags,
       );
     }
     return redactLifecycleResponse(response.data);
+  }
+
+  /**
+   * Load the private lease session that `sift work claim` saved for this work item. Refusals name
+   * the work item and the remedy, never the token. Returns null only when no credentials are needed
+   * and no session exists (for example, approving needs_review work or cancelling queued or blocked
+   * work).
+   */
+  private async resolveLeaseSession(
+    workItemId: string,
+    action: string,
+    options: {
+      apiUrl: string;
+      workspace?: string;
+      explicitOwner?: string;
+      partialCredentials: boolean;
+      credentialsRequired: boolean;
+    },
+  ): Promise<{session: WorkLeaseSession; pastCachedDeadline: boolean} | null> {
+    const lookup = await lookupWorkLeaseSession(workItemId);
+    if (lookup.state === 'mismatched') {
+      this.error(`The saved lease session found for work item ${workItemId} records a different work item, so it was not used. Reclaim it with \`sift work claim ${workItemId} --owner <owner>\`, or pass --owner and --claim-token explicitly.`);
+    }
+    if (lookup.state === 'missing' || lookup.state === 'unreadable') {
+      if (!options.credentialsRequired && !options.partialCredentials) return null;
+      const found = lookup.state === 'missing'
+        ? `no saved lease session was found for work item ${workItemId}`
+        : `the saved lease session for work item ${workItemId} is unreadable`;
+      const claim = `Claim it with \`sift work claim ${workItemId} --owner <owner>\`, or pass --owner and --claim-token explicitly.`;
+      this.error(options.partialCredentials
+        ? `${action} requires both --owner and --claim-token from the active claim, and ${found} to supply the missing one. ${claim}`
+        : `${action} needs the active claim, but ${found}. ${claim}`);
+    }
+    // The saved expiry is a cached copy: another client may have renewed the claim, an
+    // explicit-credential heartbeat may not have updated this file, or the local clock may be ahead.
+    // The saved credentials are therefore sent regardless, and the API decides: it checks the token
+    // and a live deadline for claimed or running work (release accepts an expired matching claim),
+    // and ignores lease credentials for queued, blocked and needs_review work.
+    const pastCachedDeadline = lookup.state === 'expired';
+    const {session} = lookup;
+    if (session.apiUrl !== options.apiUrl) {
+      this.error('The saved work lease belongs to a different API URL. Pass explicit lease credentials only after verifying the target service.');
+    }
+    if (options.workspace && resolveWorkspaceTenantId(options.workspace) !== session.workspaceId) {
+      this.error('The saved work lease belongs to a different workspace. Omit --workspace to resume its recorded scope, or pass explicit lease credentials after verifying the target workspace.');
+    }
+    if (options.explicitOwner !== undefined && options.explicitOwner !== session.claimOwner) {
+      this.error(`The saved lease session for work item ${workItemId} belongs to a different claim owner than --owner. Omit --owner to use the saved claim, or pass --claim-token with --owner.`);
+    }
+    return {session, pastCachedDeadline};
   }
 
   protected coverageShadowGitReader(signal?: AbortSignal): GitReader {

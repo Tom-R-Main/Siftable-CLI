@@ -77,21 +77,51 @@ export async function writeWorkLeaseSession(session: WorkLeaseSession): Promise<
   }
 }
 
-export async function readWorkLeaseSession(workItemId: string): Promise<WorkLeaseSession | null> {
+/**
+ * Result of looking up the saved lease for one work item. Only `active` and `expired` carry the
+ * session; callers must never render `session.claimToken`. `expired` compares the cached
+ * `expiresAt` with the local clock, so it is advisory: the API holds the authoritative deadline.
+ */
+export type WorkLeaseSessionLookup =
+  | {state: 'missing'}
+  | {state: 'unreadable'}
+  | {state: 'mismatched'}
+  | {state: 'expired'; session: WorkLeaseSession}
+  | {state: 'active'; session: WorkLeaseSession};
+
+export function isWorkLeaseSessionExpired(session: WorkLeaseSession, now: number = Date.now()): boolean {
+  if (session.expiresAt === null) return false;
+  const expiresAt = Date.parse(session.expiresAt);
+  return Number.isFinite(expiresAt) && expiresAt <= now;
+}
+
+export async function lookupWorkLeaseSession(
+  workItemId: string,
+  now: number = Date.now(),
+): Promise<WorkLeaseSessionLookup> {
+  let raw: string;
   try {
-    const raw = await readFile(sessionPath(workItemId), 'utf8');
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw) as unknown;
-    } catch {
-      return null;
-    }
-    const session = parseSession(parsed);
-    return session?.workItemId === workItemId ? session : null;
+    raw = await readFile(sessionPath(workItemId), 'utf8');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {state: 'missing'};
     throw error;
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return {state: 'unreadable'};
+  }
+  const session = parseSession(parsed);
+  if (!session) return {state: 'unreadable'};
+  if (session.workItemId !== workItemId) return {state: 'mismatched'};
+  if (isWorkLeaseSessionExpired(session, now)) return {state: 'expired', session};
+  return {state: 'active', session};
+}
+
+export async function readWorkLeaseSession(workItemId: string): Promise<WorkLeaseSession | null> {
+  const lookup = await lookupWorkLeaseSession(workItemId);
+  return lookup.state === 'active' || lookup.state === 'expired' ? lookup.session : null;
 }
 
 export async function deleteWorkLeaseSession(workItemId: string): Promise<void> {
