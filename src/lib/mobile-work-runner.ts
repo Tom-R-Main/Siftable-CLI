@@ -27,7 +27,8 @@ export interface MobileRunnerOptions {
   requestTimeoutMs?: number;
   /** Attachment IO includes the server's 30s storage read and base64 transfer. */
   attachmentRequestTimeoutMs?: number;
-  checkpoint?: (workItem: Record<string, unknown>, signal: AbortSignal) => Promise<void>;
+  /** Runs a checkpoint control; `controlId` is its durable identity, stable across redelivery. */
+  checkpoint?: (workItem: Record<string, unknown>, signal: AbortSignal, controlId: string) => Promise<void>;
   refreshRunner?: (signal?: AbortSignal) => Promise<unknown>;
 }
 
@@ -505,7 +506,7 @@ export async function consumeMobileDispatch(options: MobileRunnerOptions): Promi
             await syncDirectory(options.receiptDirectory);
             signal.throwIfAborted();
             if (options.checkpoint) {
-              await options.checkpoint(safeWorkItem, signal);
+              await options.checkpoint(safeWorkItem, signal, control.id);
               signal.throwIfAborted();
               await durableWrite(controlPath, {state: 'acknowledged'});
               state = 'acknowledged';
