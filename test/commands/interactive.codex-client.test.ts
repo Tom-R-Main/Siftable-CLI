@@ -21,6 +21,7 @@ import {
   __setCodexClientForTests,
   __setCodexSpawnForTests,
   killCodexChildrenOnExit,
+  codexChildAlive,
   __failedCodexClientCountForTests,
   type CodexSpawnFn,
 } from '../../interactive-tui/codexEngine';
@@ -28,7 +29,7 @@ import {closeBrain, setBrainModel, getBrainModel, agentHarnessAsk, __setExplorer
   __resetBrainAgentsForTests, setAgentConversationKey, __setProcessJobsForTests} from '../../interactive-tui/brain';
 import {enqueueSessionInstruction, sessionJournalIdForConversation} from '../../interactive-tui/sessionMailbox';
 import * as bundledHarness from '../../interactive-tui/agent-harness';
-import {SessionServer, WireEventLog} from '../../interactive-tui/sessionServer';
+import {SessionServer, WireEventLog, type SessionEngine} from '../../interactive-tui/sessionServer';
 import {JsonlSessionEventStore} from '../../interactive-tui/agent-harness/framework/session';
 import * as confirmGateModule from '../../interactive-tui/confirmGate';
 import * as questionGateModule from '../../interactive-tui/questionGate';
@@ -60,6 +61,35 @@ async function readyClient(): Promise<{ client: CodexClient; proc: FakeCodexProc
   await ready;
   return { client, proc };
 }
+
+// The cancellation tests below never assert elapsed time. Each holds the slow
+// work open (a stalled request, a child that ignores kill, or a promise the
+// test settles itself) and checks what happens while it is still held. The
+// waits here expire only when an expected event never arrives; they are set
+// well under the 30 s test timeout so that a missing event reports what was seen.
+const EVENT_WAIT_MS = 10_000;
+
+/**
+ * Stop bound for tests whose stop is confirmed by work the test settles. The
+ * bound only has to outlast that hold, which is a few event-loop turns, so
+ * the timer path (always unconfirmed) cannot produce the confirmed result.
+ */
+const RELEASE_BOUND_MS = 10_000;
+
+/** Poll until `condition` holds; fail only if it never does. */
+async function until(condition: () => boolean, what: () => string): Promise<void> {
+  const deadline = Date.now() + EVENT_WAIT_MS;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${what()}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+/**
+ * Let work settled after a cancel run its continuations. Only negative checks
+ * follow this wait, so a slow machine cannot make correct code fail them.
+ */
+const lateSettlement = () => new Promise((resolve) => setTimeout(resolve, 100));
 
 describe('CodexClient handshake', () => {
   it('drives initialize → initialized and resolves ensureReady', async () => {
@@ -553,33 +583,55 @@ describe('codexAsk cancellation during app-server setup (AGENT-RUNTIME-31)', () 
     __setCodexClientForTests(null);
   });
 
+  /** Answer the stalled request after the cancel: nothing more may reach the child. */
+  async function answerLate(proc: FakeCodexProc, stage: 'initialize' | 'thread/start', id: number): Promise<void> {
+    const sent = proc.sent.length;
+    proc.reply(id, stage === 'initialize' ? { capabilities: {} } : { thread: { id: 'thread-late' } });
+    await lateSettlement();
+    expect(proc.sent.slice(sent)).toEqual([]);
+    expect(proc.sent.some((m) => m.method === 'turn/start')).toBe(false);
+  }
+
   for (const stage of ['initialize', 'thread/start'] as const) {
     it(`a cancel while app-server stalls at ${stage} is bounded and confirmed once the child is gone`, async () => {
       const proc = fakeProc(true);
       await install(proc, stage);
       const controller = new AbortController();
-      const result = codexAsk('continue', () => {}, { signal: controller.signal, stopTimeoutMs: 2_000 });
-      await waitForSent(proc, stage);
-      const started = Date.now();
+      const events: unknown[] = [];
+      // The timer path always reports stopConfirmed: false, so with a bound
+      // this long a confirmed stop can only come from draining the child.
+      const result = codexAsk('continue', (event) => events.push(event), { signal: controller.signal, stopTimeoutMs: RELEASE_BOUND_MS });
+      const stalledId = await waitForSent(proc, stage);
       controller.abort();
+      // The stalled request is still unanswered: the cancel did not wait for it.
       await expect(result).resolves.toEqual({ text: '', status: 'interrupted', stopConfirmed: true });
-      expect(Date.now() - started).toBeLessThan(2_000);
       expect(proc.killed).toBe(true);
-      expect(proc.sent.some((m) => m.method === 'turn/start')).toBe(false);
+      expect(codexChildAlive()).toBe(false);
+      await answerLate(proc, stage, stalledId);
+      expect(events).toEqual([]);
     });
 
     it(`a cancel while app-server stalls at ${stage} and ignores kill is unconfirmed within the bound`, async () => {
       const proc = fakeProc(false);
       await install(proc, stage);
       const controller = new AbortController();
-      const result = codexAsk('continue', () => {}, { signal: controller.signal, stopTimeoutMs: 60 });
-      await waitForSent(proc, stage);
-      const started = Date.now();
+      const events: unknown[] = [];
+      const result = codexAsk('continue', (event) => events.push(event), { signal: controller.signal, stopTimeoutMs: 60 });
+      const stalledId = await waitForSent(proc, stage);
       controller.abort();
       const outcome = await result;
-      expect(Date.now() - started).toBeLessThan(1_000);
+      // Read in the microtask run that settled the stop, before any later
+      // timer: the drain had sent SIGTERM but not its SIGKILL escalation.
+      const signalAtStop = proc.killSignal;
       expect(outcome).toMatchObject({ status: 'interrupted', stopConfirmed: false });
+      // The 60 ms bound ended the wait while the drain was still pending:
+      // the child has not exited.
       expect(outcome.error).toContain('Codex setup');
+      expect(outcome.error).toContain('within 60 ms');
+      expect(signalAtStop).toBe('SIGTERM');
+      expect(codexChildAlive()).toBe(true);
+      await answerLate(proc, stage, stalledId);
+      expect(events).toEqual([]);
     });
   }
 
@@ -693,24 +745,43 @@ describe('codexAsk cancellation during app-server setup (AGENT-RUNTIME-31)', () 
       await install(proc, 'initialize');
       const lines: Array<Record<string, any>> = [];
       const log = new WireEventLog({rootDir: root, session: 'codex-setup', leaseStore: dir => new JsonlSessionEventStore({rootDir: dir})});
+      let signalAtStop: NodeJS.Signals | number | undefined;
+      const ask: SessionEngine['ask'] = async (input, onEvent, signal) => {
+        const result = await codexAsk(input, onEvent, {signal, stopTimeoutMs: 60});
+        // Read in the microtask run that settled the stop, before any later
+        // timer: the drain had sent SIGTERM but not its SIGKILL escalation.
+        signalAtStop = proc.killSignal;
+        return result;
+      };
       const server = new SessionServer({session: 'codex-setup', provider: 'codex', model: 'gpt', cwd: root, deadlineMs: 60_000, log,
         write: line => { lines.push(JSON.parse(line)); }, gates: {...confirmGateModule, ...questionGateModule},
-        engine: {kind: 'codex', ask: (input, onEvent, signal) => codexAsk(input, onEvent, {signal, stopTimeoutMs: 60}), close: () => closeCodex()}});
+        engine: {kind: 'codex', ask, close: () => closeCodex()}});
       await server.handleLine(JSON.stringify({id: 1, type: 'initialize', protocolVersion: 1}));
       await server.handleLine(JSON.stringify({id: 2, type: 'prompt', input: 'hello'}));
-      await waitForSent(proc, 'initialize');
-      const started = Date.now();
+      const initializeId = await waitForSent(proc, 'initialize');
       await server.handleLine(JSON.stringify({id: 3, type: 'cancel'}));
-      const deadline = Date.now() + 2_000;
-      while (!lines.some(line => String(line.type).startsWith('turn.stop')) && Date.now() < deadline) await new Promise(r => setTimeout(r, 5));
-      expect(Date.now() - started).toBeLessThan(1_000);
-      const terminals = lines.filter(line => String(line.type).startsWith('turn.') && line.type !== 'turn.started');
-      expect(terminals).toHaveLength(1);
-      expect(terminals[0]).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false, reason: 'client'});
+      const terminals = () => lines.filter(line => String(line.type).startsWith('turn.') && line.type !== 'turn.started');
+      await until(() => lines.some(line => String(line.type).startsWith('turn.stop')),
+        () => `a stop terminal; saw ${JSON.stringify(lines.map(line => line.type))}`);
+      expect(terminals()).toHaveLength(1);
+      expect(terminals()[0]).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false, reason: 'client'});
+      // The 60 ms bound produced the terminal while the stubborn child was
+      // still undrained, so the cancel did not wait for the handshake or drain.
+      expect(terminals()[0].error).toContain('within 60 ms');
+      expect(signalAtStop).toBe('SIGTERM');
+      expect(codexChildAlive()).toBe(true);
+      // A late initialize answer neither resumes the turn nor adds a terminal.
+      const seenLines = lines.length;
+      const seenSent = proc.sent.length;
+      proc.reply(initializeId, { capabilities: {} });
+      await lateSettlement();
+      expect(lines.slice(seenLines)).toEqual([]);
+      expect(proc.sent.slice(seenSent)).toEqual([]);
       // Shutdown drains the stubborn child within closeCodex's bounded grace.
       const exitCode = await server.shutdown('client');
       expect(exitCode).toBe(1);
       expect(lines.at(-1)).toMatchObject({type: 'session.closed'});
+      expect(terminals()).toHaveLength(1);
     } finally {
       await rm(root, {recursive: true, force: true});
     }
@@ -742,14 +813,9 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
       deadlineMs: 60_000, log, write: line => { lines.push(JSON.parse(line)); }, gates: {...confirmGateModule, ...questionGateModule},
       engine: {kind, ask: (input, onEvent, signal) => agentHarnessAsk(input, onEvent, signal), close}});
     let next = 0;
-    const waitFor = async (predicate: (line: Record<string, any>) => boolean, timeoutMs = 2_000) => {
-      const deadline = Date.now() + timeoutMs;
-      while (Date.now() < deadline) {
-        const found = lines.find(predicate);
-        if (found) return found;
-        await new Promise(r => setTimeout(r, 5));
-      }
-      throw new Error(`timed out; saw ${JSON.stringify(lines.map(line => line.type))}`);
+    const waitFor = async (predicate: (line: Record<string, any>) => boolean) => {
+      await until(() => lines.some(predicate), () => `a matching line; saw ${JSON.stringify(lines.map(line => line.type))}`);
+      return lines.find(predicate)!;
     };
     const send = async (command: Record<string, unknown>) => {
       const id = ++next;
@@ -757,20 +823,40 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
       return waitFor(line => line.type === 'response' && line.id === id);
     };
     const terminals = () => lines.filter(line => String(line.type).startsWith('turn.') && line.type !== 'turn.started');
-    return {server, lines, send, waitFor, terminals};
+    /** Settle held work after a turn's terminal: nothing more may appear for that turn. */
+    const releaseLate = async (turnId: string, release: () => void) => {
+      const seen = lines.length;
+      release();
+      await lateSettlement();
+      expect(lines.slice(seen).filter(line => line.turnId === turnId)).toEqual([]);
+    };
+    return {server, lines, send, waitFor, terminals, releaseLate};
   }
 
   /** An explorer that stalls until cancelled, then ends shortly after. */
   const abortableExplorer = ((_input: unknown, options?: {signal?: AbortSignal}) => new Promise((_resolve, reject) => {
     options?.signal?.addEventListener('abort', () => setTimeout(() => reject(new DOMException('Explorer cancelled', 'AbortError')), 20), {once: true});
   })) as unknown as Parameters<typeof __setExplorerReportBuilderForTests>[0];
-  /** An explorer that never ends. */
-  const stuckExplorer = (() => new Promise(() => {})) as unknown as Parameters<typeof __setExplorerReportBuilderForTests>[0];
+  /**
+   * An explorer that runs until the test ends it, either as the cancel asked
+   * (an AbortError) or with a late report, and records whether the cancel
+   * reached it.
+   */
+  function heldExplorer() {
+    let aborted = false;
+    let end: (how: 'abort' | 'report') => void = () => { throw new Error('the explorer has not started'); };
+    const builder = ((_input: unknown, options?: {signal?: AbortSignal}) => new Promise((resolve, reject) => {
+      options?.signal?.addEventListener('abort', () => { aborted = true; }, {once: true});
+      end = how => (how === 'abort' ? reject(new DOMException('Explorer cancelled', 'AbortError')) : resolve({mode: 'skipped'}));
+    })) as unknown as Parameters<typeof __setExplorerReportBuilderForTests>[0];
+    return {builder, aborted: () => aborted, end: (how: 'abort' | 'report') => end(how)};
+  }
 
   it('codex: a cancel during a stalled explorer is confirmed once it ends, and a follow-up prompt runs', async () => {
     setBrainModel({provider: 'codex', model: 'gpt-5.6-sol'});
-    __setExplorerReportBuilderForTests(abortableExplorer);
-    __setPreTurnStopBoundForTests(1_000);
+    const explorer = heldExplorer();
+    __setExplorerReportBuilderForTests(explorer.builder);
+    __setPreTurnStopBoundForTests(RELEASE_BOUND_MS);
     const proc = new FakeCodexProc();
     const client = new CodexClient(proc.asSpawnFn());
     const ready = client.ensureReady();
@@ -781,11 +867,18 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
     await s.send({type: 'initialize', protocolVersion: 1});
     const turn = await s.send({type: 'prompt', input: CODE_PROMPT});
     await s.waitFor(line => line.type === 'tool_call' && line.toolCall?.name === 'repo_explorer');
-    const started = Date.now();
-    await s.send({type: 'cancel'});
+    // The cancel is accepted while the explorer runs, but the stop is not
+    // confirmed until the explorer has ended.
+    expect(await s.send({type: 'cancel'})).toMatchObject({ok: true, status: 'stopping'});
+    expect(explorer.aborted()).toBe(true);
+    await lateSettlement();
+    expect(s.terminals()).toEqual([]);
+    explorer.end('abort');
     const terminal = await s.waitFor(line => line.turnId === turn.turnId && line.type === 'turn.stopped');
-    expect(Date.now() - started).toBeLessThan(1_000);
     expect(terminal).toMatchObject({confirmed: true, reason: 'client'});
+    // The explorer ending after the cancel adds no second terminal and never
+    // starts a Codex turn for the cancelled prompt.
+    await lateSettlement();
     expect(s.terminals()).toHaveLength(1);
     expect(proc.sent.some(m => m.method === 'turn/start')).toBe(false);
     // The stop was confirmed, so the session takes the next prompt, which reaches Codex.
@@ -802,19 +895,22 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
 
   it('codex: an explorer that never stops is unconfirmed within the bound and blocks new prompts', async () => {
     setBrainModel({provider: 'codex', model: 'gpt-5.6-sol'});
-    __setExplorerReportBuilderForTests(stuckExplorer);
+    const explorer = heldExplorer();
+    __setExplorerReportBuilderForTests(explorer.builder);
     __setPreTurnStopBoundForTests(60);
     const s = session('codex');
     await s.send({type: 'initialize', protocolVersion: 1});
     const turn = await s.send({type: 'prompt', input: CODE_PROMPT});
     await s.waitFor(line => line.type === 'tool_call' && line.toolCall?.name === 'repo_explorer');
-    const started = Date.now();
     await s.send({type: 'cancel'});
     const terminal = await s.waitFor(line => line.turnId === turn.turnId && String(line.type).startsWith('turn.stop'));
-    expect(Date.now() - started).toBeLessThan(1_000);
     expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
+    // The 60 ms bound produced the terminal while the explorer was still running.
+    expect(terminal.error).toContain('explorer preparation; it did not stop within 60 ms');
     expect(s.terminals()).toHaveLength(1);
     expect(await s.send({type: 'prompt', input: 'say hello'})).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
+    // A report that arrives after the terminal does not resume the turn.
+    await s.releaseLate(turn.turnId, () => explorer.end('report'));
     await s.server.shutdown('client');
   });
 
@@ -868,39 +964,53 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
         async close() {},
       };
     }
-    /** Resolves `release` some ms after the turn's signal would abort. */
+    /** A promise the test settles explicitly, after the cancel. */
     function later<T>() {
       let resolve!: (value: T) => void;
       const promise = new Promise<T>(done => { resolve = done; });
       return {promise, resolve};
     }
 
-    async function cancelDuringSetup(s: ReturnType<typeof session>, stalled: () => boolean) {
+    /**
+     * Prompt, wait until setup stalls, cancel, and return the turn's single
+     * terminal. With `confirmBy`, the stop must wait for that settlement: no
+     * terminal while setup is held, then a terminal once it settles. Without
+     * it, setup stays held and the terminal must arrive anyway.
+     */
+    async function cancelDuringSetup(s: ReturnType<typeof session>, stalled: () => boolean, confirmBy?: () => void) {
       await s.send({type: 'initialize', protocolVersion: 1});
       const turn = await s.send({type: 'prompt', input: 'say hello'});
-      const deadline = Date.now() + 2_000;
-      while (!stalled() && Date.now() < deadline) await new Promise(r => setTimeout(r, 5));
-      expect(stalled()).toBe(true);
-      const started = Date.now();
-      await s.send({type: 'cancel'});
-      const terminal = await s.waitFor(line => line.turnId === turn.turnId && String(line.type).startsWith('turn.stop'));
-      expect(Date.now() - started).toBeLessThan(1_000);
+      await until(stalled, () => 'agent setup to stall');
+      expect(await s.send({type: 'cancel'})).toMatchObject({ok: true, status: 'stopping'});
+      const isTerminal = (line: Record<string, any>) => line.turnId === turn.turnId && String(line.type).startsWith('turn.stop');
+      if (confirmBy) {
+        await lateSettlement();
+        expect(s.lines.some(isTerminal)).toBe(false);
+        confirmBy();
+      }
+      const terminal = await s.waitFor(isTerminal);
+      // Let any late settlement run: one terminal, and the cancelled turn never reaches the model loop.
+      await lateSettlement();
       expect(s.terminals()).toHaveLength(1);
-      // Let any late settlement run: the cancelled turn must never reach the model loop.
-      await new Promise(r => setTimeout(r, 100));
       expect(chatCalls).toBe(0);
       return terminal;
     }
 
+    /** Settle held setup after the terminal: nothing more for the turn, and no model loop. */
+    async function settleLate(s: ReturnType<typeof session>, terminal: Record<string, any>, release: () => void) {
+      await s.releaseLate(terminal.turnId, release);
+      expect(s.terminals()).toHaveLength(1);
+      expect(chatCalls).toBe(0);
+    }
+
     it('a cancel during a stalled getAgent() is confirmed once construction settles; the next prompt runs', async () => {
-      __setPreTurnStopBoundForTests(1_000);
+      __setPreTurnStopBoundForTests(RELEASE_BOUND_MS);
       const built = later<unknown>();
       let constructing = false;
       (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: () => { constructing = true; return built.promise; }};
       const s = session('harness');
-      const cancel = cancelDuringSetup(s, () => constructing);
-      setTimeout(() => built.resolve(fakeAgent()), 50);
-      expect(await cancel).toMatchObject({type: 'turn.stopped', confirmed: true});
+      expect(await cancelDuringSetup(s, () => constructing, () => built.resolve(fakeAgent())))
+        .toMatchObject({type: 'turn.stopped', confirmed: true});
       const next = await s.send({type: 'prompt', input: 'say hello again'});
       expect(await s.waitFor(line => line.turnId === next.turnId && line.type === 'turn.completed')).toMatchObject({text: 'ok'});
       await s.server.shutdown('client');
@@ -908,31 +1018,36 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
 
     it('a getAgent() that never settles is unconfirmed within the bound', async () => {
       __setPreTurnStopBoundForTests(60);
+      const built = later<unknown>();
       let constructing = false;
-      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: () => { constructing = true; return new Promise(() => {}); }};
+      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: () => { constructing = true; return built.promise; }};
       const s = session('harness');
-      expect(await cancelDuringSetup(s, () => constructing)).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
+      const terminal = await cancelDuringSetup(s, () => constructing);
+      expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
+      // The 60 ms bound produced the terminal while construction was still held.
+      expect(terminal.error).toContain('agent setup; it did not stop within 60 ms');
       expect(await s.send({type: 'prompt', input: 'say hello'})).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
+      await settleLate(s, terminal, () => built.resolve(fakeAgent()));
       await s.server.shutdown('client');
     });
 
     it('a cancel during a stalled mailbox drain is confirmed once the drain settles', async () => {
-      __setPreTurnStopBoundForTests(1_000);
+      __setPreTurnStopBoundForTests(RELEASE_BOUND_MS);
       enqueueSessionInstruction(key, 'queued instruction');
       const ingested = later<boolean>();
       let draining = false;
       (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: async () => fakeAgent(() => { draining = true; return ingested.promise; })};
       const s = session('harness');
-      const cancel = cancelDuringSetup(s, () => draining);
-      setTimeout(() => ingested.resolve(true), 50);
-      expect(await cancel).toMatchObject({type: 'turn.stopped', confirmed: true});
+      expect(await cancelDuringSetup(s, () => draining, () => ingested.resolve(true)))
+        .toMatchObject({type: 'turn.stopped', confirmed: true});
       await s.server.shutdown('client');
     });
 
     it('a process-job cleanup that never settles is unconfirmed within the bound, and shutdown completes', async () => {
       __setPreTurnStopBoundForTests(60);
       let stopCalls = 0;
-      __setProcessJobsForTests({stopSession: () => { stopCalls += 1; return new Promise(() => {}); }, close: async () => {}} as never);
+      const cleanup = later<void>();
+      __setProcessJobsForTests({stopSession: () => { stopCalls += 1; return cleanup.promise; }, close: async () => {}} as never);
       let inLoop = false;
       (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: async () => ({
         async *chat(_input: unknown, options: {signal?: AbortSignal}) {
@@ -945,78 +1060,102 @@ describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)',
       const s = session('harness');
       await s.send({type: 'initialize', protocolVersion: 1});
       const turn = await s.send({type: 'prompt', input: 'say hello'});
-      const deadline = Date.now() + 2_000;
-      while (!inLoop && Date.now() < deadline) await new Promise(r => setTimeout(r, 5));
-      const started = Date.now();
+      await until(() => inLoop, () => 'the model loop to start');
       await s.send({type: 'cancel'});
       const terminal = await s.waitFor(line => line.turnId === turn.turnId && String(line.type).startsWith('turn.stop'));
-      expect(Date.now() - started).toBeLessThan(1_000);
       expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false, jobCleanup: 'unknown'});
+      // The 60 ms bound produced the terminal while job cleanup was still held.
+      expect(terminal.error).toContain('Process job cleanup did not finish within 60 ms');
       expect(s.terminals()).toHaveLength(1);
       expect(stopCalls).toBe(1);
       expect(await s.send({type: 'prompt', input: 'say hello'})).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
+      // Cleanup finishing after the terminal adds nothing for the stopped turn.
+      await s.releaseLate(turn.turnId, () => cleanup.resolve());
+      expect(s.terminals()).toHaveLength(1);
+      expect(stopCalls).toBe(1);
       expect(await s.server.shutdown('client')).toBe(0);
       expect(s.lines.at(-1)).toMatchObject({type: 'session.closed'});
     });
 
     it('shutdown after an unconfirmed stop is bounded despite stalled agent setup and a hung job close', async () => {
       __setPreTurnStopBoundForTests(60);
-      __setProcessJobsForTests({stopSession: async () => {}, close: () => new Promise(() => {})} as never);
+      const jobsClosed = later<void>();
+      __setProcessJobsForTests({stopSession: async () => {}, close: () => jobsClosed.promise} as never);
+      const built = later<unknown>();
       let constructing = false;
-      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: () => { constructing = true; return new Promise(() => {}); }};
+      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: () => { constructing = true; return built.promise; }};
       const s = session('harness', () => closeBrain());
-      expect(await cancelDuringSetup(s, () => constructing)).toMatchObject({type: 'turn.stop_unconfirmed'});
-      const started = Date.now();
+      const terminal = await cancelDuringSetup(s, () => constructing);
+      expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed'});
       await s.server.handleLine(JSON.stringify({id: 'bye', type: 'shutdown'}));
       const response = await s.waitFor(line => line.type === 'response' && line.id === 'bye');
-      expect(Date.now() - started).toBeLessThan(1_000);
       expect(response).toMatchObject({ok: true, status: 'closed', exitCode: 1});
       const closed = s.lines.filter(line => line.type === 'session.closed');
       expect(closed).toHaveLength(1);
+      // Both closes were still held when shutdown answered; each was cut off by
+      // its own 60 ms bound, not by the session's shutdown bound.
       expect(closed[0].error).toContain('Process jobs did not close within 60 ms');
       expect(closed[0].error).toContain('Agent session did not close within 60 ms');
+      expect(closed[0].error).not.toContain('the engine did not close within');
+      // Settling both after shutdown adds no terminal, no second close, and no model loop.
+      await settleLate(s, terminal, () => { jobsClosed.resolve(); built.resolve(fakeAgent()); });
+      expect(s.lines.filter(line => line.type === 'session.closed')).toHaveLength(1);
     });
 
     it('shutdown keeps the journal lease while a timed-out mailbox drain can still write', async () => {
       __setPreTurnStopBoundForTests(60);
       enqueueSessionInstruction(key, 'queued instruction');
+      const ingested = later<boolean>();
       let draining = false;
       // Real journal store this time, so the lease is actually taken.
-      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...bundledHarness, createChatAgent: async () => fakeAgent(() => { draining = true; return new Promise(() => {}); })};
+      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...bundledHarness, createChatAgent: async () => fakeAgent(() => { draining = true; return ingested.promise; })};
       const s = session('harness', () => closeBrain());
-      expect(await cancelDuringSetup(s, () => draining)).toMatchObject({type: 'turn.stop_unconfirmed'});
+      const terminal = await cancelDuringSetup(s, () => draining);
+      expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed'});
       const response = await s.send({type: 'shutdown'});
       expect(response).toMatchObject({exitCode: 1});
       expect(s.lines.find(line => line.type === 'session.closed')?.error).toContain('session journal lease retained');
       // Another process must not be able to take the journal the drain may still append to.
       const store = new (bundledHarness as any).JsonlSessionEventStore({rootDir: process.env.SIFT_SESSION_EVENT_ROOT});
       expect(() => store.acquireLease(sessionJournalIdForConversation(key))).toThrow();
+      // The drain settling after shutdown adds no terminal and no model loop.
+      await settleLate(s, terminal, () => ingested.resolve(true));
+      expect(s.lines.filter(line => line.type === 'session.closed')).toHaveLength(1);
     });
 
     it('a mailbox drain that never settles is unconfirmed within the bound', async () => {
       __setPreTurnStopBoundForTests(60);
       enqueueSessionInstruction(key, 'queued instruction');
+      const ingested = later<boolean>();
       let draining = false;
-      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: async () => fakeAgent(() => { draining = true; return new Promise(() => {}); })};
+      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: async () => fakeAgent(() => { draining = true; return ingested.promise; })};
       const s = session('harness');
-      expect(await cancelDuringSetup(s, () => draining)).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
+      const terminal = await cancelDuringSetup(s, () => draining);
+      expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
+      // The 60 ms bound produced the terminal while the drain was still held.
+      expect(terminal.error).toContain('agent setup; it did not stop within 60 ms');
+      await settleLate(s, terminal, () => ingested.resolve(true));
       await s.server.shutdown('client');
     });
   });
 
   it('harness: a stuck explorer cannot hold a cancel past the bound', async () => {
     setBrainModel({provider: 'meta', model: 'fixture'});
-    __setExplorerReportBuilderForTests(stuckExplorer);
+    const explorer = heldExplorer();
+    __setExplorerReportBuilderForTests(explorer.builder);
     __setPreTurnStopBoundForTests(60);
     const s = session('harness');
     await s.send({type: 'initialize', protocolVersion: 1});
     const turn = await s.send({type: 'prompt', input: CODE_PROMPT});
     await s.waitFor(line => line.type === 'tool_call' && line.toolCall?.name === 'repo_explorer');
-    const started = Date.now();
     await s.send({type: 'cancel'});
-    expect(await s.waitFor(line => line.turnId === turn.turnId && String(line.type).startsWith('turn.stop')))
-      .toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
-    expect(Date.now() - started).toBeLessThan(1_000);
+    const terminal = await s.waitFor(line => line.turnId === turn.turnId && String(line.type).startsWith('turn.stop'));
+    expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
+    // The 60 ms bound produced the terminal while the explorer was still running.
+    expect(terminal.error).toContain('explorer preparation; it did not stop within 60 ms');
+    expect(s.terminals()).toHaveLength(1);
+    // A report that arrives after the terminal does not resume the turn.
+    await s.releaseLate(turn.turnId, () => explorer.end('report'));
     expect(s.terminals()).toHaveLength(1);
     await s.server.shutdown('client');
   });
