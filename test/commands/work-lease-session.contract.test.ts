@@ -11,7 +11,7 @@ import {mockFetch, restoreFetch, runCommand} from '../helpers/mock-api';
 const workItemId = '22222222-2222-4222-8222-222222222222';
 const claimOwner = 'codex:test';
 const claimToken = 'synthetic-claim-token-never-render';
-const claimExpiresAt = '2026-08-27T03:30:00.000Z';
+const claimExpiresAt = '2099-08-27T03:30:00.000Z';
 
 const isolatedConfig = installIsolatedConfigDirHooks('sift-cli-work-session-contract-');
 
