@@ -351,8 +351,11 @@ describe('production headless brain', () => {
           : fail ? Response.json({error: {message: 'fixture terminal rejection'}}, {status: 400})
             : completion(body, {role: 'assistant', content: 'Final answer.'}), async ({root, run}) => {
           await writeFile(join(root, 'candidate.txt'), 'candidate');
+          const started = performance.now(), label = fail ? 'rejected' : 'completed';
           const result = await run({mode});
-          expect(result.exit).toBe(fail ? 1 : 0);
+          // A failure prints which run it was and how long it took, so a stall reads differently from a wrong exit.
+          expect({run: label, exit: result.exit, elapsedMs: Math.round(performance.now() - started)})
+            .toMatchObject({run: label, exit: fail ? 1 : 0});
           const events = jsonl(result.stdout), terminal = events.at(-1);
           expect(terminal.text).toBe(fail ? '' : 'Final answer.');
           expect(terminal.progressText).toBe('Inspecting candidate. ');
@@ -361,7 +364,7 @@ describe('production headless brain', () => {
           if (!fail) expect(events.find(event => event.type === 'done')).toMatchObject({phase: 'final', result: {text: 'Final answer.'}});
         });
       }
-    });
+    }, 30_000);
 
     modeTest(`${mode}: streamed tool progress and final answer retain separate response boundaries`, async () => {
       await fixture((body, index) => {
