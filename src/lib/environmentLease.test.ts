@@ -155,9 +155,10 @@ describe('environment lease runtime', () => {
       cleanupState: 'pending',
       artifactPathClass: 'platform_runtime',
     });
-    const info = await lstat(result.artifactPath);
+    const info = await lstat(result.artifactPath, {bigint: true});
     expect(info.isFile()).toBe(true);
-    expect(info.mode & 0o777).toBe(0o400);
+    expect(Number(info.mode & 0o777n)).toBe(0o400);
+    expect(result.record.artifactBirthtimeNs).toBe(info.birthtimeNs.toString());
     const metadata = await readFile(path.join(runtime.root, 'records', `${leaseId}.json`), 'utf8');
     expect(metadata).not.toContain('synthetic-token');
     expect(metadata).not.toContain('synthetic-app-id');
@@ -252,6 +253,8 @@ describe('environment lease runtime', () => {
 
   it('reports changed artifact identity as unknowable instead of deleting it', async () => {
     const {runtime, leaseId, result} = await fixture();
+    // ext4 stamps birth time at jiffy granularity; wait past it so a reused inode still gets a new birth time.
+    await new Promise(resolve => setTimeout(resolve, 25));
     await rm(result.artifactPath);
     await writeFile(result.artifactPath, 'replacement', {mode: 0o600});
     const cleaned = await cleanupEnvironmentLeaseArtifact({
@@ -261,6 +264,50 @@ describe('environment lease runtime', () => {
     });
     expect(cleaned).toMatchObject({cleanupState: 'unknowable', cleanupErrorCode: 'artifact_identity_changed'});
     expect(await readFile(result.artifactPath, 'utf8')).toBe('replacement');
+  });
+
+  it('refuses to delete a replacement that reused the recorded device and inode', async () => {
+    const {runtime, leaseId, result} = await fixture();
+    await rm(result.artifactPath);
+    await writeFile(result.artifactPath, 'replacement', {mode: 0o600});
+    const replacement = await lstat(result.artifactPath, {bigint: true});
+    expect(replacement.birthtimeNs).not.toBe(0n);
+    await writeFile(path.join(runtime.root, 'records', `${leaseId}.json`), JSON.stringify({
+      ...result.record,
+      artifactDevice: Number(replacement.dev),
+      artifactInode: Number(replacement.ino),
+      artifactBirthtimeNs: (replacement.birthtimeNs - 1n).toString(),
+    }));
+    const cleaned = await cleanupEnvironmentLeaseArtifact({
+      runtimeRoot: runtime.root,
+      leaseId,
+      reason: 'startup_sweep',
+    });
+    expect(cleaned).toMatchObject({cleanupState: 'unknowable', cleanupErrorCode: 'artifact_identity_changed'});
+    expect(await readFile(result.artifactPath, 'utf8')).toBe('replacement');
+  });
+
+  it('does not delete an artifact whose record lacks a usable birth time', async () => {
+    for (const artifactBirthtimeNs of [undefined, '0']) {
+      const {runtime, leaseId, result} = await fixture();
+      const recordFile = path.join(runtime.root, 'records', `${leaseId}.json`);
+      await writeFile(recordFile, JSON.stringify({...result.record, artifactBirthtimeNs}));
+      expect(await readEnvironmentLeaseRecord(runtime.root, leaseId)).toMatchObject({leaseId, cleanupState: 'pending'});
+      const cleaned = await cleanupEnvironmentLeaseArtifact({
+        runtimeRoot: runtime.root,
+        leaseId,
+        reason: 'startup_sweep',
+      });
+      expect(cleaned).toMatchObject({cleanupState: 'unknowable', cleanupErrorCode: 'artifact_identity_unverifiable'});
+      expect(await readFile(result.artifactPath, 'utf8')).toContain('GITHUB_TOKEN=');
+    }
+
+    const malformed = await fixture();
+    await writeFile(path.join(malformed.runtime.root, 'records', `${malformed.leaseId}.json`), JSON.stringify({
+      ...malformed.result.record,
+      artifactBirthtimeNs: 123,
+    }));
+    expect(await readEnvironmentLeaseRecord(malformed.runtime.root, malformed.leaseId)).toBeUndefined();
   });
 
   it('sweeps expired artifacts and stale consumer processes after restart', async () => {

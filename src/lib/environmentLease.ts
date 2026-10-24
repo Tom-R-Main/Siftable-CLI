@@ -1,5 +1,5 @@
 import {createHash, randomUUID} from 'node:crypto';
-import {accessSync, constants as fsConstants, lstatSync, realpathSync} from 'node:fs';
+import {accessSync, constants as fsConstants, lstatSync, realpathSync, type BigIntStats} from 'node:fs';
 import {
   chmod,
   link,
@@ -21,6 +21,7 @@ import {
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SAFE_LABEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,159}$/;
+const BIRTHTIME_NS_PATTERN = /^-?[0-9]{1,30}$/;
 const SAFE_READ_FLAGS = fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK;
 
 export type EnvironmentLeaseArtifactPathClass =
@@ -62,6 +63,8 @@ export interface EnvironmentLeaseRecord {
   artifactPathClass: EnvironmentLeaseArtifactPathClass;
   artifactDevice: number;
   artifactInode: number;
+  // Records written before birth-time identity omit this; cleanup never deletes their artifact.
+  artifactBirthtimeNs?: string;
   artifactMode: number;
   artifactState: 'preparing' | 'ready';
   managerPid: number;
@@ -324,6 +327,8 @@ function parseLeaseRecord(value: unknown): EnvironmentLeaseRecord | undefined {
     || typeof item.artifactPath !== 'string' || !path.isAbsolute(item.artifactPath)
     || !pathClasses.includes(item.artifactPathClass as EnvironmentLeaseArtifactPathClass)
     || !Number.isFinite(item.artifactDevice) || !Number.isFinite(item.artifactInode)
+    || (item.artifactBirthtimeNs !== undefined
+      && (typeof item.artifactBirthtimeNs !== 'string' || !BIRTHTIME_NS_PATTERN.test(item.artifactBirthtimeNs)))
     || !Number.isFinite(item.artifactMode)
     || !['preparing', 'ready'].includes(item.artifactState ?? '')
     || !Number.isSafeInteger(item.managerPid) || Number(item.managerPid) <= 0
@@ -413,9 +418,9 @@ export async function materializeEnvironmentLeaseArtifact(input: {
     const requestedMode = input.contract.mode === '0400' ? 0o400 : 0o600;
     handle = await open(artifactPath, 'wx', requestedMode);
     await handle.chmod(requestedMode);
-    const info = await handle.stat();
-    if (!info.isFile() || info.isSymbolicLink() || !isOwnedByCurrentUser(info)
-      || (info.mode & 0o777) !== requestedMode) {
+    const info = await handle.stat({bigint: true});
+    if (!info.isFile() || info.isSymbolicLink() || !isOwnedByCurrentUser({uid: Number(info.uid)})
+      || Number(info.mode & 0o777n) !== requestedMode) {
       throw new Error('Lease artifact type, ownership, or mode is unsafe');
     }
     await syncDirectory(path.dirname(artifactPath));
@@ -435,9 +440,10 @@ export async function materializeEnvironmentLeaseArtifact(input: {
       materializerDigest: input.materializerDigest,
       artifactPath,
       artifactPathClass: runtime.pathClass,
-      artifactDevice: info.dev,
-      artifactInode: info.ino,
-      artifactMode: info.mode & 0o777,
+      artifactDevice: Number(info.dev),
+      artifactInode: Number(info.ino),
+      artifactBirthtimeNs: info.birthtimeNs.toString(),
+      artifactMode: Number(info.mode & 0o777n),
       artifactState: 'preparing',
       managerPid: process.pid,
       consumerPid: input.consumerPid ?? null,
@@ -461,11 +467,13 @@ export async function materializeEnvironmentLeaseArtifact(input: {
     const releaseReadyLock = await acquireLeaseCleanupLock(runtime.root, input.leaseId);
     try {
       const current = await readEnvironmentLeaseRecord(runtime.root, input.leaseId);
-      const currentArtifact = await lstat(artifactPath).catch(() => null);
+      const currentArtifact = await lstat(artifactPath, {bigint: true}).catch(() => null);
+      // Exact equality, zero included, keeps leases usable without btime; cleanup still refuses to delete those.
       if (!current || current.cleanupState !== 'pending'
         || !currentArtifact || !currentArtifact.isFile() || currentArtifact.isSymbolicLink()
-        || currentArtifact.dev !== record.artifactDevice
-        || currentArtifact.ino !== record.artifactInode) {
+        || Number(currentArtifact.dev) !== record.artifactDevice
+        || Number(currentArtifact.ino) !== record.artifactInode
+        || currentArtifact.birthtimeNs.toString() !== record.artifactBirthtimeNs) {
         throw new Error('Lease cleanup won the prepare-to-ready race');
       }
       record = {...current, artifactState: 'ready'};
@@ -490,6 +498,12 @@ export async function materializeEnvironmentLeaseArtifact(input: {
     rendered?.fill(0);
     for (const value of input.values) value.fill(0);
   }
+}
+
+// ext4 hands a freed inode straight back, so dev and ino alone cannot tell a replacement apart.
+// A zero or missing birth time cannot either, so it never authorizes deletion.
+function artifactBirthtimeKnown(record: EnvironmentLeaseRecord, info: BigIntStats): boolean {
+  return record.artifactBirthtimeNs !== undefined && record.artifactBirthtimeNs !== '0' && info.birthtimeNs !== 0n;
 }
 
 function processIsAlive(pid: number): boolean {
@@ -531,9 +545,11 @@ async function cleanupEnvironmentLeaseArtifactUnlocked(input: {
   );
   try {
     await rename(record.artifactPath, quarantinePath);
-    const info = await lstat(quarantinePath);
-    if (info.isSymbolicLink() || !info.isFile()
-      || info.dev !== record.artifactDevice || info.ino !== record.artifactInode) {
+    const info = await lstat(quarantinePath, {bigint: true});
+    const sameInode = !info.isSymbolicLink() && info.isFile()
+      && Number(info.dev) === record.artifactDevice && Number(info.ino) === record.artifactInode;
+    const birthtimeKnown = artifactBirthtimeKnown(record, info);
+    if (!sameInode || !birthtimeKnown || info.birthtimeNs.toString() !== record.artifactBirthtimeNs) {
       await link(quarantinePath, record.artifactPath)
         .then(() => rm(quarantinePath))
         .catch(() => undefined);
@@ -543,7 +559,9 @@ async function cleanupEnvironmentLeaseArtifactUnlocked(input: {
         cleanupReason: input.reason,
         cleanupAttemptId: attemptId,
         cleanupAttemptedAt: attemptedAt,
-        cleanupErrorCode: 'artifact_identity_changed',
+        cleanupErrorCode: sameInode && !birthtimeKnown
+          ? 'artifact_identity_unverifiable'
+          : 'artifact_identity_changed',
       };
       await writeLeaseRecord(input.runtimeRoot, unknowable);
       return unknowable;
