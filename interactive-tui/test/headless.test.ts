@@ -349,13 +349,13 @@ describe('production headless brain', () => {
         await fixture((body, index) => index === 1
           ? completion(body, {...toolMessage('read_file', {path: 'candidate.txt'}, 'read-1'), content: 'Inspecting candidate. '})
           : fail ? Response.json({error: {message: 'fixture terminal rejection'}}, {status: 400})
-            : completion(body, {role: 'assistant', content: 'Final answer.'}), async ({root, run}) => {
+            : completion(body, {role: 'assistant', content: 'Final answer.'}), async ({bodies, root, run}) => {
           await writeFile(join(root, 'candidate.txt'), 'candidate');
-          const started = performance.now(), label = fail ? 'rejected' : 'completed';
+          const started = performance.now(), label = `${mode} ${fail ? 'rejected' : 'completed'}`;
           const result = await run({mode});
-          // A failure prints which run it was and how long it took, so a stall reads differently from a wrong exit.
-          expect({run: label, exit: result.exit, elapsedMs: Math.round(performance.now() - started)})
-            .toMatchObject({run: label, exit: fail ? 1 : 0});
+          // A failure names the run, its duration and request count; exactly two requests means a 400 was never retried.
+          expect({run: label, exit: result.exit, requests: bodies.length, elapsedMs: Math.round(performance.now() - started)})
+            .toMatchObject({run: label, exit: fail ? 1 : 0, requests: 2});
           const events = jsonl(result.stdout), terminal = events.at(-1);
           expect(terminal.text).toBe(fail ? '' : 'Final answer.');
           expect(terminal.progressText).toBe('Inspecting candidate. ');
