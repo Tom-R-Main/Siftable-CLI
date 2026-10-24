@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile} from 'node:fs/promises';
+import {link, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {afterEach, describe, expect, it, vi} from 'vitest';
@@ -82,6 +82,10 @@ async function fixture(input: {
     runtime,
   });
   return {checkoutRoot, runtime, leaseId, result};
+}
+
+function quarantinePath(artifactPath: string, leaseId: string): string {
+  return path.join(path.dirname(artifactPath), `.cleanup-${leaseId}-${randomUUID()}`);
 }
 
 afterEach(async () => {
@@ -306,38 +310,98 @@ describe('environment lease runtime', () => {
     expect((await lstat(result.artifactPath)).isFile()).toBe(true);
   });
 
-  it('recovers from a crash between removals and refuses to judge a lost anchor', async () => {
-    const removed = await fixture();
-    await rm(removed.result.artifactPath);
+  it('sweeps an interrupted quarantine and its anchor to confirmed', async () => {
+    const {runtime, leaseId, result} = await fixture();
+    const leftover = quarantinePath(result.artifactPath, leaseId);
+    await rename(result.artifactPath, leftover);
+    const swept = await sweepEnvironmentLeases({
+      runtimeRoot: runtime.root,
+      now: Date.parse(result.record.expiresAt) + 1,
+    });
+    expect(swept[0]).toMatchObject({cleanupState: 'confirmed', cleanupErrorCode: null});
+    await expect(lstat(leftover)).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(lstat(environmentLeaseAnchorPath(runtime.root, leaseId))).rejects.toMatchObject({code: 'ENOENT'});
+  });
+
+  it('converges to confirmed after an interruption during quarantine reconciliation', async () => {
+    const anchorOnly = await fixture();
+    await rm(anchorOnly.result.artifactPath);
     expect(await cleanupEnvironmentLeaseArtifact({
-      runtimeRoot: removed.runtime.root,
-      leaseId: removed.leaseId,
+      runtimeRoot: anchorOnly.runtime.root,
+      leaseId: anchorOnly.leaseId,
       reason: 'crash_recovery',
     })).toMatchObject({cleanupState: 'confirmed'});
-    await expect(lstat(environmentLeaseAnchorPath(removed.runtime.root, removed.leaseId)))
+    await expect(lstat(environmentLeaseAnchorPath(anchorOnly.runtime.root, anchorOnly.leaseId)))
       .rejects.toMatchObject({code: 'ENOENT'});
 
-    const quarantined = await fixture();
-    const leftover = path.join(path.dirname(quarantined.result.artifactPath), `.cleanup-${quarantined.leaseId}-${randomUUID()}`);
-    await rename(quarantined.result.artifactPath, leftover);
+    const partial = await fixture();
+    const removedFirst = quarantinePath(partial.result.artifactPath, partial.leaseId);
+    const remaining = quarantinePath(partial.result.artifactPath, partial.leaseId);
+    await link(partial.result.artifactPath, removedFirst);
+    await rename(partial.result.artifactPath, remaining);
+    await rm(removedFirst);
     expect(await cleanupEnvironmentLeaseArtifact({
-      runtimeRoot: quarantined.runtime.root,
-      leaseId: quarantined.leaseId,
+      runtimeRoot: partial.runtime.root,
+      leaseId: partial.leaseId,
       reason: 'crash_recovery',
-    })).toMatchObject({
-      cleanupState: 'unknowable',
-      cleanupErrorCode: 'artifact_missing_before_identity_preserving_delete',
-    });
-    expect((await lstat(environmentLeaseAnchorPath(quarantined.runtime.root, quarantined.leaseId))).isFile()).toBe(true);
+    })).toMatchObject({cleanupState: 'confirmed'});
+    await expect(lstat(remaining)).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(lstat(environmentLeaseAnchorPath(partial.runtime.root, partial.leaseId)))
+      .rejects.toMatchObject({code: 'ENOENT'});
+  });
 
-    const unanchored = await fixture();
-    await rm(environmentLeaseAnchorPath(unanchored.runtime.root, unanchored.leaseId));
+  it('removes an extra owned quarantine alongside a present artifact', async () => {
+    const {runtime, leaseId, result} = await fixture();
+    const extra = quarantinePath(result.artifactPath, leaseId);
+    await link(result.artifactPath, extra);
     expect(await cleanupEnvironmentLeaseArtifact({
-      runtimeRoot: unanchored.runtime.root,
-      leaseId: unanchored.leaseId,
+      runtimeRoot: runtime.root,
+      leaseId,
+      reason: 'revoke',
+    })).toMatchObject({cleanupState: 'confirmed'});
+    await expect(lstat(result.artifactPath)).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(lstat(extra)).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(lstat(environmentLeaseAnchorPath(runtime.root, leaseId))).rejects.toMatchObject({code: 'ENOENT'});
+  });
+
+  it('preserves foreign entries under quarantine names and keeps the anchor while unexplained links remain', async () => {
+    const unrelated = await fixture();
+    const foreign = quarantinePath(unrelated.result.artifactPath, unrelated.leaseId);
+    await writeFile(foreign, 'foreign', {mode: 0o600});
+    const victim = path.join(await temporaryRoot('sift-lease-symlink-victim-'), 'victim');
+    await writeFile(victim, 'victim', {mode: 0o600});
+    const pointer = quarantinePath(unrelated.result.artifactPath, unrelated.leaseId);
+    await symlink(victim, pointer);
+    expect(await cleanupEnvironmentLeaseArtifact({
+      runtimeRoot: unrelated.runtime.root,
+      leaseId: unrelated.leaseId,
+      reason: 'revoke',
+    })).toMatchObject({cleanupState: 'confirmed'});
+    expect(await readFile(foreign, 'utf8')).toBe('foreign');
+    expect((await lstat(pointer)).isSymbolicLink()).toBe(true);
+    expect(await readFile(victim, 'utf8')).toBe('victim');
+
+    const linked = await fixture();
+    const unexplained = path.join(path.dirname(linked.result.artifactPath), `.cleanup-${linked.leaseId}-not-a-uuid`);
+    await link(linked.result.artifactPath, unexplained);
+    expect(await cleanupEnvironmentLeaseArtifact({
+      runtimeRoot: linked.runtime.root,
+      leaseId: linked.leaseId,
+      reason: 'revoke',
+    })).toMatchObject({cleanupState: 'unknowable', cleanupErrorCode: 'artifact_links_remain'});
+    expect((await lstat(unexplained)).isFile()).toBe(true);
+    expect((await lstat(environmentLeaseAnchorPath(linked.runtime.root, linked.leaseId))).isFile()).toBe(true);
+  });
+
+  it('keeps an artifact whose anchor is missing', async () => {
+    const {runtime, leaseId, result} = await fixture();
+    await rm(environmentLeaseAnchorPath(runtime.root, leaseId));
+    expect(await cleanupEnvironmentLeaseArtifact({
+      runtimeRoot: runtime.root,
+      leaseId,
       reason: 'crash_recovery',
     })).toMatchObject({cleanupState: 'unknowable', cleanupErrorCode: 'artifact_anchor_missing'});
-    expect((await lstat(unanchored.result.artifactPath)).isFile()).toBe(true);
+    expect((await lstat(result.artifactPath)).isFile()).toBe(true);
   });
 
   it('fails preparation before writing values when the anchor cannot be linked', async () => {

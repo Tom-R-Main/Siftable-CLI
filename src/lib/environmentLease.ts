@@ -7,6 +7,7 @@ import {
   mkdir,
   open,
   readFile,
+  readdir,
   realpath,
   rename,
   rm,
@@ -525,6 +526,28 @@ function anchorMatchesRecord(anchor: BigIntStats, record: EnvironmentLeaseRecord
     && Number(anchor.dev) === record.artifactDevice && Number(anchor.ino) === record.artifactInode;
 }
 
+// Only exact `.cleanup-<lease>-<attempt UUID>` names that are the anchored regular file are ours;
+// foreign files and symlinks under those names are left untouched.
+async function removeOwnedQuarantines(
+  artifactsDirectory: string,
+  leaseId: string,
+  anchor: BigIntStats,
+): Promise<void> {
+  const directory = await lstat(artifactsDirectory);
+  if (!directory.isDirectory() || directory.isSymbolicLink()) return;
+  const prefix = `.cleanup-${leaseId}-`;
+  let removed = false;
+  for (const name of await readdir(artifactsDirectory)) {
+    if (!name.startsWith(prefix) || !UUID_PATTERN.test(name.slice(prefix.length))) continue;
+    const candidate = path.join(artifactsDirectory, name);
+    const info = await lstat(candidate, {bigint: true}).catch(() => null);
+    if (!info || !sameRegularFile(info, anchor)) continue;
+    await rm(candidate);
+    removed = true;
+  }
+  if (removed) await syncDirectory(artifactsDirectory);
+}
+
 function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -581,28 +604,28 @@ async function cleanupEnvironmentLeaseArtifactUnlocked(input: {
         : 'artifact_missing_before_identity_preserving_delete');
     }
     if (!anchorMatchesRecord(anchor, record)) return await unknowable('artifact_anchor_invalid');
-    let artifactMissing = false;
+    let quarantined: BigIntStats | null = null;
     try {
       await rename(record.artifactPath, quarantinePath);
+      quarantined = await lstat(quarantinePath, {bigint: true});
     } catch (error) {
+      // A missing artifact means an earlier attempt already moved or removed it.
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      artifactMissing = true;
     }
-    if (artifactMissing) {
-      // A crash between the two removals leaves only the anchor. Any other link, such as a
-      // quarantine left by an interrupted attempt, keeps the anchor in place.
-      if (anchor.nlink !== 1n) return await unknowable('artifact_missing_before_identity_preserving_delete');
-    } else {
-      const info = await lstat(quarantinePath, {bigint: true});
-      if (!sameRegularFile(info, anchor)) {
-        await link(quarantinePath, record.artifactPath)
-          .then(() => rm(quarantinePath))
-          .catch(() => undefined);
-        return await unknowable('artifact_identity_changed');
-      }
-      await rm(quarantinePath);
-      await syncDirectory(path.dirname(record.artifactPath));
+    if (quarantined && !sameRegularFile(quarantined, anchor)) {
+      await link(quarantinePath, record.artifactPath)
+        .then(() => rm(quarantinePath))
+        .catch(() => undefined);
+      return await unknowable('artifact_identity_changed');
     }
+    // This attempt's quarantine is removed together with any an interrupted attempt left behind.
+    await removeOwnedQuarantines(path.dirname(record.artifactPath), record.leaseId, anchor);
+    // The anchor goes last, and only while it is the inode's sole remaining link.
+    const finalAnchor = await lstat(anchorPath, {bigint: true});
+    if (!anchorMatchesRecord(finalAnchor, record) || !sameRegularFile(finalAnchor, anchor)) {
+      return await unknowable('artifact_anchor_invalid');
+    }
+    if (finalAnchor.nlink !== 1n) return await unknowable('artifact_links_remain');
     await rm(anchorPath);
     await syncDirectory(path.dirname(anchorPath));
   } catch (error) {
@@ -688,7 +711,6 @@ export async function listEnvironmentLeaseRecords(
   runtimeRoot: string,
 ): Promise<EnvironmentLeaseRecord[]> {
   const recordsDirectory = leaseDirectories(runtimeRoot).records;
-  const {readdir} = await import('node:fs/promises');
   const names = await readdir(recordsDirectory).catch(() => [] as string[]);
   const records = await Promise.all(names
     .filter(name => UUID_PATTERN.test(name.slice(0, -5)) && name.endsWith('.json'))
