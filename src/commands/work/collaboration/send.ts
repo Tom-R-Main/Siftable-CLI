@@ -5,8 +5,11 @@ import {
   collaborationActorFlag,
   collaborationActorOptions,
   collaborationData,
+  collaborationParticipantLabels,
   normalizeCollaborationIdempotencyKey,
   renderCollaborationEventMutation,
+  resolveCollaborationRecipients,
+  type CollaborationParticipantLabels,
 } from '../../../lib/work-collaboration.js';
 
 type SendEventInput = Parameters<SiftClient['sendWorkItemCollaborationEvent']>[1];
@@ -36,6 +39,10 @@ export default class WorkCollaborationSend extends BaseCommand {
       description: 'Caller-owned stable 8-128 character key for exact retries',
       required: true,
     }),
+    to: Flags.string({
+      description: 'Address an active participant by participant UUID, actor UUID, or exact label (any case). Omit to address the whole room; addressing grants no authority',
+      multiple: true,
+    }),
   };
 
   async run(): Promise<unknown> {
@@ -56,6 +63,22 @@ export default class WorkCollaborationSend extends BaseCommand {
       this.error(error instanceof Error ? error.message : String(error));
     }
     const client = await this.client(flags);
+    let recipientParticipantIds: string[] = [];
+    let labels: CollaborationParticipantLabels | undefined;
+    if (flags.to?.length) {
+      const participantsResponse = await client.listWorkItemCollaborationParticipants(
+        args.id,
+        collaborationActorOptions(flags),
+      );
+      this.handleApiError(participantsResponse);
+      const participants = collaborationData(participantsResponse.data);
+      try {
+        recipientParticipantIds = resolveCollaborationRecipients(participants, flags.to);
+      } catch (error) {
+        this.error(error instanceof Error ? error.message : String(error));
+      }
+      labels = collaborationParticipantLabels(participants);
+    }
     const response = await client.sendWorkItemCollaborationEvent(
       args.id,
       {
@@ -64,12 +87,14 @@ export default class WorkCollaborationSend extends BaseCommand {
         idempotencyKey,
         replyToEventId: flags['reply-to-event-id'],
         supersedesEventId: flags['supersedes-event-id'],
+        // Sent only when non-empty so a server without addressing still accepts the body.
+        ...(recipientParticipantIds.length > 0 ? {recipientParticipantIds} : {}),
       },
       collaborationActorOptions(flags),
     );
     this.handleApiError(response);
     const result = collaborationData(response.data);
-    if (!this.jsonEnabled()) this.log(renderCollaborationEventMutation(result));
+    if (!this.jsonEnabled()) this.log(renderCollaborationEventMutation(result, labels));
     return result;
   }
 }

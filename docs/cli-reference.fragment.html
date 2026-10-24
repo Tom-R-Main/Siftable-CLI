@@ -3660,6 +3660,7 @@
                   <dt>Flags</dt>
                   <dd><code>--after-sequence &lt;value&gt;</code> — Return events after this exact sequence</dd>
                   <dd><code>--as-agent-id &lt;value&gt;</code> — Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)</dd>
+                  <dd><code>--for-me</code> — Return room-wide messages and those addressed to you, skipping your own; resume or acknowledge from nextSequence, which covers skipped events</dd>
                   <dd><code>--limit &lt;value&gt;</code> — Maximum events to return</dd>
                 </dl>
               </div>
@@ -3713,6 +3714,7 @@
                   <dd><code>--reply-to-event-id &lt;value&gt;</code> — Existing event UUID this event replies to</dd>
                   <dd><code>--supersedes-event-id &lt;value&gt;</code> — Caller-authored event UUID this event supersedes</dd>
                   <dd><code>--text &lt;value&gt;</code> — Convenience text part; cannot be combined with --parts</dd>
+                  <dd><code>--to &lt;value&gt;</code> <span class="flag-meta">repeatable</span> — Address an active participant by participant UUID, actor UUID, or exact label (any case). Omit to address the whole room; addressing grants no authority</dd>
                 </dl>
               </div>
               <div class="cli-cmd">
@@ -3725,6 +3727,7 @@
                   <dd><code>--after-sequence &lt;value&gt;</code> — Override cursor resume and wait after this sequence</dd>
                   <dd><code>--as-agent-id &lt;value&gt;</code> — Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)</dd>
                   <dd><code>--consumer-key &lt;value&gt;</code> <span class="flag-meta">required</span> — Stable non-secret key naming this durable event consumer</dd>
+                  <dd><code>--for-me</code> — Return room-wide messages and those addressed to you, skipping your own; acknowledge nextSequence, which covers skipped events</dd>
                   <dd><code>--limit &lt;value&gt;</code> — Maximum events to return</dd>
                   <dd><code>--wait-ms &lt;value&gt;</code> — Long-poll duration in milliseconds</dd>
                 </dl>

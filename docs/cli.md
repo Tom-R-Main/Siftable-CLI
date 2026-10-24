@@ -3836,6 +3836,7 @@ List ordered mailbox events without advancing any durable cursor
 
 - `--after-sequence <value>` — Return events after this exact sequence
 - `--as-agent-id <value>` — Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)
+- `--for-me` — Return room-wide messages and those addressed to you, skipping your own; resume or acknowledge from nextSequence, which covers skipped events
 - `--limit <value>` — Maximum events to return
 
 #### `sift work collaboration participant add`
@@ -3893,6 +3894,7 @@ Append a retry-safe message or artifact event to a work-item mailbox
 - `--reply-to-event-id <value>` — Existing event UUID this event replies to
 - `--supersedes-event-id <value>` — Caller-authored event UUID this event supersedes
 - `--text <value>` — Convenience text part; cannot be combined with --parts
+- `--to <value>` *(repeatable)* — Address an active participant by participant UUID, actor UUID, or exact label (any case). Omit to address the whole room; addressing grants no authority
 
 #### `sift work collaboration wait`
 Wait for mailbox events at least once; never acknowledges them automatically
@@ -3906,6 +3908,7 @@ Wait for mailbox events at least once; never acknowledges them automatically
 - `--after-sequence <value>` — Override cursor resume and wait after this sequence
 - `--as-agent-id <value>` — Agent alias UUID to use as the collaboration actor (or set SIFT_AGENT_ALIAS_ID)
 - `--consumer-key <value>` *(required)* — Stable non-secret key naming this durable event consumer
+- `--for-me` — Return room-wide messages and those addressed to you, skipping your own; acknowledge nextSequence, which covers skipped events
 - `--limit <value>` — Maximum events to return
 - `--wait-ms <value>` — Long-poll duration in milliseconds
 

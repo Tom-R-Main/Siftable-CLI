@@ -9,6 +9,11 @@ const TARGET_ALIAS_ID = '33333333-3333-4333-8333-333333333333';
 const USER_ID = '44444444-4444-4444-8444-444444444444';
 const PARTICIPANT_ID = '55555555-5555-4555-8555-555555555555';
 const EVENT_ID = '66666666-6666-4666-8666-666666666666';
+const BUILDER_PARTICIPANT_ID = '77777777-7777-4777-8777-777777777777';
+const BUILDER_ALIAS_ID = '88888888-8888-4888-8888-888888888888';
+const RETIRED_PARTICIPANT_ID = '99999999-9999-4999-8999-999999999999';
+const TWIN_PARTICIPANT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const OTHER_TWIN_PARTICIPANT_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 installIsolatedConfigDirHooks('sift-cli-work-collaboration-');
 
@@ -30,6 +35,33 @@ function participant() {
     removedAt: null,
     removedBy: null,
   };
+}
+
+function roster() {
+  const agent = (id: string, aliasId: string, label: string, role: string, active = true) => ({
+    ...participant(),
+    id,
+    actor: {kind: 'agent', id: aliasId, label},
+    role,
+    active,
+    removedAt: active ? null : '2026-08-31T00:05:00.000Z',
+  });
+  return {
+    version: 1,
+    participants: [
+      participant(),
+      agent(BUILDER_PARTICIPANT_ID, BUILDER_ALIAS_ID, 'builder-agent', 'contributor'),
+      agent(RETIRED_PARTICIPANT_ID, '99999999-0000-4000-8000-000000000001', 'retired-agent', 'reviewer', false),
+      agent(TWIN_PARTICIPANT_ID, 'aaaaaaaa-0000-4000-8000-000000000001', 'twin-agent', 'contributor'),
+      agent(OTHER_TWIN_PARTICIPANT_ID, 'bbbbbbbb-0000-4000-8000-000000000001', 'Twin-Agent', 'observer'),
+    ],
+  };
+}
+
+function postedBodies(): unknown[] {
+  return (global.fetch as jest.Mock).mock.calls
+    .filter(([, init]) => init?.method === 'POST')
+    .map(([, init]) => JSON.parse(init.body as string));
 }
 
 function event(text = 'Mailbox update') {
@@ -307,8 +339,127 @@ describe('sift work collaboration', () => {
     expect(result.stdout).toContain('Sent event: #7 message start');
     expect(result.stdout).not.toContain('\u001B[31m');
     expect(result.stdout).not.toContain('TAIL-MUST-NOT-APPEAR');
+    expect(result.stdout).not.toContain('to:');
+    expect(global.fetch).toHaveBeenCalledTimes(1);
     const request = (global.fetch as jest.Mock).mock.calls[0][1];
     expect(request.headers['Idempotency-Key']).toBe('event-send-0001');
+    expect(JSON.parse(request.body as string)).not.toHaveProperty('recipientParticipantIds');
+  });
+
+  it('resolves --to by label, alias, and participant ID into a sorted, retry-stable recipient list', async () => {
+    const addressed = {...event('Please review'), recipientParticipantIds: [PARTICIPANT_ID, BUILDER_PARTICIPANT_ID]};
+    mockFetch()
+      .on('GET', `/api/v1/work-items/${WORK_ID}/participants`)
+      .reply(200, roster())
+      .on('POST', `/api/v1/work-items/${WORK_ID}/events`)
+      .reply(201, {version: 1, event: addressed})
+      .install();
+
+    const first = await runCommand([
+      'work', 'collaboration', 'send', WORK_ID,
+      '--text', 'Please review',
+      '--to', 'REVIEWER-AGENT',
+      '--to', BUILDER_ALIAS_ID,
+      '--to', PARTICIPANT_ID.toUpperCase(),
+      '--idempotency-key', 'event-send-addressed-0001',
+      '--as-agent-id', ACTOR_ALIAS_ID,
+      '--token', 'sift_pat_test',
+    ]);
+    const retry = await runCommand([
+      'work', 'collaboration', 'send', WORK_ID,
+      '--text', 'Please review',
+      '--to', BUILDER_PARTICIPANT_ID,
+      '--to', 'reviewer-agent',
+      '--idempotency-key', 'event-send-addressed-0001',
+      '--as-agent-id', ACTOR_ALIAS_ID,
+      '--token', 'sift_pat_test',
+    ]);
+
+    expect(first.exitCode).toBe(0);
+    expect(retry.exitCode).toBe(0);
+    const expectedBody = {
+      kind: 'message',
+      parts: [{kind: 'text', text: 'Please review'}],
+      recipientParticipantIds: [PARTICIPANT_ID, BUILDER_PARTICIPANT_ID],
+    };
+    expect(postedBodies()).toEqual([expectedBody, expectedBody]);
+    expect(first.stdout).toContain('Sent event: #7 message Please review');
+    expect(first.stdout).toContain('to: reviewer-agent, builder-agent');
+    const participantLookup = (global.fetch as jest.Mock).mock.calls[0][1];
+    expect(participantLookup.method).toBe('GET');
+    expect(participantLookup.headers['X-Sift-Agent-Alias-Id']).toBe(ACTOR_ALIAS_ID);
+  });
+
+  it('returns the addressed event unchanged as JSON', async () => {
+    const addressed = {...event(), recipientParticipantIds: [BUILDER_PARTICIPANT_ID]};
+    mockFetch()
+      .on('GET', `/api/v1/work-items/${WORK_ID}/participants`)
+      .reply(200, roster())
+      .on('POST', `/api/v1/work-items/${WORK_ID}/events`)
+      .reply(201, {version: 1, event: addressed})
+      .install();
+
+    const result = await runCommand([
+      'work', 'collaboration', 'send', WORK_ID,
+      '--text', 'Mailbox update',
+      '--to', 'builder-agent',
+      '--idempotency-key', 'event-send-addressed-json',
+      '--token', 'sift_pat_test',
+      '--json',
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({version: 1, event: addressed});
+  });
+
+  it.each([
+    {
+      name: 'an ambiguous label',
+      ref: 'twin-agent',
+      expected: [
+        '--to "twin-agent" matches 2 active participants',
+        `${TWIN_PARTICIPANT_ID} (twin-agent, contributor)`,
+        `${OTHER_TWIN_PARTICIPANT_ID} (Twin-Agent, observer)`,
+        'Use a participant ID.',
+      ],
+    },
+    {
+      name: 'a reference with no match',
+      ref: 'nobody-agent',
+      expected: [
+        '--to "nobody-agent" matches no participant',
+        `${PARTICIPANT_ID} (reviewer-agent, reviewer)`,
+        `${BUILDER_PARTICIPANT_ID} (builder-agent, contributor)`,
+      ],
+    },
+    {
+      name: 'an inactive participant',
+      ref: RETIRED_PARTICIPANT_ID,
+      expected: [
+        `matches only inactive participants: ${RETIRED_PARTICIPANT_ID} (retired-agent, reviewer)`,
+        `Active participants: ${PARTICIPANT_ID} (reviewer-agent, reviewer)`,
+      ],
+    },
+  ])('refuses to send when --to names $name', async ({ref, expected}) => {
+    mockFetch()
+      .on('GET', `/api/v1/work-items/${WORK_ID}/participants`)
+      .reply(200, roster())
+      .on('POST', `/api/v1/work-items/${WORK_ID}/events`)
+      .reply(201, {version: 1, event: event()})
+      .install();
+
+    const result = await runCommand([
+      'work', 'collaboration', 'send', WORK_ID,
+      '--text', 'hello',
+      '--to', 'builder-agent',
+      '--to', ref,
+      '--idempotency-key', 'event-send-refused-0001',
+      '--token', 'sift_pat_test',
+    ]);
+
+    expect(result.exitCode).not.toBe(0);
+    for (const fragment of expected) expect(result.error?.message).toContain(fragment);
+    expect(postedBodies()).toEqual([]);
   });
 
   it('acknowledges only the exact supplied sequence and supports the actor environment variable', async () => {
@@ -345,6 +496,93 @@ describe('sift work collaboration', () => {
     expect(JSON.parse(result.stdout)).toEqual(payload);
     const request = (global.fetch as jest.Mock).mock.calls[0][1];
     expect(request.headers['X-Sift-Agent-Alias-Id']).toBe(ACTOR_ALIAS_ID);
+  });
+
+  it('lists events for the whole room unless --for-me selects the caller audience', async () => {
+    const roomWide = event('Room update');
+    const addressed = {...event('For the reviewer'), sequence: 8, recipientParticipantIds: [PARTICIPANT_ID]};
+    const payload = {version: 1, events: [roomWide, addressed], nextSequence: 8};
+    mockFetch()
+      .on('GET', `/api/v1/work-items/${WORK_ID}/events`)
+      .reply(200, payload)
+      .install();
+
+    const all = await runCommand([
+      'work', 'collaboration', 'events', WORK_ID,
+      '--token', 'sift_pat_test',
+    ]);
+    const forMe = await runCommand([
+      'work', 'collaboration', 'events', WORK_ID,
+      '--for-me',
+      '--as-agent-id', TARGET_ALIAS_ID,
+      '--token', 'sift_pat_test',
+      '--json',
+    ]);
+
+    expect(all.exitCode).toBe(0);
+    expect(forMe.exitCode).toBe(0);
+    const urls = (global.fetch as jest.Mock).mock.calls.map(([input]) => new URL(String(input)));
+    expect(urls.map((url) => url.searchParams.get('audience'))).toEqual([null, 'me']);
+    expect(JSON.parse(forMe.stdout)).toEqual(payload);
+    const lines = all.stdout.split('\n');
+    expect(lines[0]).toBe('#7  message  coordinator-agent  Room update');
+    expect(lines[1]).toBe(`#8  message  coordinator-agent  to: ${PARTICIPANT_ID}  For the reviewer`);
+  });
+
+  it('waits with --for-me and offers to acknowledge the examined watermark', async () => {
+    const addressed = {...event('For the reviewer'), recipientParticipantIds: [PARTICIPANT_ID]};
+    mockFetch()
+      .on('GET', `/api/v1/work-items/${WORK_ID}/events/wait`)
+      .query({consumerKey: 'cli-worker-for-me', audience: 'me', waitMs: '0'})
+      .reply(200, {
+        version: 1,
+        events: [addressed],
+        nextSequence: 12,
+        consumerKey: 'cli-worker-for-me',
+        timedOut: false,
+      })
+      .install();
+
+    const result = await runCommand([
+      'work', 'collaboration', 'wait', WORK_ID,
+      '--consumer-key', 'cli-worker-for-me',
+      '--for-me',
+      '--wait-ms', '0',
+      '--token', 'sift_pat_test',
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(`to: ${PARTICIPANT_ID}`);
+    expect(result.stdout).toContain('--last-sequence 12');
+    expect(result.stdout).toContain('also covers the events filtered out by --for-me');
+  });
+
+  it('offers to acknowledge a --for-me timeout that examined only filtered events', async () => {
+    mockFetch()
+      .on('GET', `/api/v1/work-items/${WORK_ID}/events/wait`)
+      .query({consumerKey: 'cli-worker-for-me', audience: 'me', waitMs: '0'})
+      .reply(200, {
+        version: 1,
+        events: [],
+        nextSequence: 15,
+        consumerKey: 'cli-worker-for-me',
+        timedOut: true,
+      })
+      .install();
+
+    const result = await runCommand([
+      'work', 'collaboration', 'wait', WORK_ID,
+      '--consumer-key', 'cli-worker-for-me',
+      '--for-me',
+      '--wait-ms', '0',
+      '--token', 'sift_pat_test',
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('Wait timed out with no events.');
+    expect(result.stdout).toContain(
+      `sift work collaboration acknowledge ${WORK_ID} --consumer-key cli-worker-for-me --last-sequence 15`,
+    );
   });
 
   it('refuses participant and event mutations without caller-owned retry keys', async () => {

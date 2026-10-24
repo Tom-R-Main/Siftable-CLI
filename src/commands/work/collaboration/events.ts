@@ -19,6 +19,9 @@ export default class WorkCollaborationEvents extends BaseCommand {
     'as-agent-id': collaborationActorFlag,
     'after-sequence': Flags.integer({description: 'Return events after this exact sequence', min: 0}),
     limit: Flags.integer({description: 'Maximum events to return', min: 1, max: 100}),
+    'for-me': Flags.boolean({
+      description: 'Return room-wide messages and those addressed to you, skipping your own; resume or acknowledge from nextSequence, which covers skipped events',
+    }),
   };
 
   async run(): Promise<unknown> {
@@ -29,12 +32,13 @@ export default class WorkCollaborationEvents extends BaseCommand {
       {
         afterSequence: flags['after-sequence'],
         limit: flags.limit,
+        ...(flags['for-me'] ? {audience: 'me' as const} : {}),
       },
       collaborationActorOptions(flags),
     );
     this.handleApiError(response);
     const result = collaborationData(response.data);
-    if (!this.jsonEnabled()) this.log(renderCollaborationEvents(result));
+    if (!this.jsonEnabled()) this.log(renderCollaborationEvents(result, {forMe: flags['for-me'], workItemId: args.id}));
     return result;
   }
 }

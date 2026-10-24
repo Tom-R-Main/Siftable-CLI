@@ -11,6 +11,18 @@ export type CollaborationActorFlags = {
 
 export type CollaborationResponse = Record<string, unknown>;
 
+/** Participant ID (lowercase) to the terminal-safe label shown for it. */
+export type CollaborationParticipantLabels = ReadonlyMap<string, string>;
+
+export type CollaborationEventsRenderOptions = {
+  labels?: CollaborationParticipantLabels;
+  /** The listing used `audience: 'me'`, so `nextSequence` also covers skipped events. */
+  forMe?: boolean;
+  workItemId?: string;
+};
+
+/** Mirrors AGENT_WORK_COLLABORATION_LIMITS.maxRecipients; the CLI does not load the shared package at runtime. */
+const MAX_COLLABORATION_RECIPIENTS = 20;
 const COLLABORATION_KEY = /^[A-Za-z0-9][A-Za-z0-9_.:-]*$/;
 const REDACTED = '[REDACTED]';
 const SENSITIVE_PREVIEW_KEY = /^(?:(?:[a-z0-9]+_)*)(?:authorization|cookie|password|passwd|passphrase|password_hash|secret|token|token_hash|credential|credentials|api_key|access_key(?:_id)?|private_key|client_secret|access_token|refresh_token|id_token|session_token)(?:_header)?(?:_value)?$/u;
@@ -153,6 +165,73 @@ function actorLabel(actor: unknown): string {
   return sanitizeTerminalLine(value.label ?? value.id ?? value.kind ?? 'unknown');
 }
 
+function participantCandidate(participant: CollaborationResponse): string {
+  return `${sanitizeTerminalLine(participant.id ?? 'unknown')} (${actorLabel(participant.actor)}, ${sanitizeTerminalLine(participant.role ?? 'unknown')})`;
+}
+
+function participantCandidates(participants: CollaborationResponse[]): string {
+  return participants.length > 0 ? participants.map(participantCandidate).join('; ') : 'none';
+}
+
+function participantMatchesRecipientRef(participant: CollaborationResponse, ref: string): boolean {
+  const actor = collaborationData(participant.actor);
+  const folded = ref.toLowerCase();
+  return [participant.id, actor.id, actor.label].some((value) => (
+    typeof value === 'string' && value.toLowerCase() === folded
+  ));
+}
+
+/**
+ * Resolve `--to` references against a work item's participant listing. A
+ * reference is a participant UUID, an actor ID (agent alias or user UUID), or
+ * an actor label, all compared without regard to case. Only active participants
+ * qualify, and each reference must name exactly one of them. Returns lowercase,
+ * unique, sorted participant IDs, so the same references give the same body.
+ */
+export function resolveCollaborationRecipients(
+  data: CollaborationResponse,
+  refs: readonly string[],
+): string[] {
+  const participants = collaborationRecords(data.participants)
+    .filter((participant) => typeof participant.id === 'string');
+  const active = participants.filter((participant) => participant.active === true);
+  const ids = new Set<string>();
+  for (const value of refs) {
+    const ref = value.trim();
+    if (!ref) throw new Error('--to must name a participant.');
+    const shown = sanitizeTerminalLine(ref);
+    const matches = active.filter((participant) => participantMatchesRecipientRef(participant, ref));
+    const [match] = matches;
+    if (match && matches.length === 1) {
+      ids.add(String(match.id).toLowerCase());
+      continue;
+    }
+    if (matches.length > 1) {
+      throw new Error(`--to "${shown}" matches ${matches.length} active participants: ${participantCandidates(matches)}. Use a participant ID.`);
+    }
+    const inactive = participants.filter((participant) => (
+      participant.active !== true && participantMatchesRecipientRef(participant, ref)
+    ));
+    if (inactive.length > 0) {
+      throw new Error(`--to "${shown}" matches only inactive participants: ${participantCandidates(inactive)}. Active participants: ${participantCandidates(active)}.`);
+    }
+    throw new Error(`--to "${shown}" matches no participant. Active participants: ${participantCandidates(active)}.`);
+  }
+  if (ids.size > MAX_COLLABORATION_RECIPIENTS) {
+    throw new Error(`--to may address at most ${MAX_COLLABORATION_RECIPIENTS} participants.`);
+  }
+  return [...ids].sort();
+}
+
+/** Labels for rendering recipients, keyed by lowercase participant ID. */
+export function collaborationParticipantLabels(data: CollaborationResponse): CollaborationParticipantLabels {
+  const labels = new Map<string, string>();
+  for (const participant of collaborationRecords(data.participants)) {
+    if (typeof participant.id === 'string') labels.set(participant.id.toLowerCase(), actorLabel(participant.actor));
+  }
+  return labels;
+}
+
 export function renderCollaborationParticipants(data: CollaborationResponse): string {
   const participants = collaborationRecords(data.participants);
   if (participants.length === 0) return 'No collaboration participants found.';
@@ -187,18 +266,42 @@ function eventReferenceSummary(event: CollaborationResponse): string {
   return references.join(', ');
 }
 
+/**
+ * `to: <label>, <label>` for an addressed event, or empty for a room-wide one.
+ * A missing `recipientParticipantIds` (an older server) means room-wide.
+ * Recipients without a known label are shown by participant ID.
+ */
+function eventRecipientSummary(
+  event: CollaborationResponse,
+  labels?: CollaborationParticipantLabels,
+): string {
+  const ids = Array.isArray(event.recipientParticipantIds)
+    ? event.recipientParticipantIds.filter((id): id is string => typeof id === 'string')
+    : [];
+  if (ids.length === 0) return '';
+  return `to: ${ids.map((id) => labels?.get(id.toLowerCase()) ?? sanitizeTerminalLine(id)).join(', ')}`;
+}
+
 /** One redacted, terminal-safe line for a ledger event. */
-export function renderCollaborationEventLine(event: CollaborationResponse): string {
+export function renderCollaborationEventLine(
+  event: CollaborationResponse,
+  labels?: CollaborationParticipantLabels,
+): string {
   const preview = eventTextPreview(event) || eventReferenceSummary(event) || '—';
+  const recipients = eventRecipientSummary(event, labels);
   return [
     `#${sanitizeTerminalLine(event.sequence ?? '?')}`,
     sanitizeTerminalLine(event.kind ?? 'unknown'),
     actorLabel(event.actor),
+    ...(recipients ? [recipients] : []),
     preview,
   ].join('  ');
 }
 
-export function renderCollaborationEvents(data: CollaborationResponse): string {
+export function renderCollaborationEvents(
+  data: CollaborationResponse,
+  options: CollaborationEventsRenderOptions = {},
+): string {
   const events = collaborationRecords(data.events);
   const serverPageLastSequence = Number.isSafeInteger(data.nextSequence) && Number(data.nextSequence) >= 0
     ? Number(data.nextSequence)
@@ -208,16 +311,30 @@ export function renderCollaborationEvents(data: CollaborationResponse): string {
     && deliveredSequences.every((sequence) => Number.isSafeInteger(sequence) && Number(sequence) >= 0)
     ? Math.max(...deliveredSequences.map(Number))
     : null;
-  const lines = events.map(renderCollaborationEventLine);
+  // With audience 'me' the watermark is the highest sequence the server examined,
+  // so acknowledging it also skips the events filtered out for the caller. It is used
+  // only when it does not trail the delivered events.
+  const forMeWatermark = options.forMe === true
+    && serverPageLastSequence !== null
+    && (deliveredSequence === null ? events.length === 0 : serverPageLastSequence >= deliveredSequence)
+    ? serverPageLastSequence
+    : null;
+  const acknowledgeSequence = forMeWatermark ?? deliveredSequence;
+  const lines = events.map((event) => renderCollaborationEventLine(event, options.labels));
   if (events.length === 0) lines.push(data.timedOut === true ? 'Wait timed out with no events.' : 'No collaboration events found.');
   if (typeof data.consumerKey === 'string') lines.push(`Consumer: ${sanitizeTerminalLine(data.consumerKey)}`);
   if (serverPageLastSequence !== null) lines.push(`Server page watermark: ${serverPageLastSequence}`);
-  if (typeof data.consumerKey === 'string' && events.length > 0 && deliveredSequence !== null) {
-    const workItemId = events[0]?.workItemId ?? '<work-item-id>';
-    lines.push('Cursor was not acknowledged. After durable processing, run:');
+  if (typeof data.consumerKey === 'string' && acknowledgeSequence !== null) {
+    const workItemId = events[0]?.workItemId ?? options.workItemId ?? '<work-item-id>';
+    lines.push(events.length > 0
+      ? 'Cursor was not acknowledged. After durable processing, run:'
+      : 'Cursor was not acknowledged. To skip the events filtered out by --for-me, run:');
     lines.push(
-      `sift work collaboration acknowledge ${sanitizeTerminalLine(workItemId)} --consumer-key ${sanitizeTerminalLine(data.consumerKey)} --last-sequence ${deliveredSequence}`,
+      `sift work collaboration acknowledge ${sanitizeTerminalLine(workItemId)} --consumer-key ${sanitizeTerminalLine(data.consumerKey)} --last-sequence ${acknowledgeSequence}`,
     );
+    if (events.length > 0 && forMeWatermark !== null && forMeWatermark !== deliveredSequence) {
+      lines.push('That sequence also covers the events filtered out by --for-me.');
+    }
   } else if (typeof data.consumerKey === 'string') {
     lines.push('No safely acknowledgeable events were delivered; cursor unchanged and no acknowledgement is needed.');
   } else {
@@ -234,9 +351,14 @@ export function renderCollaborationParticipantMutation(
   return `${verb} participant: ${sanitizeTerminalLine(participant.id ?? 'unknown')} (${sanitizeTerminalLine(participant.role ?? 'unknown')})`;
 }
 
-export function renderCollaborationEventMutation(data: CollaborationResponse): string {
+export function renderCollaborationEventMutation(
+  data: CollaborationResponse,
+  labels?: CollaborationParticipantLabels,
+): string {
   const event = collaborationData(data.event);
-  return `Sent event: #${sanitizeTerminalLine(event.sequence ?? '?')} ${sanitizeTerminalLine(event.kind ?? 'unknown')} ${eventTextPreview(event)}`.trim();
+  const sent = `Sent event: #${sanitizeTerminalLine(event.sequence ?? '?')} ${sanitizeTerminalLine(event.kind ?? 'unknown')} ${eventTextPreview(event)}`.trim();
+  const recipients = eventRecipientSummary(event, labels);
+  return recipients ? `${sent}\n${recipients}` : sent;
 }
 
 export function renderCollaborationCursor(data: CollaborationResponse): string {
