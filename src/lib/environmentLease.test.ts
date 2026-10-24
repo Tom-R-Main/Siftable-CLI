@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile} from 'node:fs/promises';
+import {lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {afterEach, describe, expect, it, vi} from 'vitest';
@@ -9,6 +9,7 @@ import {
 } from './environmentBundle.js';
 import {
   cleanupEnvironmentLeaseArtifact,
+  environmentLeaseAnchorPath,
   environmentLeaseArtifactPath,
   materializeEnvironmentLeaseArtifact,
   prepareEnvironmentLeaseRuntime,
@@ -155,10 +156,12 @@ describe('environment lease runtime', () => {
       cleanupState: 'pending',
       artifactPathClass: 'platform_runtime',
     });
-    const info = await lstat(result.artifactPath, {bigint: true});
+    const info = await lstat(result.artifactPath);
     expect(info.isFile()).toBe(true);
-    expect(Number(info.mode & 0o777n)).toBe(0o400);
-    expect(result.record.artifactBirthtimeNs).toBe(info.birthtimeNs.toString());
+    expect(info.mode & 0o777).toBe(0o400);
+    const anchorPath = environmentLeaseAnchorPath(runtime.root, leaseId);
+    expect(result.record.artifactAnchorPath).toBe(anchorPath);
+    expect(await lstat(anchorPath)).toMatchObject({dev: info.dev, ino: info.ino});
     const metadata = await readFile(path.join(runtime.root, 'records', `${leaseId}.json`), 'utf8');
     expect(metadata).not.toContain('synthetic-token');
     expect(metadata).not.toContain('synthetic-app-id');
@@ -214,6 +217,7 @@ describe('environment lease runtime', () => {
     expect(left.cleanupState).toBe('confirmed');
     expect(right.cleanupState).toBe('confirmed');
     await expect(lstat(result.artifactPath)).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(lstat(environmentLeaseAnchorPath(runtime.root, leaseId))).rejects.toMatchObject({code: 'ENOENT'});
   });
 
   it('does not recreate plaintext when cleanup wins during preparation', async () => {
@@ -247,14 +251,14 @@ describe('environment lease runtime', () => {
     })).rejects.toThrow('prepare-to-ready race');
     await expect(lstat(environmentLeaseArtifactPath(runtime.root, leaseId)))
       .rejects.toMatchObject({code: 'ENOENT'});
+    await expect(lstat(environmentLeaseAnchorPath(runtime.root, leaseId)))
+      .rejects.toMatchObject({code: 'ENOENT'});
     expect(await readEnvironmentLeaseRecord(runtime.root, leaseId))
       .toMatchObject({cleanupState: 'confirmed', cleanupReason: 'revoke'});
   });
 
   it('reports changed artifact identity as unknowable instead of deleting it', async () => {
     const {runtime, leaseId, result} = await fixture();
-    // ext4 stamps birth time at jiffy granularity; wait past it so a reused inode still gets a new birth time.
-    await new Promise(resolve => setTimeout(resolve, 25));
     await rm(result.artifactPath);
     await writeFile(result.artifactPath, 'replacement', {mode: 0o600});
     const cleaned = await cleanupEnvironmentLeaseArtifact({
@@ -266,48 +270,102 @@ describe('environment lease runtime', () => {
     expect(await readFile(result.artifactPath, 'utf8')).toBe('replacement');
   });
 
-  it('refuses to delete a replacement that reused the recorded device and inode', async () => {
+  it('refuses to delete a replacement whose device, inode, and birth time all match the record', async () => {
     const {runtime, leaseId, result} = await fixture();
     await rm(result.artifactPath);
     await writeFile(result.artifactPath, 'replacement', {mode: 0o600});
     const replacement = await lstat(result.artifactPath, {bigint: true});
-    expect(replacement.birthtimeNs).not.toBe(0n);
+    // Model a recycled inode in the same birth-time tick: every recorded identity field names the replacement.
     await writeFile(path.join(runtime.root, 'records', `${leaseId}.json`), JSON.stringify({
       ...result.record,
       artifactDevice: Number(replacement.dev),
       artifactInode: Number(replacement.ino),
-      artifactBirthtimeNs: (replacement.birthtimeNs - 1n).toString(),
+      artifactBirthtimeNs: replacement.birthtimeNs.toString(),
     }));
     const cleaned = await cleanupEnvironmentLeaseArtifact({
       runtimeRoot: runtime.root,
       leaseId,
       reason: 'startup_sweep',
     });
-    expect(cleaned).toMatchObject({cleanupState: 'unknowable', cleanupErrorCode: 'artifact_identity_changed'});
+    expect(cleaned.cleanupState).toBe('unknowable');
     expect(await readFile(result.artifactPath, 'utf8')).toBe('replacement');
   });
 
-  it('does not delete an artifact whose record lacks a usable birth time', async () => {
-    for (const artifactBirthtimeNs of [undefined, '0']) {
-      const {runtime, leaseId, result} = await fixture();
-      const recordFile = path.join(runtime.root, 'records', `${leaseId}.json`);
-      await writeFile(recordFile, JSON.stringify({...result.record, artifactBirthtimeNs}));
-      expect(await readEnvironmentLeaseRecord(runtime.root, leaseId)).toMatchObject({leaseId, cleanupState: 'pending'});
-      const cleaned = await cleanupEnvironmentLeaseArtifact({
-        runtimeRoot: runtime.root,
-        leaseId,
-        reason: 'startup_sweep',
-      });
-      expect(cleaned).toMatchObject({cleanupState: 'unknowable', cleanupErrorCode: 'artifact_identity_unverifiable'});
-      expect(await readFile(result.artifactPath, 'utf8')).toContain('GITHUB_TOKEN=');
-    }
+  it('does not delete an artifact whose record predates the anchor', async () => {
+    const {runtime, leaseId, result} = await fixture();
+    const legacyRecord: Partial<typeof result.record> = {...result.record};
+    delete legacyRecord.artifactAnchorPath;
+    await writeFile(path.join(runtime.root, 'records', `${leaseId}.json`), JSON.stringify(legacyRecord));
+    expect(await readEnvironmentLeaseRecord(runtime.root, leaseId)).toMatchObject({leaseId, cleanupState: 'pending'});
+    const cleaned = await cleanupEnvironmentLeaseArtifact({
+      runtimeRoot: runtime.root,
+      leaseId,
+      reason: 'startup_sweep',
+    });
+    expect(cleaned).toMatchObject({cleanupState: 'unknowable', cleanupErrorCode: 'artifact_identity_unverifiable'});
+    expect((await lstat(result.artifactPath)).isFile()).toBe(true);
+  });
 
-    const malformed = await fixture();
-    await writeFile(path.join(malformed.runtime.root, 'records', `${malformed.leaseId}.json`), JSON.stringify({
-      ...malformed.result.record,
-      artifactBirthtimeNs: 123,
-    }));
-    expect(await readEnvironmentLeaseRecord(malformed.runtime.root, malformed.leaseId)).toBeUndefined();
+  it('recovers from a crash between removals and refuses to judge a lost anchor', async () => {
+    const removed = await fixture();
+    await rm(removed.result.artifactPath);
+    expect(await cleanupEnvironmentLeaseArtifact({
+      runtimeRoot: removed.runtime.root,
+      leaseId: removed.leaseId,
+      reason: 'crash_recovery',
+    })).toMatchObject({cleanupState: 'confirmed'});
+    await expect(lstat(environmentLeaseAnchorPath(removed.runtime.root, removed.leaseId)))
+      .rejects.toMatchObject({code: 'ENOENT'});
+
+    const quarantined = await fixture();
+    const leftover = path.join(path.dirname(quarantined.result.artifactPath), `.cleanup-${quarantined.leaseId}-${randomUUID()}`);
+    await rename(quarantined.result.artifactPath, leftover);
+    expect(await cleanupEnvironmentLeaseArtifact({
+      runtimeRoot: quarantined.runtime.root,
+      leaseId: quarantined.leaseId,
+      reason: 'crash_recovery',
+    })).toMatchObject({
+      cleanupState: 'unknowable',
+      cleanupErrorCode: 'artifact_missing_before_identity_preserving_delete',
+    });
+    expect((await lstat(environmentLeaseAnchorPath(quarantined.runtime.root, quarantined.leaseId))).isFile()).toBe(true);
+
+    const unanchored = await fixture();
+    await rm(environmentLeaseAnchorPath(unanchored.runtime.root, unanchored.leaseId));
+    expect(await cleanupEnvironmentLeaseArtifact({
+      runtimeRoot: unanchored.runtime.root,
+      leaseId: unanchored.leaseId,
+      reason: 'crash_recovery',
+    })).toMatchObject({cleanupState: 'unknowable', cleanupErrorCode: 'artifact_anchor_missing'});
+    expect((await lstat(unanchored.result.artifactPath)).isFile()).toBe(true);
+  });
+
+  it('fails preparation before writing values when the anchor cannot be linked', async () => {
+    const checkoutRoot = await temporaryRoot('sift-lease-anchor-checkout-');
+    const runtime = {root: await temporaryRoot('sift-lease-anchor-runtime-'), pathClass: 'platform_runtime' as const};
+    await prepareEnvironmentLeaseRuntime({workspaceRoot: checkoutRoot, runtime});
+    const leaseId = randomUUID();
+    const blocker = environmentLeaseAnchorPath(runtime.root, leaseId);
+    await mkdir(blocker);
+    const onPrepared = vi.fn(async () => undefined);
+    await expect(materializeEnvironmentLeaseArtifact({
+      contract: contract(checkoutRoot),
+      values: [Buffer.from('fixture-a'), Buffer.from('fixture-b')],
+      leaseId,
+      consumer: 'consumer',
+      holder: 'holder',
+      purpose: 'refuse undisposable artifacts',
+      authorizationId: randomUUID(),
+      ...timestamps(),
+      runnerFingerprint: RUNNER_DIGEST,
+      materializerDigest: MATERIALIZER_DIGEST,
+      runtime,
+      onPrepared,
+    })).rejects.toMatchObject({code: 'EEXIST'});
+    expect(onPrepared).not.toHaveBeenCalled();
+    await expect(lstat(environmentLeaseArtifactPath(runtime.root, leaseId))).rejects.toMatchObject({code: 'ENOENT'});
+    expect(await readEnvironmentLeaseRecord(runtime.root, leaseId)).toBeUndefined();
+    expect((await lstat(blocker)).isDirectory()).toBe(true);
   });
 
   it('sweeps expired artifacts and stale consumer processes after restart', async () => {
