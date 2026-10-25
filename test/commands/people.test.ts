@@ -147,18 +147,6 @@ describe('people commands', () => {
     expect(JSON.parse(result.stdout).wouldDelete.id).toBe('owner-rel-2');
   });
 
-  it('shows a person-centered graph', async () => {
-    mockFetch()
-      .on('GET', '/api/v1/people-graph/focus/person-001')
-      .query((url) => url.searchParams.get('depth') === '2')
-      .reply(200, {focusPersonId: 'person-001', nodes: [{id: 'person-001', name: 'Test Person'}], edges: []})
-      .install();
-
-    const result = await runCommand(['people', 'graph', 'person-001', '--depth', '2', '--json', '--token', 'exf_pat_test']);
-    const parsed = JSON.parse(result.stdout);
-    expect(parsed.focusPersonId).toBe('person-001');
-  });
-
   it('lists timeline facts for a person', async () => {
     mockFetch()
       .on('GET', '/api/v1/timeline')

@@ -2168,30 +2168,6 @@ Get a person profile with traits and relationships
 
 - `id` *(required)* — Person ID
 
-#### `sift people graph`
-Show a person-centered relationship graph
-
-**Arguments**
-
-- `id` *(required)* — Person ID
-
-**Flags**
-
-- `--depth <value>` *(default: 2)* — Relationship graph depth
-- `--include-inactive` — Include inactive relationship edges
-
-#### `sift people kinship`
-Explain kinship or relationship distance between two people
-
-**Arguments**
-
-- `egoPersonId` *(required)* — Ego/source person ID
-- `targetPersonId` *(required)* — Target person ID
-
-**Flags**
-
-- `--max-depth <value>` *(default: 6)* — Maximum relationship depth
-
 #### `sift people list`
 List contacts
 
