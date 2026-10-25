@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile} from 'node:fs/promises';
+import {link, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {afterEach, describe, expect, it, vi} from 'vitest';
@@ -9,6 +9,7 @@ import {
 } from './environmentBundle.js';
 import {
   cleanupEnvironmentLeaseArtifact,
+  environmentLeaseAnchorPath,
   environmentLeaseArtifactPath,
   materializeEnvironmentLeaseArtifact,
   prepareEnvironmentLeaseRuntime,
@@ -81,6 +82,10 @@ async function fixture(input: {
     runtime,
   });
   return {checkoutRoot, runtime, leaseId, result};
+}
+
+function quarantinePath(artifactPath: string, leaseId: string): string {
+  return path.join(path.dirname(artifactPath), `.cleanup-${leaseId}-${randomUUID()}`);
 }
 
 afterEach(async () => {
@@ -158,6 +163,9 @@ describe('environment lease runtime', () => {
     const info = await lstat(result.artifactPath);
     expect(info.isFile()).toBe(true);
     expect(info.mode & 0o777).toBe(0o400);
+    const anchorPath = environmentLeaseAnchorPath(runtime.root, leaseId);
+    expect(result.record.artifactAnchorPath).toBe(anchorPath);
+    expect(await lstat(anchorPath)).toMatchObject({dev: info.dev, ino: info.ino});
     const metadata = await readFile(path.join(runtime.root, 'records', `${leaseId}.json`), 'utf8');
     expect(metadata).not.toContain('synthetic-token');
     expect(metadata).not.toContain('synthetic-app-id');
@@ -213,6 +221,7 @@ describe('environment lease runtime', () => {
     expect(left.cleanupState).toBe('confirmed');
     expect(right.cleanupState).toBe('confirmed');
     await expect(lstat(result.artifactPath)).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(lstat(environmentLeaseAnchorPath(runtime.root, leaseId))).rejects.toMatchObject({code: 'ENOENT'});
   });
 
   it('does not recreate plaintext when cleanup wins during preparation', async () => {
@@ -246,6 +255,8 @@ describe('environment lease runtime', () => {
     })).rejects.toThrow('prepare-to-ready race');
     await expect(lstat(environmentLeaseArtifactPath(runtime.root, leaseId)))
       .rejects.toMatchObject({code: 'ENOENT'});
+    await expect(lstat(environmentLeaseAnchorPath(runtime.root, leaseId)))
+      .rejects.toMatchObject({code: 'ENOENT'});
     expect(await readEnvironmentLeaseRecord(runtime.root, leaseId))
       .toMatchObject({cleanupState: 'confirmed', cleanupReason: 'revoke'});
   });
@@ -261,6 +272,164 @@ describe('environment lease runtime', () => {
     });
     expect(cleaned).toMatchObject({cleanupState: 'unknowable', cleanupErrorCode: 'artifact_identity_changed'});
     expect(await readFile(result.artifactPath, 'utf8')).toBe('replacement');
+  });
+
+  it('refuses to delete a replacement whose device, inode, and birth time all match the record', async () => {
+    const {runtime, leaseId, result} = await fixture();
+    await rm(result.artifactPath);
+    await writeFile(result.artifactPath, 'replacement', {mode: 0o600});
+    const replacement = await lstat(result.artifactPath, {bigint: true});
+    // Model a recycled inode in the same birth-time tick: every recorded identity field names the replacement.
+    await writeFile(path.join(runtime.root, 'records', `${leaseId}.json`), JSON.stringify({
+      ...result.record,
+      artifactDevice: Number(replacement.dev),
+      artifactInode: Number(replacement.ino),
+      artifactBirthtimeNs: replacement.birthtimeNs.toString(),
+    }));
+    const cleaned = await cleanupEnvironmentLeaseArtifact({
+      runtimeRoot: runtime.root,
+      leaseId,
+      reason: 'startup_sweep',
+    });
+    expect(cleaned.cleanupState).toBe('unknowable');
+    expect(await readFile(result.artifactPath, 'utf8')).toBe('replacement');
+  });
+
+  it('does not delete an artifact whose record predates the anchor', async () => {
+    const {runtime, leaseId, result} = await fixture();
+    const legacyRecord: Partial<typeof result.record> = {...result.record};
+    delete legacyRecord.artifactAnchorPath;
+    await writeFile(path.join(runtime.root, 'records', `${leaseId}.json`), JSON.stringify(legacyRecord));
+    expect(await readEnvironmentLeaseRecord(runtime.root, leaseId)).toMatchObject({leaseId, cleanupState: 'pending'});
+    const cleaned = await cleanupEnvironmentLeaseArtifact({
+      runtimeRoot: runtime.root,
+      leaseId,
+      reason: 'startup_sweep',
+    });
+    expect(cleaned).toMatchObject({cleanupState: 'unknowable', cleanupErrorCode: 'artifact_identity_unverifiable'});
+    expect((await lstat(result.artifactPath)).isFile()).toBe(true);
+  });
+
+  it('sweeps an interrupted quarantine and its anchor to confirmed', async () => {
+    const {runtime, leaseId, result} = await fixture();
+    const leftover = quarantinePath(result.artifactPath, leaseId);
+    await rename(result.artifactPath, leftover);
+    const swept = await sweepEnvironmentLeases({
+      runtimeRoot: runtime.root,
+      now: Date.parse(result.record.expiresAt) + 1,
+    });
+    expect(swept[0]).toMatchObject({cleanupState: 'confirmed', cleanupErrorCode: null});
+    await expect(lstat(leftover)).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(lstat(environmentLeaseAnchorPath(runtime.root, leaseId))).rejects.toMatchObject({code: 'ENOENT'});
+  });
+
+  it('converges to confirmed after an interruption during quarantine reconciliation', async () => {
+    const anchorOnly = await fixture();
+    await rm(anchorOnly.result.artifactPath);
+    expect(await cleanupEnvironmentLeaseArtifact({
+      runtimeRoot: anchorOnly.runtime.root,
+      leaseId: anchorOnly.leaseId,
+      reason: 'crash_recovery',
+    })).toMatchObject({cleanupState: 'confirmed'});
+    await expect(lstat(environmentLeaseAnchorPath(anchorOnly.runtime.root, anchorOnly.leaseId)))
+      .rejects.toMatchObject({code: 'ENOENT'});
+
+    const partial = await fixture();
+    const removedFirst = quarantinePath(partial.result.artifactPath, partial.leaseId);
+    const remaining = quarantinePath(partial.result.artifactPath, partial.leaseId);
+    await link(partial.result.artifactPath, removedFirst);
+    await rename(partial.result.artifactPath, remaining);
+    await rm(removedFirst);
+    expect(await cleanupEnvironmentLeaseArtifact({
+      runtimeRoot: partial.runtime.root,
+      leaseId: partial.leaseId,
+      reason: 'crash_recovery',
+    })).toMatchObject({cleanupState: 'confirmed'});
+    await expect(lstat(remaining)).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(lstat(environmentLeaseAnchorPath(partial.runtime.root, partial.leaseId)))
+      .rejects.toMatchObject({code: 'ENOENT'});
+  });
+
+  it('removes an extra owned quarantine alongside a present artifact', async () => {
+    const {runtime, leaseId, result} = await fixture();
+    const extra = quarantinePath(result.artifactPath, leaseId);
+    await link(result.artifactPath, extra);
+    expect(await cleanupEnvironmentLeaseArtifact({
+      runtimeRoot: runtime.root,
+      leaseId,
+      reason: 'revoke',
+    })).toMatchObject({cleanupState: 'confirmed'});
+    await expect(lstat(result.artifactPath)).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(lstat(extra)).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(lstat(environmentLeaseAnchorPath(runtime.root, leaseId))).rejects.toMatchObject({code: 'ENOENT'});
+  });
+
+  it('preserves foreign entries under quarantine names and keeps the anchor while unexplained links remain', async () => {
+    const unrelated = await fixture();
+    const foreign = quarantinePath(unrelated.result.artifactPath, unrelated.leaseId);
+    await writeFile(foreign, 'foreign', {mode: 0o600});
+    const victim = path.join(await temporaryRoot('sift-lease-symlink-victim-'), 'victim');
+    await writeFile(victim, 'victim', {mode: 0o600});
+    const pointer = quarantinePath(unrelated.result.artifactPath, unrelated.leaseId);
+    await symlink(victim, pointer);
+    expect(await cleanupEnvironmentLeaseArtifact({
+      runtimeRoot: unrelated.runtime.root,
+      leaseId: unrelated.leaseId,
+      reason: 'revoke',
+    })).toMatchObject({cleanupState: 'confirmed'});
+    expect(await readFile(foreign, 'utf8')).toBe('foreign');
+    expect((await lstat(pointer)).isSymbolicLink()).toBe(true);
+    expect(await readFile(victim, 'utf8')).toBe('victim');
+
+    const linked = await fixture();
+    const unexplained = path.join(path.dirname(linked.result.artifactPath), `.cleanup-${linked.leaseId}-not-a-uuid`);
+    await link(linked.result.artifactPath, unexplained);
+    expect(await cleanupEnvironmentLeaseArtifact({
+      runtimeRoot: linked.runtime.root,
+      leaseId: linked.leaseId,
+      reason: 'revoke',
+    })).toMatchObject({cleanupState: 'unknowable', cleanupErrorCode: 'artifact_links_remain'});
+    expect((await lstat(unexplained)).isFile()).toBe(true);
+    expect((await lstat(environmentLeaseAnchorPath(linked.runtime.root, linked.leaseId))).isFile()).toBe(true);
+  });
+
+  it('keeps an artifact whose anchor is missing', async () => {
+    const {runtime, leaseId, result} = await fixture();
+    await rm(environmentLeaseAnchorPath(runtime.root, leaseId));
+    expect(await cleanupEnvironmentLeaseArtifact({
+      runtimeRoot: runtime.root,
+      leaseId,
+      reason: 'crash_recovery',
+    })).toMatchObject({cleanupState: 'unknowable', cleanupErrorCode: 'artifact_anchor_missing'});
+    expect((await lstat(result.artifactPath)).isFile()).toBe(true);
+  });
+
+  it('fails preparation before writing values when the anchor cannot be linked', async () => {
+    const checkoutRoot = await temporaryRoot('sift-lease-anchor-checkout-');
+    const runtime = {root: await temporaryRoot('sift-lease-anchor-runtime-'), pathClass: 'platform_runtime' as const};
+    await prepareEnvironmentLeaseRuntime({workspaceRoot: checkoutRoot, runtime});
+    const leaseId = randomUUID();
+    const blocker = environmentLeaseAnchorPath(runtime.root, leaseId);
+    await mkdir(blocker);
+    const onPrepared = vi.fn(async () => undefined);
+    await expect(materializeEnvironmentLeaseArtifact({
+      contract: contract(checkoutRoot),
+      values: [Buffer.from('fixture-a'), Buffer.from('fixture-b')],
+      leaseId,
+      consumer: 'consumer',
+      holder: 'holder',
+      purpose: 'refuse undisposable artifacts',
+      authorizationId: randomUUID(),
+      ...timestamps(),
+      runnerFingerprint: RUNNER_DIGEST,
+      materializerDigest: MATERIALIZER_DIGEST,
+      runtime,
+      onPrepared,
+    })).rejects.toMatchObject({code: 'EEXIST'});
+    expect(onPrepared).not.toHaveBeenCalled();
+    await expect(lstat(environmentLeaseArtifactPath(runtime.root, leaseId))).rejects.toMatchObject({code: 'ENOENT'});
+    expect(await readEnvironmentLeaseRecord(runtime.root, leaseId)).toBeUndefined();
+    expect((await lstat(blocker)).isDirectory()).toBe(true);
   });
 
   it('sweeps expired artifacts and stale consumer processes after restart', async () => {

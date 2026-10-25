@@ -1,5 +1,5 @@
 import {createHash, randomUUID} from 'node:crypto';
-import {accessSync, constants as fsConstants, lstatSync, realpathSync} from 'node:fs';
+import {accessSync, constants as fsConstants, lstatSync, realpathSync, type BigIntStats} from 'node:fs';
 import {
   chmod,
   link,
@@ -7,6 +7,7 @@ import {
   mkdir,
   open,
   readFile,
+  readdir,
   realpath,
   rename,
   rm,
@@ -62,6 +63,8 @@ export interface EnvironmentLeaseRecord {
   artifactPathClass: EnvironmentLeaseArtifactPathClass;
   artifactDevice: number;
   artifactInode: number;
+  // Records written before the anchor existed omit this; cleanup never deletes their artifact.
+  artifactAnchorPath?: string;
   artifactMode: number;
   artifactState: 'preparing' | 'ready';
   managerPid: number;
@@ -132,9 +135,10 @@ function assertIsoTimestamp(value: string, label: string): number {
   return timestamp;
 }
 
-function leaseDirectories(root: string): {artifacts: string; records: string} {
+function leaseDirectories(root: string): {artifacts: string; anchors: string; records: string} {
   return {
     artifacts: path.join(root, 'artifacts'),
+    anchors: path.join(root, 'anchors'),
     records: path.join(root, 'records'),
   };
 }
@@ -142,6 +146,11 @@ function leaseDirectories(root: string): {artifacts: string; records: string} {
 export function environmentLeaseArtifactPath(runtimeRoot: string, leaseId: string): string {
   if (!UUID_PATTERN.test(leaseId)) throw new Error('Lease ID is invalid');
   return path.join(leaseDirectories(runtimeRoot).artifacts, `${leaseId}.env`);
+}
+
+export function environmentLeaseAnchorPath(runtimeRoot: string, leaseId: string): string {
+  if (!UUID_PATTERN.test(leaseId)) throw new Error('Lease ID is invalid');
+  return path.join(leaseDirectories(runtimeRoot).anchors, `${leaseId}.anchor`);
 }
 
 async function assertNoSymlinkComponents(targetPath: string): Promise<void> {
@@ -238,9 +247,10 @@ export async function prepareEnvironmentLeaseRuntime(input: {
   await assertOutsideGitWorktree(runtime.root);
   const directories = leaseDirectories(runtime.root);
   await mkdir(directories.artifacts, {recursive: true, mode: 0o700});
+  await mkdir(directories.anchors, {recursive: true, mode: 0o700});
   await mkdir(directories.records, {recursive: true, mode: 0o700});
   await assertNoSymlinkComponents(runtime.root);
-  for (const directory of [runtime.root, directories.artifacts, directories.records]) {
+  for (const directory of [runtime.root, directories.artifacts, directories.anchors, directories.records]) {
     await chmod(directory, 0o700);
     const info = await lstat(directory);
     if (!info.isDirectory() || info.isSymbolicLink() || !isOwnedByCurrentUser(info)) {
@@ -324,6 +334,8 @@ function parseLeaseRecord(value: unknown): EnvironmentLeaseRecord | undefined {
     || typeof item.artifactPath !== 'string' || !path.isAbsolute(item.artifactPath)
     || !pathClasses.includes(item.artifactPathClass as EnvironmentLeaseArtifactPathClass)
     || !Number.isFinite(item.artifactDevice) || !Number.isFinite(item.artifactInode)
+    || (item.artifactAnchorPath !== undefined
+      && (typeof item.artifactAnchorPath !== 'string' || !path.isAbsolute(item.artifactAnchorPath)))
     || !Number.isFinite(item.artifactMode)
     || !['preparing', 'ready'].includes(item.artifactState ?? '')
     || !Number.isSafeInteger(item.managerPid) || Number(item.managerPid) <= 0
@@ -402,11 +414,13 @@ export async function materializeEnvironmentLeaseArtifact(input: {
     runtime: input.runtime,
   });
   const artifactPath = environmentLeaseArtifactPath(runtime.root, input.leaseId);
+  const anchorPath = environmentLeaseAnchorPath(runtime.root, input.leaseId);
   if (isInside(input.contract.checkoutRoot, artifactPath)) {
     throw new Error('Lease artifact must be outside every Git worktree');
   }
   let rendered: Buffer | undefined;
   let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let anchorCreated = false;
   let recordWritten = false;
   try {
     rendered = renderEnvironmentLease(input.contract, input.values);
@@ -418,7 +432,15 @@ export async function materializeEnvironmentLeaseArtifact(input: {
       || (info.mode & 0o777) !== requestedMode) {
       throw new Error('Lease artifact type, ownership, or mode is unsafe');
     }
+    // The anchor keeps the inode allocated, so no later file at artifactPath can reuse its dev and ino.
+    // Without a hard link there is no safe disposal, so this fails before any value is written.
+    await link(artifactPath, anchorPath);
+    anchorCreated = true;
+    if (!sameRegularFile(await lstat(anchorPath, {bigint: true}), await handle.stat({bigint: true}))) {
+      throw new Error('Lease artifact anchor does not match the artifact');
+    }
     await syncDirectory(path.dirname(artifactPath));
+    await syncDirectory(path.dirname(anchorPath));
     let record: EnvironmentLeaseRecord = {
       schemaVersion: 1,
       leaseId: input.leaseId,
@@ -437,6 +459,7 @@ export async function materializeEnvironmentLeaseArtifact(input: {
       artifactPathClass: runtime.pathClass,
       artifactDevice: info.dev,
       artifactInode: info.ino,
+      artifactAnchorPath: anchorPath,
       artifactMode: info.mode & 0o777,
       artifactState: 'preparing',
       managerPid: process.pid,
@@ -461,11 +484,11 @@ export async function materializeEnvironmentLeaseArtifact(input: {
     const releaseReadyLock = await acquireLeaseCleanupLock(runtime.root, input.leaseId);
     try {
       const current = await readEnvironmentLeaseRecord(runtime.root, input.leaseId);
-      const currentArtifact = await lstat(artifactPath).catch(() => null);
+      const currentArtifact = await lstat(artifactPath, {bigint: true}).catch(() => null);
+      const currentAnchor = await lstat(anchorPath, {bigint: true}).catch(() => null);
       if (!current || current.cleanupState !== 'pending'
-        || !currentArtifact || !currentArtifact.isFile() || currentArtifact.isSymbolicLink()
-        || currentArtifact.dev !== record.artifactDevice
-        || currentArtifact.ino !== record.artifactInode) {
+        || !currentArtifact || !currentAnchor || !anchorMatchesRecord(currentAnchor, record)
+        || !sameRegularFile(currentArtifact, currentAnchor)) {
         throw new Error('Lease cleanup won the prepare-to-ready race');
       }
       record = {...current, artifactState: 'ready'};
@@ -484,12 +507,45 @@ export async function materializeEnvironmentLeaseArtifact(input: {
       }).catch(() => undefined);
     } else {
       await rm(artifactPath, {force: true}).catch(() => undefined);
+      if (anchorCreated) await rm(anchorPath, {force: true}).catch(() => undefined);
     }
     throw error;
   } finally {
     rendered?.fill(0);
     for (const value of input.values) value.fill(0);
   }
+}
+
+function sameRegularFile(left: BigIntStats, right: BigIntStats): boolean {
+  return left.isFile() && !left.isSymbolicLink() && right.isFile() && !right.isSymbolicLink()
+    && left.dev === right.dev && left.ino === right.ino;
+}
+
+function anchorMatchesRecord(anchor: BigIntStats, record: EnvironmentLeaseRecord): boolean {
+  return anchor.isFile() && !anchor.isSymbolicLink()
+    && Number(anchor.dev) === record.artifactDevice && Number(anchor.ino) === record.artifactInode;
+}
+
+// Only exact `.cleanup-<lease>-<attempt UUID>` names that are the anchored regular file are ours;
+// foreign files and symlinks under those names are left untouched.
+async function removeOwnedQuarantines(
+  artifactsDirectory: string,
+  leaseId: string,
+  anchor: BigIntStats,
+): Promise<void> {
+  const directory = await lstat(artifactsDirectory);
+  if (!directory.isDirectory() || directory.isSymbolicLink()) return;
+  const prefix = `.cleanup-${leaseId}-`;
+  let removed = false;
+  for (const name of await readdir(artifactsDirectory)) {
+    if (!name.startsWith(prefix) || !UUID_PATTERN.test(name.slice(prefix.length))) continue;
+    const candidate = path.join(artifactsDirectory, name);
+    const info = await lstat(candidate, {bigint: true}).catch(() => null);
+    if (!info || !sameRegularFile(info, anchor)) continue;
+    await rm(candidate);
+    removed = true;
+  }
+  if (removed) await syncDirectory(artifactsDirectory);
 }
 
 function processIsAlive(pid: number): boolean {
@@ -510,82 +566,82 @@ async function cleanupEnvironmentLeaseArtifactUnlocked(input: {
   const record = await readEnvironmentLeaseRecord(input.runtimeRoot, input.leaseId);
   if (!record) throw new Error('Environment lease record is missing or invalid');
   if (record.cleanupState === 'confirmed') return record;
-  const expectedPath = environmentLeaseArtifactPath(input.runtimeRoot, input.leaseId);
-  if (record.artifactPath !== expectedPath || !isInside(leaseDirectories(input.runtimeRoot).artifacts, record.artifactPath)) {
-    const unknowable: EnvironmentLeaseRecord = {
-      ...record,
-      cleanupState: 'unknowable',
-      cleanupReason: input.reason,
-      cleanupAttemptId: input.attemptId ?? randomUUID(),
-      cleanupAttemptedAt: new Date().toISOString(),
-      cleanupErrorCode: 'artifact_path_mismatch',
-    };
-    await writeLeaseRecord(input.runtimeRoot, unknowable);
-    return unknowable;
-  }
   const attemptId = input.attemptId ?? randomUUID();
   const attemptedAt = new Date().toISOString();
+  const settle = async (update: Partial<EnvironmentLeaseRecord>): Promise<EnvironmentLeaseRecord> => {
+    const settled: EnvironmentLeaseRecord = {
+      ...record,
+      cleanupReason: input.reason,
+      cleanupAttemptId: attemptId,
+      cleanupAttemptedAt: attemptedAt,
+      ...update,
+    };
+    await writeLeaseRecord(input.runtimeRoot, settled);
+    return settled;
+  };
+  const unknowable = (cleanupErrorCode: string) => settle({cleanupState: 'unknowable', cleanupErrorCode});
+  const expectedPath = environmentLeaseArtifactPath(input.runtimeRoot, input.leaseId);
+  const anchorPath = environmentLeaseAnchorPath(input.runtimeRoot, input.leaseId);
+  if (record.artifactPath !== expectedPath || !isInside(leaseDirectories(input.runtimeRoot).artifacts, record.artifactPath)
+    || (record.artifactAnchorPath !== undefined && record.artifactAnchorPath !== anchorPath)) {
+    return unknowable('artifact_path_mismatch');
+  }
+  // Without an anchor, dev and ino cannot rule out a reused inode, so the artifact stays in place.
+  if (record.artifactAnchorPath === undefined) return unknowable('artifact_identity_unverifiable');
   const quarantinePath = path.join(
     path.dirname(record.artifactPath),
     `.cleanup-${record.leaseId}-${attemptId}`,
   );
   try {
-    await rename(record.artifactPath, quarantinePath);
-    const info = await lstat(quarantinePath);
-    if (info.isSymbolicLink() || !info.isFile()
-      || info.dev !== record.artifactDevice || info.ino !== record.artifactInode) {
+    const anchor = await lstat(anchorPath, {bigint: true}).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!anchor) {
+      const artifactPresent = await lstat(record.artifactPath).then(() => true, () => false);
+      return await unknowable(artifactPresent
+        ? 'artifact_anchor_missing'
+        : 'artifact_missing_before_identity_preserving_delete');
+    }
+    if (!anchorMatchesRecord(anchor, record)) return await unknowable('artifact_anchor_invalid');
+    let quarantined: BigIntStats | null = null;
+    try {
+      await rename(record.artifactPath, quarantinePath);
+      quarantined = await lstat(quarantinePath, {bigint: true});
+    } catch (error) {
+      // A missing artifact means an earlier attempt already moved or removed it.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    if (quarantined && !sameRegularFile(quarantined, anchor)) {
       await link(quarantinePath, record.artifactPath)
         .then(() => rm(quarantinePath))
         .catch(() => undefined);
-      const unknowable: EnvironmentLeaseRecord = {
-        ...record,
-        cleanupState: 'unknowable',
-        cleanupReason: input.reason,
-        cleanupAttemptId: attemptId,
-        cleanupAttemptedAt: attemptedAt,
-        cleanupErrorCode: 'artifact_identity_changed',
-      };
-      await writeLeaseRecord(input.runtimeRoot, unknowable);
-      return unknowable;
+      return await unknowable('artifact_identity_changed');
     }
-    await rm(quarantinePath);
-    await syncDirectory(path.dirname(record.artifactPath));
+    // This attempt's quarantine is removed together with any an interrupted attempt left behind.
+    await removeOwnedQuarantines(path.dirname(record.artifactPath), record.leaseId, anchor);
+    // The anchor goes last, and only while it is the inode's sole remaining link.
+    const finalAnchor = await lstat(anchorPath, {bigint: true});
+    if (!anchorMatchesRecord(finalAnchor, record) || !sameRegularFile(finalAnchor, anchor)) {
+      return await unknowable('artifact_anchor_invalid');
+    }
+    if (finalAnchor.nlink !== 1n) return await unknowable('artifact_links_remain');
+    await rm(anchorPath);
+    await syncDirectory(path.dirname(anchorPath));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      const unknowable: EnvironmentLeaseRecord = {
-        ...record,
-        cleanupState: 'unknowable',
-        cleanupReason: input.reason,
-        cleanupAttemptId: attemptId,
-        cleanupAttemptedAt: attemptedAt,
-        cleanupErrorCode: 'artifact_missing_before_identity_preserving_delete',
-      };
-      await writeLeaseRecord(input.runtimeRoot, unknowable);
-      return unknowable;
-    } else {
-      const failed: EnvironmentLeaseRecord = {
-        ...record,
-        cleanupState: 'failed',
-        cleanupReason: input.reason,
-        cleanupAttemptId: attemptId,
-        cleanupAttemptedAt: attemptedAt,
-        cleanupErrorCode: (error as NodeJS.ErrnoException).code ?? 'cleanup_failed',
-      };
-      await writeLeaseRecord(input.runtimeRoot, failed);
-      return failed;
+      return unknowable('artifact_missing_before_identity_preserving_delete');
     }
+    return settle({
+      cleanupState: 'failed',
+      cleanupErrorCode: (error as NodeJS.ErrnoException).code ?? 'cleanup_failed',
+    });
   }
-  const confirmed: EnvironmentLeaseRecord = {
-    ...record,
+  return settle({
     cleanupState: 'confirmed',
-    cleanupReason: input.reason,
-    cleanupAttemptId: attemptId,
-    cleanupAttemptedAt: attemptedAt,
     cleanupCompletedAt: new Date().toISOString(),
     cleanupErrorCode: null,
-  };
-  await writeLeaseRecord(input.runtimeRoot, confirmed);
-  return confirmed;
+  });
 }
 
 async function acquireLeaseCleanupLock(runtimeRoot: string, leaseId: string): Promise<() => Promise<void>> {
@@ -655,7 +711,6 @@ export async function listEnvironmentLeaseRecords(
   runtimeRoot: string,
 ): Promise<EnvironmentLeaseRecord[]> {
   const recordsDirectory = leaseDirectories(runtimeRoot).records;
-  const {readdir} = await import('node:fs/promises');
   const names = await readdir(recordsDirectory).catch(() => [] as string[]);
   const records = await Promise.all(names
     .filter(name => UUID_PATTERN.test(name.slice(0, -5)) && name.endsWith('.json'))
