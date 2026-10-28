@@ -44,6 +44,38 @@ sift notes search "deployment process"
 sift work list --agent codex --json
 ```
 
+### Local Taster review
+
+Taster reviews committed changes in a Git checkout using your existing Codex login:
+
+```bash
+sift review --repo /path/to/checkout --expected-head <full-commit-sha> \
+  --base origin/main --receipt /tmp/taster-receipt.json
+```
+
+`--repo` defaults to the current directory. `--workspace` selects a Siftable organization;
+repository paths belong in `--repo`. `--expected-head` fails before inference if the selected
+checkout has a different committed HEAD. Uncommitted changes are disclosed but not reviewed.
+
+Taster checks the selected Codex executable's version and required local CLI capabilities
+before starting the pre-pass or model work. Use `--codex-bin /absolute/path/to/codex` to choose
+another executable. This check does not establish that your account can use the requested model.
+
+`--receipt` saves three private local files: the existing revision-bound receipt, a complete
+`<receipt>.report.json` companion containing findings, source evidence, scope exclusions,
+runtime identity and budgets, and a `<receipt>.attempt.json` lifecycle record. Use `--report`
+to override the companion path or save a full report without a receipt file. The attempt is
+written before setup; setup failures keep unresolved revisions null. Interruptions after
+revision resolution produce a failed receipt and report. Completion describes the stated
+review scope and does not establish that the code is correct.
+
+The default whole-review deadline is 30 minutes, including setup and the pre-pass; set
+`--deadline-ms` to change it. The existing per-call timeout and model-call ceiling still apply.
+A timeout or interruption stops owned processes and retains a non-clean outcome. Exit codes
+are 0 for clean/advisory-only, 1 for blocking findings, 2 for incomplete/skipped/failed,
+130 for SIGINT, and 143 for SIGTERM. Full reports can contain private repository source;
+choose which artifacts to share with your team.
+
 ### The interactive copilot
 
 ```bash
