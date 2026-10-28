@@ -236,7 +236,10 @@ export async function runLocalReview(options: LocalReviewOptions, deps: LocalRev
       policy,
       prior: [],
       evidence: {reports},
-      models: {run: request => abortable(() => models.run(request), options.signal)},
+      models: {run: request => {
+        const signal = options.signal ? AbortSignal.any([request.signal, options.signal]) : request.signal;
+        return abortable(() => models.run({...request, signal}), signal);
+      }},
       budget: options.budget,
       mode: 'local',
       git: deps.git,

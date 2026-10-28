@@ -231,6 +231,33 @@ describe('sift review local runs', () => {
     expect(verifyReceipt({...tampered, revision: {...receipt.revision, head: base}})).toBe(false);
   });
 
+  it('aborts delayed model preparation before it can launch after the whole-review deadline', async () => {
+    const controller = new AbortController();
+    let prepared: (() => void) | undefined;
+    let release: (() => void) | undefined;
+    const ready = new Promise<void>(resolveReady => { prepared = resolveReady; });
+    const blocked = new Promise<void>(resolveBlocked => { release = resolveBlocked; });
+    const signals: AbortSignal[] = [];
+    let lateExecutions = 0;
+    const models = new ScriptedModels({finder: async request => {
+      signals.push(request.signal);
+      prepared?.();
+      await blocked;
+      if (!request.signal.aborted) lateExecutions += 1;
+      return {findings: []};
+    }});
+    const running = runLocalReview(options({signal: controller.signal}), deps(models));
+    await ready;
+    controller.abort(new Error('whole-review deadline'));
+    const outcome = await running;
+    release?.();
+    await new Promise(resolveTick => setImmediate(resolveTick));
+    expect(outcome.receipt.status).toBe('failed');
+    expect(signals.length).toBeGreaterThan(0);
+    expect(signals.every(signal => signal.aborted)).toBe(true);
+    expect(lateExecutions).toBe(0);
+  });
+
   it('rejects a different expected head before preflight or model work', async () => {
     const models = new ScriptedModels({finder: quietFinder});
     const preflight = vi.fn().mockResolvedValue({codexBin: '/fixture/codex', codexVersion: '0.159.0'});

@@ -12157,11 +12157,11 @@
     "review": {
       "aliases": [],
       "args": {},
-      "description": "Review the committed changes of this checkout with Taster before opening a pull request.\nRuns the Taster engine locally (mode local) through your own Codex login and prints confirmed findings\nplus a receipt bound to the reviewed revision, the trusted policy revision and the completion state.\nAn incomplete review is reported as incomplete, never as clean. Uncommitted changes are not reviewed.\nExit status: 0 clean or advisory findings only, 1 blocking (P0-P1) findings, 2 incomplete, skipped or failed.",
+      "description": "Review committed changes with Taster before opening a pull request.\nRuns locally through your Codex login. --repo selects the checkout; --expected-head asserts its full commit ID.\nOnly committed changes are reviewed. An incomplete review is never reported as clean.\n--receipt also saves a full companion report and a durable attempt record, including failures and interruptions.\nExit status: 0 clean or advisory findings only, 1 blocking (P0-P1) findings, 2 incomplete, skipped or failed.",
       "examples": [
         "<%= config.bin %> review",
-        "<%= config.bin %> review --base origin/main --receipt /tmp/taster-receipt.json",
-        "<%= config.bin %> review --json --no-input > /tmp/taster-review.json"
+        "<%= config.bin %> review --repo /path/to/checkout --expected-head <full-sha> --base origin/main --receipt /tmp/taster-receipt.json",
+        "<%= config.bin %> review --report /tmp/taster-report.json --json --no-input"
       ],
       "flags": {
         "json": {
@@ -12203,6 +12203,20 @@
           "multiple": false,
           "type": "option"
         },
+        "repo": {
+          "description": "Repository checkout to review (default: current directory)",
+          "name": "repo",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "expected-head": {
+          "description": "Require this full committed HEAD before starting review",
+          "name": "expected-head",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
         "base": {
           "description": "Base ref to review against (default: origin/main, then main)",
           "name": "base",
@@ -12219,7 +12233,7 @@
           "type": "option"
         },
         "codex-bin": {
-          "description": "Absolute path of the codex binary (default: codex on PATH)",
+          "description": "Absolute path of the Codex binary (default: codex on PATH)",
           "name": "codex-bin",
           "hasDynamicHelp": false,
           "multiple": false,
@@ -12242,7 +12256,7 @@
           "type": "option"
         },
         "concurrency": {
-          "description": "Concurrent codex runs",
+          "description": "Concurrent Codex runs",
           "name": "concurrency",
           "default": 2,
           "hasDynamicHelp": false,
@@ -12257,9 +12271,24 @@
           "multiple": false,
           "type": "option"
         },
+        "deadline-ms": {
+          "description": "Whole-review deadline, including setup and pre-pass, in milliseconds",
+          "name": "deadline-ms",
+          "default": 1800000,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
         "receipt": {
-          "description": "Also write the receipt JSON to this path (attach it as Sift verification evidence)",
+          "description": "Write the revision-bound receipt, plus <path>.report.json and <path>.attempt.json",
           "name": "receipt",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "report": {
+          "description": "Write the full review report to this path (overrides the companion report path)",
+          "name": "report",
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
