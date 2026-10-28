@@ -231,6 +231,72 @@ describe('sift review local runs', () => {
     expect(verifyReceipt({...tampered, revision: {...receipt.revision, head: base}})).toBe(false);
   });
 
+  it('aborts delayed model preparation before it can launch after the whole-review deadline', async () => {
+    const controller = new AbortController();
+    let prepared: (() => void) | undefined;
+    let release: (() => void) | undefined;
+    const ready = new Promise<void>(resolveReady => { prepared = resolveReady; });
+    const blocked = new Promise<void>(resolveBlocked => { release = resolveBlocked; });
+    const signals: AbortSignal[] = [];
+    let lateExecutions = 0;
+    const models = new ScriptedModels({finder: async request => {
+      signals.push(request.signal);
+      prepared?.();
+      await blocked;
+      if (!request.signal.aborted) lateExecutions += 1;
+      return {findings: []};
+    }});
+    const running = runLocalReview(options({signal: controller.signal}), deps(models));
+    await ready;
+    controller.abort(new Error('whole-review deadline'));
+    const outcome = await running;
+    release?.();
+    await new Promise(resolveTick => setImmediate(resolveTick));
+    expect(outcome.receipt.status).toBe('failed');
+    expect(signals.length).toBeGreaterThan(0);
+    expect(signals.every(signal => signal.aborted)).toBe(true);
+    expect(lateExecutions).toBe(0);
+  });
+
+  it('rejects a different expected head before preflight or model work', async () => {
+    const models = new ScriptedModels({finder: quietFinder});
+    const preflight = vi.fn().mockResolvedValue({codexBin: '/fixture/codex', codexVersion: '0.159.0'});
+    await expect(runLocalReview(options({expectedHead: base}), {...deps(models), preflight})).rejects.toThrow(/--expected-head/u);
+    expect(preflight).not.toHaveBeenCalled(); expect(models.requests).toEqual([]);
+  });
+
+  it('resolves an explicit checkout and full expected head independently of cwd', async () => {
+    const other = mkdtempSync(join(tmpdir(), 'sift-review-other-'));
+    const first = {root, base, head};
+    try {
+      root = other;
+      git('init', '-q', '-b', 'main');
+      base = commit({'src/paging.ts': PAGING_BASE, 'README.md': 'different repository'}, 'base B');
+      git('checkout', '-q', '-b', 'feature');
+      head = commit({'src/paging.ts': PAGING_HEAD}, 'head B');
+      const bHead = head;
+      const models = new ScriptedModels({finder: quietFinder, validator: confirmingValidator});
+      const instance = Object.create(Review.prototype) as Review;
+      (instance as any).parse = async () => ({flags: {repo: other, 'expected-head': bHead, model: 'scripted-sol', 'finder-passes': 2, 'max-model-calls': 40, concurrency: 2, 'max-files': 60}});
+      (instance as any).loadDeps = () => deps(models);
+      (instance as any).jsonEnabled = () => true;
+      vi.spyOn(process, 'cwd').mockReturnValue(first.root);
+      const output = await instance.run() as {receipt: Receipt};
+      expect(output.receipt.revision.head).toBe(bHead);
+      expect(output.receipt.revision.head).not.toBe(first.head);
+      expect(output.receipt.revision.base).toBe(base);
+    } finally { root = first.root; base = first.base; head = first.head; rmSync(other, {recursive: true, force: true}); }
+  });
+
+  it('binds a detached worktree to its own head', async () => {
+    const other = join(root, '..', `${root.split('/').pop()}-worktree`);
+    git('worktree', 'add', '--quiet', '--detach', other, base);
+    try {
+      const {receipt} = await runLocalReview(options({cwd: other, expectedHead: base}), deps(new ScriptedModels({finder: quietFinder})));
+      expect(receipt.revision).toMatchObject({head: base, base, mergeBase: base});
+    } finally { git('worktree', 'remove', '--force', other); }
+  });
+
   it('rejects a base ref that does not exist with a recovery hint', async () => {
     await expect(runLocalReview(options({baseRef: 'origin/nope'}), deps(new ScriptedModels({})))).rejects.toThrow(/--base origin\/nope does not name a commit/u);
   });
@@ -261,7 +327,7 @@ describe('sift review command', () => {
     const written = JSON.parse(readFileSync(receiptPath, 'utf8')) as Receipt;
     expect(written).toEqual(output.receipt);
     expect(verifyReceipt(written)).toBe(true);
-    rmSync(receiptPath, {force: true});
+    for (const path of [receiptPath, `${receiptPath}.report.json`, `${receiptPath}.attempt.json`]) rmSync(path, {force: true});
   });
 
   it('returns an incomplete receipt in JSON mode with exit status 2', async () => {
@@ -318,6 +384,15 @@ describe('review report hygiene', () => {
     expect(text).not.toContain('\r');
     expect(text.split('\n')).not.toContain('COMPLETE: no findings');
     expect(text).toContain('[P1] Last page is dropped');
+  });
+
+  it('creates model sessions with the exact binary selected by preflight', async () => {
+    const instance = Object.create(Review.prototype) as Review;
+    const dependencies = (instance as any).loadDeps({model: 'fixture', 'codex-bin': process.execPath, concurrency: 1}) as LocalReviewDeps;
+    dependencies.identity = {codexBin: '/verified/canonical/codex', codexVersion: '0.159.0'};
+    const create = vi.spyOn(dependencies.runtime, 'createCodexClient').mockReturnValue(new ScriptedModels({}));
+    await dependencies.modelSession({checkoutRoot: root, workDir: root});
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({codexBin: '/verified/canonical/codex'}));
   });
 
   it('finds only executable files on PATH and explains a relative --codex-bin', async () => {

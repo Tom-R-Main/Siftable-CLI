@@ -8,11 +8,12 @@
 import {mkdtemp, realpath, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {delimiter, dirname, isAbsolute, join} from 'node:path';
-import {accessSync, constants, rmSync, statSync} from 'node:fs';
+import {accessSync, constants, statSync} from 'node:fs';
 import type {ModelClient, ReviewBudget, ReviewResult, Verdict} from '@siftable/taster';
-import {buildReceipt, failedVerdict, type Receipt} from './receipt.js';
+import {buildReceipt, failedVerdict, type Receipt, type ReceiptContext} from './receipt.js';
 import {createGitExec, killActiveProcessGroups, loopbackMcpEndpoint, processRunner, runTrustedPrepassProcess} from './ports.js';
 import type {GitExec, TasterRuntime} from './runtime.js';
+import {abortable, cleanupReviewDirectories, throwIfAborted, trackReviewDirectory, untrackReviewDirectory, type RuntimeIdentity} from './lifecycle.js';
 
 export const DEFAULT_MODEL = 'gpt-6.1-sol';
 export const DEFAULT_BUDGET: ReviewBudget = {maxModelCalls: 40, concurrency: 2, callTimeoutMs: 900_000, maxFiles: 60};
@@ -20,6 +21,9 @@ export const DEFAULT_BUDGET: ReviewBudget = {maxModelCalls: 40, concurrency: 2, 
 export interface LocalReviewOptions {
   /** Any directory inside the checkout to review. */
   cwd: string;
+  expectedHead?: string;
+  signal?: AbortSignal;
+  onResolved?: (revisions: Revisions, context: ReceiptContext) => void;
   /** Base ref; default: origin/main, then main. */
   baseRef?: string;
   model: string;
@@ -46,6 +50,8 @@ export interface LocalReviewDeps {
   path: string;
   modelSession: ModelSessionFactory;
   now?: () => Date;
+  identity?: RuntimeIdentity;
+  preflight?: (signal?: AbortSignal) => Promise<RuntimeIdentity>;
 }
 
 export interface LocalReviewOutcome {
@@ -127,9 +133,6 @@ async function changedFileListBytes(deps: LocalReviewDeps, root: string, from: s
   return deps.runtime.fileListBytes(result.stdout.toString('utf8'));
 }
 
-/** Work directories of reviews in progress (per-call CODEX_HOME and temporary files). */
-const activeWorkDirs = new Set<string>();
-
 /**
  * Synchronous cleanup for an interrupted review (SIGINT/SIGTERM): kills the
  * detached codex and git process groups and removes the work directories,
@@ -137,16 +140,34 @@ const activeWorkDirs = new Set<string>();
  */
 export function cleanupInterruptedReview(): void {
   killActiveProcessGroups();
-  for (const dir of activeWorkDirs) rmSync(dir, {recursive: true, force: true});
-  activeWorkDirs.clear();
+  cleanupReviewDirectories();
 }
 
 export async function runLocalReview(options: LocalReviewOptions, deps: LocalReviewDeps): Promise<LocalReviewOutcome> {
   const now = deps.now ?? (() => new Date());
   const startedAt = now();
-  const revisions = await resolveRevisions(deps, options.cwd, options.baseRef);
+  const originalGit = deps.git;
+  deps = {...deps, git: (args, opts) => abortable(() => originalGit(args, opts), options.signal)};
+  const revisions = await abortable(() => resolveRevisions(deps, options.cwd, options.baseRef), options.signal);
+  if (options.expectedHead !== undefined && (!OBJECT_ID.test(options.expectedHead) || options.expectedHead !== revisions.head)) {
+    throw new LocalReviewSetupError(`--expected-head must match the full committed HEAD (${revisions.head}) in ${revisions.root}.`);
+  }
   const policy = deps.runtime.loadDefaultPolicyBundle();
   const problems: string[] = [];
+  options.onResolved?.(revisions, {
+    head: revisions.head, base: revisions.base, mergeBase: revisions.mergeBase,
+    baseRef: revisions.baseRef, worktreeDirty: revisions.worktreeDirty,
+    policy: {name: policy.name, revision: policy.revisionId}, model: options.model,
+    finderPasses: options.finderPasses, problems, startedAt, finishedAt: startedAt,
+  });
+  const preflight = deps.preflight;
+  if (preflight) {
+    try {
+      deps.identity = await abortable(() => preflight(options.signal), options.signal);
+    } catch (error) {
+      throw new LocalReviewSetupError((error as Error).message);
+    }
+  }
 
   const finish = (verdict: Verdict, result: ReviewResult | null): LocalReviewOutcome => ({
     receipt: buildReceipt({
@@ -168,7 +189,7 @@ export async function runLocalReview(options: LocalReviewOptions, deps: LocalRev
   // Trusted pre-pass from the CLI's own copy of the tools, never from the checkout.
   let reports: unknown[] = [];
   try {
-    const prepass = await runTrustedPrepassProcess({
+    const prepass = await abortable(() => runTrustedPrepassProcess({
       script: deps.runtime.prepassScript,
       repo: revisions.root,
       baseSha: revisions.base,
@@ -177,7 +198,7 @@ export async function runLocalReview(options: LocalReviewOptions, deps: LocalRev
       ratchetGrowth: deps.runtime.ratchetGrowthScript,
       path: deps.path,
       home: tmpdir(),
-    });
+    }), options.signal);
     reports = prepass.reports;
     problems.push(...prepass.problems.map(problem => `pre-pass: ${problem}`));
   } catch (error) {
@@ -185,6 +206,7 @@ export async function runLocalReview(options: LocalReviewOptions, deps: LocalRev
     problems.push(`pre-pass did not run: ${String((error as Error).message).slice(0, 200)}`);
   }
 
+  throwIfAborted(options.signal);
   const fileList = await changedFileListBytes(deps, revisions.root, revisions.mergeBase, revisions.head);
   if (fileList === null) {
     problems.push('changed files could not be listed');
@@ -199,11 +221,12 @@ export async function runLocalReview(options: LocalReviewOptions, deps: LocalRev
   });
 
   const workDir = await mkdtemp(join(tmpdir(), 'sift-review-'));
-  activeWorkDirs.add(workDir);
+  trackReviewDirectory(workDir);
   let session: ModelSession | undefined;
   try {
-    session = await deps.modelSession({checkoutRoot: revisions.root, workDir});
-    const result = await deps.runtime.review({
+    session = await abortable(() => deps.modelSession({checkoutRoot: revisions.root, workDir}), options.signal);
+    const models = session.models;
+    const result = await abortable(() => deps.runtime.review({
       checkout: {
         root: revisions.root,
         base: {sha: revisions.base, mergeBase: revisions.mergeBase},
@@ -213,13 +236,16 @@ export async function runLocalReview(options: LocalReviewOptions, deps: LocalRev
       policy,
       prior: [],
       evidence: {reports},
-      models: session.models,
+      models: {run: request => {
+        const signal = options.signal ? AbortSignal.any([request.signal, options.signal]) : request.signal;
+        return abortable(() => models.run({...request, signal}), signal);
+      }},
       budget: options.budget,
       mode: 'local',
       git: deps.git,
       finderPasses: options.finderPasses,
       limits: {maxDiffBytes},
-    });
+    }), options.signal);
     if (result.verdict.kind !== 'complete') problems.push(...session.problems());
     return finish(result.verdict, result);
   } catch (error) {
@@ -230,7 +256,7 @@ export async function runLocalReview(options: LocalReviewOptions, deps: LocalRev
   } finally {
     await session?.close().catch(() => undefined);
     await rm(workDir, {recursive: true, force: true, maxRetries: 3}).catch(() => undefined);
-    activeWorkDirs.delete(workDir);
+    untrackReviewDirectory(workDir);
   }
 }
 

@@ -175,7 +175,7 @@ const STATUS_LINE: Record<ReviewStatus, string> = {
 const short = (sha: string) => sha.slice(0, 12);
 
 /** Human-readable report: findings first, then the receipt summary. */
-export function renderReport(receipt: Receipt, result: Pick<ReviewResult, 'findings'> | null): string {
+export function renderReport(receipt: Receipt, result: (Pick<ReviewResult, 'findings'> & Partial<Pick<ReviewResult, 'verdict'>>) | null): string {
   const lines: string[] = [];
   const findings = result ? [...result.findings].sort((a, b) => a.priority - b.priority) : [];
   if (findings.length > 0) {
@@ -197,6 +197,11 @@ export function renderReport(receipt: Receipt, result: Pick<ReviewResult, 'findi
   if (v.reason) lines.push(`Reason: ${sanitizeTerminalLine(v.reason)}`);
   if (receipt.status === 'findings') lines.push(`Blocking (P0-P1): ${v.blocking}  Advisory: ${v.advisory}`);
   if (v.filesInScope !== null) lines.push(`Coverage: ${v.filesReviewed}/${v.filesInScope} files reviewed, ${v.filesSkipped} skipped`);
+  if (result?.verdict && 'coverage' in result.verdict) {
+    for (const skipped of result.verdict.coverage.filesSkipped) {
+      lines.push(`  Skipped: ${sanitizeTerminalLine(skipped.path)} (${sanitizeTerminalLine(skipped.reason)})`);
+    }
+  }
   if (v.stages) {
     const unfinished = Object.entries(v.stages).filter(([, status]) => status !== 'complete');
     if (unfinished.length > 0) lines.push(`Stages not complete: ${unfinished.map(([name, status]) => `${name}=${status}`).join(', ')}`);
