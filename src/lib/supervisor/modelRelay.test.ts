@@ -153,9 +153,23 @@ describe('supervisor model relay', () => {
   it('refuses a request over its size limit without calling the API', async () => {
     const {received, url} = await api((_req, res) => res.writeHead(200).end())
     relay = await startModelRelay(target(url), {maxRequestBytes: 16})
-    const response = await fetch(`${relay.baseUrl}/v1/messages`, {body: 'x'.repeat(64), method: 'POST'}).catch(() => null)
-    if (response) expect(response.status).toBe(413)
+    const response = await fetch(`${relay.baseUrl}/v1/messages`, {body: 'x'.repeat(64), method: 'POST'})
+    // A permanent refusal in the agent's protocol, not a connection reset an SDK would retry.
+    expect(response.status).toBe(413)
+    expect(await response.json()).toMatchObject({error: {type: 'request_too_large'}, type: 'error'})
     expect(received).toHaveLength(0)
+  })
+
+  it('fails the agent\'s response when the API stream breaks, instead of ending it as complete', async () => {
+    const {url} = await api((req, res) => {
+      res.writeHead(200, {'content-type': 'text/event-stream'})
+      res.write('event: message_start\ndata: {}\n\n')
+      setTimeout(() => req.socket.destroy(), 50)
+    })
+    relay = await startModelRelay(target(url))
+    const response = await fetch(`${relay.baseUrl}/v1/messages`, {body: '{}', method: 'POST'})
+    expect(response.status).toBe(200)
+    await expect(response.text()).rejects.toThrow()
   })
 
   it('cancels the API call when the agent goes away mid-stream', async () => {

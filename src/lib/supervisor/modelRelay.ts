@@ -98,8 +98,9 @@ function readBody(req: IncomingMessage, limit: number): Promise<Buffer | null> {
     req.on('data', (chunk: Buffer) => {
       size += chunk.byteLength
       if (size > limit) {
+        // Answer now and drop the rest, so the agent gets a 413 rather than a reset it might retry.
+        chunks.length = 0
         resolve(null)
-        req.destroy()
         return
       }
 
@@ -149,6 +150,7 @@ export async function startModelRelay(target: ModelRelayTarget, options: ModelRe
 
     const body = await readBody(req, limit)
     if (!body) {
+      res.setHeader('connection', 'close')
       send(res, target.protocol, 413, 'The request is larger than the relay accepts')
       return
     }
@@ -199,6 +201,7 @@ export async function startModelRelay(target: ModelRelayTarget, options: ModelRe
       }
 
       const reader = upstream.body.getReader()
+      let broken = false
       try {
         for (;;) {
           const {done, value} = await reader.read()
@@ -207,10 +210,12 @@ export async function startModelRelay(target: ModelRelayTarget, options: ModelRe
           if (abort.signal.aborted) break
         }
       } catch {
-        // A stream cut after its status was sent ends here; the API keeps its outcome unknown.
+        // The API connection broke mid-stream; the API keeps the call's outcome unknown.
+        broken = true
       } finally {
-        if (abort.signal.aborted) {
-          // An agent that stopped reading would never take the rest; close its connection instead of waiting.
+        if (abort.signal.aborted || broken) {
+          // A broken stream must not end like a complete one, and an agent that stopped reading would
+          // never take the rest: close the connection rather than end the response.
           res.destroy()
           // The fetch is already aborted; releasing the reader must not hold this handler.
           reader.cancel().catch(() => undefined)
