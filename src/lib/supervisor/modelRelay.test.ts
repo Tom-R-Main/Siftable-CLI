@@ -1,4 +1,4 @@
-import {createServer, type IncomingMessage, type Server} from 'node:http'
+import {createServer, request as httpRequest, type IncomingMessage, type Server} from 'node:http'
 import type {AddressInfo} from 'node:net'
 import {afterEach, describe, expect, it} from 'vitest'
 
@@ -177,5 +177,45 @@ describe('supervisor model relay', () => {
       setTimeout(resolve, 100)
     })
     expect(upstreamClosed).toBe(true)
+  })
+
+  it('ends a request at its deadline when the agent stops reading but stays connected', async () => {
+    let upstreamClosed = false
+    const {url} = await api((req, res) => {
+      res.writeHead(200, {'content-type': 'text/event-stream'})
+      // Far more than the socket buffers hold, so the relay's writes report backpressure.
+      const frame = `event: content_block_delta\ndata: ${'x'.repeat(64 * 1024)}\n\n`
+      const pump = () => {
+        while (res.write(frame)) { /* fill */ }
+        res.once('drain', pump)
+      }
+
+      pump()
+      req.socket.on('close', () => {
+        upstreamClosed = true
+      })
+    })
+    relay = await startModelRelay(target(url), {requestDeadlineMs: 200})
+    const {hostname, pathname, port} = new URL(`${relay.baseUrl}/v1/messages`)
+    let started = false
+    const req = httpRequest({hostname, method: 'POST', path: pathname, port}, res => {
+      started = true
+      // The agent never reads, but keeps the connection open.
+      res.pause()
+    })
+    req.on('error', () => undefined)
+    req.end('{}')
+    await new Promise(resolve => {
+      setTimeout(resolve, 100)
+    })
+    expect(started).toBe(true)
+    expect(relay.activeCalls()).toBe(1)
+    await new Promise(resolve => {
+      setTimeout(resolve, 400)
+    })
+    // Past the deadline the relay has let go on its own: the API call is cancelled and nothing is in flight.
+    expect(upstreamClosed).toBe(true)
+    expect(relay.activeCalls()).toBe(0)
+    req.destroy()
   })
 })

@@ -43,9 +43,17 @@ export interface ModelRelayOptions {
   maxRequestBytes?: number
   /** Injected for tests. */
   fetch?: typeof fetch
+  /**
+   * The longest one request may take, forwarding included. Past it the relay
+   * aborts the API call and ends the response, even for an agent that stopped
+   * reading. A little over the API's own limit (7 minutes plus 15 s).
+   */
+  requestDeadlineMs?: number
 }
 
 export interface ModelRelay {
+  /** Calls in flight; the supervisor reports it, and it falls to zero as each request ends. */
+  activeCalls(): number
   /** The base URL to give the agent: ANTHROPIC_BASE_URL, or OPENAI_BASE_URL (which ends in /v1). */
   baseUrl: string
   stop(): Promise<void>
@@ -62,6 +70,7 @@ const API_PATH: Readonly<Record<ModelRelayProtocol, string>> = {
 }
 
 const DEFAULT_MAX_REQUEST_BYTES = 16 * 1024 * 1024
+const DEFAULT_REQUEST_DEADLINE_MS = 450_000
 
 /** An error in the agent's own protocol, for failures the relay itself reports. */
 function protocolError(protocol: ModelRelayProtocol, status: number, message: string): string {
@@ -151,6 +160,9 @@ export async function startModelRelay(target: ModelRelayTarget, options: ModelRe
     }
 
     res.once('close', onClose)
+    // One deadline for the whole request, so a stalled agent cannot hold it open.
+    const deadline = setTimeout(() => abort.abort(), options.requestDeadlineMs ?? DEFAULT_REQUEST_DEADLINE_MS)
+    deadline.unref()
     try {
       const headers: Record<string, string> = {
         accept: 'text/event-stream, application/json',
@@ -197,10 +209,17 @@ export async function startModelRelay(target: ModelRelayTarget, options: ModelRe
       } catch {
         // A stream cut after its status was sent ends here; the API keeps its outcome unknown.
       } finally {
-        if (abort.signal.aborted) await reader.cancel().catch(() => undefined)
-        res.end()
+        if (abort.signal.aborted) {
+          // An agent that stopped reading would never take the rest; close its connection instead of waiting.
+          res.destroy()
+          // The fetch is already aborted; releasing the reader must not hold this handler.
+          reader.cancel().catch(() => undefined)
+        } else {
+          res.end()
+        }
       }
     } finally {
+      clearTimeout(deadline)
       res.off('close', onClose)
       active.delete(abort)
     }
@@ -218,6 +237,7 @@ export async function startModelRelay(target: ModelRelayTarget, options: ModelRe
   const host = address.includes(':') ? `[${address}]` : address
   const base = `http://${host}:${port}${prefix}`
   return {
+    activeCalls: () => active.size,
     // Anthropic's SDK appends /v1/messages; OpenAI's appends /responses to a base ending in /v1.
     baseUrl: target.protocol === 'anthropic' ? base : `${base}/v1`,
     async stop() {
