@@ -94,16 +94,19 @@ export default class Review extends BaseCommand {
   async run(): Promise<unknown> {
     const {flags} = await this.parse(Review);
     const repository = resolve(flags.repo ?? process.cwd());
-    const receiptPath = flags.receipt ? canonicalOutputPath(flags.receipt) : undefined;
-    const reportPath = flags.report ? canonicalOutputPath(flags.report) : receiptPath ? `${receiptPath}.report.json` : undefined;
+    const outputPath = (value: string): string => {
+      try { return canonicalOutputPath(value); } catch (error) { this.error(`Cannot resolve review output path: ${String((error as Error).message)}`, {exit: 2}); }
+    };
+    const receiptPath = flags.receipt ? outputPath(flags.receipt) : undefined;
+    const reportPath = flags.report ? outputPath(flags.report) : receiptPath ? `${receiptPath}.report.json` : undefined;
     const attemptPath = receiptPath ? `${receiptPath}.attempt.json` : reportPath ? `${reportPath}.attempt.json` : undefined;
     const outputPaths = [receiptPath, reportPath, attemptPath].filter((p): p is string => p !== undefined);
-    if (new Set(outputPaths).size !== outputPaths.length) throw new LocalReviewSetupError('Receipt, report and attempt paths must be distinct.');
+    if (new Set(outputPaths).size !== outputPaths.length) this.error('Receipt, report and attempt paths must be distinct.', {exit: 2});
     for (const path of outputPaths) {
       try {
         if (statSync(path).isDirectory()) throw new LocalReviewSetupError(`Review output path is a directory: ${path}`);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.error(String((error as Error).message), {exit: 2});
       }
     }
     const attempt: ReviewAttempt = {
@@ -112,7 +115,7 @@ export default class Review extends BaseCommand {
       revision: null, runtime: null, startedAt: new Date().toISOString(), finishedAt: null, reason: null, receiptDigest: null,
     };
     const persistAttempt = () => { if (attemptPath) writeAtomicJson(attemptPath, attempt); };
-    persistAttempt();
+    try { persistAttempt(); } catch (error) { this.error(`Cannot write review attempt: ${String((error as Error).message)}`, {exit: 2}); }
     const controller = new AbortController();
     const deadlineMs = flags['deadline-ms'] ?? DEFAULT_REVIEW_DEADLINE_MS;
     const budget = {maxModelCalls: flags['max-model-calls'], concurrency: flags.concurrency, callTimeoutMs: DEFAULT_BUDGET.callTimeoutMs, maxFiles: flags['max-files']};
@@ -203,8 +206,7 @@ export default class Review extends BaseCommand {
         if (artifactError) this.error('Could not persist the requested review artifacts; the failed attempt was recorded.', {exit: 2});
       }
       if (!outcome) {
-        if (error instanceof LocalReviewSetupError) this.error(error.message, {exit: 2});
-        throw error;
+        this.error(String((error as Error).message), {exit: 2});
       }
     } finally {
       clearTimeout(timer);
