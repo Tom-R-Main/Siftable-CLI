@@ -26,4 +26,15 @@ describe('uploadAgentLog', () => {
     expect(outcome).toEqual({acknowledged: false, manifestDigest: 'd'.repeat(64)});
     expect(sent).toEqual(['declare']);
   });
+
+  it('counts a slow read of the log against the deadline, before anything is sent', async () => {
+    let now = 0;
+    const sent: string[] = [];
+    const call: EvidenceCall = async () => { sent.push('declare'); return {status: 200, body: {}}; };
+    const fetchImpl = (async () => { sent.push('put'); return new Response(null, {status: 200}); }) as unknown as typeof fetch;
+    const outcome = await uploadAgentLog({call, fetch: fetchImpl, monoMs: () => now, deadlineMono: 10, route: '/r', claimToken: 'c',
+      log: {path: 'unused', sha256: 'a'.repeat(64), bytes: 3}, read: async () => { now = 20; return Buffer.from('log'); }});
+    expect(outcome).toEqual({acknowledged: false});
+    expect(sent).toEqual([]);
+  });
 });

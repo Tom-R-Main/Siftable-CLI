@@ -41,7 +41,7 @@ async function until(condition: () => boolean, timeoutMs = 10_000): Promise<void
 
 interface Scenario {
   dispatch?: object | null;
-  claimExpiresAt?: string;
+  claimExpiresAt?: string | 'none';
   controls?: () => Array<{id: string; action: string; state: string}>;
   heartbeat?: () => {status: number; body: object} | 'throw';
   ack?: () => {status: number} | 'throw';
@@ -107,7 +107,8 @@ function world(scenario: Scenario = {}) {
       if (scenario.consumeStatus) return reply(scenario.consumeStatus, {detail: 'Runner lease changed; reconcile the existing runtime'});
       if (scenario.dispatch === null) return reply(200, {dispatch: null});
       return reply(200, {dispatch: {id: DISPATCH, workItemId: WORK_ITEM, computeGrantExpiresAt: null, ...scenario.dispatch},
-        workItem: {id: WORK_ITEM, claimToken: 'claim-secret', claimExpiresAt: scenario.claimExpiresAt ?? inFuture(600_000), title: 't', prompt: 'p'},
+        workItem: {id: WORK_ITEM, claimToken: 'claim-secret', title: 't', prompt: 'p',
+          ...(scenario.claimExpiresAt === 'none' ? {} : {claimExpiresAt: scenario.claimExpiresAt ?? inFuture(600_000)})},
         controls: []});
     }
     if (route.endsWith('/cleanup-receipts')) {
@@ -775,7 +776,8 @@ describe('superviseOnce', () => {
     });
 
     /** A journal as a crash leaves it: the workload exited 0, its processes are gone, and the log was frozen. */
-    async function crashedAfterFreeze(evidence: Partial<{acknowledged: boolean; manifestDigest: string}>, logText: string | null = WORKLOAD_OUTPUT) {
+    async function crashedAfterFreeze(evidence: Partial<{acknowledged: boolean; manifestDigest: string}> | 'not-frozen',
+      logText: string | null = WORKLOAD_OUTPUT) {
       const dir = path.join(inputRoot, ATTEMPT);
       await fs.mkdir(dir, {recursive: true});
       const logPath = path.join(dir, 'agent.log');
@@ -784,7 +786,9 @@ describe('superviseOnce', () => {
         workItemId: WORK_ITEM, runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`, attemptId: ATTEMPT, networkId: 'net-1',
         workspace: {repositoryId: PLAN.repositoryId, branch: PLAN.branch, baseSha: PLAN.baseSha},
         containers: {sidecar: 'c-relay', agent: 'c-agent'}, callSeq: 0, stop: {reason: 'workload_exited', exitCode: 0},
-        evidence: {path: logPath, sha256: sha(WORKLOAD_OUTPUT), bytes: WORKLOAD_OUTPUT.length, ...evidence}} satisfies AttemptJournal);
+        evidenceOwed: true,
+        ...(evidence === 'not-frozen' ? {} : {evidence: {path: logPath, sha256: sha(WORKLOAD_OUTPUT), bytes: WORKLOAD_OUTPUT.length, ...evidence}}),
+      } satisfies AttemptJournal);
       return dir;
     }
 
@@ -845,5 +849,24 @@ describe('superviseOnce', () => {
       expect(w.events).not.toContain('review');
       expect(String(w.posts.find((post) => post.path.endsWith('/fail'))!.body.failureReason)).toContain('evidence_upload_failed');
     });
+
+    it('fails the work when a crash came between the clean exit and freezing its log', async () => {
+      await crashedAfterFreeze('not-frozen');
+      const w = world();
+      expect(await superviseOnce(deps(w))).toEqual({kind: 'recovered', settled: true});
+      expect(w.events).not.toContain('evidence-declare');
+      expect(w.events).not.toContain('review');
+      expect(String(w.posts.find((post) => post.path.endsWith('/fail'))!.body.failureReason)).toContain('evidence_upload_failed');
+    });
+
+    it.each([['about to expire', inFuture(0)], ['without an expiry', 'none' as const]])(
+      'uploads nothing on recovery under a claim %s, and fails the work', async (_label, claimExpiresAt) => {
+        await crashedAfterFreeze({});
+        const w = world({claimExpiresAt});
+        expect(await superviseOnce(deps(w))).toMatchObject({kind: 'recovered'});
+        expect(w.events).not.toContain('evidence-declare');
+        expect(w.evidence.puts).toEqual([]);
+        expect(w.events).not.toContain('review');
+      });
   });
 });

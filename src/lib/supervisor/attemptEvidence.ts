@@ -93,9 +93,14 @@ export async function uploadAgentLog(input: {
   route: string;
   claimToken: string;
   log: FrozenLog;
+  /** Reads the frozen log's bytes; the file system by default. */
+  read?: (file: string) => Promise<Buffer>;
 }): Promise<EvidenceOutcome> {
   const {call, log, route, claimToken} = input;
   const left = () => input.deadlineMono - input.monoMs();
+  // Read once, before anything is admitted: a slow read is counted against the deadline, never after it.
+  const body = await (input.read ?? ((file: string) => fs.readFile(file)))(log.path).catch(() => null);
+  if (!body) return {acknowledged: false};
   const artifacts = [{kind: 'agent_log', sha256: log.sha256, bytes: log.bytes, contentType: EVIDENCE_CONTENT_TYPE}];
   let manifestDigest: string | undefined;
   for (let round = 0; round < ROUNDS && left() > 0; round += 1) {
@@ -108,13 +113,13 @@ export async function uploadAgentLog(input: {
     const uploads = Array.isArray(declared.body.uploads) ? declared.body.uploads as Array<{sha256?: unknown; url?: unknown}> : [];
     let uploaded = true;
     for (const upload of uploads) {
-      // Every request is admitted only while the deadline holds, not just each round.
+      // Every request is admitted only while the deadline holds, checked immediately before it starts.
       if (upload.sha256 !== log.sha256 || typeof upload.url !== 'string' || left() <= 0) { uploaded = false; break; }
       const put = await input.fetch(upload.url, {
         method: 'PUT',
         headers: {'Content-Type': EVIDENCE_CONTENT_TYPE, 'x-goog-if-generation-match': '0',
           'x-goog-content-length-range': `${log.bytes},${log.bytes}`},
-        body: await fs.readFile(log.path),
+        body,
         signal: AbortSignal.timeout(Math.max(1, Math.floor(Math.min(60_000, left())))),
       }).catch(() => null);
       // 412: the object already exists (an earlier round's PUT landed); the acknowledge decides whether it is right.

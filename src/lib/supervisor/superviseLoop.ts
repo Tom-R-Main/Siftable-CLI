@@ -109,6 +109,8 @@ export interface AttemptJournal {
   workspace?: {repositoryId: string; branch: string; baseSha: string};
   /** The server's digest of the attempt's frozen input, the task the agent was given. */
   inputSha256?: string;
+  /** Set once the workload ran: its evidence is owed, so a crash before the log is frozen still fails the work. */
+  evidenceOwed?: boolean;
   /** The frozen workload log and how its upload ended; the file is kept on the machine unless acknowledged. */
   evidence?: {path: string; sha256: string; bytes: number} & Partial<EvidenceOutcome>;
   /** The last model call ID handed out; journaled before the call is sent. */
@@ -481,7 +483,8 @@ async function postSettlement(
  * Finishes an evidence upload a crash cut off, under the attempt's own recovered claim and before its
  * settlement is posted. The frozen log must still match its journaled digest; nothing is re-run.
  */
-async function resumeEvidence(deps: SuperviseDeps, session: Session, journal: AttemptJournal, claimToken: string): Promise<AttemptJournal> {
+async function resumeEvidence(deps: SuperviseDeps, session: Session, journal: AttemptJournal, claimToken: string,
+  deadlineMono: number): Promise<AttemptJournal> {
   const frozen = journal.evidence;
   if (!frozen || !journal.settlement || journal.settlement.evidence || !journal.attemptId) return journal;
   const intact = await fs.readFile(frozen.path)
@@ -489,7 +492,7 @@ async function resumeEvidence(deps: SuperviseDeps, session: Session, journal: At
     .catch(() => false);
   const outcome: EvidenceOutcome = intact ? await uploadAgentLog({
     call: (method, route, body, options) => session.call(method, route, body, options), fetch: deps.fetch,
-    monoMs: () => deps.clock.monoMs(), deadlineMono: deps.clock.monoMs() + EVIDENCE_BUDGET_MS,
+    monoMs: () => deps.clock.monoMs(), deadlineMono,
     route: `/api/v1/work-items/${journal.workItemId}/execution-attempts/${journal.attemptId}/evidence-manifest`, claimToken,
     log: {path: frozen.path, sha256: frozen.sha256, bytes: frozen.bytes},
   }) : {acknowledged: false};
@@ -536,7 +539,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     }
     // Evidence whose upload had ended is settled as it ended; one cut off mid-upload stays undecided and is
     // finished below under the attempt's own recovered claim.
-    const ended = journal.evidence?.acknowledged;
+    // Evidence owed but never frozen (a crash between the exit and the freeze) can never be acknowledged.
+    const ended = journal.evidence ? journal.evidence.acknowledged : journal.evidenceOwed ? false : undefined;
     earlier = {...journal, state: 'settling', settlement: {...(journal.settlement ?? {
       reason, ...(journal.stop?.controlId ? {controlId: journal.stop.controlId} : {}),
       ...(journal.stop?.exitCode === undefined ? {} : {exitCode: journal.stop.exitCode}),
@@ -583,7 +587,11 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     // Settle the earlier attempt with its own recovered claim, or record that the claim is gone.
     let settled = false;
     if (claimed && dispatch?.id === earlier.dispatchId) {
-      earlier = await resumeEvidence(deps, session, earlier, workItem?.claimToken as string);
+      // Only within the claim the server just confirmed; a missing expiry leaves no time to upload.
+      const recoveredCap = initialCaps(deps.clock, {claimExpiresAt: workItem?.claimExpiresAt,
+        computeGrantExpiresAt: dispatch?.computeGrantExpiresAt}, sentMono).cap;
+      earlier = await resumeEvidence(deps, session, earlier, workItem?.claimToken as string,
+        Math.min(recoveredCap, deps.clock.monoMs() + EVIDENCE_BUDGET_MS));
       const settlement = await postSettlement(session, earlier, workItem?.claimToken as string, 30_000);
       earlier = {...earlier, settlement};
       settled = isSettled(settlement);
@@ -851,6 +859,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     const ready = await guard(readFirstLine(agent.stdout, within(deps.timing?.readyTimeoutMs ?? READY_TIMEOUT_MS)));
     // The workload's output (stdout and stderr, merged by the launcher) is the attempt's log.
     agentLog = captureLog(inputDir, agent.stdout);
+    await save({...journal, evidenceOwed: true});
     const running = await inspectBoth('running');
     const [network] = JSON.parse(await must(['network', 'inspect', networkId])) as unknown[];
     running.push(...evaluateNetworkInspect(network, {networkId, labels: specs.networkLabels, containerIds: [sidecarId, agentId],
