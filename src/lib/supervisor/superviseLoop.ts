@@ -243,7 +243,12 @@ function terminalReport(settlement: Settlement): {state: 'ended' | 'interrupted'
   }
 }
 
-const settledStatus = (status: number | undefined): 'done' | 'conflict' | 'pending' => (status === 200 ? 'done' : status === 409 ? 'conflict' : 'pending');
+/** 200 confirms; any other definitive 4xx is a recorded conflict; no reply, 408, 429 or 5xx stays pending. */
+const settledStatus = (status: number | undefined): 'done' | 'conflict' | 'pending' => {
+  if (status === 200) return 'done';
+  if (status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429) return 'conflict';
+  return 'pending';
+};
 
 /**
  * Tells the server how the attempt ended, using the dispatch's live claim.
@@ -324,7 +329,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     earlier = {...journal, state: 'settling', settlement: {...(journal.settlement ?? {
       reason, ...(journal.stop?.controlId ? {controlId: journal.stop.controlId} : {}),
       started: Boolean(journal.containers.sidecar || journal.containers.agent),
-      attemptReport: journal.attemptId ? 'pending' : 'skipped', work: 'pending',
+      // The attach may have committed even if its reply was lost: report by the journaled runtime and workspace.
+      attemptReport: journal.workspace ? 'pending' : 'skipped', work: 'pending',
     }), cgroupEmpty: facts.cgroupEmpty === 'empty'}};
     await writeJournal(deps.state, JOURNAL, earlier);
   }
@@ -423,7 +429,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   const attempt = attached?.body.attempt as {id?: string; state?: string} | undefined;
   if (attached?.status !== 200 || !attempt?.id || attached.body.replayed === true || attempt.state !== 'starting') {
     // Only a fresh attempt in `starting` is a launch; a replay or an advanced attempt is reconciliation only.
-    await conclude({reason: 'start_failed', started: false, cgroupEmpty: true, attemptReport: attempt?.id ? 'pending' : 'skipped', work: 'pending'});
+    // Whatever the reply, the attach may have committed; the terminal report is keyed by runtime, not by attempt ID.
+    await conclude({reason: 'start_failed', started: false, cgroupEmpty: true, attemptReport: 'pending', work: 'pending'});
     return {kind: 'refused', reason: attached ? `attach_not_fresh_${attached.status}` : 'attach_unknown'};
   }
   const attemptId = attempt.id;

@@ -40,6 +40,8 @@ interface Scenario {
   readyDelayMs?: number;
   /** The running inspect never returns, as a wedged Docker daemon would. */
   hangRunningInspect?: boolean;
+  /** The attach commits on the server but its reply is lost. */
+  attachLost?: boolean;
 }
 
 /** The API, Docker and attached processes one attempt touches, recording what happened in order. */
@@ -71,6 +73,7 @@ function world(scenario: Scenario = {}) {
     if (route.endsWith('/execution-attempts')) {
       events.push(`attempt:${String(body.state)}${body.endReason ? `:${String(body.endReason)}` : ''}`);
       if (body.state === 'running' && scenario.runningStatus) return reply(scenario.runningStatus, {});
+      if (body.state === 'starting' && scenario.attachLost) throw new TypeError('fetch failed');
       return reply(200, {attempt: {id: ATTEMPT, state: scenario.attachReplay ? 'ended' : body.state}, replayed: scenario.attachReplay === true});
     }
     if (route.endsWith('/controls/ack')) { events.push(`control-ack:${String(body.state)}`); return reply(200, {}); }
@@ -378,6 +381,22 @@ describe('superviseOnce', () => {
     expect(w.events).toEqual(expect.arrayContaining(['kill:c-relay', 'kill:c-agent']));
     expect(w.events).not.toContain('ack:acknowledged');
     expect(w.events).not.toContain('go');
+  });
+
+  it('ends an attempt whose attach reply was lost, by its journaled runtime, before failing the start', async () => {
+    const w = world({attachLost: true});
+    expect(await superviseOnce(deps(w))).toEqual({kind: 'refused', reason: 'attach_unknown'});
+    expect(w.events).toEqual(['runner-heartbeat', 'consume', 'attempt:starting', 'attempt:ended:failed', 'ack:failed']);
+    expect(await journal()).toBeNull();
+  });
+
+  it('ends an attempt attached just before a crash, though its ID was never saved', async () => {
+    await writeJournal({root, owner: null}, JOURNAL, {version: 1, state: 'claimed', runId: 'abc123abc123', dispatchId: DISPATCH,
+      workItemId: WORK_ITEM, runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`, containers: {}, callSeq: 0,
+      workspace: {repositoryId: PLAN.repositoryId, branch: PLAN.branch, baseSha: PLAN.baseSha}} satisfies AttemptJournal);
+    const w = world();
+    expect(await superviseOnce(deps(w))).toEqual({kind: 'recovered', settled: true});
+    expect(w.events).toEqual(['ls:container', 'ls:network', 'runner-heartbeat', 'consume', 'attempt:ended:failed', 'ack:failed']);
   });
 
   it('tears down a run left by a crash by exact ID and never relaunches it', async () => {
