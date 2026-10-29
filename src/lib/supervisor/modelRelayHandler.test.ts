@@ -67,7 +67,7 @@ describe('attemptRelayHandler', () => {
   it('routes the writer\'s questions to the desk only while the attempt is running, never to the API', async () => {
     const noFetch = (() => { throw new Error('no fetch'); }) as never;
     const desk = new QuestionDesk([], async () => undefined, () => performance.now());
-    const ask = frame(QUESTION_PATHS.ask, 'POST', JSON.stringify({questionId: 'q-1', questions: [{question: 'Which branch?'}]}));
+    const ask = frame(QUESTION_PATHS.ask, 'POST', JSON.stringify({questionId: 'q-1', questions: [{id: 'branch', header: 'Branch', question: 'Which branch?', options: []}]}));
     const closed = attemptRelayHandler({fetch: noFetch, diagnosticNonce: 'n'}, target, {...control(false), questions: desk});
     expect((await closed(ask, signal)).status).toBe(503);
     expect(desk.list()).toEqual([]);

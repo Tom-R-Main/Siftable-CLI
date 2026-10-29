@@ -105,6 +105,34 @@ describe('QuestionDesk', () => {
     expect((await d.handle(QUESTION_PATHS.ask, 'not json', new AbortController().signal)).status).toBe(400);
   });
 
+  it('refuses questions the server schema would refuse, so no question waits on a sync that always fails', async () => {
+    const {d} = desk();
+    const q = ask.questions[0];
+    for (const questions of [
+      [{question: 'Which branch?'}],
+      [{...q, header: ' '}],
+      [{...q, extra: true}],
+      [q, {...q}],
+      [{...q, options: [{label: 'main'}]}],
+      [{...q, options: Array.from({length: 21}, (_, i) => ({label: `o${i}`, description: ''}))}],
+      [{...q, question: 'x'.repeat(4000), header: 'h'.repeat(500), options: Array.from({length: 20}, (_, i) => ({label: `o${i}`, description: 'd'.repeat(2000)}))}],
+    ]) expect((await send(d, QUESTION_PATHS.ask, {questionId: 'q-1', questions})).status).toBe(400);
+    const valid = [{...q, options: [{label: 'main', description: '', value: 'main'}], multiSelect: false, allowCustomAnswer: true}];
+    expect((await send(d, QUESTION_PATHS.ask, {questionId: 'q-1', questions: valid})).status).toBe(202);
+  });
+
+  it('marks a question the server refuses rejected and tells the waiting writer', async () => {
+    const {d} = desk();
+    await send(d, QUESTION_PATHS.ask, ask);
+    const call: QuestionCall = async (_method, route) => ({status: route.endsWith('/sync') ? 400 : 200, body: {}});
+    const polled = send(d, QUESTION_PATHS.poll, {questionId: 'q-1'});
+    await d.tick(call, 'w-1', credential);
+    expect((await polled).status).toBe(422);
+    expect(d.list()[0].state).toBe('rejected');
+    await d.tick(call, 'w-1', credential);
+    expect(d.list()[0].state).toBe('rejected');
+  });
+
   it('stops closing once its budget is spent, and says so', async () => {
     let now = 0;
     const sent: string[] = [];

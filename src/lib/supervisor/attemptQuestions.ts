@@ -11,7 +11,8 @@
  * closed (`session_ended`) and the journal is reconciled: a received answer
  * is recorded delivered, an offered but unconfirmed one failed, and nothing
  * is offered again. A blocking question unanswered for two hours seals the
- * attempt.
+ * attempt. A question the server refuses outright is marked rejected and its
+ * poll says so, rather than waiting for an answer that cannot come.
  */
 import {createHash} from 'node:crypto';
 import {QUESTION_PATHS} from './relaySidecar.js';
@@ -22,12 +23,14 @@ export const QUESTION_SEAL_MS = 2 * 60 * 60 * 1000;
 export const MAX_QUESTIONS = 20;
 const POLL_HOLD_MS = 25_000;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+/** The server's cap on a request's stored detail (V462); JSON text is a lower bound on its jsonb size. */
+const MAX_DETAIL_BYTES = 32_768;
 
 export interface JournalQuestion {
   questionId: string;
   questions: unknown[];
   summary: string;
-  state: 'asked' | 'opened' | 'offered' | 'received' | 'acknowledged';
+  state: 'asked' | 'opened' | 'offered' | 'received' | 'acknowledged' | 'rejected';
   /** The server's own creation time for the request; the two-hour seal counts from it. */
   openedAt?: string;
   requestId?: string;
@@ -42,6 +45,36 @@ export type QuestionCall = (method: 'GET' | 'POST', route: string, body?: unknow
 
 type Reply = {status: number; body: string};
 const reply = (status: number, value?: object): Reply => ({status, body: value === undefined ? '' : JSON.stringify(value)});
+
+const text = (value: unknown, max: number, trim = true) => typeof value === 'string'
+  && (trim ? value.trim() : value).length >= (trim ? 1 : 0) && (trim ? value.trim() : value).length <= max;
+const only = (value: object, keys: string[]) => Object.keys(value).every((key) => keys.includes(key));
+
+/** The server's question contract (agentWorkRuntimeRequestController), checked before a question is accepted. */
+export function questionProblem(questions: unknown): string | undefined {
+  if (!Array.isArray(questions) || questions.length < 1 || questions.length > 50) return 'questions must hold 1 to 50 questions';
+  const ids = new Set<string>();
+  for (const q of questions as Array<Record<string, unknown>>) {
+    if (!q || typeof q !== 'object' || Array.isArray(q)) return 'Each question must be an object';
+    if (!only(q, ['id', 'header', 'question', 'options', 'allowCustomAnswer', 'multiSelect', 'optionsOmitted'])) return 'A question has an unknown field';
+    if (typeof q.id !== 'string' || q.id.length > 200 || !q.id.trim() || ids.has(q.id)) return 'Each question needs its own nonblank id';
+    ids.add(q.id);
+    if (!text(q.header, 500) || !text(q.question, 4000)) return 'Each question needs a header and its text';
+    if (!Array.isArray(q.options) || q.options.length > 20) return 'options must be a list of at most 20';
+    for (const o of q.options as Array<Record<string, unknown>>) {
+      if (!o || typeof o !== 'object' || !only(o, ['label', 'description', 'value']) || !text(o.label, 500)
+        || !text(o.description, 2000, false) || (o.value !== undefined && !text(o.value, 2000, false))) {
+        return 'Each option needs a label and a description';
+      }
+    }
+    if ((q.allowCustomAnswer !== undefined && typeof q.allowCustomAnswer !== 'boolean')
+      || (q.multiSelect !== undefined && typeof q.multiSelect !== 'boolean')) return 'allowCustomAnswer and multiSelect are booleans';
+    if (q.optionsOmitted !== undefined && !(Number.isInteger(q.optionsOmitted) && (q.optionsOmitted as number) >= 1
+      && (q.optionsOmitted as number) <= 100_000)) return 'optionsOmitted must be a count';
+  }
+  if (Buffer.byteLength(JSON.stringify({questions})) > MAX_DETAIL_BYTES) return 'The questions are too large';
+  return undefined;
+}
 
 /** answerId binds an answer to its request and content, so the writer can tell a repeat from a new one. */
 export function answerIdOf(requestId: string, answers: Record<string, string | string[]>): string {
@@ -84,12 +117,10 @@ export class QuestionDesk {
       if (known) return reply(202, {});
       if (this.sealed) return reply(410, {});
       if (this.questions.length >= MAX_QUESTIONS) return reply(429, {error: `At most ${MAX_QUESTIONS} questions per attempt`});
-      const questions = Array.isArray(body.questions) ? body.questions : [];
-      const first = questions[0] as {question?: unknown} | undefined;
-      if (questions.length < 1 || questions.length > 50 || typeof first?.question !== 'string') {
-        return reply(400, {error: 'questions must hold 1 to 50 questions'});
-      }
-      this.questions = [...this.questions, {questionId, questions, summary: first.question.slice(0, 2000), state: 'asked'}];
+      const problem = questionProblem(body.questions);
+      if (problem) return reply(400, {error: problem});
+      const questions = body.questions as Array<{question: string}>;
+      this.questions = [...this.questions, {questionId, questions, summary: questions[0].question.trim().slice(0, 2000), state: 'asked'}];
       await this.persist(this.questions);
       return reply(202, {});
     }
@@ -108,6 +139,7 @@ export class QuestionDesk {
     for (;;) {
       const current = this.questions.find((q) => q.questionId === questionId);
       if (current?.answerId && current.answers) return reply(200, {answerId: current.answerId, answers: current.answers});
+      if (current?.state === 'rejected') return reply(422, {error: 'The server refused this question; it will not be answered'});
       if (this.sealed) return reply(410, {});
       const left = until - this.monoMs();
       if (left <= 0 || signal.aborted) return reply(204);
@@ -140,6 +172,8 @@ export class QuestionDesk {
         type: 'opened', providerRequestId: q.questionId, kind: 'user_input', blocking: true, category: null, summary: q.summary,
         detail: {questions: q.questions}}]}, {timeoutMs: 10_000}).catch(() => null);
       if (opened?.status === 200) await this.update(q.questionId, {state: 'opened'});
+      // One observation per call, so a 400 is this question's own: it can never open.
+      else if (opened?.status === 400) await this.update(q.questionId, {state: 'rejected'});
     }
     // The seal counts from the server's creation time: a lost open reply or a retry never restarts it.
     if (this.questions.some((q) => q.state === 'opened' && !q.openedAt)) {

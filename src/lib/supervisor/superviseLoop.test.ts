@@ -987,7 +987,7 @@ describe('superviseOnce', () => {
       const running = background(superviseOnce(deps(w, {shutdown: shutdown.signal})), () => shutdown.abort());
       await until(() => w.events.includes('go'));
       w.sidecarIo.stdout?.write(`${JSON.stringify({id: 1, method: 'POST', path: '/sift/v1/questions',
-        body: Buffer.from(JSON.stringify({questionId: 'q-1', questions: [{question: 'Which branch?'}]})).toString('base64')})}\n`);
+        body: Buffer.from(JSON.stringify({questionId: 'q-1', questions: [{id: 'branch', header: 'Branch', question: 'Which branch?', options: []}]})).toString('base64')})}\n`);
       await until(() => w.events.includes('rr-sync:opened'));
       shutdown.abort();
       const stoppedAt = performance.now();
@@ -1002,7 +1002,7 @@ describe('superviseOnce', () => {
       const running = background(superviseOnce(deps(w, {shutdown: shutdown.signal})), () => shutdown.abort());
       await until(() => w.events.includes('go'));
       w.sidecarIo.stdout?.write(`${JSON.stringify({id: 1, method: 'POST', path: '/sift/v1/questions',
-        body: Buffer.from(JSON.stringify({questionId: 'q-1', questions: [{question: 'Which branch?'}]})).toString('base64')})}\n`);
+        body: Buffer.from(JSON.stringify({questionId: 'q-1', questions: [{id: 'branch', header: 'Branch', question: 'Which branch?', options: []}]})).toString('base64')})}\n`);
       await until(() => w.events.includes('rr-sync:opened'));
       const stoppedAt = performance.now();
       shutdown.abort();
