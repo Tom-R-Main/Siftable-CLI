@@ -6,14 +6,18 @@ const ask = {questionId: 'q-1', questions: [{id: 'name', header: 'Name', questio
 const answers = {name: 'main'};
 
 /** The server's runtime-request routes, recording what the supervisor sent. */
-function server(options: {answered?: boolean} = {}) {
+function server(options: {answered?: boolean; openedAt?: string; deliveryStatus?: number} = {}) {
   const sent: Array<{route: string; body?: unknown; key?: string}> = [];
   let answered = options.answered ?? false;
   const call: QuestionCall = async (_method, route, body, opts) => {
     sent.push({route, body, key: opts?.key});
+    if (route.includes('open=true')) {
+      return {status: 200, body: {requests: [{providerRequestId: 'q-1', runtimeId: credential.runtimeId, createdAt: options.openedAt ?? new Date().toISOString()}]}};
+    }
     if (route.includes('delivery=pending')) {
       return {status: 200, body: {requests: answered ? [{id: 'req-1', providerRequestId: 'q-1', resolution: {answers}}] : []}};
     }
+    if (route.endsWith('/delivery') && options.deliveryStatus) return {status: options.deliveryStatus, body: {}};
     return {status: 200, body: {}};
   };
   return {sent, call, answer: () => { answered = true; }};
@@ -58,33 +62,37 @@ describe('QuestionDesk', () => {
     expect(waiting.list()[0].state).toBe('acknowledged');
   });
 
-  it('seals a blocking question unanswered for two hours, and then answers nothing more', async () => {
-    let now = 0;
-    const {d} = desk(() => now);
-    const api = server();
+  it('seals a blocking question two hours after the server opened it, whatever the local clock saw', async () => {
+    const opened = Date.parse('2026-10-29T00:00:00.000Z');
+    let wall = opened + QUESTION_SEAL_MS - 1;
+    const d = new QuestionDesk([], async () => undefined, () => performance.now(), 50, () => wall);
+    const api = server({openedAt: '2026-10-29T00:00:00.000Z'});
     await send(d, QUESTION_PATHS.ask, ask);
-    await d.tick(api.call, 'w-1', credential);
-    now = QUESTION_SEAL_MS - 1;
     expect(await d.tick(api.call, 'w-1', credential)).toBe(false);
-    now = QUESTION_SEAL_MS;
+    expect(d.list()[0].openedAt).toBe('2026-10-29T00:00:00.000Z');
+    wall = opened + QUESTION_SEAL_MS;
     expect(await d.tick(api.call, 'w-1', credential)).toBe(true);
     expect((await send(d, QUESTION_PATHS.poll, {questionId: 'q-1'})).status).toBe(410);
     expect((await send(d, QUESTION_PATHS.ask, {...ask, questionId: 'q-2'})).status).toBe(410);
+    // A replayed open of a request the server created two hours ago seals at once.
+    const late = new QuestionDesk([], async () => undefined, () => performance.now(), 50, () => opened + QUESTION_SEAL_MS + 1);
+    await send(late, QUESTION_PATHS.ask, ask);
+    expect(await late.tick(api.call, 'w-1', credential)).toBe(true);
   });
 
-  it('at a stop, ends the session, then records a received answer delivered and an unconfirmed one failed', async () => {
+  it('at a stop, records a received answer delivered and an unconfirmed one failed, then ends the session', async () => {
     const api = server({answered: true});
     const received: JournalQuestion = {questionId: 'q-1', questions: ask.questions, summary: 's', state: 'received', requestId: 'req-1',
       answerId: 'a', answers};
     const offered: JournalQuestion = {...received, questionId: 'q-2', state: 'offered', requestId: 'req-2'};
     const d = new QuestionDesk([received, offered], async () => undefined, () => 0);
-    await d.close(api.call, 'w-1', credential);
+    expect(await d.close(api.call, 'w-1', credential)).toBe(true);
     expect(api.sent.map((s) => [s.route.split('/').slice(-2).join('/'), s.key, (s.body as {delivery?: unknown}).delivery
       ?? (s.body as {observations?: unknown}).observations])).toEqual([
-      // The session's requests are closed first: the one call that must land within the budget.
-      ['runtime-requests/sync', undefined, [{type: 'session_ended'}]],
+      // Receipts first: ending the session fails every answer whose delivery is still pending.
       ['req-1/delivery', 'req-1:delivered', {outcome: 'delivered'}],
       ['req-2/delivery', 'req-2:not_received', {outcome: 'failed', error: 'not_received'}],
+      ['runtime-requests/sync', undefined, [{type: 'session_ended'}]],
     ]);
     // Nothing is offered again after a stop.
     expect((await d.handle(QUESTION_PATHS.poll, JSON.stringify({questionId: 'q-3'}), new AbortController().signal)).status).toBe(404);
@@ -97,14 +105,29 @@ describe('QuestionDesk', () => {
     expect((await d.handle(QUESTION_PATHS.ask, 'not json', new AbortController().signal)).status).toBe(400);
   });
 
-  it('stops closing once its budget is spent, after ending the session', async () => {
+  it('stops closing once its budget is spent, and says so', async () => {
     let now = 0;
     const sent: string[] = [];
     const call: QuestionCall = async (_method, route) => { sent.push(route.split('/').slice(-2).join('/')); now += 3_000; return {status: 200, body: {}}; };
     const offered: JournalQuestion = {questionId: 'q-1', questions: [], summary: 's', state: 'offered', requestId: 'req-1', answerId: 'a', answers};
     const d = new QuestionDesk([offered, {...offered, questionId: 'q-2', requestId: 'req-2'}, {...offered, questionId: 'q-3', requestId: 'req-3'}],
       async () => undefined, () => now);
-    await d.close(call, 'w-1', credential, 5_000);
-    expect(sent).toEqual(['runtime-requests/sync', 'req-1/delivery']);
+    expect(await d.close(call, 'w-1', credential, 5_000)).toBe(false);
+    expect(sent).toEqual(['req-1/delivery', 'req-2/delivery']);
+  });
+
+  it('never ends the session while a received answer is unrecorded', async () => {
+    const api = server({deliveryStatus: 503});
+    const received: JournalQuestion = {questionId: 'q-1', questions: [], summary: 's', state: 'received', requestId: 'req-1', answerId: 'a', answers};
+    const d = new QuestionDesk([received], async () => undefined, () => performance.now());
+    expect(await d.close(api.call, 'w-1', credential)).toBe(false);
+    expect(api.sent.map((s) => s.route.split('/').at(-1))).toEqual(['delivery']);
+    expect(d.list()[0].state).toBe('received');
+  });
+
+  it('refuses a question beyond the per-attempt limit', async () => {
+    const {d} = desk();
+    for (let i = 0; i < 20; i += 1) expect((await send(d, QUESTION_PATHS.ask, {...ask, questionId: `q-${i}`})).status).toBe(202);
+    expect((await send(d, QUESTION_PATHS.ask, {...ask, questionId: 'q-20'})).status).toBe(429);
   });
 });

@@ -18,6 +18,8 @@ import {QUESTION_PATHS} from './relaySidecar.js';
 
 export {QUESTION_PATHS};
 export const QUESTION_SEAL_MS = 2 * 60 * 60 * 1000;
+/** Questions one attempt may ask; more are refused, so one cycle's work stays bounded. */
+export const MAX_QUESTIONS = 20;
 const POLL_HOLD_MS = 25_000;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
@@ -26,8 +28,8 @@ export interface JournalQuestion {
   questions: unknown[];
   summary: string;
   state: 'asked' | 'opened' | 'offered' | 'received' | 'acknowledged';
-  /** Monotonic time the server confirmed the open; the two-hour seal counts from here. */
-  openedMono?: number;
+  /** The server's own creation time for the request; the two-hour seal counts from it. */
+  openedAt?: string;
   requestId?: string;
   answerId?: string;
   answers?: Record<string, string | string[]>;
@@ -35,7 +37,7 @@ export interface JournalQuestion {
 
 export interface QuestionCredential {runtimeId: string; leaseGeneration: number; claimOwner: string; claimToken: string}
 
-export type QuestionCall = (method: 'GET' | 'POST', route: string, body?: unknown, options?: {key?: string; timeoutMs?: number})
+export type QuestionCall = (method: 'GET' | 'POST', route: string, body?: unknown, options?: {key?: string; timeoutMs?: number; signal?: AbortSignal})
   => Promise<{status: number; body: Record<string, unknown>}>;
 
 type Reply = {status: number; body: string};
@@ -56,6 +58,7 @@ export class QuestionDesk {
     private readonly persist: (questions: JournalQuestion[]) => Promise<void>,
     private readonly monoMs: () => number,
     private readonly holdMs = POLL_HOLD_MS,
+    private readonly wallMs: () => number = () => Date.now(),
   ) {}
 
   list(): JournalQuestion[] { return this.questions; }
@@ -80,6 +83,7 @@ export class QuestionDesk {
     if (path === QUESTION_PATHS.ask) {
       if (known) return reply(202, {});
       if (this.sealed) return reply(410, {});
+      if (this.questions.length >= MAX_QUESTIONS) return reply(429, {error: `At most ${MAX_QUESTIONS} questions per attempt`});
       const questions = Array.isArray(body.questions) ? body.questions : [];
       const first = questions[0] as {question?: unknown} | undefined;
       if (questions.length < 1 || questions.length > 50 || typeof first?.question !== 'string') {
@@ -135,7 +139,20 @@ export class QuestionDesk {
       const opened = await call('POST', `/api/v1/work-items/${workItemId}/runtime-requests/sync`, {...credential, observations: [{
         type: 'opened', providerRequestId: q.questionId, kind: 'user_input', blocking: true, category: null, summary: q.summary,
         detail: {questions: q.questions}}]}, {timeoutMs: 10_000}).catch(() => null);
-      if (opened?.status === 200) await this.update(q.questionId, {state: 'opened', openedMono: this.monoMs()});
+      if (opened?.status === 200) await this.update(q.questionId, {state: 'opened'});
+    }
+    // The seal counts from the server's creation time: a lost open reply or a retry never restarts it.
+    if (this.questions.some((q) => q.state === 'opened' && !q.openedAt)) {
+      const open = await call('GET', `/api/v1/work-items/${workItemId}/runtime-requests?open=true`, undefined, {timeoutMs: 10_000})
+        .catch(() => null);
+      const listed = (open?.status === 200 ? open.body.requests : []) as Array<{providerRequestId?: string; attemptId?: string;
+        runtimeId?: string; createdAt?: string}> | undefined;
+      for (const request of listed ?? []) {
+        const q = this.questions.find((entry) => entry.questionId === request.providerRequestId && entry.state === 'opened' && !entry.openedAt);
+        if (q && request.runtimeId === credential.runtimeId && typeof request.createdAt === 'string') {
+          await this.update(q.questionId, {openedAt: request.createdAt});
+        }
+      }
     }
     if (this.questions.some((q) => q.state === 'opened')) {
       // The workspace travels in the session's header, as for every other call.
@@ -152,8 +169,8 @@ export class QuestionDesk {
       }
     }
     await this.recordReceipts(call, workItemId, credential);
-    const now = this.monoMs();
-    if (this.questions.some((q) => q.state === 'opened' && q.openedMono !== undefined && now - q.openedMono >= QUESTION_SEAL_MS)) {
+    const now = this.wallMs();
+    if (this.questions.some((q) => q.state === 'opened' && q.openedAt !== undefined && now - Date.parse(q.openedAt) >= QUESTION_SEAL_MS)) {
       this.sealed = true;
       for (const wake of [...this.waiters]) wake();
       return true;
@@ -161,40 +178,53 @@ export class QuestionDesk {
     return false;
   }
 
-  private async recordReceipts(call: QuestionCall, workItemId: string, credential: QuestionCredential, left: () => number = () => 10_000) {
-    for (const q of this.questions.filter((entry) => entry.state === 'received' && entry.requestId)) {
-      if (left() <= 0) return;
-      const recorded = await call('POST', `/api/v1/work-items/${workItemId}/runtime-requests/${q.requestId}/delivery`,
-        {...credential, delivery: {outcome: 'delivered'}}, {key: `${q.requestId}:delivered`, timeoutMs: left()}).catch(() => null);
-      if (recorded?.status === 200) await this.update(q.questionId, {state: 'acknowledged'});
-    }
-  }
-
-  /** Answers no more polls or questions; the journal is left for a later close. */
+  /** Answers no more polls or questions. */
   seal(): void {
     this.sealed = true;
     for (const wake of [...this.waiters]) wake();
   }
 
+  /** Records each received answer delivered, once per key; true when none is left unrecorded. */
+  private async recordReceipts(call: QuestionCall, workItemId: string, credential: QuestionCredential,
+    left: () => number = () => 10_000): Promise<boolean> {
+    for (const q of this.questions.filter((entry) => entry.state === 'received' && entry.requestId)) {
+      if (left() <= 0) return false;
+      const recorded = await call('POST', `/api/v1/work-items/${workItemId}/runtime-requests/${q.requestId}/delivery`,
+        {...credential, delivery: {outcome: 'delivered'}}, {key: `${q.requestId}:delivered`, timeoutMs: left()}).catch(() => null);
+      if (recorded?.status === 200) await this.update(q.questionId, {state: 'acknowledged'});
+    }
+    return !this.questions.some((entry) => entry.state === 'received');
+  }
+
   /**
-   * At any stop, while the claim still holds: confirmed answers are recorded
-   * delivered, unconfirmed offers failed, and the session's open requests
-   * closed. Nothing is offered again.
+   * At any stop, while the claim still holds, within `budgetMs`: received
+   * answers are recorded delivered first, unconfirmed offers failed, and only
+   * then is the session ended, since ending it fails every answer whose
+   * delivery is still pending. Returns false when anything is left unrecorded:
+   * the caller then keeps the attempt unsettled for the next start to finish
+   * under the same claim. Nothing is offered again.
    */
-  async close(call: QuestionCall, workItemId: string, credential: QuestionCredential, budgetMs = 30_000): Promise<void> {
+  async close(call: QuestionCall, workItemId: string, credential: QuestionCredential, budgetMs = 30_000): Promise<boolean> {
     this.seal();
-    if (this.questions.length === 0) return;
+    if (this.questions.length === 0) return true;
     const until = this.monoMs() + budgetMs;
     const left = () => Math.floor(Math.min(10_000, until - this.monoMs()));
-    // The session's open requests are closed first: it is the one call that must land.
-    await call('POST', `/api/v1/work-items/${workItemId}/runtime-requests/sync`, {...credential, observations: [{type: 'session_ended'}]},
-      {timeoutMs: Math.max(1, left())}).catch(() => null);
-    await this.recordReceipts(call, workItemId, credential, left);
+    if (!await this.recordReceipts(call, workItemId, credential, left)) return false;
     for (const q of this.questions.filter((entry) => entry.state === 'offered' && entry.requestId)) {
-      if (left() <= 0) return;
+      if (left() <= 0) return false;
       await call('POST', `/api/v1/work-items/${workItemId}/runtime-requests/${q.requestId}/delivery`,
         {...credential, delivery: {outcome: 'failed', error: 'not_received'}}, {key: `${q.requestId}:not_received`, timeoutMs: left()})
         .catch(() => null);
     }
+    if (left() <= 0) return false;
+    const ended = await call('POST', `/api/v1/work-items/${workItemId}/runtime-requests/sync`,
+      {...credential, observations: [{type: 'session_ended'}]}, {timeoutMs: left()}).catch(() => null);
+    return ended?.status === 200;
   }
+}
+
+/** Closes a recovered attempt's questions under its recovered claim, journaling progress; false leaves it unsettled. */
+export function closeRecoveredQuestions(questions: JournalQuestion[], persist: (questions: JournalQuestion[]) => Promise<void>,
+  monoMs: () => number, call: QuestionCall, workItemId: string, credential: QuestionCredential, budgetMs: number): Promise<boolean> {
+  return new QuestionDesk(questions, persist, monoMs).close(call, workItemId, credential, budgetMs);
 }

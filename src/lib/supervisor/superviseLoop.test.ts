@@ -79,6 +79,10 @@ interface Scenario {
   onDeclare?: () => void;
   /** Whether the person has answered the writer's question yet. */
   answered?: () => boolean;
+  /** Opening a question never answers (until the request is aborted). */
+  openHangs?: boolean;
+  /** Delivery receipts are answered with this status. */
+  deliveryStatus?: number;
 }
 
 /** The API, Docker and attached processes one attempt touches, recording what happened in order. */
@@ -102,12 +106,20 @@ function world(scenario: Scenario = {}) {
     if (route.includes('/runtime-requests')) {
       if (init.method === 'POST') posts.push({path: route, body, key: (init.headers as Record<string, string>)['Idempotency-Key']});
       if (route.endsWith('/runtime-requests/sync')) {
-        events.push(`rr-sync:${(body.observations as Array<{type: string}>)[0].type}`);
+        const type = (body.observations as Array<{type: string}>)[0].type;
+        events.push(`rr-sync:${type}`);
+        if (type === 'opened' && scenario.openHangs) {
+          return new Promise<Response>((_, reject) => init.signal?.addEventListener('abort', () => reject(new Error('aborted'))));
+        }
         return new Response(JSON.stringify({version: 1, changed: 1}), {status: 200});
       }
       if (route.endsWith('/delivery')) {
         events.push(`rr-delivery:${(body.delivery as {outcome: string}).outcome}`);
-        return new Response(JSON.stringify({version: 1}), {status: 200});
+        return new Response(JSON.stringify({version: 1}), {status: scenario.deliveryStatus ?? 200});
+      }
+      if (route.includes('open=true')) {
+        return new Response(JSON.stringify({requests: [{providerRequestId: 'q-1', runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`,
+          createdAt: new Date().toISOString()}]}), {status: 200});
       }
       const requests = scenario.answered?.() ? [{id: 'req-1', providerRequestId: 'q-1', resolution: {answers: {branch: 'main'}}}] : [];
       return new Response(JSON.stringify({requests, truncated: false}), {status: 200});
@@ -982,6 +994,41 @@ describe('superviseOnce', () => {
       expect(await running).toMatchObject({kind: 'finished', reason: 'shutdown'});
       expect(w.events).toContain('rr-sync:session_ended');
       expect(performance.now() - stoppedAt).toBeLessThan(10_000);
+    });
+
+    it('interrupts a question call that never answers when the service shuts down', async () => {
+      const w = world({agentExit: 'never', openHangs: true});
+      const shutdown = new AbortController();
+      const running = background(superviseOnce(deps(w, {shutdown: shutdown.signal})), () => shutdown.abort());
+      await until(() => w.events.includes('go'));
+      w.sidecarIo.stdout?.write(`${JSON.stringify({id: 1, method: 'POST', path: '/sift/v1/questions',
+        body: Buffer.from(JSON.stringify({questionId: 'q-1', questions: [{question: 'Which branch?'}]})).toString('base64')})}\n`);
+      await until(() => w.events.includes('rr-sync:opened'));
+      const stoppedAt = performance.now();
+      shutdown.abort();
+      expect(await running).toMatchObject({kind: 'finished', reason: 'shutdown', facts: {cgroupEmpty: 'empty'}});
+      expect(performance.now() - stoppedAt).toBeLessThan(5_000);
+    });
+
+    it('keeps the attempt unsettled while a received answer is unrecorded, and finishes it on the next start', async () => {
+      const question = {questions: [{question: 'Which branch?'}], summary: 'Which branch?', answers: {branch: 'main'}};
+      await writeJournal({root, owner: null}, JOURNAL, {version: 1, state: 'stopping', runId: 'abc123abc123', dispatchId: DISPATCH,
+        workItemId: WORK_ITEM, runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`, attemptId: ATTEMPT, networkId: 'net-1',
+        workspace: {repositoryId: PLAN.repositoryId, branch: PLAN.branch, baseSha: PLAN.baseSha},
+        containers: {sidecar: 'c-relay', agent: 'c-agent'}, callSeq: 0, stop: {reason: 'workload_exited', exitCode: 0},
+        evidenceOwed: true, evidence: {path: '/gone', sha256: 'a'.repeat(64), bytes: 1, acknowledged: true, manifestDigest: MANIFEST},
+        questions: [{...question, questionId: 'q-1', state: 'received', requestId: 'req-1', answerId: 'req-1:x'}],
+      } satisfies AttemptJournal);
+      const failing = world({deliveryStatus: 503});
+      expect(await superviseOnce(deps(failing))).toEqual({kind: 'recovered', settled: false});
+      expect(failing.events).not.toContain('rr-sync:session_ended');
+      expect(failing.events).not.toContain('review');
+      expect((await journal())?.questions?.[0]).toMatchObject({state: 'received'});
+      const healthy = world();
+      expect(await superviseOnce(deps(healthy))).toEqual({kind: 'recovered', settled: true});
+      const order = (event: string) => healthy.events.indexOf(event);
+      expect(order('rr-delivery:delivered')).toBeLessThan(order('rr-sync:session_ended'));
+      expect(order('rr-sync:session_ended')).toBeLessThan(order('review'));
     });
   });
 });

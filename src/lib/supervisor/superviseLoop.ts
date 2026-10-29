@@ -18,7 +18,7 @@ import {hostname} from 'node:os';
 import path from 'node:path';
 import {attemptSliceName, cgroupSetupProblem, isInsideAttemptSlice, parseCgroupV2, type ReadFile} from './attemptCgroup.js';
 import {captureLog, type EvidenceOutcome, uploadAgentLog} from './attemptEvidence.js';
-import {type JournalQuestion, QuestionDesk} from './attemptQuestions.js';
+import {closeRecoveredQuestions, type JournalQuestion, QuestionDesk} from './attemptQuestions.js';
 import {GO_LINE, READY_LINE} from './attemptLauncher.js';
 import {dockerVersionProblem, evaluateNetworkInspect, evaluateSandboxInspect, networkCreateArgs, sandboxCreateArgs, type SandboxContainerSpec} from './containerSandbox.js';
 import {DEADLINE_EXIT, type DeadlineDocker} from './hostDocker.js';
@@ -601,12 +601,12 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       if (resumed === 'cancelled') return {kind: 'recovered', settled: false};
       earlier = resumed;
       // The attempt stopped with the restart: its questions are closed and reconciled, never offered again.
-      if (earlier.questions?.length) {
-        await new QuestionDesk(earlier.questions, async () => undefined, () => deps.clock.monoMs()).close(
-          (method, route, body, options) => session.call(method, route, body, options), earlier.workItemId,
-          {runtimeId: earlier.runtimeId, leaseGeneration: 1, claimOwner: `mobile-runner:${machine.runnerId}`,
-            claimToken: workItem?.claimToken as string});
-      }
+      const pending = earlier;
+      if (pending.questions?.length && !await closeRecoveredQuestions(pending.questions, (questions) => writeAttemptJournal(deps,
+        earlier = {...pending, questions}), () => deps.clock.monoMs(), (method, route, body, options) => session.call(method, route, body,
+        {...options, signal: deps.shutdown}), pending.workItemId, {runtimeId: pending.runtimeId, leaseGeneration: 1,
+        claimOwner: `mobile-runner:${machine.runnerId}`, claimToken: workItem?.claimToken as string},
+        Math.min(30_000, recoveredCap - deps.clock.monoMs()))) return {kind: 'recovered', settled: false};
       const settlement = await postSettlement(session, earlier, workItem?.claimToken as string, 30_000);
       earlier = {...earlier, settlement};
       settled = isSettled(settlement);
@@ -745,7 +745,11 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   let sidecar: AttachedProcess | undefined;
   let agent: AttachedProcess | undefined;
   let agentLog: ReturnType<typeof captureLog> | undefined;
+  // During the run every question call is bounded by the confirmed lease and dies with the attempt's lifetime.
   const call = (method: 'GET' | 'POST', route: string, body?: unknown, options?: {key?: string; timeoutMs?: number}) =>
+    session.call(method, route, body, {...options, timeoutMs: within(options?.timeoutMs ?? 10_000), signal: life.signal});
+  // Closing runs after the lifetime ends, within its own budget.
+  const closeCall = (method: 'GET' | 'POST', route: string, body?: unknown, options?: {key?: string; timeoutMs?: number}) =>
     session.call(method, route, body, options);
   const credential = {runtimeId: journal.runtimeId, leaseGeneration: 1, claimOwner: `mobile-runner:${machine.runnerId}`, claimToken};
   const desk = new QuestionDesk(journal.questions ?? [], (questions) => save({...journal, questions}), () => deps.clock.monoMs());
@@ -783,6 +787,13 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       settled.facts = facts;
       await save({...journal, state: 'held', stop: {reason, ...(controlId ? {controlId} : {}), facts}});
     }
+    // Leaves the attempt unsettled, its state as the stop wrote it so the next start sweeps again, then settles it there.
+    const keepUnsettled = async (outcome?: EvidenceOutcome): Promise<SuperviseOutcome> => {
+      await save({...journal, settlement: {reason, ...(exitCode === undefined ? {} : {exitCode}), ...(controlId ? {controlId} : {}),
+        started: true, cgroupEmpty: settled.facts.cgroupEmpty === 'empty', attemptReport: 'pending', work: 'pending',
+        ...(outcome && !outcome.cancelled ? {evidence: outcome} : {})}});
+      return {kind: 'finished', reason, exitCode, facts: settled.facts, settled: false};
+    };
     // Evidence, once every process has stopped and while the attempt's own claim still holds: settlement comes after.
     let evidence: EvidenceOutcome | undefined;
     if (agentLog) {
@@ -793,21 +804,15 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
         fetch: deps.fetch, monoMs: () => deps.clock.monoMs(), deadlineMono: Math.min(cap, deps.clock.monoMs() + EVIDENCE_BUDGET_MS),
         route: `/api/v1/work-items/${workItem.id}/execution-attempts/${attemptId}/evidence-manifest`, claimToken, log,
         signal: deps.shutdown}) : {acknowledged: false};
-      if (evidence.cancelled) {
-        // Shutdown arrived mid-upload: nothing is decided or posted. The undecided evidence and the settlement wait
-        // in the journal, and the next start finishes the upload under the recovered claim before settling.
-        const pending: Settlement = {reason, ...(exitCode === undefined ? {} : {exitCode}), ...(controlId ? {controlId} : {}),
-          started: true, cgroupEmpty: true, attemptReport: 'pending', work: 'pending'};
-        // The journal's state is left as the stop wrote it, so the next start sweeps again before it settles.
-        await save({...journal, settlement: pending});
-        return {kind: 'finished', reason, exitCode, facts: settled.facts, settled: false};
-      }
+      // Shutdown arrived mid-upload: nothing is decided or posted; the next start finishes it under the recovered claim.
+      if (evidence.cancelled) return keepUnsettled();
       if (journal.evidence) await save({...journal, evidence: {...journal.evidence, ...evidence}});
       if (!evidence.acknowledged) deps.log(`The attempt's evidence was not acknowledged; its log is kept at ${inputDir}.`);
     }
     // Questions are closed while the claim holds: received answers recorded delivered, unconfirmed ones failed.
-    // At shutdown the unit's stop timeout bounds it to 5 s in all; otherwise 30 s.
-    await desk.close(call, journal.workItemId, credential, deps.shutdown?.aborted ? 5_000 : 30_000);
+    // At shutdown the unit's stop timeout bounds it to 5 s in all; otherwise 30 s. Anything left unrecorded keeps the
+    // attempt unsettled: the next start finishes the reconciliation under the same claim before settling.
+    if (!await desk.close(closeCall, journal.workItemId, credential, deps.shutdown?.aborted ? 5_000 : 30_000)) return keepUnsettled(evidence);
     // An unacknowledged log stays on the machine for the operator; nothing else is kept.
     if (!evidence || evidence.acknowledged) await fs.rm(inputDir, {recursive: true, force: true}).catch(() => undefined);
     const settlement: Settlement = {reason, ...(exitCode === undefined ? {} : {exitCode}), ...(controlId ? {controlId} : {}),
@@ -962,7 +967,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
         const stop = (controls?.body.controls as Array<{id: string; action: string; state: string}> | undefined)
           ?.find((control) => control.action === 'stop' && control.state === 'pending');
         if (stop) return await finish('stop_control', undefined, stop.id);
-        if (await desk.tick(call, journal.workItemId, credential)) return await finish('question_timeout');
+        if (await guard(desk.tick(call, journal.workItemId, credential))) return await finish('question_timeout');
       }
       if (deps.clock.monoMs() >= renewAt) {
         const sent = deps.clock.monoMs();
