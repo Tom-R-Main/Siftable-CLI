@@ -764,5 +764,60 @@ describe('superviseOnce', () => {
       // The same declaration both times: the frozen log's digest never changes.
       expect(w.evidence.declared[0]).toEqual(w.evidence.declared[1]);
     });
+
+    /** A journal as a crash leaves it: the workload exited 0, its processes are gone, and the log was frozen. */
+    async function crashedAfterFreeze(evidence: Partial<{acknowledged: boolean; manifestDigest: string}>, logText: string | null = WORKLOAD_OUTPUT) {
+      const dir = path.join(inputRoot, ATTEMPT);
+      await fs.mkdir(dir, {recursive: true});
+      const logPath = path.join(dir, 'agent.log');
+      if (logText !== null) await fs.writeFile(logPath, logText);
+      await writeJournal({root, owner: null}, JOURNAL, {version: 1, state: 'stopping', runId: 'abc123abc123', dispatchId: DISPATCH,
+        workItemId: WORK_ITEM, runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`, attemptId: ATTEMPT, networkId: 'net-1',
+        workspace: {repositoryId: PLAN.repositoryId, branch: PLAN.branch, baseSha: PLAN.baseSha},
+        containers: {sidecar: 'c-relay', agent: 'c-agent'}, callSeq: 0, stop: {reason: 'workload_exited', exitCode: 0},
+        evidence: {path: logPath, sha256: sha(WORKLOAD_OUTPUT), bytes: WORKLOAD_OUTPUT.length, ...evidence}} satisfies AttemptJournal);
+      return dir;
+    }
+
+    it('finishes an upload a crash cut off, under the recovered claim, and settles the clean exit as a review', async () => {
+      const dir = await crashedAfterFreeze({});
+      const w = world();
+      expect(await superviseOnce(deps(w))).toEqual({kind: 'recovered', settled: true});
+      const order = (event: string) => w.events.indexOf(event);
+      expect(order('consume')).toBeLessThan(order('evidence-declare'));
+      expect(order('evidence-ack')).toBeLessThan(order('review'));
+      expect(w.evidence.puts).toHaveLength(1);
+      const review = w.posts.find((post) => post.path.endsWith('/review'))!;
+      expect(review.body.artifactRefs).toContainEqual({type: 'evidence_manifest', attemptId: ATTEMPT, manifestDigest: MANIFEST});
+      expect(w.events).not.toContain('fail');
+      await expect(fs.stat(dir)).rejects.toMatchObject({code: 'ENOENT'});
+    });
+
+    it('acknowledges once after a crash between the upload and its acknowledgement, without a second object', async () => {
+      await crashedAfterFreeze({});
+      const w = world({putStatus: 412});
+      expect(await superviseOnce(deps(w))).toEqual({kind: 'recovered', settled: true});
+      expect(w.events.filter((e) => e === 'evidence-ack')).toHaveLength(1);
+      expect(w.events).toContain('review');
+    });
+
+    it('settles an acknowledgement journaled before a crash without uploading again', async () => {
+      await crashedAfterFreeze({acknowledged: true, manifestDigest: MANIFEST});
+      const w = world();
+      expect(await superviseOnce(deps(w))).toEqual({kind: 'recovered', settled: true});
+      expect(w.events).not.toContain('evidence-declare');
+      const review = w.posts.find((post) => post.path.endsWith('/review'))!;
+      expect(review.body.artifactRefs).toContainEqual({type: 'evidence_manifest', attemptId: ATTEMPT, manifestDigest: MANIFEST});
+    });
+
+    it('fails the work, never uploading, when the frozen log is gone after a crash', async () => {
+      await crashedAfterFreeze({}, null);
+      const w = world();
+      expect(await superviseOnce(deps(w))).toEqual({kind: 'recovered', settled: true});
+      expect(w.events).not.toContain('evidence-declare');
+      const fail = w.posts.find((post) => post.path.endsWith('/fail'))!;
+      expect(String(fail.body.failureReason)).toContain('evidence_upload_failed');
+      expect(w.events).toContain('attempt:ended:failed');
+    });
   });
 });

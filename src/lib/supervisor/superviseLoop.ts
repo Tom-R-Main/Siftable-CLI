@@ -12,7 +12,7 @@
  * cannot be shown gone stays held and blocks further work. The claim token is
  * never written to disk: a restart recovers it from consume.
  */
-import {randomBytes, randomUUID} from 'node:crypto';
+import {createHash, randomBytes, randomUUID} from 'node:crypto';
 import {promises as fs} from 'node:fs';
 import {hostname} from 'node:os';
 import path from 'node:path';
@@ -113,7 +113,7 @@ export interface AttemptJournal {
   evidence?: {path: string; sha256: string; bytes: number} & Partial<EvidenceOutcome>;
   /** The last model call ID handed out; journaled before the call is sent. */
   callSeq: number;
-  stop?: {reason: StopReason; controlId?: string; facts?: StopFacts};
+  stop?: {reason: StopReason; controlId?: string; exitCode?: number; facts?: StopFacts};
   settlement?: Settlement;
   /** Creates sent but not yet answered. Their IDs are recorded whenever they resolve; an unresolved one is held. */
   pendingCreates?: Array<'network' | 'sidecar' | 'agent'>;
@@ -306,7 +306,9 @@ async function sendCleanupReceipts(deps: SuperviseDeps): Promise<void> {
 async function settle(
   deps: SuperviseDeps, journal: AttemptJournal, reason: StopReason, controlId?: string, pendingWrites: Promise<unknown> = Promise.resolve(),
 ): Promise<{facts: StopFacts; journal: AttemptJournal}> {
-  const stop = {reason, ...(controlId ? {controlId} : {})};
+  // The workload's exit code survives a crash and a second sweep: recovery settles with it.
+  const exitCode = journal.stop?.exitCode;
+  const stop = {reason, ...(controlId ? {controlId} : {}), ...(exitCode === undefined ? {} : {exitCode})};
   let current: AttemptJournal = {...journal, state: 'stopping', stop};
   // The physical stop never waits on the journal, failed or slow: the `stopping` record is written in the
   // background, after any earlier write so an older snapshot cannot land last, and a failure is raised only
@@ -475,6 +477,28 @@ async function postSettlement(
   return settlement;
 }
 
+/**
+ * Finishes an evidence upload a crash cut off, under the attempt's own recovered claim and before its
+ * settlement is posted. The frozen log must still match its journaled digest; nothing is re-run.
+ */
+async function resumeEvidence(deps: SuperviseDeps, session: Session, journal: AttemptJournal, claimToken: string): Promise<AttemptJournal> {
+  const frozen = journal.evidence;
+  if (!frozen || !journal.settlement || journal.settlement.evidence || !journal.attemptId) return journal;
+  const intact = await fs.readFile(frozen.path)
+    .then((bytes) => bytes.length === frozen.bytes && createHash('sha256').update(bytes).digest('hex') === frozen.sha256)
+    .catch(() => false);
+  const outcome: EvidenceOutcome = intact ? await uploadAgentLog({
+    call: (method, route, body, options) => session.call(method, route, body, options), fetch: deps.fetch,
+    monoMs: () => deps.clock.monoMs(), deadlineMono: deps.clock.monoMs() + EVIDENCE_BUDGET_MS,
+    route: `/api/v1/work-items/${journal.workItemId}/execution-attempts/${journal.attemptId}/evidence-manifest`, claimToken,
+    log: {path: frozen.path, sha256: frozen.sha256, bytes: frozen.bytes},
+  }) : {acknowledged: false};
+  const next = {...journal, evidence: {...frozen, ...outcome}, settlement: {...journal.settlement, evidence: outcome}};
+  await writeAttemptJournal(deps, next);
+  if (outcome.acknowledged) await fs.rm(path.dirname(frozen.path), {recursive: true, force: true}).catch(() => undefined);
+  return next;
+}
+
 const isSettled = (settlement: Settlement) => settlement.attemptReport !== 'pending' && settlement.work !== 'pending';
 
 async function readLedger(deps: SuperviseDeps): Promise<string[]> {
@@ -510,8 +534,14 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       await sendCleanupReceipts(deps);
       return {kind: 'held', held: facts.held};
     }
+    // Evidence whose upload had ended is settled as it ended; one cut off mid-upload stays undecided and is
+    // finished below under the attempt's own recovered claim.
+    const ended = journal.evidence?.acknowledged;
     earlier = {...journal, state: 'settling', settlement: {...(journal.settlement ?? {
       reason, ...(journal.stop?.controlId ? {controlId: journal.stop.controlId} : {}),
+      ...(journal.stop?.exitCode === undefined ? {} : {exitCode: journal.stop.exitCode}),
+      ...(ended === undefined ? {} : {evidence: {acknowledged: ended, ...(journal.evidence?.manifestDigest
+        ? {manifestDigest: journal.evidence.manifestDigest} : {})}}),
       started: Boolean(journal.containers.sidecar || journal.containers.agent),
       // The attach may have committed even if its reply was lost: report by the journaled runtime and workspace.
       attemptReport: journal.workspace ? 'pending' : 'skipped', work: 'pending',
@@ -553,6 +583,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     // Settle the earlier attempt with its own recovered claim, or record that the claim is gone.
     let settled = false;
     if (claimed && dispatch?.id === earlier.dispatchId) {
+      earlier = await resumeEvidence(deps, session, earlier, workItem?.claimToken as string);
       const settlement = await postSettlement(session, earlier, workItem?.claimToken as string, 30_000);
       earlier = {...earlier, settlement};
       settled = isSettled(settlement);
@@ -700,6 +731,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     deps.shutdown?.removeEventListener('abort', onShutdown);
     if (!life.signal.aborted) life.abort('finished');
     agent?.stdin.end();
+    if (exitCode !== undefined) journal = {...journal, stop: {reason, ...(controlId ? {controlId} : {}), exitCode}};
     // Known containers are killed at once, before waiting on creates in flight or on any journal write.
     const killBy = deps.clock.monoMs() + STOP_BUDGET_MS;
     for (const id of [journal.containers.agent, journal.containers.sidecar]) {
