@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import {promises as fs} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
@@ -22,6 +23,9 @@ const DISPATCH = '66666666-6666-4666-8666-666666666666';
 const WORK_ITEM = '77777777-7777-4777-8777-777777777777';
 const ATTEMPT = '88888888-8888-4888-8888-888888888888';
 const INPUT_SHA = 'f'.repeat(64);
+const STORAGE = 'https://storage.example/';
+const MANIFEST = 'e'.repeat(64);
+const WORKLOAD_OUTPUT = 'the workload ran\nand wrote to stderr too\n';
 const CONTROL = '99999999-9999-4999-8999-999999999999';
 const PLAN = {repositoryId: 'repo-1', branch: 'main', baseSha: 'c'.repeat(40), imageRef: IMAGE, command: ['sh', '-c', 'true']};
 const inFuture = (ms: number) => new Date(Date.now() + ms).toISOString();
@@ -65,6 +69,10 @@ interface Scenario {
   consumeStatus?: number;
   /** The frozen-input request is answered with this status. */
   inputStatus?: number;
+  /** Each evidence upload PUT is answered with this status; a function sees the attempt number. */
+  putStatus?: number | ((n: number) => number);
+  /** Each evidence acknowledge is answered with this, or its reply is lost. */
+  evidenceAck?: (n: number) => number | 'lost';
 }
 
 /** The API, Docker and attached processes one attempt touches, recording what happened in order. */
@@ -74,7 +82,15 @@ function world(scenario: Scenario = {}) {
   const sidecarIo: {stdin?: PassThrough; stdout?: PassThrough} = {};
   const agentInput: {value?: Record<string, unknown>} = {};
   const posts: Array<{path: string; body: Record<string, unknown>; key?: string}> = [];
+  const evidence = {puts: [] as Array<{url: string; headers: Record<string, string>; body: string}>, acknowledged: false, declared: [] as unknown[]};
   const fetchImpl = (async (url: string, init: RequestInit) => {
+    if (url.startsWith(STORAGE)) {
+      const n = evidence.puts.length + 1;
+      evidence.puts.push({url, headers: init.headers as Record<string, string>, body: Buffer.from(init.body as Uint8Array).toString()});
+      events.push('evidence-put');
+      const status = typeof scenario.putStatus === 'function' ? scenario.putStatus(n) : scenario.putStatus ?? 200;
+      return new Response(null, {status});
+    }
     const route = url.slice(API.length);
     const body = init.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
     const key = (init.headers as Record<string, string>)['Idempotency-Key'];
@@ -105,6 +121,21 @@ function world(scenario: Scenario = {}) {
       events.push('input');
       if (scenario.inputStatus) return reply(scenario.inputStatus, {});
       return reply(200, {payloadSha256: INPUT_SHA, task: {version: 2, title: 'From the server'}, replayed: false});
+    }
+    if (route.endsWith('/evidence-manifest/acknowledge')) {
+      const n = events.filter((e) => e === 'evidence-ack').length + 1;
+      events.push('evidence-ack');
+      const outcome = scenario.evidenceAck?.(n) ?? 200;
+      if (outcome === 200) evidence.acknowledged = true;
+      if (outcome === 'lost') { evidence.acknowledged = true; throw new TypeError('fetch failed'); }
+      return reply(outcome, {});
+    }
+    if (route.endsWith('/evidence-manifest')) {
+      events.push('evidence-declare');
+      evidence.declared.push(body.artifacts);
+      const [artifact] = body.artifacts as Array<{sha256: string}>;
+      return reply(200, {manifestDigest: MANIFEST, acknowledgedAt: evidence.acknowledged ? '2026-10-29T00:00:00.000Z' : null,
+        uploads: evidence.acknowledged ? [] : [{sha256: artifact.sha256, url: `${STORAGE}attempts/${ATTEMPT}/${artifact.sha256}`}]});
     }
     if (route.endsWith('/review')) { events.push('review'); return reply(scenario.reviewStatus ?? 200, {}); }
     if (route.endsWith('/fail')) { events.push('fail'); return reply(200, {}); }
@@ -217,6 +248,7 @@ function world(scenario: Scenario = {}) {
     stdin.on('data', (chunk: Buffer) => {
       if (!chunk.toString().includes(GO_LINE)) return;
       events.push('go');
+      stdout.write(WORKLOAD_OUTPUT);
       if (scenario.agentExit !== 'never') setTimeout(() => resolveExit(scenario.agentExit ?? 0), 20);
     });
     return {stdin, stdout, exited, kill: () => stdout.end()};
@@ -227,7 +259,7 @@ function world(scenario: Scenario = {}) {
     if (file.endsWith('cgroup.events')) return (scenario.populated ?? (() => 'populated 0\n'))();
     throw Object.assign(new Error('missing'), {code: 'ENOENT'});
   };
-  return {events, posts, fetchImpl, docker, attach, readFile, modelKeys, sidecarIo, agentInput};
+  return {events, posts, fetchImpl, docker, attach, readFile, modelKeys, sidecarIo, agentInput, evidence};
 }
 
 describe('superviseOnce', () => {
@@ -680,5 +712,57 @@ describe('superviseOnce', () => {
     expect(await superviseOnce(deps(after))).toEqual({kind: 'recovered', settled: false});
     expect(await journal()).toBeNull();
     expect(await superviseOnce(deps(world({consumeStatus: 502})))).toEqual({kind: 'refused', reason: 'consume_http_502'});
+  });
+
+  describe('evidence (U5b-2b, log only)', () => {
+    const sha = (text: string) => createHash('sha256').update(text).digest('hex');
+    const receipts = (w: ReturnType<typeof world>) => w.posts.filter((post) => post.path.endsWith('/cleanup-receipts'))
+      .map((post) => (post.body.receipt as {recoveryVolumeRetained?: boolean}).recoveryVolumeRetained);
+
+    it('declares the frozen log after every process has stopped, uploads it create-only, and binds the review to it', async () => {
+      const w = world();
+      expect(await superviseOnce(deps(w))).toMatchObject({kind: 'finished', reason: 'workload_exited', settled: true});
+      const order = (event: string) => w.events.indexOf(event);
+      expect(order('rm:c-agent')).toBeLessThan(order('evidence-declare'));
+      expect(order('evidence-ack')).toBeLessThan(order('review'));
+      expect(w.evidence.declared).toEqual([[{kind: 'agent_log', sha256: sha(WORKLOAD_OUTPUT), bytes: WORKLOAD_OUTPUT.length,
+        contentType: 'text/plain'}]]);
+      expect(w.evidence.puts).toEqual([{url: `${STORAGE}attempts/${ATTEMPT}/${sha(WORKLOAD_OUTPUT)}`, body: WORKLOAD_OUTPUT,
+        headers: {'Content-Type': 'text/plain', 'x-goog-if-generation-match': '0',
+          'x-goog-content-length-range': `${WORKLOAD_OUTPUT.length},${WORKLOAD_OUTPUT.length}`}}]);
+      const review = w.posts.find((post) => post.path.endsWith('/review'))!;
+      expect(review.body.artifactRefs).toContainEqual({type: 'evidence_manifest', attemptId: ATTEMPT, manifestDigest: MANIFEST});
+      expect(await fs.readdir(inputRoot)).toEqual([]);
+    });
+
+    it('fails the work when the upload never succeeds, keeping the log and claiming no retained volume', async () => {
+      const w = world({putStatus: 503});
+      expect(await superviseOnce(deps(w))).toMatchObject({kind: 'finished', reason: 'workload_exited', settled: true});
+      expect(w.events.filter((e) => e === 'evidence-declare')).toHaveLength(3);
+      expect(w.events).not.toContain('evidence-ack');
+      expect(w.events).not.toContain('review');
+      expect(w.events).toContain('attempt:ended:failed');
+      const fail = w.posts.find((post) => post.path.endsWith('/fail'))!;
+      expect(String(fail.body.failureReason)).toContain('evidence_upload_failed');
+      // The log stays on the machine, byte for byte, and the archived journal says where.
+      expect(await fs.readFile(path.join(inputRoot, ATTEMPT, 'agent.log'), 'utf8')).toBe(WORKLOAD_OUTPUT);
+      const retired = await fs.readdir(path.join(root, 'retired'));
+      const archived = JSON.parse(await fs.readFile(path.join(root, 'retired', retired.find((name) => name.endsWith(JOURNAL))!), 'utf8'));
+      expect(archived.evidence).toMatchObject({sha256: sha(WORKLOAD_OUTPUT), bytes: WORKLOAD_OUTPUT.length, acknowledged: false});
+      // Only a real retained volume would make this true; there is none in this cut.
+      expect(receipts(w).length).toBeGreaterThan(0);
+      expect(receipts(w).every((retained) => retained === false)).toBe(true);
+    });
+
+    it('settles a lost acknowledge reply by declaring again, without a second upload', async () => {
+      const w = world({evidenceAck: (n) => (n === 1 ? 'lost' : 200)});
+      expect(await superviseOnce(deps(w))).toMatchObject({kind: 'finished', reason: 'workload_exited', settled: true});
+      expect(w.events.filter((e) => e === 'evidence-declare')).toHaveLength(2);
+      expect(w.evidence.puts).toHaveLength(1);
+      expect(w.events.filter((e) => e === 'evidence-ack')).toHaveLength(1);
+      expect(w.events.filter((e) => e === 'review')).toHaveLength(1);
+      // The same declaration both times: the frozen log's digest never changes.
+      expect(w.evidence.declared[0]).toEqual(w.evidence.declared[1]);
+    });
   });
 });

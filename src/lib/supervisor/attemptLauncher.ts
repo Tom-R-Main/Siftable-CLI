@@ -69,7 +69,8 @@ export async function launch(env: NodeJS.ProcessEnv, argv: string[], io = {input
   if (!await waitForGo(io.input)) return 71;
   const [command, ...args] = argv;
   if (!command) return 72;
-  const child = spawn(command, args, {stdio: ['ignore', 'inherit', 'inherit'], env: {...env, SIFT_DIAGNOSTIC_NONCE: ''}});
+  // stderr joins stdout, so the supervisor's one stream is the attempt's whole log.
+  const child = spawn(command, args, {stdio: ['ignore', 'inherit', 1], env: {...env, SIFT_DIAGNOSTIC_NONCE: ''}});
   return new Promise((resolve) => {
     child.once('error', () => resolve(127));
     child.once('exit', (code, signal) => resolve(code ?? (signal ? 128 : 1)));

@@ -17,6 +17,7 @@ import {promises as fs} from 'node:fs';
 import {hostname} from 'node:os';
 import path from 'node:path';
 import {attemptSliceName, cgroupSetupProblem, isInsideAttemptSlice, parseCgroupV2, type ReadFile} from './attemptCgroup.js';
+import {captureLog, type EvidenceOutcome, uploadAgentLog} from './attemptEvidence.js';
 import {GO_LINE, READY_LINE} from './attemptLauncher.js';
 import {dockerVersionProblem, evaluateNetworkInspect, evaluateSandboxInspect, networkCreateArgs, sandboxCreateArgs, type SandboxContainerSpec} from './containerSandbox.js';
 import {DEADLINE_EXIT, type DeadlineDocker} from './hostDocker.js';
@@ -89,6 +90,8 @@ export interface Settlement {
   cgroupEmpty: boolean;
   attemptReport: 'pending' | 'done' | 'conflict' | 'skipped';
   work: 'pending' | 'done' | 'conflict';
+  /** The workload's evidence (U5b-2b): absent when nothing ran; unacknowledged fails the work. */
+  evidence?: EvidenceOutcome;
 }
 
 export interface AttemptJournal {
@@ -106,6 +109,8 @@ export interface AttemptJournal {
   workspace?: {repositoryId: string; branch: string; baseSha: string};
   /** The server's digest of the attempt's frozen input, the task the agent was given. */
   inputSha256?: string;
+  /** The frozen workload log and how its upload ended; the file is kept on the machine unless acknowledged. */
+  evidence?: {path: string; sha256: string; bytes: number} & Partial<EvidenceOutcome>;
   /** The last model call ID handed out; journaled before the call is sent. */
   callSeq: number;
   stop?: {reason: StopReason; controlId?: string; facts?: StopFacts};
@@ -380,8 +385,12 @@ function attemptSpecs(deps: SuperviseDeps, journal: AttemptJournal, attemptId: s
 }
 
 const RUNNER_HEARTBEAT_MS = 45_000;
+/** Evidence upload before settlement: three rounds at most, within this and the confirmed lease. */
+const EVIDENCE_BUDGET_MS = 120_000;
 
 function terminalReport(settlement: Settlement): {state: 'ended' | 'interrupted'; endReason?: 'lease_lost' | 'terminated' | 'failed'} {
+  // A workload that exited cleanly but whose evidence was never acknowledged ended as failed.
+  if (settlement.reason === 'workload_exited' && settlement.evidence?.acknowledged === false) return {state: 'ended', endReason: 'failed'};
   switch (settlement.reason) {
     case 'workload_exited': return settlement.exitCode === 0 ? {state: 'ended'} : {state: 'ended', endReason: 'failed'};
     case 'stop_control': return {state: 'ended', endReason: 'terminated'};
@@ -439,17 +448,23 @@ async function postSettlement(
       // Acknowledged only on an observed empty cgroup; the server then cancels the work item.
       reply = await session.call('POST', `/api/v1/work-items/dispatches/${journal.dispatchId}/controls/ack`,
         {workspaceId, controlId: settlement.controlId, claimToken, state: 'acknowledged'}, options(`${settlement.controlId}:ack`)).catch(() => null);
-    } else if (settlement.reason === 'workload_exited' && settlement.exitCode === 0) {
+    } else if (settlement.reason === 'workload_exited' && settlement.exitCode === 0 && settlement.evidence?.acknowledged !== false) {
+      const manifestDigest = settlement.evidence?.manifestDigest;
       reply = await session.call('POST', `/api/v1/work-items/${journal.workItemId}/review`, {
         workspaceId, claimOwner, claimToken,
-        resultSummary: 'The workload exited 0. The supervisor collected no deliverable; verification and evidence are later units.',
-        artifactRefs: [{type: 'worker_run', dispatchId: journal.dispatchId, attemptId: journal.attemptId, exitCode: 0}],
+        resultSummary: manifestDigest
+          ? 'The workload exited 0. Its log is the acknowledged evidence; there is no checkout, patch or verifier result yet.'
+          : 'The workload exited 0. The supervisor collected no deliverable; verification and evidence are later units.',
+        artifactRefs: [{type: 'worker_run', dispatchId: journal.dispatchId, attemptId: journal.attemptId, exitCode: 0},
+          ...(manifestDigest ? [{type: 'evidence_manifest', attemptId: journal.attemptId, manifestDigest}] : [])],
         durableMemory: {decision: 'skip', rationale: 'A supervised run does not infer durable knowledge from process completion'},
       }, options(`${journal.dispatchId}:review`)).catch(() => null);
     } else {
-      const failureReason = settlement.reason === 'workload_exited'
-        ? `The workload exited with code ${settlement.exitCode ?? 'unknown'}.`
-        : `The supervisor stopped this attempt (${settlement.reason}); it was not re-executed.`;
+      const failureReason = settlement.reason === 'workload_exited' && settlement.exitCode === 0
+        ? 'The workload exited 0, but its evidence upload failed (evidence_upload_failed); the log is kept on the machine.'
+        : settlement.reason === 'workload_exited'
+          ? `The workload exited with code ${settlement.exitCode ?? 'unknown'}.`
+          : `The supervisor stopped this attempt (${settlement.reason}); it was not re-executed.`;
       reply = await session.call('POST', `/api/v1/work-items/${journal.workItemId}/fail`, {
         workspaceId, claimOwner, claimToken, failureReason, resultSummary: failureReason,
         artifactRefs: [{type: 'worker_run', dispatchId: journal.dispatchId, attemptId: journal.attemptId, reason: settlement.reason}],
@@ -675,6 +690,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
 
   let sidecar: AttachedProcess | undefined;
   let agent: AttachedProcess | undefined;
+  let agentLog: ReturnType<typeof captureLog> | undefined;
   let modelsOpen = false;
   const inputDir = path.join(deps.inputRoot, attemptId);
   const finish = async (reason: StopReason, exitCode?: number, controlId?: string): Promise<SuperviseOutcome> => {
@@ -703,9 +719,23 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       settled.facts = facts;
       await save({...journal, state: 'held', stop: {reason, ...(controlId ? {controlId} : {}), facts}});
     }
-    await fs.rm(inputDir, {recursive: true, force: true}).catch(() => undefined);
+    // Evidence, once every process has stopped and while the attempt's own claim still holds: settlement comes after.
+    let evidence: EvidenceOutcome | undefined;
+    if (agentLog) {
+      const log = await agentLog.close().catch(() => undefined);
+      if (log) await save({...journal, evidence: log});
+      const uploadable = log && settled.facts.cgroupEmpty === 'empty' && reason !== 'shutdown' && reason !== 'lease_lost' && capLeft() > 0;
+      evidence = uploadable ? await uploadAgentLog({call: (method, route, body, options) => session.call(method, route, body, options),
+        fetch: deps.fetch, monoMs: () => deps.clock.monoMs(), deadlineMono: Math.min(cap, deps.clock.monoMs() + EVIDENCE_BUDGET_MS),
+        route: `/api/v1/work-items/${workItem.id}/execution-attempts/${attemptId}/evidence-manifest`, claimToken, log}) : {acknowledged: false};
+      if (journal.evidence) await save({...journal, evidence: {...journal.evidence, ...evidence}});
+      if (!evidence.acknowledged) deps.log(`The attempt's evidence was not acknowledged; its log is kept at ${inputDir}.`);
+    }
+    // An unacknowledged log stays on the machine for the operator; nothing else is kept.
+    if (!evidence || evidence.acknowledged) await fs.rm(inputDir, {recursive: true, force: true}).catch(() => undefined);
     const settlement: Settlement = {reason, ...(exitCode === undefined ? {} : {exitCode}), ...(controlId ? {controlId} : {}),
-      started: Boolean(sidecar || agent), cgroupEmpty: settled.facts.cgroupEmpty === 'empty', attemptReport: 'pending', work: 'pending'};
+      started: Boolean(sidecar || agent), cgroupEmpty: settled.facts.cgroupEmpty === 'empty', attemptReport: 'pending', work: 'pending',
+      ...(evidence ? {evidence} : {})};
     if (settled.facts.held.length > 0) {
       // Held resources block new work; the server is told once they are gone. Keep what it will be told.
       await save({...journal, settlement});
@@ -782,8 +812,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
 
     // Readiness: the launcher reached the relay through the sidecar and saw this run's nonce.
     const ready = await guard(readFirstLine(agent.stdout, within(deps.timing?.readyTimeoutMs ?? READY_TIMEOUT_MS)));
-    // Keep the workload's output flowing; U5b collects it as evidence.
-    agent.stdout.resume();
+    // The workload's output (stdout and stderr, merged by the launcher) is the attempt's log.
+    agentLog = captureLog(inputDir, agent.stdout);
     const running = await inspectBoth('running');
     const [network] = JSON.parse(await must(['network', 'inspect', networkId])) as unknown[];
     running.push(...evaluateNetworkInspect(network, {networkId, labels: specs.networkLabels, containerIds: [sidecarId, agentId],
