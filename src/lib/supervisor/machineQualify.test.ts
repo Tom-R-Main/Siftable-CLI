@@ -23,6 +23,11 @@ const PASSING_PROBES = {probes: {
   reach_relay: {outcome: 'reached', code: 'ok'},
 }};
 
+/** Containers joined to their network: Docker connects a container only when it starts. */
+const started = new Set<string>();
+/** Challenges issued in this test; the first carries binding()'s id, later ones their own. */
+let issued = 0;
+
 /** A Docker that keeps what `container create` asked for and reports it back as Docker would. */
 function fakeDocker(options: {failRemove?: boolean; privileged?: boolean} = {}) {
   const calls: string[][] = [];
@@ -41,7 +46,7 @@ function fakeDocker(options: {failRemove?: boolean; privileged?: boolean} = {}) 
     if (a === 'network' && b === 'inspect') {
       return ok(JSON.stringify([{Id: 'net-1', Driver: 'bridge', Internal: true, EnableIPv6: false, Scope: 'local', Attachable: false,
         Ingress: false, Labels: network?.labels, IPAM: {Config: [{Gateway: '172.30.0.1'}]},
-        Containers: Object.fromEntries([...containers.keys()].map((id) => [id, {}]))}]));
+        Containers: Object.fromEntries([...containers.keys()].filter((id) => started.has(id)).map((id) => [id, {}]))}]));
     }
     if (a === 'container' && b === 'create') {
       const name = flag(args, '--name')[0];
@@ -85,15 +90,16 @@ function fakeDocker(options: {failRemove?: boolean; privileged?: boolean} = {}) 
 
 /** `docker start --attach`: the sidecar is a pipe pair; the probe prints its result line. */
 function fakeAttach(probeLine: string) {
-  const started: string[][] = [];
+  const startedArgs: string[][] = [];
   const attach: Attach = (args) => {
-    started.push(args);
+    startedArgs.push(args);
+    started.add(String(args.at(-1)));
     const stdin = new PassThrough();
     const stdout = new PassThrough();
     if (args.at(-1) === 'probe-1') setImmediate(() => stdout.write(`${probeLine}\n`));
     return {stdin, stdout, exited: Promise.resolve(0), kill: () => stdout.end()};
   };
-  return {attach, started};
+  return {attach, started: startedArgs};
 }
 
 describe('qualifyMachine', () => {
@@ -113,6 +119,8 @@ describe('qualifyMachine', () => {
     await commitMachine(state, {version: 1, apiUrl: API, enrollmentId: ENROLLMENT, runnerId: RUNNER,
       fingerprint: machineKeyFingerprint(publicKey), scope: {type: 'user'}, enrolledAt: '2026-10-29T05:00:00.000Z', credentialId: CREDENTIAL});
     posted = [];
+    started.clear();
+    issued = 0;
   });
   afterEach(async () => fs.rm(path.dirname(root), {recursive: true, force: true}));
 
@@ -123,18 +131,24 @@ describe('qualifyMachine', () => {
     enrollmentId: ENROLLMENT, runnerId: RUNNER, keyFingerprint: machineKeyFingerprint(publicKey), enrolledTokenId: CREDENTIAL,
     templateDigest: sha256(machineCanonicalJson(template)), expiresAt: '2026-10-29T05:10:00.000Z', ...overrides,
   });
-  function fakeFetch(options: {binding?: object; template?: object; loseReport?: boolean} = {}) {
+  function fakeFetch(options: {binding?: object; template?: object; loseReport?: boolean; refuseAfter?: number} = {}) {
     return (async (url: string | URL, init: RequestInit = {}) => {
       const target = String(url);
       expect(init.redirect).toBe('error');
       expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${TOKEN}`);
       if (target.endsWith('/qualification-challenges')) {
-        return new Response(JSON.stringify({nonce: 'n'.repeat(43), template: options.template ?? template, binding: binding(options.binding)}), {status: 201});
+        issued += 1;
+        return new Response(JSON.stringify({nonce: 'n'.repeat(43), template: options.template ?? template,
+          binding: binding({...(issued > 1 ? {challengeId: `44444444-4444-4444-8444-${String(issued).padStart(12, '0')}`} : {}), ...options.binding})}),
+        {status: 201});
       }
       if (target.endsWith('/qualification')) {
         const body = JSON.parse(String(init.body));
         posted.push({url: target, body});
         if (options.loseReport && posted.length === 1) throw new TypeError('fetch failed');
+        if (options.refuseAfter !== undefined && posted.length > options.refuseAfter) {
+          return new Response(JSON.stringify({detail: 'The challenge was consumed with a different result'}), {status: 409});
+        }
         return new Response(JSON.stringify({outcome: 'qualified', receipt: {failures: []}}), {status: 200});
       }
       throw new Error(`unexpected ${target}`);
@@ -189,6 +203,23 @@ describe('qualifyMachine', () => {
     await qualifyMachine(deps({docker: docker.docker, fetch: fetchImpl}));
     expect(docker.calls).toEqual([]);
     expect(posted[1].body).toEqual(posted[0].body);
+  });
+
+  it('keeps a refused report as evidence, resends it, and retires it only on --start-over', async () => {
+    // The first POST lands but its reply is lost; the resend is refused.
+    await expect(qualifyMachine(deps({fetch: fakeFetch({loseReport: true})}))).rejects.toThrow(/resends the same signed report/);
+    const refusing = fakeFetch({refuseAfter: 0});
+    await expect(qualifyMachine(deps({fetch: refusing}))).rejects.toThrow(/--start-over/);
+    const blocked = await readJournal<{state: string; report?: {signature: string}}>({root, owner: null}, 'qualify-journal.json');
+    expect(blocked).toMatchObject({state: 'blocked', report: {signature: expect.any(String)}});
+    // Without --start-over the report is resent again, never dropped.
+    await expect(qualifyMachine(deps({fetch: refusing}))).rejects.toThrow(/--start-over/);
+    expect(posted.at(-1)!.body).toEqual(posted[0].body);
+    // --start-over moves it under retired/ and qualifies on a fresh challenge.
+    const result = await qualifyMachine(deps(), {startOver: true});
+    expect(result.outcome).toBe('qualified');
+    expect((await fs.readdir(path.join(root, 'retired'))).some((name) => name.endsWith('qualify-journal.json'))).toBe(true);
+    expect((posted.at(-1)!.body as {challengeId: string}).challengeId).not.toBe((posted[0].body as {challengeId: string}).challengeId);
   });
 
   it('keeps resources it could not remove held, and will not qualify again until they are gone', async () => {

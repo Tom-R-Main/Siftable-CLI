@@ -34309,6 +34309,12 @@
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
+        },
+        "start-over": {
+          "description": "Retire a report the server refused, keeping it under retired/, and qualify again",
+          "name": "start-over",
+          "allowNo": false,
+          "type": "boolean"
         }
       },
       "hasDynamicHelp": false,

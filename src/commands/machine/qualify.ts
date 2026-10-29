@@ -1,3 +1,4 @@
+import {Flags} from '@oclif/core';
 import {execFile, spawn} from 'node:child_process';
 import {BaseCommand} from '../../lib/base-command.js';
 import {
@@ -34,10 +35,11 @@ export default class MachineQualify extends BaseCommand {
 
   static flags = {
     ...BaseCommand.baseFlags,
+    'start-over': Flags.boolean({default: false, description: 'Retire a report the server refused, keeping it under retired/, and qualify again'}),
   };
 
   async run(): Promise<unknown> {
-    await this.parse(MachineQualify);
+    const {flags} = await this.parse(MachineQualify);
     if (process.platform !== 'linux') this.error('Machine qualification runs on Linux only.');
     if (typeof process.getuid !== 'function' || process.getuid() !== 0) this.error('Run this as root (sudo); it reads the supervisor\'s key and starts containers.');
     const account = await ensureSupervisorAccount();
@@ -49,7 +51,7 @@ export default class MachineQualify extends BaseCommand {
         log: (line) => (this.jsonEnabled() ? process.stderr.write(`${line}\n`) : this.log(line)),
         readHostCgroup: readProcCgroup,
         assets: shippedAssets(),
-      });
+      }, {startOver: flags['start-over']});
       if (!this.jsonEnabled()) {
         if (result.outcome === 'qualified') this.log('Qualified. This machine can now run work.');
         else this.log(`Not qualified: ${result.failures.join(', ') || 'the server refused the report'}.`);

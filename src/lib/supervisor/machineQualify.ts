@@ -33,6 +33,7 @@ import {
   readJournal,
   readKey,
   removeJournal,
+  retireJournal,
   updateMachine,
   writeJournal,
 } from './machineState.js';
@@ -90,7 +91,8 @@ export interface QualifyResult {
 interface QualifyJournal {
   version: 1;
   runId: string;
-  state: 'issued' | 'running' | 'report_pending' | 'held';
+  /** blocked: the server refused a resend; the signed report stays, since the first POST may have landed. */
+  state: 'issued' | 'running' | 'report_pending' | 'held' | 'blocked';
   challenge?: {binding: MachineQualificationBinding; nonce: string; template: MachineQualificationTemplate};
   networkId?: string;
   containers: {sidecar?: string; probe?: string};
@@ -221,8 +223,10 @@ async function submit(deps: QualifyDeps, machine: MachineRecord, token: string, 
   const body = await response.json().catch(() => null) as {outcome?: string; receipt?: {failures?: string[]}; detail?: string} | null;
   if (!response.ok || (body?.outcome !== 'qualified' && body?.outcome !== 'refused')) {
     if (response.status === 409 || response.status === 403) {
-      await writeJournal(deps.state, JOURNAL, {...journal, state: journal.held?.length ? 'held' : 'report_pending', report: undefined});
-      if (!journal.held?.length) await removeJournal(deps.state, JOURNAL);
+      // A refusal does not show the earlier POST failed: keep the challenge, report and signature.
+      await writeJournal(deps.state, JOURNAL, {...journal, state: 'blocked'});
+      throw new MachineQualifyError(`The server refused the report (HTTP ${response.status}${body?.detail ? `: ${body.detail}` : ''}). `
+        + 'Its signed report is kept. Run `sift machine qualify --start-over` to retire it and qualify again.');
     }
     throw new MachineQualifyError(`The server did not accept the report (HTTP ${response.status}${body?.detail ? `: ${body.detail}` : ''}).`);
   }
@@ -249,7 +253,7 @@ function specs(runId: string, imageRef: string, networkId: string, enrollmentId:
   return {sidecar, probe, networkLabels: labels('network')};
 }
 
-export async function qualifyMachine(deps: QualifyDeps): Promise<QualifyResult> {
+export async function qualifyMachine(deps: QualifyDeps, options: {startOver?: boolean} = {}): Promise<QualifyResult> {
   const release = await acquireStateLock(deps.state);
   try {
     const state = await inspectMachineState(deps.state);
@@ -268,8 +272,12 @@ export async function qualifyMachine(deps: QualifyDeps): Promise<QualifyResult> 
     }
     const known = {...machine, credentialId: machine.credentialId as string};
 
-    const earlier = await readJournal<QualifyJournal>(deps.state, JOURNAL);
-    if (earlier?.state === 'report_pending') return await submit(deps, known, token, earlier);
+    let earlier = await readJournal<QualifyJournal>(deps.state, JOURNAL);
+    if (earlier?.state === 'blocked' && options.startOver) {
+      await retireJournal(deps.state, JOURNAL, deps.now());
+      earlier = earlier.held?.length ? {...earlier, state: 'held', report: undefined} : null;
+    }
+    if (earlier?.state === 'report_pending' || earlier?.state === 'blocked') return await submit(deps, known, token, earlier);
     if (earlier) {
       const held = await teardown(deps.docker, earlier);
       if (held.length > 0) {
@@ -329,18 +337,21 @@ export async function qualifyMachine(deps: QualifyDeps): Promise<QualifyResult> 
       const byId = new Map(inspected.map((entry) => [(entry as {Id?: string}).Id, entry]));
       const sidecarCheck = evaluateSandboxInspect(byId.get(sidecarId), {containerId: sidecarId, imageRef, imageId, networkId, spec: plan.sidecar});
       const probeCheck = evaluateSandboxInspect(byId.get(probeId), {containerId: probeId, imageRef, imageId, networkId, spec: plan.probe});
-      const [networkAfter] = JSON.parse(await mustDocker(deps.docker, ['network', 'inspect', networkId])) as unknown[];
-      const networkProblems = evaluateNetworkInspect(networkAfter, {networkId, labels: plan.networkLabels, containerIds: [sidecarId, probeId]});
-      problems.push(...sidecarCheck.problems.map((p) => `relay:${p}`), ...probeCheck.problems.map((p) => `probe:${p}`), ...networkProblems);
+      problems.push(...sidecarCheck.problems.map((p) => `relay:${p}`), ...probeCheck.problems.map((p) => `probe:${p}`));
       observedImageRef = probeCheck.observedImageRef;
       observedIsolation = {...probeCheck.observedIsolation};
-      if (sidecarCheck.problems.length > 0 || networkProblems.length > 0) observedIsolation.network = 'unverified';
+      if (sidecarCheck.problems.length > 0) observedIsolation.network = 'unverified';
 
       sidecar = deps.attach(['start', '--attach', '--interactive', sidecarId]);
       serveSidecarFrames(sidecar.stdout, sidecar.stdin, diagnosticHandler(diagnosticNonce, DIAGNOSTIC_PATH));
       probe = deps.attach(['start', '--attach', '--interactive', probeId]);
       const line = await readFirstLine(probe.stdout, PROBE_OUTPUT_TIMEOUT_MS);
       probes = parseProbeOutput(line);
+      // Docker connects containers to their network when they start, so membership is read while both run.
+      const [networkAfter] = JSON.parse(await mustDocker(deps.docker, ['network', 'inspect', networkId])) as unknown[];
+      const networkProblems = evaluateNetworkInspect(networkAfter, {networkId, labels: plan.networkLabels, containerIds: [sidecarId, probeId]});
+      problems.push(...networkProblems);
+      if (networkProblems.length > 0) observedIsolation.network = 'unverified';
       // Actual cgroup membership, read on the host while the probe still runs.
       const pid = Number(await mustDocker(deps.docker, ['container', 'inspect', '--format', '{{.State.Pid}}', probeId]));
       const cgroup = Number.isInteger(pid) && pid > 0 ? await deps.readHostCgroup(pid).catch(() => '') : '';

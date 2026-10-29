@@ -167,6 +167,17 @@ export async function readJournal<T>(options: MachineStateOptions, name: string)
   return raw === null ? null : JSON.parse(raw) as T;
 }
 
+/** Moves a journal under retired/, kept as evidence; nothing is deleted. */
+export async function retireJournal(options: MachineStateOptions, name: string, now: Date): Promise<string> {
+  const retiredRoot = path.join(options.root, 'retired');
+  await ensureStateDirectory(options, retiredRoot);
+  const destination = path.join(retiredRoot, `${now.toISOString().replace(/[:.]/g, '-')}-${name}`);
+  await fs.rename(path.join(options.root, name), destination);
+  await syncDirectory(retiredRoot);
+  await syncDirectory(options.root);
+  return destination;
+}
+
 export async function removeJournal(options: MachineStateOptions, name: string): Promise<void> {
   await fs.rm(path.join(options.root, name), {force: true});
   await syncDirectory(options.root);

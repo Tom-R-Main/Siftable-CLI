@@ -1984,6 +1984,10 @@ Enroll this Linux machine as a contained supervisor (run as root)
 #### `sift machine qualify`
 Qualify this enrolled machine: run the isolation probes in the pinned agent image and report them (run as root)
 
+**Flags**
+
+- `--start-over` — Retire a report the server refused, keeping it under retired/, and qualify again
+
 #### `sift machine status`
 Show this machine's supervisor enrollment (run as root; never prints the credential)
 
