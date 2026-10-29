@@ -19,6 +19,10 @@ export default class MachineEnroll extends BaseCommand {
     workspace: Flags.string({default: 'personal', description: 'personal, or the workspace UUID to run work for'}),
     setup: Flags.string({description: 'Setup session this machine is enrolled for (recorded locally)'}),
     replace: Flags.boolean({default: false, description: 'Revoke and retire this machine\'s current enrollment, then enroll again'}),
+    'abandon-runner': Flags.string({
+      dependsOn: ['replace'],
+      description: 'With --replace: the runner you revoked in the browser, when the old state cannot revoke itself',
+    }),
   };
 
   async run(): Promise<unknown> {
@@ -47,6 +51,7 @@ export default class MachineEnroll extends BaseCommand {
         log: (line) => (this.jsonEnabled() ? process.stderr.write(`${line}\n`) : this.log(line)),
       }, {
         apiUrl, scope, replace: flags.replace, ...(flags.setup ? {setupId: flags.setup} : {}),
+        ...(flags['abandon-runner'] ? {abandonRunner: flags['abandon-runner']} : {}),
         host: machineHostLabels({hostname: hostname(), os: platform(), arch: arch(), agentVersion: this.config.version}),
       });
       if (!this.jsonEnabled()) {

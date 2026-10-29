@@ -163,6 +163,55 @@ export async function inspectMachineState(options: MachineStateOptions): Promise
   return present.length === 0 ? {kind: 'empty'} : {kind: 'partial', present};
 }
 
+/**
+ * One enrollment at a time per machine. The lock file holds the owner's pid;
+ * a lock whose process is gone is taken over by renaming it aside, so of two
+ * contenders only one wins.
+ */
+export async function acquireStateLock(options: MachineStateOptions, pid = process.pid): Promise<() => Promise<void>> {
+  const lock = path.join(options.root, '.enroll.lock');
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const handle = await fs.open(lock, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      try {
+        await handle.writeFile(JSON.stringify({pid, startedAt: new Date().toISOString()}));
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      return async () => { await fs.rm(lock, {force: true}); };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+    const holder = await lstatOrNull(lock);
+    if (holder && !holder.isFile()) throw new MachineStateError(`${lock} is not a regular file`);
+    let owner: number | undefined;
+    try {
+      owner = (JSON.parse(await fs.readFile(lock, 'utf8')) as {pid?: number}).pid;
+    } catch {
+      owner = undefined;
+    }
+    if (typeof owner === 'number' && processAlive(owner)) {
+      throw new MachineStateError(`Another enrollment is running on this machine (pid ${owner}). Wait for it to finish.`);
+    }
+    try {
+      await fs.rename(lock, `${lock}.stale-${randomBytes(4).toString('hex')}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+  throw new MachineStateError('Could not take the enrollment lock; run the command again.');
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
 /** Moves every state file into retired/<time>/; nothing is deleted. */
 export async function retireMachineState(options: MachineStateOptions, now: Date): Promise<string> {
   const retiredRoot = path.join(options.root, 'retired');

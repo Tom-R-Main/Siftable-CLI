@@ -34238,6 +34238,16 @@
           "name": "replace",
           "allowNo": false,
           "type": "boolean"
+        },
+        "abandon-runner": {
+          "dependsOn": [
+            "replace"
+          ],
+          "description": "With --replace: the runner you revoked in the browser, when the old state cannot revoke itself",
+          "name": "abandon-runner",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
         }
       },
       "hasDynamicHelp": false,

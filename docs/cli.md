@@ -1977,6 +1977,7 @@ Enroll this Linux machine as a contained supervisor (run as root)
 
 **Flags**
 
+- `--abandon-runner <value>` *(needs replace)* — With --replace: the runner you revoked in the browser, when the old state cannot revoke itself
 - `--replace` — Revoke and retire this machine's current enrollment, then enroll again
 - `--setup <value>` — Setup session this machine is enrolled for (recorded locally)
 

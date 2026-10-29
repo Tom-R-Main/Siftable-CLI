@@ -24,6 +24,7 @@ import {
   signMachineEnrollmentRequest,
 } from './machineProtocol.js';
 import {
+  acquireStateLock,
   commitMachine,
   ensureStateDirectory,
   inspectMachineState,
@@ -55,6 +56,12 @@ export interface MachineEnrollOptions {
   host: MachineHostLabels;
   setupId?: string;
   replace: boolean;
+  /**
+   * With --replace, for state that cannot revoke itself (a lost delivery or a
+   * partial directory): the runner the operator revoked in the browser, or
+   * `unknown` when the state names none.
+   */
+  abandonRunner?: string;
 }
 
 export interface MachineEnrollResult {
@@ -108,20 +115,24 @@ async function startOrResume(deps: MachineEnrollDeps, options: MachineEnrollOpti
     replaced = {enrollmentId: state.machine.enrollmentId, retiredTo: await retireMachineState(deps.state, deps.now())};
     state = {kind: 'empty'};
   } else if (state.kind === 'partial') {
-    if (!options.replace) {
-      throw new MachineEnrollError(`${deps.state.root} holds a partial enrollment (${state.present.join(', ')}). Inspect it, then run again with --replace.`);
-    }
+    // A partial directory may hold a live enrollment this command cannot revoke.
+    requireAbandon(options, 'unknown', `${deps.state.root} holds a partial enrollment (${state.present.join(', ')}). `
+      + 'If you approved a machine from it, revoke that runner in the browser.');
     await retireMachineState(deps.state, deps.now());
     state = {kind: 'empty'};
   } else if (state.kind === 'pending') {
-    const reusable = state.pending.state !== 'delivery_unknown'
-      && state.pending.apiUrl === options.apiUrl && sameScope(state.pending.scope, options.scope);
-    if (state.pending.state === 'delivery_unknown' && !options.replace) {
-      throw new MachineEnrollError(`An approval for runner ${state.pending.runnerId} may have completed, but its credential was lost. `
-        + 'Revoke that runner in the browser, then run again with --replace.');
-    }
-    if (!reusable) {
+    if (state.pending.state === 'delivery_unknown') {
+      requireAbandon(options, state.pending.runnerId, `An approval for runner ${state.pending.runnerId} may have completed, `
+        + 'but its credential was lost. Revoke that runner in the browser.');
+      await retireMachineState(deps.state, deps.now());
+      state = {kind: 'empty'};
+    } else if (state.pending.apiUrl !== options.apiUrl || !sameScope(state.pending.scope, options.scope)) {
       if (!options.replace) throw new MachineEnrollError('An enrollment for a different API or workspace is in progress. Run again with --replace to start over.');
+      // Never approved here, or its device code is still open: either way no credential exists yet.
+      if (state.pending.state === 'polling') {
+        requireAbandon(options, state.pending.runnerId, `An approval for runner ${state.pending.runnerId} may be in progress. `
+          + 'If you approved it, revoke that runner in the browser.');
+      }
       await retireMachineState(deps.state, deps.now());
       state = {kind: 'empty'};
     }
@@ -138,6 +149,12 @@ async function startOrResume(deps: MachineEnrollDeps, options: MachineEnrollOpti
   };
   await writePending(deps.state, pending);
   return {pending, replaced};
+}
+
+/** Starting over from state that cannot revoke itself needs the operator to name what they revoked. */
+function requireAbandon(options: MachineEnrollOptions, runnerId: string, problem: string): void {
+  if (options.replace && options.abandonRunner === runnerId) return;
+  throw new MachineEnrollError(`${problem} Then run again with --replace --abandon-runner ${runnerId}.`);
 }
 
 async function requestDevice(deps: MachineEnrollDeps, options: MachineEnrollOptions, pending: PendingEnrollment): Promise<PendingEnrollment> {
@@ -175,14 +192,15 @@ async function requestDevice(deps: MachineEnrollDeps, options: MachineEnrollOpti
 }
 
 async function poll(
-  deps: MachineEnrollDeps, pending: PendingEnrollment, device: NonNullable<PendingEnrollment['device']>,
+  deps: MachineEnrollDeps, pending: PendingEnrollment, device: NonNullable<PendingEnrollment['device']>, resumed: boolean,
 ): Promise<{token: string; enrollmentId: string}> {
   let interval = Math.max(device.interval, 1) * 1000;
-  let replyLost = false;
+  // A journal still polling from an earlier run may have had its one-time token consumed by that run.
+  let replyLost = resumed;
   const markUnknown = async () => {
     await writePending(deps.state, {...pending, state: 'delivery_unknown'});
     return new MachineEnrollError(`The approval for runner ${pending.runnerId} may have completed, but its reply was lost. `
-      + 'Revoke that runner in the browser, then run again with --replace.');
+      + `If you approved it, revoke that runner in the browser. Then run again with --replace --abandon-runner ${pending.runnerId}.`);
   };
   while (deps.now().getTime() < Date.parse(device.expiresAt)) {
     await deps.sleep(interval);
@@ -227,16 +245,32 @@ async function poll(
 }
 
 export async function enrollMachine(deps: MachineEnrollDeps, options: MachineEnrollOptions): Promise<MachineEnrollResult> {
+  await ensureStateDirectory(deps.state);
+  const release = await acquireStateLock(deps.state);
+  try {
+    return await enrollLocked(deps, options);
+  } finally {
+    await release();
+  }
+}
+
+async function enrollLocked(deps: MachineEnrollDeps, options: MachineEnrollOptions): Promise<MachineEnrollResult> {
   const started = await startOrResume(deps, options);
   let pending = started.pending;
-  const deviceLive = pending.state === 'polling' && pending.device && Date.parse(pending.device.expiresAt) > deps.now().getTime();
-  if (!deviceLive) pending = await requestDevice(deps, options, pending);
+  const resumed = pending.state === 'polling';
+  if (resumed && !(pending.device && Date.parse(pending.device.expiresAt) > deps.now().getTime())) {
+    // The earlier run's code expired with no reply on record: its approval may have been delivered.
+    await writePending(deps.state, {...pending, state: 'delivery_unknown'});
+    throw new MachineEnrollError(`The approval for runner ${pending.runnerId} may have completed during an earlier run. `
+      + `If you approved it, revoke that runner in the browser. Then run again with --replace --abandon-runner ${pending.runnerId}.`);
+  }
+  if (!resumed) pending = await requestDevice(deps, options, pending);
   const device = pending.device;
   if (!device) throw new MachineEnrollError('Enrollment did not start; run the command again');
   deps.log(`Machine key fingerprint: ${pending.fingerprint}`);
   deps.log(`Runner: ${pending.runnerId}`);
   deps.log(`Approve this machine in the browser with code ${device.userCode}: ${device.verificationUriComplete}`);
-  const delivered = await poll(deps, pending, device);
+  const delivered = await poll(deps, pending, device, resumed);
   // The credential before the commit marker; machine.json last.
   await writeCredential(deps.state, delivered.token);
   await commitMachine(deps.state, {

@@ -107,12 +107,48 @@ describe('enrollMachine', () => {
     const server = fakeServer(['network-error', {status: 400, body: {error: 'expired_token'}}]);
     await expect(enrollMachine(deps(server.fetchImpl), options)).rejects.toThrow(/may have completed/);
     expect(await inspectMachineState(state)).toMatchObject({kind: 'pending', pending: {state: 'delivery_unknown'}});
-    // It is never silently re-enrolled; --replace starts over with a new key and runner.
+    // It is never silently re-enrolled: --replace alone, or naming another runner, is refused.
+    const lost = server.requests[0].runnerId;
     await expect(enrollMachine(deps(fakeServer([]).fetchImpl), options)).rejects.toThrow(/may have completed/);
+    await expect(enrollMachine(deps(fakeServer([]).fetchImpl), {...options, replace: true})).rejects.toThrow(`--abandon-runner ${lost}`);
+    await expect(enrollMachine(deps(fakeServer([]).fetchImpl), {...options, replace: true, abandonRunner: 'other'}))
+      .rejects.toThrow(/may have completed/);
+    // Naming the runner the operator revoked starts over with a new key and runner.
     const fresh = fakeServer([{status: 200}]);
-    await enrollMachine(deps(fresh.fetchImpl), {...options, replace: true});
+    await enrollMachine(deps(fresh.fetchImpl), {...options, replace: true, abandonRunner: lost});
     expect(fresh.requests[0].runnerId).not.toBe(server.requests[0].runnerId);
     expect((await fs.readdir(path.join(root, 'retired'))).length).toBe(1);
+  });
+
+  it('treats a run that was polling when it stopped as possibly delivered', async () => {
+    // The first run is cut off after its poll was sent: the server consumed the token, and no reply came back.
+    const crashed = fakeServer([]);
+    const cutOff = ((url: string | URL, init?: RequestInit) => (String(url).endsWith('/token')
+      ? Promise.reject(new Error('process killed')) : crashed.fetchImpl(url, init))) as typeof fetch;
+    const killing = {...deps(cutOff), sleep: async (milliseconds: number) => {
+      clock += milliseconds;
+      if (clock > Date.parse('2026-10-29T02:00:20Z')) throw new Error('process killed');
+    }};
+    await expect(enrollMachine(killing, options)).rejects.toThrow(/process killed/);
+    expect(await inspectMachineState(state)).toMatchObject({kind: 'pending', pending: {state: 'polling'}});
+    // The rerun sees the code read as expired and refuses to treat that as a plain expiry.
+    await expect(enrollMachine(deps(fakeServer([{status: 400, body: {error: 'expired_token'}}]).fetchImpl), options))
+      .rejects.toThrow(/may have completed/);
+    expect(await inspectMachineState(state)).toMatchObject({kind: 'pending', pending: {state: 'delivery_unknown'}});
+  });
+
+  it('lets only one enrollment run at a time', async () => {
+    const slow = fakeServer([{status: 400, body: {error: 'authorization_pending'}}, {status: 200}]);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const first = enrollMachine({...deps(slow.fetchImpl), sleep: async () => { await gate; }}, options);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await expect(enrollMachine(deps(fakeServer([]).fetchImpl), options)).rejects.toThrow(/Another enrollment is running/);
+    release();
+    await expect(first).resolves.toMatchObject({enrollmentId: ENROLLMENT_ID});
+    // A lock left by a process that is gone is taken over.
+    await fs.writeFile(path.join(root, '.enroll.lock'), JSON.stringify({pid: 2 ** 22 + 12345}), {mode: 0o600});
+    await expect(enrollMachine(deps(fakeServer([]).fetchImpl), options)).rejects.toThrow(/already enrolled/);
   });
 
   it('saves nothing when the approval names another machine', async () => {
@@ -145,6 +181,7 @@ describe('enrollMachine', () => {
     await fs.mkdir(root, {recursive: true, mode: 0o700});
     await fs.writeFile(path.join(root, 'credential.json'), '{}', {mode: 0o600});
     await expect(enrollMachine(deps(fakeServer([]).fetchImpl), options)).rejects.toThrow(/partial enrollment/);
+    await expect(enrollMachine(deps(fakeServer([]).fetchImpl), {...options, replace: true})).rejects.toThrow('--abandon-runner unknown');
     await fs.rm(path.join(root, 'credential.json'));
     await fs.symlink('/etc/passwd', path.join(root, 'machine.json'));
     await expect(enrollMachine(deps(fakeServer([]).fetchImpl), options)).rejects.toThrow(/symlink/);
