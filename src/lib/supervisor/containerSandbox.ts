@@ -164,7 +164,15 @@ export function evaluateSandboxInspect(inspect: unknown, expected: SandboxExpect
   };
 }
 
-/** The attempt network must be ours, internal, bridged, IPv4-only and hold exactly the expected containers. */
+/**
+ * Docker gives an internal network's bridge the gateway address, and host
+ * services listening on all interfaces answer there. Gateway mode `isolated`
+ * (Docker 28) leaves the bridge without an address.
+ */
+export const ISOLATED_GATEWAY_OPTION = 'com.docker.network.bridge.gateway_mode_ipv4';
+export const MIN_DOCKER_MAJOR = 28;
+
+/** The attempt network must be ours, internal, bridged, IPv4-only, have no host address and hold exactly the expected containers. */
 export function evaluateNetworkInspect(inspect: unknown, expected: {networkId: string; labels: Record<string, string>; containerIds: string[]}): string[] {
   const network = obj(inspect);
   const problems: string[] = [];
@@ -174,6 +182,7 @@ export function evaluateNetworkInspect(inspect: unknown, expected: {networkId: s
   if (network.EnableIPv6 === true) problems.push('network_ipv6');
   if (network.Scope !== 'local') problems.push('network_scope');
   if (network.Attachable === true || network.Ingress === true) problems.push('network_shared');
+  if (obj(network.Options)[ISOLATED_GATEWAY_OPTION] !== 'isolated') problems.push('network_gateway_not_isolated');
   const labels = obj(network.Labels);
   if (!Object.entries(expected.labels).every(([key, value]) => labels[key] === value)) problems.push('network_labels');
   const members = Object.keys(obj(network.Containers)).sort();
@@ -182,6 +191,12 @@ export function evaluateNetworkInspect(inspect: unknown, expected: {networkId: s
 }
 
 export function networkCreateArgs(name: string, labels: Record<string, string>): string[] {
-  return ['network', 'create', '--driver', 'bridge', '--internal',
+  return ['network', 'create', '--driver', 'bridge', '--internal', '--opt', `${ISOLATED_GATEWAY_OPTION}=isolated`,
     ...Object.entries(labels).flatMap(([key, value]) => ['--label', `${key}=${value}`]), name];
+}
+
+/** An older daemon may accept the option without honouring it, so the version is checked before any attempt. */
+export function dockerVersionProblem(dockerInfo: {ServerVersion?: unknown}): string | null {
+  const major = Number(/^(\d+)\./.exec(String(dockerInfo.ServerVersion ?? ''))?.[1]);
+  return Number.isInteger(major) && major >= MIN_DOCKER_MAJOR ? null : `docker_${MIN_DOCKER_MAJOR}_required`;
 }

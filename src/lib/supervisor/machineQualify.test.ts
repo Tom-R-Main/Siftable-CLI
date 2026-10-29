@@ -45,7 +45,7 @@ function fakeDocker(options: {failRemove?: boolean; privileged?: boolean} = {}) 
       return ok('net-1\n');
     }
     if (a === 'network' && b === 'inspect') {
-      return ok(JSON.stringify([{Id: 'net-1', Driver: 'bridge', Internal: true, EnableIPv6: false, Scope: 'local', Attachable: false,
+      return ok(JSON.stringify([{Id: 'net-1', Driver: 'bridge', Internal: true, EnableIPv6: false, Options: {'com.docker.network.bridge.gateway_mode_ipv4': 'isolated'}, Scope: 'local', Attachable: false,
         Ingress: false, Labels: network?.labels, IPAM: {Config: [{Gateway: '172.30.0.1'}]},
         Containers: Object.fromEntries([...containers.keys()].filter((id) => started.has(id)).map((id) => [id, {}]))}]));
     }

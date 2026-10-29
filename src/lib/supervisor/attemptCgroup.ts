@@ -53,7 +53,7 @@ export async function readPopulated(read: ReadFile, attemptId: string): Promise<
   try {
     events = await read(`${CGROUP_ROOT}${attemptSliceCgroup(attemptId)}/cgroup.events`);
   } catch (error) {
-    // systemd removes an empty transient slice; its absence means nothing is left in it.
+    // A slice that is gone holds nothing. (systemd does not remove an empty one by itself.)
     return (error as NodeJS.ErrnoException)?.code === 'ENOENT' ? false : null;
   }
   const line = events.split('\n').find((entry) => entry.startsWith('populated '));

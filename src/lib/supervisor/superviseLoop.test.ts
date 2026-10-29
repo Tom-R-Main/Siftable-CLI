@@ -126,11 +126,11 @@ function world(scenario: Scenario = {}) {
   const docker: DeadlineDocker = async (args) => {
     const ok = (stdout = '') => ({code: 0, stdout, stderr: ''});
     const [a, b] = args;
-    if (a === 'info') return ok(JSON.stringify({CgroupDriver: 'systemd', CgroupVersion: '2'}));
+    if (a === 'info') return ok(JSON.stringify({CgroupDriver: 'systemd', CgroupVersion: '2', ServerVersion: '28.5.1'}));
     if (a === 'image' && b === 'inspect') return ok(JSON.stringify([{Id: IMAGE_ID, RepoDigests: [IMAGE]}]));
     if (a === 'network' && b === 'create') { events.push('network-create'); return ok('net-1\n'); }
     if (a === 'network' && b === 'inspect') {
-      return ok(JSON.stringify([{Id: 'net-1', Driver: 'bridge', Internal: true, EnableIPv6: false, Scope: 'local', Attachable: false, Ingress: false,
+      return ok(JSON.stringify([{Id: 'net-1', Driver: 'bridge', Internal: true, EnableIPv6: false, Options: {'com.docker.network.bridge.gateway_mode_ipv4': 'isolated'}, Scope: 'local', Attachable: false, Ingress: false,
         Labels: {'sift.machine.run': flag(containers.get('c-relay') ?? [], '--label').find((l) => l.startsWith('sift.machine.run='))?.split('=')[1],
           'sift.machine.attempt': ATTEMPT},
         Containers: Object.fromEntries([...started].map((id) => [id, {}]))}]));

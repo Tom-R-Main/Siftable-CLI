@@ -247,7 +247,8 @@ function specs(runId: string, imageRef: string, networkId: string, enrollmentId:
     env: {
       SIFT_DIAGNOSTIC_URL: `http://${sidecarName}:${SIDECAR_PORT}${DIAGNOSTIC_PATH}`,
       SIFT_DIAGNOSTIC_NONCE: nonce,
-      SIFT_PROBE_ESCAPE_ADDRESSES: [`1.1.1.1:443`, ...(gateway ? [`${gateway}:80`] : []), '169.254.169.254:80'].join(','),
+      SIFT_PROBE_ESCAPE_ADDRESSES: ['1.1.1.1:443', '169.254.169.254:80'].join(','),
+      SIFT_PROBE_HOST_ADDRESSES: gateway ? [22, 80, 8080].map((port) => `${gateway}:${port}`).join(',') : '',
       SIFT_PROBE_HOLD: '1',
     }};
   return {sidecar, probe, networkLabels: labels('network')};

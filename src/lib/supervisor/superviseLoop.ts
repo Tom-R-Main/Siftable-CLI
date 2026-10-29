@@ -18,7 +18,7 @@ import {hostname} from 'node:os';
 import path from 'node:path';
 import {attemptSliceName, cgroupSetupProblem, isInsideAttemptSlice, parseCgroupV2, type ReadFile} from './attemptCgroup.js';
 import {GO_LINE, READY_LINE} from './attemptLauncher.js';
-import {evaluateNetworkInspect, evaluateSandboxInspect, networkCreateArgs, sandboxCreateArgs, type SandboxContainerSpec} from './containerSandbox.js';
+import {dockerVersionProblem, evaluateNetworkInspect, evaluateSandboxInspect, networkCreateArgs, sandboxCreateArgs, type SandboxContainerSpec} from './containerSandbox.js';
 import {DEADLINE_EXIT, type DeadlineDocker} from './hostDocker.js';
 import {type Attach, type AttachedProcess, ensureImage, readFirstLine} from './machineQualify.js';
 import {type CleanupFacts, type OutboxEntry, enqueueReceipts, flushReceipts, receiptsForStop} from './cleanupReceiptOutbox.js';
@@ -503,7 +503,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   // Receipts go out every cycle, after any recovery above has stopped what it had to, within a short budget.
   await sendCleanupReceipts(deps);
   const info = await deps.docker(['info', '--format', '{{json .}}']);
-  const setupProblem = info.code === 0 ? cgroupSetupProblem(JSON.parse(info.stdout || '{}') as Record<string, unknown>) : 'docker_unavailable';
+  const dockerInfo = info.code === 0 ? JSON.parse(info.stdout || '{}') as Record<string, unknown> : null;
+  const setupProblem = dockerInfo ? cgroupSetupProblem(dockerInfo) ?? dockerVersionProblem(dockerInfo) : 'docker_unavailable';
   if (setupProblem && !earlier) return {kind: 'refused', reason: setupProblem};
 
   const session = await openSession(deps);

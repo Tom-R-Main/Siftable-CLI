@@ -22,8 +22,10 @@ export interface ProbeConfig {
   dockerSockets: string[];
   /** Names count only if reached; they never establish blocking. */
   providerNames: Array<{host: string; port: number}>;
-  /** Literal addresses: a public IP, the network gateway, the cloud metadata service. */
+  /** Literal addresses: a public IP, the cloud metadata service. */
   escapeAddresses: Array<{host: string; port: number}>;
+  /** Addresses that belong to the host, such as the network gateway. A refusal there is the host answering. */
+  hostAddresses: Array<{host: string; port: number}>;
   procRoot: string;
   diagnosticUrl: string;
   diagnosticNonce: string;
@@ -89,13 +91,19 @@ export async function probeDockerSocket(paths: string[], timeoutMs: number): Pro
   return combine(results);
 }
 
-export async function probeEgress(config: Pick<ProbeConfig, 'providerNames' | 'escapeAddresses' | 'timeoutMs'>): Promise<ProbeResult> {
+export async function probeEgress(config: Pick<ProbeConfig, 'providerNames' | 'escapeAddresses' | 'hostAddresses' | 'timeoutMs'>): Promise<ProbeResult> {
   for (const target of config.providerNames) {
     const result = await attemptConnect(target, config.timeoutMs);
     if (result !== 'unresolved' && result.outcome === 'reached') return result;
   }
-  if (config.escapeAddresses.length === 0) return {outcome: 'error', code: 'unexpected_error'};
+  // Without both a way-out address and a host address to try, nothing has been shown blocked.
+  if (config.escapeAddresses.length === 0 || config.hostAddresses.length === 0) return {outcome: 'error', code: 'unexpected_error'};
   const results: ProbeResult[] = [];
+  for (const target of config.hostAddresses) {
+    const result = await attemptConnect(target, config.timeoutMs);
+    if (result !== 'unresolved' && result.code === 'connection_refused') return {outcome: 'reached', code: 'connection_refused'};
+    results.push(result === 'unresolved' ? {outcome: 'error', code: 'unexpected_error'} : result);
+  }
   for (const target of config.escapeAddresses) {
     const result = await attemptConnect(target, config.timeoutMs);
     // A literal address never needs resolving; an unresolved one means the probe itself is wrong.
@@ -185,6 +193,7 @@ function configFromEnv(env: NodeJS.ProcessEnv): ProbeConfig {
     dockerSockets: ['/var/run/docker.sock', '/run/docker.sock'],
     providerNames: [{host: 'api.anthropic.com', port: 443}, {host: 'api.openai.com', port: 443}],
     escapeAddresses: targets(env.SIFT_PROBE_ESCAPE_ADDRESSES),
+    hostAddresses: targets(env.SIFT_PROBE_HOST_ADDRESSES),
     procRoot: '/proc',
     diagnosticUrl: env.SIFT_DIAGNOSTIC_URL ?? '',
     diagnosticNonce: env.SIFT_DIAGNOSTIC_NONCE ?? '',

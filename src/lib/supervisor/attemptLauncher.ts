@@ -46,9 +46,25 @@ function waitForGo(input: NodeJS.ReadableStream): Promise<boolean> {
   });
 }
 
-export async function launch(env: NodeJS.ProcessEnv, argv: string[], io = {input: process.stdin, output: process.stdout}): Promise<number> {
-  const nonce = await fetchNonce(env.SIFT_DIAGNOSTIC_URL ?? '', 10_000);
-  if (!nonce || nonce !== env.SIFT_DIAGNOSTIC_NONCE) return 70;
+/**
+ * The supervisor starts the sidecar just before this container, so its relay
+ * may not be listening yet. Retry until the nonce matches or the time is up.
+ */
+async function awaitRelay(url: string, expected: string | undefined, timeoutMs: number, retryMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const left = deadline - Date.now();
+    if (left <= 0) return false;
+    const nonce = await fetchNonce(url, left);
+    if (nonce && nonce === expected) return true;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(retryMs, Math.max(0, deadline - Date.now()))));
+  }
+}
+
+export async function launch(env: NodeJS.ProcessEnv, argv: string[], io = {input: process.stdin, output: process.stdout},
+  timing = {relayTimeoutMs: 10_000, retryMs: 100}): Promise<number> {
+  if (!env.SIFT_DIAGNOSTIC_NONCE) return 70;
+  if (!await awaitRelay(env.SIFT_DIAGNOSTIC_URL ?? '', env.SIFT_DIAGNOSTIC_NONCE, timing.relayTimeoutMs, timing.retryMs)) return 70;
   io.output.write(`${READY_LINE}\n`);
   if (!await waitForGo(io.input)) return 71;
   const [command, ...args] = argv;

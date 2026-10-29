@@ -1,5 +1,6 @@
 import {describe, expect, it} from 'vitest';
 import {
+  dockerVersionProblem,
   evaluateNetworkInspect,
   evaluateSandboxInspect,
   networkCreateArgs,
@@ -114,19 +115,29 @@ describe('evaluateSandboxInspect', () => {
 
 describe('evaluateNetworkInspect', () => {
   const network = {Id: 'net-1', Driver: 'bridge', Internal: true, EnableIPv6: false, Scope: 'local', Attachable: false, Ingress: false,
-    Labels: {'sift.machine.run': 'run-1'}, Containers: {'container-1': {}, 'sidecar-1': {}}};
+    Options: {'com.docker.network.bridge.gateway_mode_ipv4': 'isolated'}, Labels: {'sift.machine.run': 'run-1'}, Containers: {'container-1': {}, 'sidecar-1': {}}};
   const want = {networkId: 'net-1', labels: {'sift.machine.run': 'run-1'}, containerIds: ['container-1', 'sidecar-1']};
 
   it('accepts our internal bridge holding exactly our containers', () => {
     expect(evaluateNetworkInspect(network, want)).toEqual([]);
     expect(networkCreateArgs('sift-run-1', {'sift.machine.run': 'run-1'}))
-      .toEqual(['network', 'create', '--driver', 'bridge', '--internal', '--label', 'sift.machine.run=run-1', 'sift-run-1']);
+      .toEqual(['network', 'create', '--driver', 'bridge', '--internal', '--opt', 'com.docker.network.bridge.gateway_mode_ipv4=isolated', '--label', 'sift.machine.run=run-1', 'sift-run-1']);
   });
 
-  it('rejects an external, IPv6, foreign or crowded network', () => {
+  it('rejects an external, IPv6, host-addressed, foreign or crowded network', () => {
+    expect(evaluateNetworkInspect({...network, Options: {}}, want)).toContain('network_gateway_not_isolated');
     expect(evaluateNetworkInspect({...network, Internal: false}, want)).toContain('network_not_internal');
     expect(evaluateNetworkInspect({...network, EnableIPv6: true}, want)).toContain('network_ipv6');
     expect(evaluateNetworkInspect({...network, Labels: {}}, want)).toContain('network_labels');
     expect(evaluateNetworkInspect({...network, Containers: {...network.Containers, stranger: {}}}, want)).toContain('network_members');
+  });
+});
+
+describe('dockerVersionProblem', () => {
+  it('requires Docker 28 for an isolated gateway', () => {
+    expect(dockerVersionProblem({ServerVersion: '28.0.1'})).toBeNull();
+    expect(dockerVersionProblem({ServerVersion: '29.1.0'})).toBeNull();
+    expect(dockerVersionProblem({ServerVersion: '27.5.1'})).toBe('docker_28_required');
+    expect(dockerVersionProblem({})).toBe('docker_28_required');
   });
 });
