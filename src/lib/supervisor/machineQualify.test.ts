@@ -15,6 +15,7 @@ const IMAGE_ID = `sha256:${'b'.repeat(64)}`;
 const ENROLLMENT = '33333333-3333-4333-8333-333333333333';
 const RUNNER = '7a0c2a59-4f3e-4c1d-9b2e-5d6f7a8b9c0d';
 const CREDENTIAL = '55555555-5555-4555-8555-555555555555';
+const REPLACED = '66666666-6666-4666-8666-666666666666';
 const TOKEN = 'sift_pat_supervisor';
 const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
 const PASSING_PROBES = {probes: {
@@ -237,6 +238,21 @@ describe('qualifyMachine', () => {
     const removedFirst = docker.calls.slice(0, firstCreate).filter((args) => args[1] === 'rm').map((args) => args.at(-1));
     expect(removedFirst).toEqual(expect.arrayContaining(['sidecar-1', 'probe-1', 'net-1']));
     expect((await fs.readdir(path.join(root, 'retired'))).filter((name) => name.endsWith('qualify-journal.json')).length).toBe(2);
+  });
+
+  it('never replays a pending report from an enrollment this machine has replaced', async () => {
+    await expect(qualifyMachine(deps({fetch: fakeFetch({loseReport: true})}))).rejects.toThrow(/resends the same signed report/);
+    const stale = posted[0].body;
+    // `enroll --replace` commits a new enrollment; the old qualify journal is still on disk.
+    await commitMachine({root, owner: null}, {version: 1, apiUrl: API, enrollmentId: REPLACED, runnerId: RUNNER,
+      fingerprint: machineKeyFingerprint(publicKey), scope: {type: 'user'}, enrolledAt: '2026-10-29T06:00:00.000Z', credentialId: CREDENTIAL});
+    posted = [];
+    const fetchImpl = fakeFetch({binding: {enrollmentId: REPLACED}});
+    expect(await qualifyMachine(deps({fetch: fetchImpl}))).toMatchObject({outcome: 'qualified'});
+    expect(posted).toHaveLength(1);
+    expect(posted[0].body).not.toEqual(stale);
+    expect(posted[0].url).toContain(`/enrollments/${REPLACED}/`);
+    expect((await fs.readdir(path.join(root, 'retired'))).some((name) => name.endsWith('qualify-journal.json'))).toBe(true);
   });
 
   it('keeps resources it could not remove held, and will not qualify again until they are gone', async () => {
