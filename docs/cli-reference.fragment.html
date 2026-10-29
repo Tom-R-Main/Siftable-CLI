@@ -1809,7 +1809,7 @@
               </div>
             </details>
             <h2 id="cli-machine" data-i18n="docs.cli.machine.title">Machine</h2>
-            <details class="cli-topic"><summary><span data-i18n="docs.cli.machine.count">2 commands</span></summary>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.machine.count">3 commands</span></summary>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift machine enroll</code></div></div>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.machine.enroll.desc">Enroll this Linux machine as a contained supervisor (run as root)</p>
@@ -1818,6 +1818,14 @@
                   <dd><code>--abandon-runner &lt;value&gt;</code> <span class="flag-meta">needs replace</span> — With --replace: the runner you revoked in the browser, when the old state cannot revoke itself</dd>
                   <dd><code>--replace</code> — Revoke and retire this machine's current enrollment, then enroll again</dd>
                   <dd><code>--setup &lt;value&gt;</code> — Setup session this machine is enrolled for (recorded locally)</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift machine qualify</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.machine.qualify.desc">Qualify this enrolled machine: run the isolation probes in the pinned agent image and report them (run as root)</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--start-over</code> — Retire a report the server refused, keeping it under retired/, and qualify again</dd>
                 </dl>
               </div>
               <div class="cli-cmd">

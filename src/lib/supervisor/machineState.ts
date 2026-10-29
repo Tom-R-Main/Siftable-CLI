@@ -156,6 +156,37 @@ export async function updateMachine(options: MachineStateOptions, machine: Machi
   await writeFileAtomic(options, FILES.machine, `${JSON.stringify(machine, null, 2)}\n`);
 }
 
+/** A named JSON journal beside the enrollment (e.g. qualify-journal.json), with the same atomic, 0600 writes. */
+export async function writeJournal(options: MachineStateOptions, name: string, value: unknown): Promise<void> {
+  if (!/^[a-z-]+-journal\.json$/.test(name)) throw new MachineStateError(`${name} is not a journal name`);
+  await writeFileAtomic(options, name, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+export async function readJournal<T>(options: MachineStateOptions, name: string): Promise<T | null> {
+  const raw = await readRegularFile(options, name);
+  return raw === null ? null : JSON.parse(raw) as T;
+}
+
+/**
+ * Copies a journal under retired/ as evidence and leaves the active one in
+ * place, so the caller can record what it still owns before replacing it. A
+ * crash between the two leaves a duplicate copy, never a lost journal.
+ */
+export async function archiveJournal(options: MachineStateOptions, name: string, now: Date): Promise<string | null> {
+  const raw = await readRegularFile(options, name);
+  if (raw === null) return null;
+  const retiredRoot = path.join(options.root, 'retired');
+  await ensureStateDirectory(options, retiredRoot);
+  const destination = path.join(retiredRoot, `${now.toISOString().replace(/[:.]/g, '-')}-${name}`);
+  await writeFileAtomic({...options, root: retiredRoot}, path.basename(destination), raw);
+  return destination;
+}
+
+export async function removeJournal(options: MachineStateOptions, name: string): Promise<void> {
+  await fs.rm(path.join(options.root, name), {force: true});
+  await syncDirectory(options.root);
+}
+
 /** What the directory holds. Anything that is not exactly empty, pending or enrolled is partial. */
 export async function inspectMachineState(options: MachineStateOptions): Promise<MachineStateKind> {
   const present: string[] = [];

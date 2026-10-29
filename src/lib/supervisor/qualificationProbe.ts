@@ -194,6 +194,10 @@ function configFromEnv(env: NodeJS.ProcessEnv): ProbeConfig {
 
 if (require.main === module) {
   runProbes(configFromEnv(process.env))
-    .then((probes) => { process.stdout.write(`${JSON.stringify({probes})}\n`); })
+    .then((probes) => {
+      process.stdout.write(`${JSON.stringify({probes})}\n`);
+      // Stay running until the supervisor closes stdin, so it can read this container's cgroup from the host.
+      if (process.env.SIFT_PROBE_HOLD === '1') process.stdin.resume().once('end', () => process.exit(0));
+    })
     .catch(() => { process.exitCode = 1; });
 }
