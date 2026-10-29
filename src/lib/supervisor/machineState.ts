@@ -164,43 +164,49 @@ export async function inspectMachineState(options: MachineStateOptions): Promise
 }
 
 /**
- * One enrollment at a time per machine. The lock file holds the owner's pid;
- * a lock whose process is gone is taken over by renaming it aside, so of two
- * contenders only one wins.
+ * One enrollment at a time per machine. The lock's content (pid and a nonce)
+ * is written to a temp file first and then hard-linked into place, so the
+ * lock never exists empty. A lock left by a process that is gone is not taken
+ * over automatically: the operator removes it, which keeps two contenders
+ * from both deciding it is stale. Release deletes the lock only while it is
+ * still this holder's.
  */
 export async function acquireStateLock(options: MachineStateOptions, pid = process.pid): Promise<() => Promise<void>> {
   const lock = path.join(options.root, '.enroll.lock');
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const handle = await fs.open(lock, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-      try {
-        await handle.writeFile(JSON.stringify({pid, startedAt: new Date().toISOString()}));
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      return async () => { await fs.rm(lock, {force: true}); };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    }
-    const holder = await lstatOrNull(lock);
-    if (holder && !holder.isFile()) throw new MachineStateError(`${lock} is not a regular file`);
-    let owner: number | undefined;
-    try {
-      owner = (JSON.parse(await fs.readFile(lock, 'utf8')) as {pid?: number}).pid;
-    } catch {
-      owner = undefined;
-    }
-    if (typeof owner === 'number' && processAlive(owner)) {
-      throw new MachineStateError(`Another enrollment is running on this machine (pid ${owner}). Wait for it to finish.`);
-    }
-    try {
-      await fs.rename(lock, `${lock}.stale-${randomBytes(4).toString('hex')}`);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
+  const nonce = randomBytes(16).toString('hex');
+  const temp = path.join(options.root, `.enroll.lock.${nonce}.tmp`);
+  const handle = await fs.open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try {
+    await handle.writeFile(JSON.stringify({pid, nonce, startedAt: new Date().toISOString()}));
+    await handle.sync();
+  } finally {
+    await handle.close();
   }
-  throw new MachineStateError('Could not take the enrollment lock; run the command again.');
+  try {
+    await fs.link(temp, lock);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    const holder = await readLock(lock);
+    if (holder && processAlive(holder.pid)) {
+      throw new MachineStateError(`Another enrollment is running on this machine (pid ${holder.pid}). Wait for it to finish.`);
+    }
+    throw new MachineStateError(`An earlier enrollment${holder ? ` (pid ${holder.pid})` : ''} stopped without releasing ${lock}. `
+      + 'If no enrollment is running, remove that file and run the command again.');
+  } finally {
+    await fs.rm(temp, {force: true});
+  }
+  return async () => {
+    if ((await readLock(lock))?.nonce === nonce) await fs.rm(lock, {force: true});
+  };
+}
+
+async function readLock(lock: string): Promise<{pid: number; nonce: string} | null> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(lock, 'utf8')) as {pid?: unknown; nonce?: unknown};
+    return typeof parsed.pid === 'number' && typeof parsed.nonce === 'string' ? {pid: parsed.pid, nonce: parsed.nonce} : null;
+  } catch {
+    return null;
+  }
 }
 
 function processAlive(pid: number): boolean {

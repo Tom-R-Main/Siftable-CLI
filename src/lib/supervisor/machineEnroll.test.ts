@@ -5,7 +5,7 @@ import path from 'node:path';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {enrollMachine, MachineEnrollError, type MachineEnrollDeps} from './machineEnroll.js';
 import {machineSupervisorProofBinding, type MachineEnrollmentRequest} from './machineProtocol.js';
-import {inspectMachineState, type MachineStateOptions} from './machineState.js';
+import {acquireStateLock, inspectMachineState, type MachineStateOptions} from './machineState.js';
 import {describeMachineState} from './machineStatus.js';
 import {ensureSupervisorAccount, type Exec} from './systemAccount.js';
 
@@ -146,9 +146,25 @@ describe('enrollMachine', () => {
     await expect(enrollMachine(deps(fakeServer([]).fetchImpl), options)).rejects.toThrow(/Another enrollment is running/);
     release();
     await expect(first).resolves.toMatchObject({enrollmentId: ENROLLMENT_ID});
-    // A lock left by a process that is gone is taken over.
-    await fs.writeFile(path.join(root, '.enroll.lock'), JSON.stringify({pid: 2 ** 22 + 12345}), {mode: 0o600});
+    // A lock left by a process that is gone is reported, never taken over.
+    await fs.writeFile(path.join(root, '.enroll.lock'), JSON.stringify({pid: 2 ** 22 + 12345, nonce: 'gone'}), {mode: 0o600});
+    await expect(enrollMachine(deps(fakeServer([]).fetchImpl), options)).rejects.toThrow(/stopped without releasing/);
+    await fs.rm(path.join(root, '.enroll.lock'));
     await expect(enrollMachine(deps(fakeServer([]).fetchImpl), options)).rejects.toThrow(/already enrolled/);
+  });
+
+  it('admits exactly one of many contenders for the lock, and releases only its own', async () => {
+    await fs.mkdir(root, {recursive: true, mode: 0o700});
+    const contenders = await Promise.allSettled(Array.from({length: 8}, () => acquireStateLock(state)));
+    const winners = contenders.filter((result) => result.status === 'fulfilled');
+    expect(winners).toHaveLength(1);
+    const lock = path.join(root, '.enroll.lock');
+    expect(JSON.parse(await fs.readFile(lock, 'utf8'))).toMatchObject({pid: process.pid, nonce: expect.any(String)});
+    // A lock that is no longer this holder's survives its release.
+    await fs.writeFile(lock, JSON.stringify({pid: process.pid, nonce: 'someone-else'}));
+    await (winners[0] as PromiseFulfilledResult<() => Promise<void>>).value();
+    expect(JSON.parse(await fs.readFile(lock, 'utf8'))).toMatchObject({nonce: 'someone-else'});
+    expect((await fs.readdir(root)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
 
   it('saves nothing when the approval names another machine', async () => {
