@@ -68,6 +68,20 @@ describe('probeHostProcesses', () => {
     expect(await probeHostProcesses(proc)).toEqual({outcome: 'reached', code: 'read_succeeded'});
     expect(await probeHostProcesses(path.join(dir, 'nope'))).toEqual({outcome: 'error', code: 'unexpected_error'});
   });
+
+  it('is inconclusive when process names cannot be read, and skips processes that exited', async () => {
+    const proc = path.join(dir, 'proc');
+    await fs.mkdir(path.join(proc, '7'), {recursive: true});
+    // No readable comm at all: nothing was observed, so nothing is blocked.
+    expect(await probeHostProcesses(proc)).toEqual({outcome: 'error', code: 'unexpected_error'});
+    await fs.mkdir(path.join(proc, '1'));
+    await fs.writeFile(path.join(proc, '1', 'comm'), 'node\n');
+    // PID 7 exited (no comm file); PID 1 was read.
+    expect(await probeHostProcesses(proc)).toEqual({outcome: 'blocked', code: 'ok'});
+    // A comm that exists but cannot be read hides a name.
+    await fs.mkdir(path.join(proc, '9', 'comm'), {recursive: true});
+    expect(await probeHostProcesses(proc)).toEqual({outcome: 'error', code: 'unexpected_error'});
+  });
 });
 
 describe('probeRelay', () => {
@@ -82,5 +96,17 @@ describe('probeRelay', () => {
     expect(await probeRelay(url, 'expected-nonce', 1000)).toEqual({outcome: 'error', code: 'unexpected_error'});
     expect(await probeRelay('http://127.0.0.1:1/sift/v1/diagnostic', 'expected-nonce', 1000))
       .toEqual({outcome: 'error', code: 'connection_refused'});
+  });
+
+  it('settles as an error when the response is cut off mid-body', async () => {
+    const server = createHttpServer((_request, response) => {
+      response.writeHead(200, {'content-length': '100'});
+      response.write('{"nonce":"expe');
+      setTimeout(() => response.destroy(), 20);
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const url = `http://127.0.0.1:${(server.address() as {port: number}).port}/sift/v1/diagnostic`;
+    expect(await probeRelay(url, 'expected-nonce', 2000)).toEqual({outcome: 'error', code: 'unexpected_error'});
   });
 });

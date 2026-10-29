@@ -113,24 +113,38 @@ export async function probeHostProcesses(procRoot: string): Promise<ProbeResult>
     return {outcome: 'error', code: 'unexpected_error'};
   }
   if (entries.length === 0) return {outcome: 'error', code: 'unexpected_error'};
+  let read = 0;
+  let unreadable = false;
   for (const pid of entries) {
     let comm: string;
     try {
       comm = (await fs.readFile(`${procRoot}/${pid}/comm`, 'utf8')).trim();
-    } catch {
+    } catch (error) {
+      // A process that exited during the listing is gone; any other failure hides a name.
+      const code = errnoOf(error);
+      if (code !== 'ENOENT' && code !== 'ESRCH') unreadable = true;
       continue;
     }
+    read += 1;
     if (HOST_PROCESSES.has(comm)) return {outcome: 'reached', code: 'read_succeeded'};
   }
-  return {outcome: 'blocked', code: 'ok'};
+  return read === 0 || unreadable ? {outcome: 'error', code: 'unexpected_error'} : {outcome: 'blocked', code: 'ok'};
 }
 
 /** The relay is reached only when the supervisor's own nonce comes back through the sidecar. */
 export function probeRelay(url: string, nonce: string, timeoutMs: number): Promise<ProbeResult> {
-  return new Promise((resolve) => {
+  return new Promise((settle) => {
+    let settled = false;
+    const resolve = (result: ProbeResult) => { if (!settled) { settled = true; clearTimeout(deadline); settle(result); } };
+    // The whole exchange is bounded, not only idle time on the socket.
+    const deadline = setTimeout(() => { request.destroy(); resolve({outcome: 'error', code: 'timeout'}); }, timeoutMs);
     const request = get(url, {timeout: timeoutMs}, (response) => {
       let body = '';
       response.setEncoding('utf8');
+      // A response cut off mid-body is a failed exchange, never a pass.
+      response.once('error', () => resolve({outcome: 'error', code: 'unexpected_error'}));
+      response.once('aborted', () => resolve({outcome: 'error', code: 'unexpected_error'}));
+      response.once('close', () => { if (!response.complete) resolve({outcome: 'error', code: 'unexpected_error'}); });
       response.on('data', (chunk: string) => { if (body.length < 4096) body += chunk; });
       response.on('end', () => {
         let echoed: unknown;
