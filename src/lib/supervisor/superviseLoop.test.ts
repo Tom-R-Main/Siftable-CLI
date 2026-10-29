@@ -503,6 +503,28 @@ describe('superviseOnce', () => {
     expect(await journal()).toMatchObject({state: 'running'});
   });
 
+  it('kills at once on shutdown even while a journal write never completes', async () => {
+    const w = world({agentExit: 'never'});
+    const shutdown = new AbortController();
+    let hang = false;
+    let releaseWrites: () => void = () => {};
+    const held = new Promise<void>((resolve) => { releaseWrites = resolve; });
+    const writer = async (next: AttemptJournal) => {
+      if (hang) await held;
+      await writeJournal({root, owner: null}, JOURNAL, next);
+    };
+    const running = superviseOnce(deps(w, {shutdown: shutdown.signal, writeJournal: writer}));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(w.events).toContain('go');
+    hang = true;
+    shutdown.abort();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    // The journal is stuck, yet both known containers were killed.
+    expect(w.events).toEqual(expect.arrayContaining(['kill:c-agent', 'kill:c-relay']));
+    releaseWrites();
+    expect(await running).toMatchObject({kind: 'finished', reason: 'shutdown'});
+  });
+
   it('tears down a run left by a crash by exact ID and never relaunches it', async () => {
     await writeJournal({root, owner: null}, JOURNAL, {version: 1, state: 'running', runId: 'abc123abc123', dispatchId: DISPATCH,
       workItemId: WORK_ITEM, runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`, attemptId: ATTEMPT, networkId: 'net-1',

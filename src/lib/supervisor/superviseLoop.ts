@@ -63,7 +63,12 @@ export interface SuperviseDeps {
    * resources are not found by name are treated as never made. Without it they stay held.
    */
   releaseUnknownCreates?: boolean;
+  /** Tests substitute a slow or failing journal; production writes through machineState. */
+  writeJournal?: (journal: AttemptJournal) => Promise<void>;
 }
+
+const writeAttemptJournal = (deps: SuperviseDeps, journal: AttemptJournal) =>
+  (deps.writeJournal ? deps.writeJournal(journal) : writeJournal(deps.state, JOURNAL, journal));
 
 type JournalState = 'claimed' | 'attached' | 'created' | 'started' | 'acknowledging' | 'running' | 'stopping' | 'held' | 'settling';
 
@@ -204,12 +209,18 @@ async function unresolvedCreates(deps: SuperviseDeps, journal: AttemptJournal): 
 }
 
 /** Tears down a journal's run; returns what is still held. Never relaunches. */
-async function settle(deps: SuperviseDeps, journal: AttemptJournal, reason: StopReason, controlId?: string): Promise<{facts: StopFacts; journal: AttemptJournal}> {
+async function settle(
+  deps: SuperviseDeps, journal: AttemptJournal, reason: StopReason, controlId?: string, pendingWrites: Promise<unknown> = Promise.resolve(),
+): Promise<{facts: StopFacts; journal: AttemptJournal}> {
   const stop = {reason, ...(controlId ? {controlId} : {})};
   let current: AttemptJournal = {...journal, state: 'stopping', stop};
-  // The physical stop never waits on the journal: a failed write is raised only after kills and removal.
+  // The physical stop never waits on the journal, failed or slow: the `stopping` record is written in the
+  // background, after any earlier write so an older snapshot cannot land last, and a failure is raised only
+  // after kills and removal.
   let journalError: unknown;
-  await writeJournal(deps.state, JOURNAL, current).catch((error: unknown) => { journalError ??= error; });
+  const stoppingWritten = pendingWrites.catch(() => undefined)
+    .then(() => writeAttemptJournal(deps, current))
+    .catch((error: unknown) => { journalError ??= error; });
   let facts: StopFacts;
   if (!current.attemptId) {
     const owned = await ownedResources(deps, current, deps.clock.monoMs() + STOP_BUDGET_MS);
@@ -231,7 +242,8 @@ async function settle(deps: SuperviseDeps, journal: AttemptJournal, reason: Stop
     (deadlineMono) => ownedResources(deps, journaled, deadlineMono));
   }
   current = {...current, state: facts.held.length > 0 ? 'held' : 'stopping', stop: {...stop, facts}};
-  await writeJournal(deps.state, JOURNAL, current).catch((error: unknown) => { journalError ??= error; });
+  await stoppingWritten;
+  await writeAttemptJournal(deps, current).catch((error: unknown) => { journalError ??= error; });
   if (journalError !== undefined) {
     throw new SuperviseError(`The attempt was stopped (cgroup ${facts.cgroupEmpty}, resources ${facts.resourcesRemoved ? 'removed' : 'held'}), `
       + `but its journal could not be written: ${(journalError as Error).message}. The earlier journal is kept for the next start.`);
@@ -375,7 +387,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     if (unknown.length > 0) {
       facts = {...facts, resourcesRemoved: false, held: [...facts.held, ...unknown.map((role) => `create:${role}`)]};
       journal = {...journal, state: 'held', stop: {...(journal.stop ?? {reason}), facts}};
-      await writeJournal(deps.state, JOURNAL, journal);
+      await writeAttemptJournal(deps, journal);
     }
     if (facts.held.length > 0) return {kind: 'held', held: facts.held};
     earlier = {...journal, state: 'settling', settlement: {...(journal.settlement ?? {
@@ -384,7 +396,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       // The attach may have committed even if its reply was lost: report by the journaled runtime and workspace.
       attemptReport: journal.workspace ? 'pending' : 'skipped', work: 'pending',
     }), cgroupEmpty: facts.cgroupEmpty === 'empty'}};
-    await writeJournal(deps.state, JOURNAL, earlier);
+    await writeAttemptJournal(deps, earlier);
   }
 
   const info = await deps.docker(['info', '--format', '{{json .}}']);
@@ -416,7 +428,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       const settlement = await postSettlement(session, earlier, workItem?.claimToken as string, 30_000);
       earlier = {...earlier, settlement};
       settled = isSettled(settlement);
-      await writeJournal(deps.state, JOURNAL, earlier);
+      await writeAttemptJournal(deps, earlier);
       if (!settled) return {kind: 'recovered', settled: false};
     }
     await archiveJournal(deps.state, JOURNAL, new Date(deps.clock.wallMs()));
@@ -441,7 +453,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   let writing: Promise<void> = Promise.resolve();
   const persist = () => {
     // A failed write is returned to its caller but never poisons the writes queued after it.
-    const next = writing.catch(() => undefined).then(() => writeJournal(deps.state, JOURNAL, journal));
+    const next = writing.catch(() => undefined).then(() => writeAttemptJournal(deps, journal));
     writing = next;
     return next;
   };
@@ -550,11 +562,15 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     deps.shutdown?.removeEventListener('abort', onShutdown);
     if (!life.signal.aborted) life.abort('finished');
     agent?.stdin.end();
-    // Wait, within the stop budget, for creates still in flight, so their IDs are torn down too.
-    await Promise.race([Promise.allSettled([...inflight]), sleep(STOP_BUDGET_MS)]);
+    // Known containers are killed at once, before waiting on creates in flight or on any journal write.
+    const killBy = deps.clock.monoMs() + STOP_BUDGET_MS;
+    for (const id of [journal.containers.agent, journal.containers.sidecar]) {
+      if (id) await deps.docker(['container', 'kill', '--signal', 'KILL', id], {deadlineMono: killBy});
+    }
+    // Then wait, within the stop budget, for creates still in flight, so their IDs are torn down too.
+    await Promise.race([Promise.allSettled([...inflight]), sleep(Math.max(0, killBy - deps.clock.monoMs()))]);
     finished = true;
-    await writing.catch(() => undefined);
-    const settled = await settle(deps, journal, reason, controlId);
+    const settled = await settle(deps, journal, reason, controlId, writing);
     sidecar?.kill();
     agent?.kill();
     journal = settled.journal;
