@@ -227,7 +227,8 @@ async function receiptsOwed(deps: SuperviseDeps, journal: AttemptJournal, facts:
   const carried = journal.receipts ?? [];
   if (!journal.attemptId) return carried;
   const state = await inspectMachineState(deps.state);
-  if (state.kind !== 'enrolled') return carried;
+  // An attached attempt owes receipts; machine state that cannot say to whom leaves them unresolved, never empty.
+  if (state.kind !== 'enrolled') throw new SuperviseError(`The machine state is ${state.kind}; the cleanup receipts cannot be worked out yet`);
   const {machine} = state;
   const unresolved = (journal.pendingCreates ?? []).map((role) => `create:${role}`);
   const held = [...facts.held, ...unresolved];
@@ -259,7 +260,13 @@ async function ensureReceiptsQueued(deps: SuperviseDeps, journal: AttemptJournal
       current = {...current, receipts, receiptsDerived: true, receiptsQueued: false};
       await writeAttemptJournal(deps, current);
     }
-    if (current.receiptsQueued !== false || !current.receipts?.length) return current;
+    if (current.receiptsQueued !== false) return current;
+    // Worked out and nothing owed (an attempt that was never attached): settled.
+    if (!current.receipts?.length) {
+      current = {...current, receiptsQueued: true};
+      await writeAttemptJournal(deps, current);
+      return current;
+    }
     const state = await inspectMachineState(deps.state);
     if (state.kind !== 'enrolled') return null;
     await enqueueReceipts(deps.state, state.machine.enrollmentId, current.receipts);
