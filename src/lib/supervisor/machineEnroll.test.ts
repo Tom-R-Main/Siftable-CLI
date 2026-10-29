@@ -161,7 +161,7 @@ describe('enrollMachine', () => {
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const first = enrollMachine({...deps(slow.fetchImpl), sleep: async () => { await gate; }}, options);
     await new Promise((resolve) => setTimeout(resolve, 50));
-    await expect(enrollMachine(deps(fakeServer([]).fetchImpl), options)).rejects.toThrow(/Another enrollment is running/);
+    await expect(enrollMachine(deps(fakeServer([]).fetchImpl), options)).rejects.toThrow(/Another machine command \(enroll\) is running/);
     release();
     await expect(first).resolves.toMatchObject({enrollmentId: ENROLLMENT_ID});
     // A lock left by a process that is gone is reported, never taken over.
@@ -169,6 +169,30 @@ describe('enrollMachine', () => {
     await expect(enrollMachine(deps(fakeServer([]).fetchImpl), options)).rejects.toThrow(/stopped without releasing/);
     await fs.rm(path.join(root, '.enroll.lock'));
     await expect(enrollMachine(deps(fakeServer([]).fetchImpl), options)).rejects.toThrow(/already enrolled/);
+  });
+
+  it('lets exactly one supervisor take over a dead supervisor\'s lock, and nothing else take over any dead lock', async () => {
+    await fs.mkdir(root, {recursive: true, mode: 0o700});
+    const lock = path.join(root, '.enroll.lock');
+    const dead = (purpose: string) => JSON.stringify({pid: 2 ** 22 + 12345, nonce: (purpose === 'supervise' ? 'a' : 'b').repeat(32), purpose});
+    await fs.writeFile(lock, dead('supervise'), {mode: 0o600});
+    await expect(acquireStateLock(state, process.pid, 'qualify')).rejects.toThrow(/stopped without releasing/);
+    const contenders = await Promise.allSettled(Array.from({length: 6}, () => acquireStateLock(state, process.pid, 'supervise')));
+    expect(contenders.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(JSON.parse(await fs.readFile(lock, 'utf8'))).toMatchObject({pid: process.pid, purpose: 'supervise'});
+    // A claimant that linked its marker and died before replacing the lock does not block the next one.
+    await fs.rm(root, {recursive: true, force: true});
+    await fs.mkdir(root, {recursive: true, mode: 0o700});
+    await fs.writeFile(lock, dead('supervise'), {mode: 0o600});
+    await fs.writeFile(path.join(root, `.enroll.lock.takeover-${'a'.repeat(32)}`),
+      JSON.stringify({pid: 2 ** 22 + 23456, nonce: 'c'.repeat(32), purpose: 'supervise'}), {mode: 0o600});
+    const release = await acquireStateLock(state, process.pid, 'supervise');
+    expect(JSON.parse(await fs.readFile(lock, 'utf8'))).toMatchObject({pid: process.pid, purpose: 'supervise'});
+    await release();
+    await fs.rm(root, {recursive: true, force: true});
+    await fs.mkdir(root, {recursive: true, mode: 0o700});
+    await fs.writeFile(lock, dead('qualify'), {mode: 0o600});
+    await expect(acquireStateLock(state, process.pid, 'supervise')).rejects.toThrow(/stopped without releasing/);
   });
 
   it('admits exactly one of many contenders for the lock, and releases only its own', async () => {

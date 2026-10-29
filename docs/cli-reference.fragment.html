@@ -1809,7 +1809,7 @@
               </div>
             </details>
             <h2 id="cli-machine" data-i18n="docs.cli.machine.title">Machine</h2>
-            <details class="cli-topic"><summary><span data-i18n="docs.cli.machine.count">3 commands</span></summary>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.machine.count">5 commands</span></summary>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift machine enroll</code></div></div>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.machine.enroll.desc">Enroll this Linux machine as a contained supervisor (run as root)</p>
@@ -1829,8 +1829,26 @@
                 </dl>
               </div>
               <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift machine service</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.machine.service.desc">Install or remove the systemd service that runs the supervisor (run as root)</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>action</code> <span class="req">required</span> — install writes, enables and starts the unit; uninstall stops, disables and removes it</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift machine status</code></div></div>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.machine.status.desc">Show this machine's supervisor enrollment (run as root; never prints the credential)</p>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift machine supervise</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.machine.supervise.desc">Run this machine's contained supervisor: claim work, run it in the sandbox, stop and clean up (run as root, normally by systemd)</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--once</code> — Run at most one attempt, then exit</dd>
+                  <dd><code>--plan-file &lt;value&gt;</code> — Root-owned JSON plan used for every dispatch (test fixture until setup launches record plans)</dd>
+                  <dd><code>--release-unknown-creates</code> — After checking Docker yourself: treat held creates whose result was never known, and that are not found by name, as never made</dd>
+                </dl>
               </div>
             </details>
             <h2 id="cli-notes" data-i18n="docs.cli.notes.title">Notes</h2>

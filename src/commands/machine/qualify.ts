@@ -1,9 +1,7 @@
 import {Flags} from '@oclif/core';
-import {execFile, spawn} from 'node:child_process';
 import {BaseCommand} from '../../lib/base-command.js';
+import {createHostDocker, hostAttach} from '../../lib/supervisor/hostDocker.js';
 import {
-  type Attach,
-  type Docker,
   MachineQualifyError,
   qualifyMachine,
   readProcCgroup,
@@ -12,23 +10,7 @@ import {
 import {MachineStateError, SUPERVISOR_STATE_DIR} from '../../lib/supervisor/machineState.js';
 import {ensureSupervisorAccount} from '../../lib/supervisor/systemAccount.js';
 
-const DOCKER_ENV = {PATH: '/usr/sbin:/usr/bin:/sbin:/bin', DOCKER_CONFIG: '/dev/null'};
-
-const docker: Docker = (args) => new Promise((resolve) => {
-  execFile('docker', args, {env: DOCKER_ENV, timeout: 120_000, maxBuffer: 16 * 1024 * 1024}, (error, stdout, stderr) => {
-    const code = error ? (typeof (error as {code?: unknown}).code === 'number' ? (error as {code: number}).code : 1) : 0;
-    resolve({code, stdout: String(stdout), stderr: String(stderr)});
-  });
-});
-
-const attach: Attach = (args) => {
-  const child = spawn('docker', args, {env: DOCKER_ENV, stdio: ['pipe', 'pipe', 'ignore']});
-  return {
-    stdin: child.stdin, stdout: child.stdout,
-    exited: new Promise((resolve) => child.once('exit', (code) => resolve(code ?? 1))),
-    kill: () => { child.kill('SIGTERM'); },
-  };
-};
+const docker = createHostDocker();
 
 export default class MachineQualify extends BaseCommand {
   static description = 'Qualify this enrolled machine: run the isolation probes in the pinned agent image and report them (run as root)';
@@ -45,7 +27,7 @@ export default class MachineQualify extends BaseCommand {
     const account = await ensureSupervisorAccount();
     try {
       const result = await qualifyMachine({
-        fetch: globalThis.fetch, docker, attach,
+        fetch: globalThis.fetch, docker, attach: hostAttach,
         state: {root: SUPERVISOR_STATE_DIR, owner: {uid: account.uid, gid: account.gid}},
         now: () => new Date(),
         log: (line) => (this.jsonEnabled() ? process.stderr.write(`${line}\n`) : this.log(line)),

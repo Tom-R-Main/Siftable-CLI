@@ -157,7 +157,7 @@ export function parseProbeOutput(line: string | undefined): MachineQualification
 }
 
 /** The pinned image, present locally, and its local ID. */
-async function ensureImage(docker: Docker, imageRef: string): Promise<string> {
+export async function ensureImage(docker: Docker, imageRef: string): Promise<string> {
   let inspected = await docker(['image', 'inspect', imageRef]);
   if (inspected.code !== 0) {
     await mustDocker(docker, ['pull', imageRef]);
@@ -192,7 +192,7 @@ async function teardown(docker: Docker, journal: QualifyJournal): Promise<string
   return held;
 }
 
-function readFirstLine(stream: NodeJS.ReadableStream, timeoutMs: number): Promise<string | undefined> {
+export function readFirstLine(stream: NodeJS.ReadableStream, timeoutMs: number): Promise<string | undefined> {
   return new Promise((resolve) => {
     let buffer = '';
     const done = (value: string | undefined) => { clearTimeout(timer); stream.removeAllListeners('data'); resolve(value); };
@@ -254,7 +254,7 @@ function specs(runId: string, imageRef: string, networkId: string, enrollmentId:
 }
 
 export async function qualifyMachine(deps: QualifyDeps, options: {startOver?: boolean} = {}): Promise<QualifyResult> {
-  const release = await acquireStateLock(deps.state);
+  const release = await acquireStateLock(deps.state, process.pid, 'qualify');
   try {
     const state = await inspectMachineState(deps.state);
     if (state.kind !== 'enrolled') throw new MachineQualifyError('This machine is not enrolled. Run `sudo sift machine enroll` first.');
