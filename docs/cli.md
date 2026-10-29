@@ -164,9 +164,9 @@ The exact read is not limited by the 100-request list cap, so an older request a
 
 ## Command reference
 
-All 350 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
+All 357 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
 
-**Topics:** [General](#general) · [Agent](#agent) · [Agents](#agents) · [Ai](#ai) · [Approvals](#approvals) · [Auth](#auth) · [Billing](#billing) · [Calendar](#calendar) · [Capabilities](#capabilities) · [Code](#code) · [Codebase](#codebase) · [Codex](#codex) · [Context](#context) · [Crm](#crm) · [Datasets](#datasets) · [Documents](#documents) · [Env](#env) · [Events](#events) · [Evidence](#evidence) · [Grants](#grants) · [Graph](#graph) · [Lead-discovery](#lead-discovery) · [Notes](#notes) · [Organizations](#organizations) · [People](#people) · [Projects](#projects) · [Recipes](#recipes) · [Relationships](#relationships) · [Research](#research) · [Skills](#skills) · [Tasks](#tasks) · [Timeline](#timeline) · [Vault](#vault) · [Work](#work) · [Worker](#worker) · [Workspaces](#workspaces)
+**Topics:** [General](#general) · [Agent](#agent) · [Agents](#agents) · [Ai](#ai) · [Approvals](#approvals) · [Auth](#auth) · [Billing](#billing) · [Calendar](#calendar) · [Capabilities](#capabilities) · [Code](#code) · [Codebase](#codebase) · [Codex](#codex) · [Compute](#compute) · [Context](#context) · [Crm](#crm) · [Datasets](#datasets) · [Documents](#documents) · [Env](#env) · [Events](#events) · [Evidence](#evidence) · [Grants](#grants) · [Graph](#graph) · [Lead-discovery](#lead-discovery) · [Machine](#machine) · [Notes](#notes) · [Organizations](#organizations) · [People](#people) · [Projects](#projects) · [Recipes](#recipes) · [Relationships](#relationships) · [Research](#research) · [Skills](#skills) · [Tasks](#tasks) · [Timeline](#timeline) · [Vault](#vault) · [Work](#work) · [Worker](#worker) · [Workspaces](#workspaces)
 
 
 ### General
@@ -211,6 +211,24 @@ Render a Mermaid diagram to the terminal (flowchart, sequence, state, class, ER,
 - `--overflow <allow|clip|error>` *(default: "clip")* — What to do when the diagram exceeds the bounds
 - `--unicode` — Use Unicode box drawing (default)
 - `--width <value>` — Fit into an exact N-column pane (pads/clips)
+
+#### `sift review`
+Review committed changes with Taster before opening a pull request. Runs locally through your Codex login. --repo selects the checkout; --expected-head asserts its full commit ID. Only committed changes are reviewed. An incomplete review is never reported as clean. --receipt also saves a full companion report and a durable attempt record, including failures and interruptions. Exit status: 0 clean or advisory findings only, 1 blocking (P0-P1) findings, 2 incomplete, skipped or failed.
+
+**Flags**
+
+- `--base <value>` — Base ref to review against (default: origin/main, then main)
+- `--codex-bin <value>` — Absolute path of the Codex binary (default: codex on PATH)
+- `--concurrency <value>` *(default: 2)* — Concurrent Codex runs
+- `--deadline-ms <value>` *(default: 1800000)* — Whole-review deadline, including setup and pre-pass, in milliseconds
+- `--expected-head <value>` — Require this full committed HEAD before starting review
+- `--finder-passes <value>` *(default: 2)* — Finder passes with different file orderings (2 or 3)
+- `--max-files <value>` *(default: 60)* — Changed files to review; more are skipped and the review is incomplete
+- `--max-model-calls <value>` *(default: 40)* — Model call ceiling for the whole review
+- `--model <value>` *(default: "gpt-6.1-sol")* — Model for finders and validators
+- `--receipt <value>` — Write the revision-bound receipt, plus <path>.report.json and <path>.attempt.json
+- `--repo <value>` — Repository checkout to review (default: current directory)
+- `--report <value>` — Write the full review report to this path (overrides the companion report path)
 
 
 ### Agent
@@ -694,6 +712,62 @@ Collect read-only Siftable and local git context for Codex daily work reviews
 - `--calendar-days <value>` *(default: 7)* — Calendar lookahead days
 - `--limit <value>` *(default: 20)* — Maximum records per source
 - `--skip-git` — Skip local git summary
+
+
+### Compute
+
+#### `sift compute get`
+Inspect a compute grant, its dispatch, and cleanup state
+
+**Arguments**
+
+- `grantId` *(required)* — Compute grant ID
+
+#### `sift compute list`
+List this credential's compute grants
+
+#### `sift compute request`
+Request human authorization to launch managed compute for one work-item revision
+
+**Arguments**
+
+- `workItemId` *(required)* — Work item ID
+
+**Flags**
+
+- `--idempotency-key <value>` — Explicit idempotency key for safe retries
+- `--purpose <value>` *(required)* — Human-readable purpose shown on the approval
+- `--revision <value>` *(required)* — Expected work-item revision
+- `--runner <value>` *(required)* — Runner ID advertising a managed compute profile
+
+#### `sift compute runners`
+List managed runners advertising a compute profile
+
+**Flags**
+
+- `--work-item <value>` — Check runner eligibility for this work item
+
+#### `sift compute start`
+Start the single approved dispatch for a compute grant
+
+**Arguments**
+
+- `grantId` *(required)* — Compute grant ID
+
+**Flags**
+
+- `--idempotency-key <value>` — Explicit idempotency key for safe retries
+
+#### `sift compute stop`
+Request stop on a compute grant's running dispatch
+
+**Arguments**
+
+- `grantId` *(required)* — Compute grant ID
+
+**Flags**
+
+- `--idempotency-key <value>` — Explicit idempotency key for safe retries
 
 
 ### Context
@@ -1894,6 +1968,20 @@ Recover durable discovery run status and receipt by stable run ID
 **Arguments**
 
 - `runId` *(required)* — Discovery run UUID
+
+
+### Machine
+
+#### `sift machine enroll`
+Enroll this Linux machine as a contained supervisor (run as root)
+
+**Flags**
+
+- `--replace` — Revoke and retire this machine's current enrollment, then enroll again
+- `--setup <value>` — Setup session this machine is enrolled for (recorded locally)
+
+#### `sift machine status`
+Show this machine's supervisor enrollment (run as root; never prints the credential)
 
 
 ### Notes
@@ -3704,6 +3792,7 @@ Answer a question a running agent asked. Opens the web app, where you answer wit
 **Flags**
 
 - `--app-url <value>` — Web app origin for the decision page (default: SIFT_APP_URL, else derived from --api-url)
+- `--full-detail` — Print the whole stored request text instead of a 500-character preview
 - `--no-browser` — Print the decision URL instead of opening it
 - `--poll-ms <value>` *(default: 2000)*
 - `--timeout <value>` *(default: 900)* — Seconds to wait for the decision
@@ -3719,6 +3808,7 @@ Decide an approval a running agent is waiting on. Opens the web app, where you d
 **Flags**
 
 - `--app-url <value>` — Web app origin for the decision page (default: SIFT_APP_URL, else derived from --api-url)
+- `--full-detail` — Print the whole stored request text instead of a 500-character preview
 - `--no-browser` — Print the decision URL instead of opening it
 - `--poll-ms <value>` *(default: 2000)*
 - `--timeout <value>` *(default: 900)* — Seconds to wait for the decision
@@ -3734,6 +3824,7 @@ Attach to a running work item: show its state and recent ledger, follow it, and 
 
 - `--after-sequence <value>` — Follow from after this ledger sequence instead of the current end
 - `--backlog <value>` *(default: 20)* — Replay this many ledger events before the current end
+- `--full-detail` — Print the whole stored request text instead of a 500-character preview
 - `--keep-following` — Keep following after the live execution attempt ends
 - `--once` — Print the current state (and backlog) once, then exit
 - `--timeout <value>` *(default: 0)* — Stop following after this many seconds (0 = no limit)
@@ -4265,6 +4356,7 @@ Follow a running work item: ledger events, the execution attempt, runtime reques
 
 - `--after-sequence <value>` — Follow from after this ledger sequence instead of the current end
 - `--backlog <value>` *(default: 0)* — Replay this many ledger events before the current end
+- `--full-detail` — Print the whole stored request text instead of a 500-character preview
 - `--keep-following` — Keep following after the live execution attempt ends
 - `--once` — Print the current state (and backlog) once, then exit
 - `--timeout <value>` *(default: 0)* — Stop following after this many seconds (0 = no limit)

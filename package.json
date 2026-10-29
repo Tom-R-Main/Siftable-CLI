@@ -104,6 +104,9 @@
       "auth": {
         "description": "Authentication commands"
       },
+      "machine": {
+        "description": "Enroll this Linux machine as a contained supervisor"
+      },
       "tasks": {
         "description": "Human planning tasks"
       },

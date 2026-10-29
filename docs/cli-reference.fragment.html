@@ -1,7 +1,7 @@
         <!-- BEGIN generated CLI command reference (gen-cli-docs.mjs) -->
             <h2 id="cli-general" data-i18n="docs.cli.general.title">General</h2>
             <p class="cli-topic__intro" data-i18n="docs.cli.general.intro">Top-level commands and diagnostics.</p>
-            <details class="cli-topic"><summary><span data-i18n="docs.cli.general.count">5 commands</span></summary>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.general.count">6 commands</span></summary>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift capabilities</code></div></div>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.general.capabilities.desc">Show Siftable CLI capabilities and readiness status</p>
@@ -42,6 +42,25 @@
                   <dd><code>--overflow &lt;allow|clip|error&gt;</code> <span class="flag-meta">default: "clip"</span> — What to do when the diagram exceeds the bounds</dd>
                   <dd><code>--unicode</code> — Use Unicode box drawing (default)</dd>
                   <dd><code>--width &lt;value&gt;</code> — Fit into an exact N-column pane (pads/clips)</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift review</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.general.review.desc">Review committed changes with Taster before opening a pull request. Runs locally through your Codex login. --repo selects the checkout; --expected-head asserts its full commit ID. Only committed changes are reviewed. An incomplete review is never reported as clean. --receipt also saves a full companion report and a durable attempt record, including failures and interruptions. Exit status: 0 clean or advisory findings only, 1 blocking (P0-P1) findings, 2 incomplete, skipped or failed.</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--base &lt;value&gt;</code> — Base ref to review against (default: origin/main, then main)</dd>
+                  <dd><code>--codex-bin &lt;value&gt;</code> — Absolute path of the Codex binary (default: codex on PATH)</dd>
+                  <dd><code>--concurrency &lt;value&gt;</code> <span class="flag-meta">default: 2</span> — Concurrent Codex runs</dd>
+                  <dd><code>--deadline-ms &lt;value&gt;</code> <span class="flag-meta">default: 1800000</span> — Whole-review deadline, including setup and pre-pass, in milliseconds</dd>
+                  <dd><code>--expected-head &lt;value&gt;</code> — Require this full committed HEAD before starting review</dd>
+                  <dd><code>--finder-passes &lt;value&gt;</code> <span class="flag-meta">default: 2</span> — Finder passes with different file orderings (2 or 3)</dd>
+                  <dd><code>--max-files &lt;value&gt;</code> <span class="flag-meta">default: 60</span> — Changed files to review; more are skipped and the review is incomplete</dd>
+                  <dd><code>--max-model-calls &lt;value&gt;</code> <span class="flag-meta">default: 40</span> — Model call ceiling for the whole review</dd>
+                  <dd><code>--model &lt;value&gt;</code> <span class="flag-meta">default: "gpt-6.1-sol"</span> — Model for finders and validators</dd>
+                  <dd><code>--receipt &lt;value&gt;</code> — Write the revision-bound receipt, plus &lt;path&gt;.report.json and &lt;path&gt;.attempt.json</dd>
+                  <dd><code>--repo &lt;value&gt;</code> — Repository checkout to review (default: current directory)</dd>
+                  <dd><code>--report &lt;value&gt;</code> — Write the full review report to this path (overrides the companion report path)</dd>
                 </dl>
               </div>
             </details>
@@ -539,6 +558,62 @@
                   <dd><code>--calendar-days &lt;value&gt;</code> <span class="flag-meta">default: 7</span> — Calendar lookahead days</dd>
                   <dd><code>--limit &lt;value&gt;</code> <span class="flag-meta">default: 20</span> — Maximum records per source</dd>
                   <dd><code>--skip-git</code> — Skip local git summary</dd>
+                </dl>
+              </div>
+            </details>
+            <h2 id="cli-compute" data-i18n="docs.cli.compute.title">Compute</h2>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.compute.count">6 commands</span></summary>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift compute get</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.compute.get.desc">Inspect a compute grant, its dispatch, and cleanup state</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>grantId</code> <span class="req">required</span> — Compute grant ID</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift compute list</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.compute.list.desc">List this credential's compute grants</p>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift compute request</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.compute.request.desc">Request human authorization to launch managed compute for one work-item revision</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>workItemId</code> <span class="req">required</span> — Work item ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> — Explicit idempotency key for safe retries</dd>
+                  <dd><code>--purpose &lt;value&gt;</code> <span class="flag-meta">required</span> — Human-readable purpose shown on the approval</dd>
+                  <dd><code>--revision &lt;value&gt;</code> <span class="flag-meta">required</span> — Expected work-item revision</dd>
+                  <dd><code>--runner &lt;value&gt;</code> <span class="flag-meta">required</span> — Runner ID advertising a managed compute profile</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift compute runners</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.compute.runners.desc">List managed runners advertising a compute profile</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--work-item &lt;value&gt;</code> — Check runner eligibility for this work item</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift compute start</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.compute.start.desc">Start the single approved dispatch for a compute grant</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>grantId</code> <span class="req">required</span> — Compute grant ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> — Explicit idempotency key for safe retries</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift compute stop</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.compute.stop.desc">Request stop on a compute grant's running dispatch</p>
+                <dl class="cli-cmd__params">
+                  <dt>Arguments</dt>
+                  <dd><code>grantId</code> <span class="req">required</span> — Compute grant ID</dd>
+                  <dt>Flags</dt>
+                  <dd><code>--idempotency-key &lt;value&gt;</code> — Explicit idempotency key for safe retries</dd>
                 </dl>
               </div>
             </details>
@@ -1733,6 +1808,22 @@
                 </dl>
               </div>
             </details>
+            <h2 id="cli-machine" data-i18n="docs.cli.machine.title">Machine</h2>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.machine.count">2 commands</span></summary>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift machine enroll</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.machine.enroll.desc">Enroll this Linux machine as a contained supervisor (run as root)</p>
+                <dl class="cli-cmd__params">
+                  <dt>Flags</dt>
+                  <dd><code>--replace</code> — Revoke and retire this machine's current enrollment, then enroll again</dd>
+                  <dd><code>--setup &lt;value&gt;</code> — Setup session this machine is enrolled for (recorded locally)</dd>
+                </dl>
+              </div>
+              <div class="cli-cmd">
+                <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift machine status</code></div></div>
+                <p class="cli-cmd__desc" data-i18n="docs.cli.machine.status.desc">Show this machine's supervisor enrollment (run as root; never prints the credential)</p>
+              </div>
+            </details>
             <h2 id="cli-notes" data-i18n="docs.cli.notes.title">Notes</h2>
             <p class="cli-topic__intro" data-i18n="docs.cli.notes.intro">Knowledge notes.</p>
             <details class="cli-topic"><summary><span data-i18n="docs.cli.notes.count">7 commands</span></summary>
@@ -1900,7 +1991,7 @@
             </details>
             <h2 id="cli-people" data-i18n="docs.cli.people.title">People</h2>
             <p class="cli-topic__intro" data-i18n="docs.cli.people.intro">People and contacts.</p>
-            <details class="cli-topic"><summary><span data-i18n="docs.cli.people.count">15 commands</span></summary>
+            <details class="cli-topic"><summary><span data-i18n="docs.cli.people.count">13 commands</span></summary>
               <div class="cli-cmd">
                 <div class="cli-cmd__card"><div class="cli-cmd__card-head"><span>Shell</span><span>sift</span></div><div class="cli-cmd__card-body" tabindex="0"><code class="cli-cmd__name">sift people bulk-delete</code></div></div>
                 <p class="cli-cmd__desc" data-i18n="docs.cli.people.bulk-delete.desc">Preview or bulk-delete contacts</p>
@@ -3537,6 +3628,7 @@
                   <dd><code>requestId</code> — Runtime request UUID (default: the only open question)</dd>
                   <dt>Flags</dt>
                   <dd><code>--app-url &lt;value&gt;</code> — Web app origin for the decision page (default: SIFT_APP_URL, else derived from --api-url)</dd>
+                  <dd><code>--full-detail</code> — Print the whole stored request text instead of a 500-character preview</dd>
                   <dd><code>--no-browser</code> — Print the decision URL instead of opening it</dd>
                   <dd><code>--poll-ms &lt;value&gt;</code> <span class="flag-meta">default: 2000</span></dd>
                   <dd><code>--timeout &lt;value&gt;</code> <span class="flag-meta">default: 900</span> — Seconds to wait for the decision</dd>
@@ -3551,6 +3643,7 @@
                   <dd><code>requestId</code> — Runtime request UUID (default: the only open approval)</dd>
                   <dt>Flags</dt>
                   <dd><code>--app-url &lt;value&gt;</code> — Web app origin for the decision page (default: SIFT_APP_URL, else derived from --api-url)</dd>
+                  <dd><code>--full-detail</code> — Print the whole stored request text instead of a 500-character preview</dd>
                   <dd><code>--no-browser</code> — Print the decision URL instead of opening it</dd>
                   <dd><code>--poll-ms &lt;value&gt;</code> <span class="flag-meta">default: 2000</span></dd>
                   <dd><code>--timeout &lt;value&gt;</code> <span class="flag-meta">default: 900</span> — Seconds to wait for the decision</dd>
@@ -3565,6 +3658,7 @@
                   <dt>Flags</dt>
                   <dd><code>--after-sequence &lt;value&gt;</code> — Follow from after this ledger sequence instead of the current end</dd>
                   <dd><code>--backlog &lt;value&gt;</code> <span class="flag-meta">default: 20</span> — Replay this many ledger events before the current end</dd>
+                  <dd><code>--full-detail</code> — Print the whole stored request text instead of a 500-character preview</dd>
                   <dd><code>--keep-following</code> — Keep following after the live execution attempt ends</dd>
                   <dd><code>--once</code> — Print the current state (and backlog) once, then exit</dd>
                   <dd><code>--timeout &lt;value&gt;</code> <span class="flag-meta">default: 0</span> — Stop following after this many seconds (0 = no limit)</dd>
@@ -4076,6 +4170,7 @@
                   <dt>Flags</dt>
                   <dd><code>--after-sequence &lt;value&gt;</code> — Follow from after this ledger sequence instead of the current end</dd>
                   <dd><code>--backlog &lt;value&gt;</code> <span class="flag-meta">default: 0</span> — Replay this many ledger events before the current end</dd>
+                  <dd><code>--full-detail</code> — Print the whole stored request text instead of a 500-character preview</dd>
                   <dd><code>--keep-following</code> — Keep following after the live execution attempt ends</dd>
                   <dd><code>--once</code> — Print the current state (and backlog) once, then exit</dd>
                   <dd><code>--timeout &lt;value&gt;</code> <span class="flag-meta">default: 0</span> — Stop following after this many seconds (0 = no limit)</dd>
