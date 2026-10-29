@@ -881,6 +881,14 @@ describe('superviseOnce', () => {
       expect(first.events).not.toContain('review');
       expect(first.events).not.toContain('fail');
       expect(await fs.readFile(path.join(inputRoot, ATTEMPT, 'agent.log'), 'utf8')).toBe(WORKLOAD_OUTPUT);
+      // A shutdown during the resumed upload again decides and posts nothing.
+      const again = new AbortController();
+      const interrupted = world({onDeclare: () => again.abort()});
+      expect(await superviseOnce(deps(interrupted, {shutdown: again.signal}))).toEqual({kind: 'recovered', settled: false});
+      expect(interrupted.events).not.toContain('evidence-ack');
+      expect(interrupted.events).not.toContain('review');
+      expect(interrupted.events).not.toContain('fail');
+      expect(interrupted.events).not.toContain('attempt:ended');
       // The next start finishes the upload under the recovered claim, then settles the clean exit as a review.
       const second = world();
       expect(await superviseOnce(deps(second))).toEqual({kind: 'recovered', settled: true});

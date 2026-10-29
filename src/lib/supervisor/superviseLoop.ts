@@ -484,7 +484,7 @@ async function postSettlement(
  * settlement is posted. The frozen log must still match its journaled digest; nothing is re-run.
  */
 async function resumeEvidence(deps: SuperviseDeps, session: Session, journal: AttemptJournal, claimToken: string,
-  deadlineMono: number): Promise<AttemptJournal> {
+  deadlineMono: number): Promise<AttemptJournal | 'cancelled'> {
   const frozen = journal.evidence;
   if (!frozen || !journal.settlement || journal.settlement.evidence || !journal.attemptId) return journal;
   const intact = await fs.readFile(frozen.path)
@@ -494,8 +494,10 @@ async function resumeEvidence(deps: SuperviseDeps, session: Session, journal: At
     call: (method, route, body, options) => session.call(method, route, body, options), fetch: deps.fetch,
     monoMs: () => deps.clock.monoMs(), deadlineMono,
     route: `/api/v1/work-items/${journal.workItemId}/execution-attempts/${journal.attemptId}/evidence-manifest`, claimToken,
-    log: {path: frozen.path, sha256: frozen.sha256, bytes: frozen.bytes},
+    log: {path: frozen.path, sha256: frozen.sha256, bytes: frozen.bytes}, signal: deps.shutdown,
   }) : {acknowledged: false};
+  // Shutdown again: still undecided; the journal is left as it was for the next start.
+  if (outcome.cancelled) return 'cancelled';
   const next = {...journal, evidence: {...frozen, ...outcome}, settlement: {...journal.settlement, evidence: outcome}};
   await writeAttemptJournal(deps, next);
   if (outcome.acknowledged) await fs.rm(path.dirname(frozen.path), {recursive: true, force: true}).catch(() => undefined);
@@ -590,8 +592,10 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       // Only within the claim the server just confirmed; a missing expiry leaves no time to upload.
       const recoveredCap = initialCaps(deps.clock, {claimExpiresAt: workItem?.claimExpiresAt,
         computeGrantExpiresAt: dispatch?.computeGrantExpiresAt}, sentMono).cap;
-      earlier = await resumeEvidence(deps, session, earlier, workItem?.claimToken as string,
+      const resumed = await resumeEvidence(deps, session, earlier, workItem?.claimToken as string,
         Math.min(recoveredCap, deps.clock.monoMs() + EVIDENCE_BUDGET_MS));
+      if (resumed === 'cancelled') return {kind: 'recovered', settled: false};
+      earlier = resumed;
       const settlement = await postSettlement(session, earlier, workItem?.claimToken as string, 30_000);
       earlier = {...earlier, settlement};
       settled = isSettled(settlement);
