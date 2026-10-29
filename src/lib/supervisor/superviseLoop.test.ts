@@ -968,5 +968,20 @@ describe('superviseOnce', () => {
       ]);
       expect(w.events.indexOf('rr-sync:session_ended')).toBeLessThan(w.events.indexOf('review'));
     });
+
+    it('still closes the session at shutdown, within a short budget', async () => {
+      const w = world({agentExit: 'never'});
+      const shutdown = new AbortController();
+      const running = background(superviseOnce(deps(w, {shutdown: shutdown.signal})), () => shutdown.abort());
+      await until(() => w.events.includes('go'));
+      w.sidecarIo.stdout?.write(`${JSON.stringify({id: 1, method: 'POST', path: '/sift/v1/questions',
+        body: Buffer.from(JSON.stringify({questionId: 'q-1', questions: [{question: 'Which branch?'}]})).toString('base64')})}\n`);
+      await until(() => w.events.includes('rr-sync:opened'));
+      shutdown.abort();
+      const stoppedAt = performance.now();
+      expect(await running).toMatchObject({kind: 'finished', reason: 'shutdown'});
+      expect(w.events).toContain('rr-sync:session_ended');
+      expect(performance.now() - stoppedAt).toBeLessThan(10_000);
+    });
   });
 });

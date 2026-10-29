@@ -161,12 +161,19 @@ export class QuestionDesk {
     return false;
   }
 
-  private async recordReceipts(call: QuestionCall, workItemId: string, credential: QuestionCredential) {
+  private async recordReceipts(call: QuestionCall, workItemId: string, credential: QuestionCredential, left: () => number = () => 10_000) {
     for (const q of this.questions.filter((entry) => entry.state === 'received' && entry.requestId)) {
+      if (left() <= 0) return;
       const recorded = await call('POST', `/api/v1/work-items/${workItemId}/runtime-requests/${q.requestId}/delivery`,
-        {...credential, delivery: {outcome: 'delivered'}}, {key: `${q.requestId}:delivered`, timeoutMs: 10_000}).catch(() => null);
+        {...credential, delivery: {outcome: 'delivered'}}, {key: `${q.requestId}:delivered`, timeoutMs: left()}).catch(() => null);
       if (recorded?.status === 200) await this.update(q.questionId, {state: 'acknowledged'});
     }
+  }
+
+  /** Answers no more polls or questions; the journal is left for a later close. */
+  seal(): void {
+    this.sealed = true;
+    for (const wake of [...this.waiters]) wake();
   }
 
   /**
@@ -174,17 +181,20 @@ export class QuestionDesk {
    * delivered, unconfirmed offers failed, and the session's open requests
    * closed. Nothing is offered again.
    */
-  async close(call: QuestionCall, workItemId: string, credential: QuestionCredential): Promise<void> {
-    this.sealed = true;
-    for (const wake of [...this.waiters]) wake();
+  async close(call: QuestionCall, workItemId: string, credential: QuestionCredential, budgetMs = 30_000): Promise<void> {
+    this.seal();
     if (this.questions.length === 0) return;
-    await this.recordReceipts(call, workItemId, credential);
+    const until = this.monoMs() + budgetMs;
+    const left = () => Math.floor(Math.min(10_000, until - this.monoMs()));
+    // The session's open requests are closed first: it is the one call that must land.
+    await call('POST', `/api/v1/work-items/${workItemId}/runtime-requests/sync`, {...credential, observations: [{type: 'session_ended'}]},
+      {timeoutMs: Math.max(1, left())}).catch(() => null);
+    await this.recordReceipts(call, workItemId, credential, left);
     for (const q of this.questions.filter((entry) => entry.state === 'offered' && entry.requestId)) {
+      if (left() <= 0) return;
       await call('POST', `/api/v1/work-items/${workItemId}/runtime-requests/${q.requestId}/delivery`,
-        {...credential, delivery: {outcome: 'failed', error: 'not_received'}}, {key: `${q.requestId}:not_received`, timeoutMs: 10_000})
+        {...credential, delivery: {outcome: 'failed', error: 'not_received'}}, {key: `${q.requestId}:not_received`, timeoutMs: left()})
         .catch(() => null);
     }
-    await call('POST', `/api/v1/work-items/${workItemId}/runtime-requests/sync`, {...credential, observations: [{type: 'session_ended'}]},
-      {timeoutMs: 10_000}).catch(() => null);
   }
 }

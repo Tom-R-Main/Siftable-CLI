@@ -72,7 +72,7 @@ describe('QuestionDesk', () => {
     expect((await send(d, QUESTION_PATHS.ask, {...ask, questionId: 'q-2'})).status).toBe(410);
   });
 
-  it('at a stop, records a received answer delivered, an unconfirmed one failed, and ends the session', async () => {
+  it('at a stop, ends the session, then records a received answer delivered and an unconfirmed one failed', async () => {
     const api = server({answered: true});
     const received: JournalQuestion = {questionId: 'q-1', questions: ask.questions, summary: 's', state: 'received', requestId: 'req-1',
       answerId: 'a', answers};
@@ -81,9 +81,10 @@ describe('QuestionDesk', () => {
     await d.close(api.call, 'w-1', credential);
     expect(api.sent.map((s) => [s.route.split('/').slice(-2).join('/'), s.key, (s.body as {delivery?: unknown}).delivery
       ?? (s.body as {observations?: unknown}).observations])).toEqual([
+      // The session's requests are closed first: the one call that must land within the budget.
+      ['runtime-requests/sync', undefined, [{type: 'session_ended'}]],
       ['req-1/delivery', 'req-1:delivered', {outcome: 'delivered'}],
       ['req-2/delivery', 'req-2:not_received', {outcome: 'failed', error: 'not_received'}],
-      ['runtime-requests/sync', undefined, [{type: 'session_ended'}]],
     ]);
     // Nothing is offered again after a stop.
     expect((await d.handle(QUESTION_PATHS.poll, JSON.stringify({questionId: 'q-3'}), new AbortController().signal)).status).toBe(404);
@@ -94,5 +95,16 @@ describe('QuestionDesk', () => {
     expect((await send(d, QUESTION_PATHS.ask, {questionId: 'bad id', questions: ask.questions})).status).toBe(400);
     expect((await send(d, QUESTION_PATHS.ask, {questionId: 'q-1', questions: []})).status).toBe(400);
     expect((await d.handle(QUESTION_PATHS.ask, 'not json', new AbortController().signal)).status).toBe(400);
+  });
+
+  it('stops closing once its budget is spent, after ending the session', async () => {
+    let now = 0;
+    const sent: string[] = [];
+    const call: QuestionCall = async (_method, route) => { sent.push(route.split('/').slice(-2).join('/')); now += 3_000; return {status: 200, body: {}}; };
+    const offered: JournalQuestion = {questionId: 'q-1', questions: [], summary: 's', state: 'offered', requestId: 'req-1', answerId: 'a', answers};
+    const d = new QuestionDesk([offered, {...offered, questionId: 'q-2', requestId: 'req-2'}, {...offered, questionId: 'q-3', requestId: 'req-3'}],
+      async () => undefined, () => now);
+    await d.close(call, 'w-1', credential, 5_000);
+    expect(sent).toEqual(['runtime-requests/sync', 'req-1/delivery']);
   });
 });
