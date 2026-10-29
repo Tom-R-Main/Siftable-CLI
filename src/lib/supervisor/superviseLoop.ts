@@ -810,9 +810,10 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       if (!evidence.acknowledged) deps.log(`The attempt's evidence was not acknowledged; its log is kept at ${inputDir}.`);
     }
     // Questions are closed while the claim holds: received answers recorded delivered, unconfirmed ones failed.
-    // At shutdown the unit's stop timeout bounds it to 5 s in all; otherwise 30 s. Anything left unrecorded keeps the
-    // attempt unsettled: the next start finishes the reconciliation under the same claim before settling.
-    if (!await desk.close(closeCall, journal.workItemId, credential, deps.shutdown?.aborted ? 5_000 : 30_000)) return keepUnsettled(evidence);
+    // 5 s at shutdown (the unit's stop timeout), else 30 s, never past the claim. Anything left unrecorded keeps the
+    // attempt unsettled; the next start reconciles under the same claim before settling.
+    const closeBudget = Math.min(deps.shutdown?.aborted ? 5_000 : 30_000, capLeft());
+    if (!await desk.close(closeCall, journal.workItemId, credential, closeBudget)) return keepUnsettled(evidence);
     // An unacknowledged log stays on the machine for the operator; nothing else is kept.
     if (!evidence || evidence.acknowledged) await fs.rm(inputDir, {recursive: true, force: true}).catch(() => undefined);
     const settlement: Settlement = {reason, ...(exitCode === undefined ? {} : {exitCode}), ...(controlId ? {controlId} : {}),
