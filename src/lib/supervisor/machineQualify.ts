@@ -254,7 +254,7 @@ function specs(runId: string, imageRef: string, networkId: string, enrollmentId:
 }
 
 export async function qualifyMachine(deps: QualifyDeps, options: {startOver?: boolean} = {}): Promise<QualifyResult> {
-  const release = await acquireStateLock(deps.state);
+  const release = await acquireStateLock(deps.state, process.pid, 'qualify');
   try {
     const state = await inspectMachineState(deps.state);
     if (state.kind !== 'enrolled') throw new MachineQualifyError('This machine is not enrolled. Run `sudo sift machine enroll` first.');

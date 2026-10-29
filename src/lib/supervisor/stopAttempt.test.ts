@@ -52,6 +52,21 @@ describe('stopAttempt', () => {
     expect(facts).toMatchObject({processesStopped: true, cgroupEmpty: 'empty', resourcesRemoved: false, held: [`container:${owned.containers[1]}`]});
   });
 
+  it('kills known IDs before discovery, then extras, all under one deadline; an incomplete listing is held', async () => {
+    const {deps, calls} = harness();
+    let discoveredWith: number | undefined;
+    const facts = await stopAttempt(deps, {...owned, networkId: undefined}, async (deadlineMono) => {
+      discoveredWith = deadlineMono;
+      expect(calls.filter((call) => call.args[1] === 'kill').map((call) => call.args.at(-1))).toEqual(owned.containers);
+      return {containers: [owned.containers[0], 'c'.repeat(64)], networkIds: ['m'.repeat(64)], complete: false};
+    });
+    const kills = calls.filter((call) => call.args[1] === 'kill');
+    expect(kills.map((call) => call.args.at(-1))).toEqual([...owned.containers, 'c'.repeat(64)]);
+    expect(new Set([...kills.map((call) => call.deadlineMono), discoveredWith]).size).toBe(1);
+    expect(facts).toMatchObject({cgroupEmpty: 'empty', resourcesRemoved: false, held: [`run:${ATTEMPT}`]});
+    expect(calls.filter((call) => call.args[1] === 'rm').map((call) => call.args.at(-1))).toEqual([...owned.containers, 'c'.repeat(64), 'm'.repeat(64)]);
+  });
+
   it('accepts containers that already exited or are gone', async () => {
     const {deps} = harness({kill: () => ({code: 1, stderr: 'Error response from daemon: Container abc is not running'})});
     expect(await stopAttempt(deps, owned)).toMatchObject({processesStopped: true, resourcesRemoved: true});

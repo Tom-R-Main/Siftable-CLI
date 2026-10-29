@@ -24,7 +24,7 @@ import {archiveJournal, inspectMachineState, type MachineRecord, type MachineSta
 import {attemptRelayHandler} from './modelRelayHandler.js';
 import {DIAGNOSTIC_PATH, MODEL_PATHS, SIDECAR_PORT} from './relaySidecar.js';
 import {serveSidecarFrames} from './sidecarBridge.js';
-import {type StopFacts, stopAttempt} from './stopAttempt.js';
+import {STOP_BUDGET_MS, type StopFacts, stopAttempt} from './stopAttempt.js';
 import {heartbeatDeadlineAt, HEARTBEAT_BUDGET_MS, initialCaps, nextRenewalDelay, renewedCap, type SupervisorClock} from './superviseAuthority.js';
 
 export const JOURNAL = 'attempt-journal.json';
@@ -55,6 +55,8 @@ export interface SuperviseDeps {
   resolvePlan: (workItem: Record<string, unknown>) => Promise<AttemptPlan | null>;
   /** Tests shorten these; production uses the defaults. */
   timing?: {controlPollMs?: number; readyTimeoutMs?: number};
+  /** Aborted when the service is stopping: the running attempt is stopped and cleaned up before return. */
+  shutdown?: AbortSignal;
 }
 
 type JournalState = 'claimed' | 'attached' | 'created' | 'started' | 'acknowledging' | 'running' | 'stopping' | 'held';
@@ -75,7 +77,7 @@ export interface AttemptJournal {
   stop?: {reason: StopReason; controlId?: string; facts?: StopFacts};
 }
 
-export type StopReason = 'stop_control' | 'workload_exited' | 'lease_lost' | 'ack_unknown' | 'start_failed' | 'recovered';
+export type StopReason = 'stop_control' | 'workload_exited' | 'lease_lost' | 'ack_unknown' | 'start_failed' | 'shutdown' | 'recovered';
 export type SuperviseOutcome =
   | {kind: 'idle'}
   | {kind: 'held'; held: string[]}
@@ -134,11 +136,11 @@ async function mustDocker(deps: SuperviseDeps, args: string[]): Promise<string> 
   return result.stdout.trim();
 }
 
-/** Everything a crashed or held run left, by exact ID and by its run label. */
-async function ownedResources(deps: SuperviseDeps, journal: AttemptJournal) {
+/** Everything a crashed or held run left, by exact ID and by its run label, within a deadline. */
+async function ownedResources(deps: SuperviseDeps, journal: AttemptJournal, deadlineMono?: number) {
   const label = `label=sift.machine.run=${journal.runId}`;
-  const listed = await deps.docker(['container', 'ls', '--all', '--quiet', '--no-trunc', '--filter', label]);
-  const networks = await deps.docker(['network', 'ls', '--quiet', '--no-trunc', '--filter', label]);
+  const listed = await deps.docker(['container', 'ls', '--all', '--quiet', '--no-trunc', '--filter', label], {deadlineMono});
+  const networks = await deps.docker(['network', 'ls', '--quiet', '--no-trunc', '--filter', label], {deadlineMono});
   const containers = new Set([...Object.values(journal.containers).filter(Boolean) as string[],
     ...(listed.code === 0 ? listed.stdout.split('\n').map((id) => id.trim()).filter(Boolean) : [])]);
   const networkIds = new Set([...(journal.networkId ? [journal.networkId] : []),
@@ -151,9 +153,9 @@ async function settle(deps: SuperviseDeps, journal: AttemptJournal, reason: Stop
   const stop = {reason, ...(controlId ? {controlId} : {})};
   let current: AttemptJournal = {...journal, state: 'stopping', stop};
   await writeJournal(deps.state, JOURNAL, current);
-  const owned = await ownedResources(deps, current);
   let facts: StopFacts;
   if (!current.attemptId) {
+    const owned = await ownedResources(deps, current, deps.clock.monoMs() + STOP_BUDGET_MS);
     // No attempt slice was ever bound: nothing was started under it. Remove what was created.
     const held: string[] = owned.complete ? [] : [`run:${current.runId}`];
     for (const id of owned.containers) {
@@ -166,12 +168,10 @@ async function settle(deps: SuperviseDeps, journal: AttemptJournal, reason: Stop
     }
     facts = {processesStopped: owned.containers.length === 0 || held.length === 0, cgroupEmpty: 'empty', resourcesRemoved: held.length === 0, held};
   } else {
-    facts = await stopAttempt(deps, {attemptId: current.attemptId, containers: owned.containers, networkId: owned.networkIds[0]});
-    for (const extra of owned.networkIds.slice(1)) {
-      const removed = await deps.docker(['network', 'rm', extra]);
-      if (removed.code !== 0 && !/No such network|not found/i.test(removed.stderr)) facts.held.push(`network:${extra}`);
-    }
-    if (!owned.complete) facts = {...facts, resourcesRemoved: false, held: [...facts.held, `run:${current.runId}`]};
+    const journaled = current;
+    facts = await stopAttempt(deps, {attemptId: current.attemptId,
+      containers: Object.values(current.containers).filter((id): id is string => Boolean(id)), networkId: current.networkId},
+    (deadlineMono) => ownedResources(deps, journaled, deadlineMono));
   }
   current = {...current, state: facts.held.length > 0 ? 'held' : 'stopping', stop: {...stop, facts}};
   await writeJournal(deps.state, JOURNAL, current);
@@ -298,6 +298,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     }
     if (live) {
       const terminal = reason === 'lease_lost' ? report('interrupted', 'lease_lost')
+        : reason === 'shutdown' ? report('interrupted', 'terminated')
         : reason === 'workload_exited' && exitCode === 0 ? report('ended')
           : report('ended', reason === 'stop_control' ? 'terminated' : 'failed');
       await terminal.catch(() => undefined);
@@ -337,6 +338,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       return await finish('start_failed');
     }
 
+    if (deps.shutdown?.aborted) return await finish('shutdown');
     sidecar = deps.attach(['start', '--attach', '--interactive', sidecarId]);
     serveSidecarFrames(sidecar.stdout, sidecar.stdin, attemptRelayHandler({fetch: deps.fetch, diagnosticNonce: nonce}, {
       apiUrl: machine.apiUrl, token: session.token, workspaceId, workItemId: workItem.id, attemptId, claimToken,
@@ -370,6 +372,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       return await finish('start_failed');
     }
 
+    if (deps.shutdown?.aborted) return await finish('shutdown');
     // Positive acknowledgement before any workload or model call. A lost reply is unknown, never failed.
     await save({...journal, state: 'acknowledging'});
     let acknowledged = false;
@@ -386,13 +389,18 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     agent.stdin.write(`${GO_LINE}\n`);
 
     const exited = agent.exited.then((code) => ({kind: 'exit' as const, code}));
+    const stopping = new Promise<{kind: 'shutdown'}>((resolve) => {
+      if (deps.shutdown?.aborted) resolve({kind: 'shutdown'});
+      deps.shutdown?.addEventListener('abort', () => resolve({kind: 'shutdown'}), {once: true});
+    });
     let renewAt = deps.clock.monoMs() + nextRenewalDelay(cap, deps.clock.monoMs());
     let pollAt = deps.clock.monoMs() + (deps.timing?.controlPollMs ?? CONTROL_POLL_MS);
     for (;;) {
       const now = deps.clock.monoMs();
       if (now >= cap) return await finish('lease_lost');
-      const event = await Promise.race([exited, sleep(Math.min(renewAt, pollAt, cap) - now).then(() => ({kind: 'tick' as const}))]);
+      const event = await Promise.race([exited, stopping, sleep(Math.min(renewAt, pollAt, cap) - now).then(() => ({kind: 'tick' as const}))]);
       if (event.kind === 'exit') return await finish('workload_exited', event.code);
+      if (event.kind === 'shutdown') return await finish('shutdown');
       if (deps.clock.monoMs() >= pollAt) {
         pollAt = deps.clock.monoMs() + (deps.timing?.controlPollMs ?? CONTROL_POLL_MS);
         const scope = workspaceId ?? 'personal';

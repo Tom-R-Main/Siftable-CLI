@@ -211,21 +211,27 @@ export async function inspectMachineState(options: MachineStateOptions): Promise
   return present.length === 0 ? {kind: 'empty'} : {kind: 'partial', present};
 }
 
+export type LockPurpose = 'enroll' | 'qualify' | 'supervise';
+
 /**
- * One enrollment at a time per machine. The lock's content (pid and a nonce)
- * is written to a temp file first and then hard-linked into place, so the
- * lock never exists empty. A lock left by a process that is gone is not taken
- * over automatically: the operator removes it, which keeps two contenders
- * from both deciding it is stale. Release deletes the lock only while it is
- * still this holder's.
+ * One machine command at a time (enroll, qualify, supervise). The lock's
+ * content (pid, nonce, purpose) is written to a temp file first and then
+ * hard-linked into place, so the lock never exists empty. A lock left by a
+ * process that is gone is not taken over, with one exception: a supervisor
+ * restarted by systemd may take over a dead supervisor's lock. That takeover
+ * first links a marker named for the stale lock's nonce, which only one
+ * contender can create, then atomically replaces the lock. Release deletes
+ * the lock only while it is still this holder's.
  */
-export async function acquireStateLock(options: MachineStateOptions, pid = process.pid): Promise<() => Promise<void>> {
+export async function acquireStateLock(
+  options: MachineStateOptions, pid = process.pid, purpose: LockPurpose = 'enroll',
+): Promise<() => Promise<void>> {
   const lock = path.join(options.root, '.enroll.lock');
   const nonce = randomBytes(16).toString('hex');
   const temp = path.join(options.root, `.enroll.lock.${nonce}.tmp`);
   const handle = await fs.open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
   try {
-    await handle.writeFile(JSON.stringify({pid, nonce, startedAt: new Date().toISOString()}));
+    await handle.writeFile(JSON.stringify({pid, nonce, purpose, startedAt: new Date().toISOString()}));
     await handle.sync();
   } finally {
     await handle.close();
@@ -236,10 +242,21 @@ export async function acquireStateLock(options: MachineStateOptions, pid = proce
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     const holder = await readLock(lock);
     if (holder && processAlive(holder.pid)) {
-      throw new MachineStateError(`Another enrollment is running on this machine (pid ${holder.pid}). Wait for it to finish.`);
+      throw new MachineStateError(`Another machine command (${holder.purpose ?? 'enroll'}) is running here (pid ${holder.pid}). Wait for it to finish.`);
     }
-    throw new MachineStateError(`An earlier enrollment${holder ? ` (pid ${holder.pid})` : ''} stopped without releasing ${lock}. `
-      + 'If no enrollment is running, remove that file and run the command again.');
+    if (purpose === 'supervise' && holder?.purpose === 'supervise') {
+      try {
+        await fs.link(temp, path.join(options.root, `.enroll.lock.takeover-${holder.nonce}`));
+      } catch (takeover) {
+        if ((takeover as NodeJS.ErrnoException).code === 'EEXIST') throw new MachineStateError('Another supervisor is taking over the lock left by a stopped one.');
+        throw takeover;
+      }
+      await fs.rename(temp, lock);
+      await syncDirectory(options.root);
+    } else {
+      throw new MachineStateError(`An earlier ${holder?.purpose ?? 'machine'} command${holder ? ` (pid ${holder.pid})` : ''} stopped without releasing ${lock}. `
+        + 'If nothing is running, remove that file and run the command again.');
+    }
   } finally {
     await fs.rm(temp, {force: true});
   }
@@ -248,10 +265,12 @@ export async function acquireStateLock(options: MachineStateOptions, pid = proce
   };
 }
 
-async function readLock(lock: string): Promise<{pid: number; nonce: string} | null> {
+async function readLock(lock: string): Promise<{pid: number; nonce: string; purpose?: LockPurpose} | null> {
   try {
-    const parsed = JSON.parse(await fs.readFile(lock, 'utf8')) as {pid?: unknown; nonce?: unknown};
-    return typeof parsed.pid === 'number' && typeof parsed.nonce === 'string' ? {pid: parsed.pid, nonce: parsed.nonce} : null;
+    const parsed = JSON.parse(await fs.readFile(lock, 'utf8')) as {pid?: unknown; nonce?: unknown; purpose?: unknown};
+    if (typeof parsed.pid !== 'number' || typeof parsed.nonce !== 'string' || !/^[0-9a-f]{32}$/.test(parsed.nonce)) return null;
+    const purpose = ['enroll', 'qualify', 'supervise'].includes(String(parsed.purpose)) ? parsed.purpose as LockPurpose : undefined;
+    return {pid: parsed.pid, nonce: parsed.nonce, purpose};
   } catch {
     return null;
   }

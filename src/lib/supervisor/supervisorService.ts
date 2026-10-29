@@ -44,10 +44,11 @@ export function serviceUnit(paths: {node: string; cli: string}): string {
     'NoNewPrivileges=yes',
     `RuntimeDirectory=${path.basename(INPUT_ROOT)}`,
     'RuntimeDirectoryMode=0755',
-    // Stopping ends the docker attach clients too. Attempt containers live in the Docker daemon;
-    // the next start tears them down from the journal and never relaunches them.
+    // SIGTERM goes to the supervisor, which stops the running attempt (10 s kill budget,
+    // then removal) before exiting; whatever it cannot remove stays journaled as held.
+    // Only after the timeout are the docker attach clients killed too.
     'KillMode=mixed',
-    'TimeoutStopSec=30',
+    'TimeoutStopSec=60',
     '',
     '[Install]',
     'WantedBy=multi-user.target',

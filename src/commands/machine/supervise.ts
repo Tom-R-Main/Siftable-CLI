@@ -2,7 +2,7 @@ import {Flags} from '@oclif/core';
 import {promises as fs} from 'node:fs';
 import {BaseCommand} from '../../lib/base-command.js';
 import {createHostDocker, hostAttach} from '../../lib/supervisor/hostDocker.js';
-import {MachineStateError, SUPERVISOR_STATE_DIR} from '../../lib/supervisor/machineState.js';
+import {acquireStateLock, MachineStateError, SUPERVISOR_STATE_DIR} from '../../lib/supervisor/machineState.js';
 import {systemClock} from '../../lib/supervisor/superviseAuthority.js';
 import {type AttemptPlan, superviseOnce, SuperviseError, type SuperviseOutcome, supervisorAssets} from '../../lib/supervisor/superviseLoop.js';
 import {INPUT_ROOT} from '../../lib/supervisor/supervisorService.js';
@@ -29,7 +29,8 @@ function describe(outcome: SuperviseOutcome): string {
     case 'held': return `Holding resources that could not be shown gone: ${outcome.held.join(', ')}. No new work starts until they are.`;
     case 'refused': return `Not starting work: ${outcome.reason}.`;
     case 'recovered': return 'Tore down an attempt left by an earlier run; it was not relaunched.';
-    case 'finished': return `Attempt finished (${outcome.reason}${outcome.exitCode === undefined ? '' : `, exit ${outcome.exitCode}`}); `
+    case 'finished': return outcome.reason === 'shutdown' ? `Stopped the running attempt for shutdown; cgroup ${outcome.facts.cgroupEmpty}, `
+      + `resources ${outcome.facts.resourcesRemoved ? 'removed' : `held: ${outcome.facts.held.join(', ')}`}.` : `Attempt finished (${outcome.reason}${outcome.exitCode === undefined ? '' : `, exit ${outcome.exitCode}`}); `
       + `cgroup ${outcome.facts.cgroupEmpty}, resources ${outcome.facts.resourcesRemoved ? 'removed' : `held: ${outcome.facts.held.join(', ')}`}.`;
   }
 }
@@ -49,27 +50,51 @@ export default class MachineSupervise extends BaseCommand {
     if (typeof process.getuid !== 'function' || process.getuid() !== 0) this.error('Run this as root; it reads the supervisor\'s credential and starts containers.');
     const account = await ensureSupervisorAccount();
     await fs.mkdir(INPUT_ROOT, {recursive: true, mode: 0o755});
+    const state = {root: SUPERVISOR_STATE_DIR, owner: {uid: account.uid, gid: account.gid}};
+    // One machine command at a time, for the life of this process: no second supervisor, no qualify alongside.
+    let release: () => Promise<void>;
+    try {
+      release = await acquireStateLock(state, process.pid, 'supervise');
+    } catch (error) {
+      if (error instanceof MachineStateError) this.error(error.message);
+      throw error;
+    }
+    const shutdown = new AbortController();
+    const stop = () => shutdown.abort();
+    process.once('SIGTERM', stop);
+    process.once('SIGINT', stop);
+    const pause = (ms: number) => new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      shutdown.signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, {once: true});
+    });
     const deps = {
       fetch: globalThis.fetch, docker: createHostDocker(), attach: hostAttach, clock: systemClock,
       readFile: (file: string) => fs.readFile(file, 'utf8'),
-      state: {root: SUPERVISOR_STATE_DIR, owner: {uid: account.uid, gid: account.gid}},
+      state, shutdown: shutdown.signal,
       log: (line: string) => process.stderr.write(`${line}\n`),
       assets: supervisorAssets(),
       inputRoot: INPUT_ROOT,
       resolvePlan: async () => (flags['plan-file'] ? readPlanFile(flags['plan-file']) : null),
     };
-    for (;;) {
-      let outcome: SuperviseOutcome;
-      try {
-        outcome = await superviseOnce(deps);
-      } catch (error) {
-        if (error instanceof SuperviseError || error instanceof MachineStateError) this.error(error.message);
-        throw error;
+    try {
+      for (;;) {
+        let outcome: SuperviseOutcome;
+        try {
+          outcome = await superviseOnce(deps);
+        } catch (error) {
+          if (error instanceof SuperviseError || error instanceof MachineStateError) this.error(error.message);
+          throw error;
+        }
+        this.log(describe(outcome));
+        if (flags.once || shutdown.signal.aborted) return outcome;
+        if (outcome.kind === 'idle') await pause(IDLE_MS);
+        if (outcome.kind === 'refused' || outcome.kind === 'held') await pause(BLOCKED_MS);
+        if (shutdown.signal.aborted) return outcome;
       }
-      this.log(describe(outcome));
-      if (flags.once) return outcome;
-      if (outcome.kind === 'idle' || outcome.kind === 'refused') await new Promise((resolve) => setTimeout(resolve, outcome.kind === 'idle' ? IDLE_MS : BLOCKED_MS));
-      if (outcome.kind === 'held') await new Promise((resolve) => setTimeout(resolve, BLOCKED_MS));
+    } finally {
+      process.off('SIGTERM', stop);
+      process.off('SIGINT', stop);
+      await release();
     }
   }
 }

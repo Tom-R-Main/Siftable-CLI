@@ -3,6 +3,8 @@ import {execFile} from 'node:child_process';
 import {promises as fs} from 'node:fs';
 import path from 'node:path';
 import {BaseCommand} from '../../lib/base-command.js';
+import {readJournal, SUPERVISOR_STATE_DIR} from '../../lib/supervisor/machineState.js';
+import {JOURNAL} from '../../lib/supervisor/superviseLoop.js';
 import {SERVICE_NAME, servicePath, ServicePathError, serviceUnit, UNIT_PATH} from '../../lib/supervisor/supervisorService.js';
 
 const systemctl = (...args: string[]) => new Promise<void>((resolve, reject) => {
@@ -28,11 +30,17 @@ export default class MachineService extends BaseCommand {
     if (process.platform !== 'linux') this.error('The supervisor service runs on Linux only.');
     if (typeof process.getuid !== 'function' || process.getuid() !== 0) this.error('Run this as root (sudo); it writes a systemd unit.');
     if (args.action === 'uninstall') {
+      // Stopping sends SIGTERM; the supervisor stops and cleans up its running attempt before it exits.
       await systemctl('disable', '--now', SERVICE_NAME).catch((error: Error) => this.warn(error.message));
       await fs.rm(UNIT_PATH, {force: true});
       await systemctl('daemon-reload');
-      this.log(`Removed ${SERVICE_NAME}. Any attempt it left is torn down the next time the supervisor runs.`);
-      return {action: 'uninstall', unit: UNIT_PATH};
+      const left = await readJournal<{state?: string; stop?: {facts?: {held?: string[]}}}>({root: SUPERVISOR_STATE_DIR, owner: null}, JOURNAL).catch(() => null);
+      if (left) {
+        this.warn(`An attempt is still journaled (${left.state ?? 'unknown'}${left.stop?.facts?.held?.length ? `; held: ${left.stop.facts.held.join(', ')}` : ''}). `
+          + 'Run `sudo sift machine supervise --once` to tear it down; it is never relaunched.');
+      }
+      this.log(`Removed ${SERVICE_NAME}.`);
+      return {action: 'uninstall', unit: UNIT_PATH, attemptLeft: Boolean(left)};
     }
     let paths: {node: string; cli: string};
     try {

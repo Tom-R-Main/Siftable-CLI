@@ -118,7 +118,7 @@ function world(scenario: Scenario = {}) {
         };
       })));
     }
-    if ((a === 'container' || a === 'network') && b === 'ls') return ok('');
+    if ((a === 'container' || a === 'network') && b === 'ls') { events.push(`ls:${a}`); return ok(''); }
     if (a === 'container' && b === 'kill') { events.push(`kill:${args.at(-1)}`); return ok(); }
     if (a === 'container' && b === 'rm') { events.push(`rm:${args.at(-1)}`); return ok(); }
     if (a === 'network' && b === 'rm') { events.push('network-rm'); return ok(); }
@@ -264,13 +264,27 @@ describe('superviseOnce', () => {
     expect(noPlan.events).toContain('ack:failed');
   });
 
+  it('stops and cleans up the running attempt when the service shuts down', async () => {
+    const w = world({agentExit: 'never'});
+    const shutdown = new AbortController();
+    const running = superviseOnce(deps(w, {shutdown: shutdown.signal}));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(w.events).toContain('go');
+    shutdown.abort();
+    expect(await running).toMatchObject({kind: 'finished', reason: 'shutdown', facts: {cgroupEmpty: 'empty', resourcesRemoved: true}});
+    expect(w.events).toContain('attempt:interrupted:terminated');
+    expect(w.events.some((event) => event.startsWith('control-ack'))).toBe(false);
+    expect(await journal()).toBeNull();
+  });
+
   it('tears down a run left by a crash by exact ID and never relaunches it', async () => {
     await writeJournal({root, owner: null}, JOURNAL, {version: 1, state: 'running', runId: 'abc123abc123', dispatchId: DISPATCH,
       workItemId: WORK_ITEM, runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`, attemptId: ATTEMPT, networkId: 'net-1',
       containers: {sidecar: 'c-relay', agent: 'c-agent'}, callSeq: 3} satisfies AttemptJournal);
     const w = world();
     expect(await superviseOnce(deps(w))).toEqual({kind: 'recovered'});
-    expect(w.events).toEqual(['kill:c-relay', 'kill:c-agent', 'rm:c-relay', 'rm:c-agent', 'network-rm']);
+    // Journaled IDs are killed before any discovery listing runs.
+    expect(w.events).toEqual(['kill:c-relay', 'kill:c-agent', 'ls:container', 'ls:network', 'rm:c-relay', 'rm:c-agent', 'network-rm']);
     expect(await journal()).toBeNull();
   });
 });
