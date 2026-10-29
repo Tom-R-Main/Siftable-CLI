@@ -273,6 +273,18 @@ export async function qualifyMachine(deps: QualifyDeps, options: {startOver?: bo
     const known = {...machine, credentialId: machine.credentialId as string};
 
     let earlier = await readJournal<QualifyJournal>(deps.state, JOURNAL);
+    if (earlier && earlier.challenge?.binding.enrollmentId !== known.enrollmentId) {
+      // Left by an enrollment this machine has since replaced: its report is never sent for this one.
+      // Its resources are still local, so they are removed first; the journal is kept under retired/.
+      const held = await teardown(deps.docker, earlier);
+      await archiveJournal(deps.state, JOURNAL, deps.now());
+      if (held.length > 0) {
+        await writeJournal(deps.state, JOURNAL, {...earlier, state: 'held', held, report: undefined});
+        throw new MachineQualifyError(`An earlier enrollment's qualification left resources that could not be removed (${held.join(', ')}). Remove them, then run again.`);
+      }
+      await removeJournal(deps.state, JOURNAL);
+      earlier = null;
+    }
     if (earlier?.state === 'blocked' && options.startOver) {
       // Archive a copy first, then make the held cleanup durable in the active journal before the report leaves it.
       await archiveJournal(deps.state, JOURNAL, deps.now());
