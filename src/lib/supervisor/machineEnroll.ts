@@ -86,7 +86,7 @@ async function readJson(response: Response): Promise<Record<string, unknown> | n
 }
 
 /** Revokes the recorded enrollment with its own credential, at its own API. */
-async function revokeRecorded(deps: MachineEnrollDeps, machine: MachineRecord): Promise<void> {
+async function revokeRecorded(deps: MachineEnrollDeps, options: MachineEnrollOptions, machine: MachineRecord): Promise<void> {
   const token = await readCredential(deps.state);
   if (!token) throw new MachineEnrollError('The recorded enrollment has no credential to revoke it with');
   let response: Response;
@@ -97,21 +97,28 @@ async function revokeRecorded(deps: MachineEnrollDeps, machine: MachineRecord): 
   } catch {
     throw new MachineEnrollError('The old enrollment\'s revocation did not get a reply. Nothing was replaced; run again with --replace.');
   }
-  // 401: the old credential is revoked or expired; the owner can still revoke the enrollment in the browser.
   if (response.ok) return;
+  // A 401 means the old credential has expired or was revoked, so this machine can no longer revoke
+  // its own enrollment. The owner revokes it in the browser and names it, as for a lost delivery.
+  if (response.status === 401 && options.abandonRunner === machine.runnerId) return;
   throw new MachineEnrollError(`The old enrollment was not revoked (HTTP ${response.status}). Nothing was replaced. `
-    + `Revoke runner ${machine.runnerId} in the browser if its credential is gone, then run again with --replace.`);
+    + (response.status === 401
+      ? `Its credential no longer works: revoke runner ${machine.runnerId} in the browser, then run again with --replace --abandon-runner ${machine.runnerId}.`
+      : 'Run again with --replace.'));
 }
 
-async function startOrResume(deps: MachineEnrollDeps, options: MachineEnrollOptions): Promise<{pending: PendingEnrollment; replaced?: MachineEnrollResult['replaced']}> {
+async function startOrResume(deps: MachineEnrollDeps, options: MachineEnrollOptions):
+  Promise<{pending: PendingEnrollment; replaced?: MachineEnrollResult['replaced']} | {delivered: PendingEnrollment}> {
   await ensureStateDirectory(deps.state);
   let state = await inspectMachineState(deps.state);
   let replaced: MachineEnrollResult['replaced'];
+  // An earlier run saved the token and stopped before its commit: finish that enrollment.
+  if (state.kind === 'delivered') return {delivered: state.pending};
   if (state.kind === 'enrolled') {
     if (!options.replace) {
       throw new MachineEnrollError(`This machine is already enrolled (runner ${state.machine.runnerId}). Use --replace to enroll it again.`);
     }
-    await revokeRecorded(deps, state.machine);
+    await revokeRecorded(deps, options, state.machine);
     replaced = {enrollmentId: state.machine.enrollmentId, retiredTo: await retireMachineState(deps.state, deps.now())};
     state = {kind: 'empty'};
   } else if (state.kind === 'partial') {
@@ -254,8 +261,22 @@ export async function enrollMachine(deps: MachineEnrollDeps, options: MachineEnr
   }
 }
 
+async function commitDelivered(deps: MachineEnrollDeps, pending: PendingEnrollment, enrollmentId: string): Promise<void> {
+  await commitMachine(deps.state, {
+    version: 1, apiUrl: pending.apiUrl, enrollmentId, runnerId: pending.runnerId,
+    fingerprint: pending.fingerprint, scope: pending.scope, ...(pending.setupId ? {setupId: pending.setupId} : {}),
+    enrolledAt: deps.now().toISOString(),
+  });
+}
+
 async function enrollLocked(deps: MachineEnrollDeps, options: MachineEnrollOptions): Promise<MachineEnrollResult> {
   const started = await startOrResume(deps, options);
+  if ('delivered' in started) {
+    const {delivered} = started;
+    await commitDelivered(deps, delivered, delivered.enrollmentId as string);
+    deps.log(`Finished the enrollment an earlier run received: runner ${delivered.runnerId}.`);
+    return {enrollmentId: delivered.enrollmentId as string, runnerId: delivered.runnerId, fingerprint: delivered.fingerprint, qualified: false};
+  }
   let pending = started.pending;
   const resumed = pending.state === 'polling';
   if (resumed && !(pending.device && Date.parse(pending.device.expiresAt) > deps.now().getTime())) {
@@ -271,13 +292,11 @@ async function enrollLocked(deps: MachineEnrollDeps, options: MachineEnrollOptio
   deps.log(`Runner: ${pending.runnerId}`);
   deps.log(`Approve this machine in the browser with code ${device.userCode}: ${device.verificationUriComplete}`);
   const delivered = await poll(deps, pending, device, resumed);
-  // The credential before the commit marker; machine.json last.
+  // The enrollment id first, so a stop before the commit is recoverable; then the credential; machine.json last.
+  const recorded: PendingEnrollment = {...pending, state: 'delivered', enrollmentId: delivered.enrollmentId};
+  await writePending(deps.state, recorded);
   await writeCredential(deps.state, delivered.token);
-  await commitMachine(deps.state, {
-    version: 1, apiUrl: pending.apiUrl, enrollmentId: delivered.enrollmentId, runnerId: pending.runnerId,
-    fingerprint: pending.fingerprint, scope: pending.scope, ...(pending.setupId ? {setupId: pending.setupId} : {}),
-    enrolledAt: deps.now().toISOString(),
-  });
+  await commitDelivered(deps, recorded, delivered.enrollmentId);
   return {enrollmentId: delivered.enrollmentId, runnerId: pending.runnerId, fingerprint: pending.fingerprint, qualified: false,
     ...(started.replaced ? {replaced: started.replaced} : {})};
 }

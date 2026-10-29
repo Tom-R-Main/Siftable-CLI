@@ -33,8 +33,12 @@ export interface PendingEnrollment {
   fingerprint: string;
   publicKey: string;
   setupId?: string;
-  /** delivery_unknown: an approval may have delivered the one-time token, and the reply was lost. */
-  state: 'requesting' | 'polling' | 'delivery_unknown';
+  /**
+   * delivery_unknown: an approval may have delivered the one-time token, and the reply was lost.
+   * delivered: the token arrived; enrollmentId is recorded before credential.json is written.
+   */
+  state: 'requesting' | 'polling' | 'delivery_unknown' | 'delivered';
+  enrollmentId?: string;
   device?: {deviceCode: string; userCode: string; verificationUriComplete: string; expiresAt: string; interval: number};
   createdAt: string;
 }
@@ -53,6 +57,8 @@ export interface MachineRecord {
 export type MachineStateKind =
   | {kind: 'empty'}
   | {kind: 'pending'; pending: PendingEnrollment}
+  /** The token was saved and the commit marker was not: finish the commit, never retire it. */
+  | {kind: 'delivered'; pending: PendingEnrollment}
   | {kind: 'enrolled'; machine: MachineRecord}
   | {kind: 'partial'; present: string[]};
 
@@ -157,8 +163,12 @@ export async function inspectMachineState(options: MachineStateOptions): Promise
     return {kind: 'enrolled', machine: JSON.parse((await readRegularFile(options, FILES.machine)) as string) as MachineRecord};
   }
   if (has(FILES.pending)) {
-    if (!has(FILES.key) || has(FILES.credential)) return {kind: 'partial', present};
-    return {kind: 'pending', pending: JSON.parse((await readRegularFile(options, FILES.pending)) as string) as PendingEnrollment};
+    if (!has(FILES.key)) return {kind: 'partial', present};
+    const pending = JSON.parse((await readRegularFile(options, FILES.pending)) as string) as PendingEnrollment;
+    if (has(FILES.credential)) {
+      return pending.state === 'delivered' && pending.enrollmentId ? {kind: 'delivered', pending} : {kind: 'partial', present};
+    }
+    return {kind: 'pending', pending};
   }
   return present.length === 0 ? {kind: 'empty'} : {kind: 'partial', present};
 }

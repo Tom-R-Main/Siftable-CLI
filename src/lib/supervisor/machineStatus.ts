@@ -35,6 +35,10 @@ export async function describeMachineState(root: string): Promise<{summary: Mach
       case 'partial':
         return {summary: {state: 'partial', problem: `present: ${state.present.join(', ')}`},
           lines: [`The enrollment state is incomplete (${state.present.join(', ')}). Run \`sudo sift machine enroll --replace\`.`]};
+      case 'delivered':
+        return {summary: {state: 'pending', runnerId: state.pending.runnerId, enrollmentId: state.pending.enrollmentId,
+          fingerprint: state.pending.fingerprint, apiUrl: state.pending.apiUrl, credentialPresent: true, pendingState: 'delivered'},
+        lines: [`Enrollment ${state.pending.enrollmentId} was received but not committed. Run \`sudo sift machine enroll\` to finish it.`]};
       case 'pending':
         return {summary: {state: 'pending', runnerId: state.pending.runnerId, fingerprint: state.pending.fingerprint,
           apiUrl: state.pending.apiUrl, pendingState: state.pending.state},

@@ -167,6 +167,51 @@ describe('enrollMachine', () => {
     expect((await fs.readdir(root)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
 
+  it('finishes an enrollment whose token was saved before a stop, instead of retiring it', async () => {
+    const server = fakeServer([{status: 200}]);
+    // Stop the first run right after the credential is written, before machine.json.
+    const stopping = {...deps(server.fetchImpl), state: {...state}};
+    const original = fs.rename;
+    let stopped = false;
+    const renameSpy = async (from: Parameters<typeof fs.rename>[0], to: Parameters<typeof fs.rename>[1]) => {
+      if (String(to).endsWith('machine.json') && !stopped) {
+        stopped = true;
+        throw new Error('process killed');
+      }
+      return original(from, to);
+    };
+    (fs as {rename: typeof fs.rename}).rename = renameSpy as typeof fs.rename;
+    try {
+      await expect(enrollMachine(stopping, options)).rejects.toThrow(/process killed/);
+    } finally {
+      (fs as {rename: typeof fs.rename}).rename = original;
+    }
+    expect(await inspectMachineState(state)).toMatchObject({kind: 'delivered', pending: {enrollmentId: ENROLLMENT_ID}});
+    expect(await describeMachineState(root)).toMatchObject({summary: {pendingState: 'delivered', credentialPresent: true}});
+    // The rerun commits it without another approval.
+    const rerun = fakeServer([]);
+    expect(await enrollMachine(deps(rerun.fetchImpl), options)).toMatchObject({enrollmentId: ENROLLMENT_ID});
+    expect(rerun.calls).toEqual([]);
+    expect(await inspectMachineState(state)).toMatchObject({kind: 'enrolled', machine: {enrollmentId: ENROLLMENT_ID}});
+  });
+
+  it('replaces an enrollment whose credential stopped working only when the operator names the revoked runner', async () => {
+    await enrollMachine(deps(fakeServer([{status: 200}]).fetchImpl), options);
+    const {machine} = await inspectMachineState(state) as {machine: {runnerId: string}};
+    const revokeUrl = `${API}/api/v1/machines/enrollments/${ENROLLMENT_ID}/revoke`;
+    const expired = fakeServer([], {[revokeUrl]: {status: 401, body: {error: 'unauthorized'}}});
+    await expect(enrollMachine(deps(expired.fetchImpl), {...options, replace: true}))
+      .rejects.toThrow(`--abandon-runner ${machine.runnerId}`);
+    expect(await inspectMachineState(state)).toMatchObject({kind: 'enrolled'});
+    // A server error never counts as a dead credential.
+    const failing = fakeServer([], {[revokeUrl]: {status: 503}});
+    await expect(enrollMachine(deps(failing.fetchImpl), {...options, replace: true, abandonRunner: machine.runnerId}))
+      .rejects.toThrow(/HTTP 503/);
+    const confirmed = fakeServer([{status: 200}], {[revokeUrl]: {status: 401, body: {error: 'unauthorized'}}});
+    const result = await enrollMachine(deps(confirmed.fetchImpl), {...options, replace: true, abandonRunner: machine.runnerId});
+    expect(result.replaced?.enrollmentId).toBe(ENROLLMENT_ID);
+  });
+
   it('saves nothing when the approval names another machine', async () => {
     const server = fakeServer([]);
     const mismatched = fakeServer([], {[`${API}/auth/device/token`]: {status: 200, body: {access_token: TOKEN,
