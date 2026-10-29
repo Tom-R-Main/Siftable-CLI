@@ -6,7 +6,7 @@ import {PassThrough} from 'node:stream';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {generateMachineKey, machineKeyFingerprint, rawEd25519PublicKey} from './machineProtocol.js';
 import {
-  type Attach, type Docker, MachineQualifyError, networkGateway, qualifyMachine, type QualifyDeps, wildcardListeningPorts,
+  type Attach, type Docker, MachineQualifyError, qualifyMachine, type QualifyDeps, wildcardListeningPorts,
 } from './machineQualify.js';
 import {archiveJournal, commitMachine, ensureStateDirectory, readJournal, writeCredential, writeKey} from './machineState.js';
 import {MACHINE_ISOLATION_PROFILE_V1, machineCanonicalJson, machineQualificationSignedPayload} from './qualificationProtocol.js';
@@ -32,7 +32,7 @@ const started = new Set<string>();
 let issued = 0;
 
 /** A Docker that keeps what `container create` asked for and reports it back as Docker would. */
-function fakeDocker(options: {failRemove?: boolean; privileged?: boolean; ipam?: object} = {}) {
+function fakeDocker(options: {failRemove?: boolean; privileged?: boolean} = {}) {
   const calls: string[][] = [];
   const containers = new Map<string, {args: string[]; name: string}>();
   let network: {id: string; labels: Record<string, string>} | undefined;
@@ -48,7 +48,7 @@ function fakeDocker(options: {failRemove?: boolean; privileged?: boolean; ipam?:
     }
     if (a === 'network' && b === 'inspect') {
       return ok(JSON.stringify([{Id: 'net-1', Driver: 'bridge', Internal: true, EnableIPv6: false, Options: {'com.docker.network.bridge.gateway_mode_ipv4': 'isolated'}, Scope: 'local', Attachable: false,
-        Ingress: false, Labels: network?.labels, IPAM: {Config: [options.ipam ?? {Gateway: '172.30.0.1'}]},
+        Ingress: false, Labels: network?.labels, IPAM: {Config: [{Subnet: '172.30.0.0/16', Gateway: 'invalid IP'}]},
         Containers: Object.fromEntries([...containers.keys()].filter((id) => started.has(id)).map((id) => [id, {}]))}]));
     }
     if (a === 'container' && b === 'create') {
@@ -163,6 +163,7 @@ describe('qualifyMachine', () => {
     state: {root, owner: null}, now: () => new Date('2026-10-29T05:01:00Z'), log: () => undefined,
     readHostCgroup: async () => '0::/siftable.slice/docker-probe-1.scope\n',
     readHostListeningPorts: async () => [22, 3000],
+    hostAddresses: () => ['127.0.0.1', '10.84.15.113'],
     assets: {probe: '/usr/lib/sift/probe.js', sidecar: '/usr/lib/sift/sidecar.js'}, ...overrides,
   });
 
@@ -177,9 +178,10 @@ describe('qualifyMachine', () => {
     const payload = machineQualificationSignedPayload(binding() as never, body.nonce, sha256(machineCanonicalJson(body.report)));
     expect(verify(null, Buffer.from(payload), createPublicKey(key.privateKey), Buffer.from(body.signature, 'base64url'))).toBe(true);
     expect(attach.started.map((args) => args.at(-1))).toEqual(['sidecar-1', 'probe-1']);
-    // The probe tries every wildcard listener at the gateway, plus 22, 80 and 8080.
+    // The probe tries every wildcard listener, plus 22, 80 and 8080, at each non-loopback host address.
     const create = docker.calls.find((args) => args[1] === 'create' && args[args.indexOf('--name') + 1]?.endsWith('-probe'));
-    expect(create?.join(' ')).toContain('SIFT_PROBE_ESCAPE_ADDRESSES=1.1.1.1:443,172.30.0.1:22,172.30.0.1:3000,172.30.0.1:80,172.30.0.1:8080,169.254.169.254:80');
+    expect(create?.join(' ')).toContain('SIFT_PROBE_ESCAPE_ADDRESSES=1.1.1.1:443,169.254.169.254:80,'
+      + '10.84.15.113:22,10.84.15.113:3000,10.84.15.113:80,10.84.15.113:8080 ');
     expect(docker.calls.filter((args) => args[1] === 'rm').map((args) => args.at(-1))).toEqual(['sidecar-1', 'probe-1', 'net-1']);
     expect(await readJournal({root, owner: null}, 'qualify-journal.json')).toBeNull();
   });
@@ -271,9 +273,9 @@ describe('qualifyMachine', () => {
     expect(await qualifyMachine(deps())).toMatchObject({outcome: 'qualified', held: []});
   });
 
-  it('reports the network unverified when it cannot tell which address reaches the host', async () => {
-    const result = await qualifyMachine(deps({docker: fakeDocker({ipam: {}}).docker}));
-    expect(result.problems).toContain('network_gateway_unknown');
+  it('reports the network unverified when the host has an address in its subnet', async () => {
+    const result = await qualifyMachine(deps({hostAddresses: () => ['10.84.15.113', '172.30.0.1']}));
+    expect(result.problems).toContain('network_host_address');
     expect((posted[0].body as {report: {observedIsolation: {network: string}}}).report.observedIsolation.network).toBe('unverified');
   });
 
@@ -310,13 +312,5 @@ describe('host reachability inputs', () => {
     ].join('\n');
     // 8080 and 22 listen on every address; 5432 on loopback and 80 on ::ffff:127.0.0.1 do not; the 22 row in tcp is a connection.
     expect(wildcardListeningPorts([tcp, tcp6])).toEqual([22, 8080]);
-  });
-
-  it('takes the gateway Docker reports, or the subnet\'s first address when isolated mode reports none', () => {
-    expect(networkGateway({Gateway: '172.19.0.1', Subnet: '172.19.0.0/16'})).toBe('172.19.0.1');
-    expect(networkGateway({Gateway: 'invalid IP', Subnet: '172.18.0.0/16'})).toBe('172.18.0.1');
-    expect(networkGateway({Subnet: '10.200.3.128/25'})).toBe('10.200.3.129');
-    expect(networkGateway({Subnet: 'fd00::/64'})).toBe('');
-    expect(networkGateway(undefined)).toBe('');
   });
 });

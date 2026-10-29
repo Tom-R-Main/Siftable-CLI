@@ -1,5 +1,6 @@
 import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {hostIPv4Addresses} from '../../lib/supervisor/containerSandbox.js';
 import {createHostDocker, hostAttach} from '../../lib/supervisor/hostDocker.js';
 import {
   MachineQualifyError,
@@ -34,6 +35,7 @@ export default class MachineQualify extends BaseCommand {
         log: (line) => (this.jsonEnabled() ? process.stderr.write(`${line}\n`) : this.log(line)),
         readHostCgroup: readProcCgroup,
         readHostListeningPorts: readWildcardListeningPorts,
+        hostAddresses: hostIPv4Addresses,
         assets: shippedAssets(),
       }, {startOver: flags['start-over']});
       if (!this.jsonEnabled()) {

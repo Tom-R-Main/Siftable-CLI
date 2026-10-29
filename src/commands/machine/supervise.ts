@@ -1,6 +1,7 @@
 import {Flags} from '@oclif/core';
 import {promises as fs} from 'node:fs';
 import {BaseCommand} from '../../lib/base-command.js';
+import {hostIPv4Addresses} from '../../lib/supervisor/containerSandbox.js';
 import {createHostDocker, hostAttach} from '../../lib/supervisor/hostDocker.js';
 import {acquireStateLock, MachineStateError, SUPERVISOR_STATE_DIR} from '../../lib/supervisor/machineState.js';
 import {systemClock} from '../../lib/supervisor/superviseAuthority.js';
@@ -80,6 +81,7 @@ export default class MachineSupervise extends BaseCommand {
     const deps = {
       fetch: globalThis.fetch, docker: createHostDocker(), attach: hostAttach, clock: systemClock,
       readFile: (file: string) => fs.readFile(file, 'utf8'),
+      hostAddresses: hostIPv4Addresses,
       state, shutdown: shutdown.signal, releaseUnknownCreates: flags['release-unknown-creates'],
       log: (line: string) => process.stderr.write(`${line}\n`),
       assets: supervisorAssets(),

@@ -75,8 +75,10 @@ export interface QualifyDeps {
   log: (line: string) => void;
   /** Contents of /proc/<pid>/cgroup on the host. */
   readHostCgroup: (pid: number) => Promise<string>;
-  /** TCP ports the host listens on for every address; the probe tries each at the network's gateway. */
+  /** TCP ports the host listens on for every address; the probe tries each at the host's own addresses. */
   readHostListeningPorts: () => Promise<number[]>;
+  /** The host's IPv4 addresses: none may lie in the network's subnet, and the probe tries each. */
+  hostAddresses: () => string[];
   /** Host paths of the shipped probe and sidecar programs, mounted read-only. */
   assets: {probe: string; sidecar: string};
 }
@@ -238,7 +240,7 @@ async function submit(deps: QualifyDeps, machine: MachineRecord, token: string, 
 }
 
 const HOST_PROBE_PORTS = [22, 80, 8080];
-const MAX_HOST_PROBE_PORTS = 32;
+const MAX_HOST_PROBE_TARGETS = 64;
 // 0.0.0.0, ::, and ::ffff:0.0.0.0 as /proc/net/tcp{,6} print them.
 const WILDCARD_ADDRESSES = new Set(['00000000', '0'.repeat(32), '0000000000000000FFFF000000000000']);
 
@@ -260,24 +262,8 @@ export async function readWildcardListeningPorts(): Promise<number[]> {
   return wildcardListeningPorts(tables);
 }
 
-/**
- * The address a container on the network would use to reach the host. In gateway
- * mode isolated Docker reports no gateway, so it is the subnet's first address.
- */
-export function networkGateway(config: {Gateway?: string; Subnet?: string} | undefined): string {
-  const quad = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
-  const octets = (value: string) => value.split('.').map(Number);
-  if (config?.Gateway && quad.test(config.Gateway) && octets(config.Gateway).every((octet) => octet <= 255)) return config.Gateway;
-  const [base, bits] = (config?.Subnet ?? '').split('/');
-  const prefix = Number(bits);
-  if (!base || !quad.test(base) || !Number.isInteger(prefix) || prefix < 8 || prefix > 30) return '';
-  const value = octets(base).reduce((sum, octet) => sum * 256 + octet, 0);
-  const first = (value - (value % 2 ** (32 - prefix))) + 1;
-  return [24, 16, 8, 0].map((shift) => Math.floor(first / 2 ** shift) % 256).join('.');
-}
-
-function specs(runId: string, imageRef: string, networkId: string, enrollmentId: string, nonce: string, gateway: string, assets: QualifyDeps['assets'],
-  hostPorts: number[] = []) {
+function specs(runId: string, imageRef: string, networkId: string, enrollmentId: string, nonce: string, assets: QualifyDeps['assets'],
+  hostTargets: string[] = []) {
   const labels = (role: string) => ({'sift.machine.run': runId, 'sift.machine.role': role, 'sift.machine.enrollment': enrollmentId});
   const sidecarName = `sift-q-${runId}-relay`;
   const base = {imageRef, networkId, entrypoint: 'node', tmpfs: ['/tmp'], cgroupParent: QUALIFY_CGROUP_PARENT,
@@ -289,8 +275,9 @@ function specs(runId: string, imageRef: string, networkId: string, enrollmentId:
     env: {
       SIFT_DIAGNOSTIC_URL: `http://${sidecarName}:${SIDECAR_PORT}${DIAGNOSTIC_PATH}`,
       SIFT_DIAGNOSTIC_NONCE: nonce,
-      // A refusal at the gateway proves nothing: in isolated mode Docker's own rules refuse there. Only a connection counts.
-      SIFT_PROBE_ESCAPE_ADDRESSES: ['1.1.1.1:443', ...(gateway ? hostPorts.map((port) => `${gateway}:${port}`) : []), '169.254.169.254:80'].join(','),
+      // The host's own addresses on the ports it listens on. In isolated mode the subnet's first address is the
+      // relay, not the host, so it is not a target. Only a connection counts as reached.
+      SIFT_PROBE_ESCAPE_ADDRESSES: ['1.1.1.1:443', '169.254.169.254:80', ...hostTargets].join(','),
       SIFT_PROBE_HOLD: '1',
     }};
   return {sidecar, probe, networkLabels: labels('network')};
@@ -381,16 +368,16 @@ export async function qualifyMachine(deps: QualifyDeps, options: {startOver?: bo
     try {
       journal = {...journal, state: 'running'};
       await writeJournal(deps.state, JOURNAL, journal);
-      const labelsOnly = specs(runId, imageRef, '', known.enrollmentId, diagnosticNonce, '', deps.assets).networkLabels;
+      const labelsOnly = specs(runId, imageRef, '', known.enrollmentId, diagnosticNonce, deps.assets).networkLabels;
       const networkId = await mustDocker(deps.docker, networkCreateArgs(`sift-q-${runId}`, labelsOnly));
       journal = {...journal, networkId};
       await writeJournal(deps.state, JOURNAL, journal);
-      const [network] = JSON.parse(await mustDocker(deps.docker, ['network', 'inspect', networkId])) as Array<{IPAM?: {Config?: Array<{Gateway?: string; Subnet?: string}>}}>;
-      const gateway = networkGateway(network?.IPAM?.Config?.[0]);
-      if (!gateway) problems.push('network_gateway_unknown');
+      const hostAddresses = deps.hostAddresses();
       const listening = await deps.readHostListeningPorts().catch(() => [] as number[]);
-      const hostPorts = [...new Set([...listening, ...HOST_PROBE_PORTS])].slice(0, MAX_HOST_PROBE_PORTS);
-      const plan = specs(runId, imageRef, networkId, known.enrollmentId, diagnosticNonce, gateway, deps.assets, hostPorts);
+      const ports = [...new Set([...listening, ...HOST_PROBE_PORTS])];
+      const hostTargets = hostAddresses.filter((address) => !address.startsWith('127.'))
+        .flatMap((address) => ports.map((port) => `${address}:${port}`)).slice(0, MAX_HOST_PROBE_TARGETS);
+      const plan = specs(runId, imageRef, networkId, known.enrollmentId, diagnosticNonce, deps.assets, hostTargets);
       const sidecarId = await mustDocker(deps.docker, sandboxCreateArgs(plan.sidecar));
       journal = {...journal, containers: {...journal.containers, sidecar: sidecarId}};
       await writeJournal(deps.state, JOURNAL, journal);
@@ -420,10 +407,9 @@ export async function qualifyMachine(deps: QualifyDeps, options: {startOver?: bo
       // Docker connects containers to their network when they start, so endpoints and membership are read while both run.
       await inspectBoth('running');
       const [networkAfter] = JSON.parse(await mustDocker(deps.docker, ['network', 'inspect', networkId])) as unknown[];
-      const networkProblems = evaluateNetworkInspect(networkAfter, {networkId, labels: plan.networkLabels, containerIds: [sidecarId, probeId]});
+      const networkProblems = evaluateNetworkInspect(networkAfter, {networkId, labels: plan.networkLabels, containerIds: [sidecarId, probeId], hostAddresses});
       problems.push(...networkProblems);
-      // Without a gateway to try, the probe never tested the way to the host.
-      if (networkProblems.length > 0 || !gateway) observedIsolation.network = 'unverified';
+      if (networkProblems.length > 0) observedIsolation.network = 'unverified';
       // Actual cgroup membership, read on the host while the probe still runs.
       const pid = Number(await mustDocker(deps.docker, ['container', 'inspect', '--format', '{{.State.Pid}}', probeId]));
       const cgroup = Number.isInteger(pid) && pid > 0 ? await deps.readHostCgroup(pid).catch(() => '') : '';

@@ -49,6 +49,8 @@ export interface SuperviseDeps {
   attach: Attach;
   clock: SupervisorClock;
   readFile: ReadFile;
+  /** The host's IPv4 addresses; none may lie in the attempt network's subnet. */
+  hostAddresses: () => string[];
   state: MachineStateOptions;
   log: (line: string) => void;
   assets: {sidecar: string; launcher: string};
@@ -770,7 +772,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     agent.stdout.resume();
     const running = await inspectBoth('running');
     const [network] = JSON.parse(await must(['network', 'inspect', networkId])) as unknown[];
-    running.push(...evaluateNetworkInspect(network, {networkId, labels: specs.networkLabels, containerIds: [sidecarId, agentId]}));
+    running.push(...evaluateNetworkInspect(network, {networkId, labels: specs.networkLabels, containerIds: [sidecarId, agentId],
+      hostAddresses: deps.hostAddresses()}));
     const cgroups: Record<string, string | null> = {};
     for (const [role, id] of [['sidecar', sidecarId], ['agent', agentId]] as const) {
       const pid = Number(await must(['container', 'inspect', '--format', '{{.State.Pid}}', id]));

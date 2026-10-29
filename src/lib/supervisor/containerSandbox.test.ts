@@ -2,6 +2,7 @@ import {describe, expect, it} from 'vitest';
 import {
   dockerVersionProblem,
   evaluateNetworkInspect,
+  ipv4InSubnet,
   evaluateSandboxInspect,
   networkCreateArgs,
   sandboxCreateArgs,
@@ -115,8 +116,9 @@ describe('evaluateSandboxInspect', () => {
 
 describe('evaluateNetworkInspect', () => {
   const network = {Id: 'net-1', Driver: 'bridge', Internal: true, EnableIPv6: false, Scope: 'local', Attachable: false, Ingress: false,
-    Options: {'com.docker.network.bridge.gateway_mode_ipv4': 'isolated'}, Labels: {'sift.machine.run': 'run-1'}, Containers: {'container-1': {}, 'sidecar-1': {}}};
-  const want = {networkId: 'net-1', labels: {'sift.machine.run': 'run-1'}, containerIds: ['container-1', 'sidecar-1']};
+    Options: {'com.docker.network.bridge.gateway_mode_ipv4': 'isolated'}, IPAM: {Config: [{Subnet: '172.18.0.0/16', Gateway: 'invalid IP'}]}, Labels: {'sift.machine.run': 'run-1'}, Containers: {'container-1': {}, 'sidecar-1': {}}};
+  const want = {networkId: 'net-1', labels: {'sift.machine.run': 'run-1'}, containerIds: ['container-1', 'sidecar-1'],
+    hostAddresses: ['127.0.0.1', '10.84.15.113']};
 
   it('accepts our internal bridge holding exactly our containers', () => {
     expect(evaluateNetworkInspect(network, want)).toEqual([]);
@@ -126,6 +128,10 @@ describe('evaluateNetworkInspect', () => {
 
   it('rejects an external, IPv6, host-addressed, foreign or crowded network', () => {
     expect(evaluateNetworkInspect({...network, Options: {}}, want)).toContain('network_gateway_not_isolated');
+    // A plain internal network gives the host the gateway address, inside the subnet.
+    expect(evaluateNetworkInspect(network, {...want, hostAddresses: [...want.hostAddresses, '172.18.0.1']})).toContain('network_host_address');
+    expect(evaluateNetworkInspect({...network, IPAM: {Config: []}}, want)).toContain('network_subnet_unknown');
+    expect(evaluateNetworkInspect({...network, IPAM: {Config: [{Subnet: 'garbage'}]}}, want)).toContain('network_host_address');
     expect(evaluateNetworkInspect({...network, Internal: false}, want)).toContain('network_not_internal');
     expect(evaluateNetworkInspect({...network, EnableIPv6: true}, want)).toContain('network_ipv6');
     expect(evaluateNetworkInspect({...network, Labels: {}}, want)).toContain('network_labels');
@@ -139,5 +145,16 @@ describe('dockerVersionProblem', () => {
     expect(dockerVersionProblem({ServerVersion: '29.1.0'})).toBeNull();
     expect(dockerVersionProblem({ServerVersion: '27.5.1'})).toBe('docker_28_required');
     expect(dockerVersionProblem({})).toBe('docker_28_required');
+  });
+});
+
+describe('ipv4InSubnet', () => {
+  it('places addresses by prefix and refuses an unreadable subnet', () => {
+    expect(ipv4InSubnet('172.18.0.1', '172.18.0.0/16')).toBe(true);
+    expect(ipv4InSubnet('172.19.0.1', '172.18.0.0/16')).toBe(false);
+    expect(ipv4InSubnet('10.200.3.200', '10.200.3.128/25')).toBe(true);
+    expect(ipv4InSubnet('10.200.3.100', '10.200.3.128/25')).toBe(false);
+    expect(ipv4InSubnet('fe80::1', '172.18.0.0/16')).toBe(false);
+    expect(ipv4InSubnet('172.18.0.1', 'fd00::/64')).toBeNull();
   });
 });

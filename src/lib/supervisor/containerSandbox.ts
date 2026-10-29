@@ -9,6 +9,8 @@
  * never from the container, and every deviation is named.
  */
 
+import {networkInterfaces} from 'node:os';
+
 export const SANDBOX_USER = '10001:10001';
 export const SANDBOX_LABEL_PREFIX = 'sift.machine.';
 export const IMAGE_REF_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9./:_-]{0,254}@sha256:[0-9a-f]{64}$/;
@@ -167,13 +169,39 @@ export function evaluateSandboxInspect(inspect: unknown, expected: SandboxExpect
 /**
  * Docker gives an internal network's bridge the gateway address, and host
  * services listening on all interfaces answer there. Gateway mode `isolated`
- * (Docker 28) leaves the bridge without an address.
+ * (Docker 28) leaves the bridge without an address; the subnet's first address
+ * then goes to the first container. The host-side check below is that no host
+ * address lies in the network's subnet.
  */
 export const ISOLATED_GATEWAY_OPTION = 'com.docker.network.bridge.gateway_mode_ipv4';
 export const MIN_DOCKER_MAJOR = 28;
 
-/** The attempt network must be ours, internal, bridged, IPv4-only, have no host address and hold exactly the expected containers. */
-export function evaluateNetworkInspect(inspect: unknown, expected: {networkId: string; labels: Record<string, string>; containerIds: string[]}): string[] {
+/** The IPv4 addresses on this host's interfaces. */
+export function hostIPv4Addresses(): string[] {
+  return Object.values(networkInterfaces()).flat().flatMap((entry) => (entry?.family === 'IPv4' ? [entry.address] : []));
+}
+
+function ipv4Value(address: string): number | null {
+  const parts = address.split('.');
+  if (parts.length !== 4 || !parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255)) return null;
+  return parts.reduce((sum, part) => sum * 256 + Number(part), 0);
+}
+
+/** True when the address is in the IPv4 subnet; null when the subnet cannot be read. */
+export function ipv4InSubnet(address: string, cidr: string): boolean | null {
+  const [base, bits] = cidr.split('/');
+  const prefix = Number(bits);
+  const network = ipv4Value(base ?? '');
+  if (network === null || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) return null;
+  const value = ipv4Value(address);
+  if (value === null) return false;
+  const size = 2 ** (32 - prefix);
+  return Math.floor(value / size) === Math.floor(network / size);
+}
+
+/** The attempt network must be ours, internal, bridged, IPv4-only, without a host address, and hold exactly the expected containers. */
+export function evaluateNetworkInspect(inspect: unknown, expected: {networkId: string; labels: Record<string, string>; containerIds: string[];
+  hostAddresses: string[]}): string[] {
   const network = obj(inspect);
   const problems: string[] = [];
   if (network.Id !== expected.networkId) problems.push('network_id');
@@ -183,6 +211,11 @@ export function evaluateNetworkInspect(inspect: unknown, expected: {networkId: s
   if (network.Scope !== 'local') problems.push('network_scope');
   if (network.Attachable === true || network.Ingress === true) problems.push('network_shared');
   if (obj(network.Options)[ISOLATED_GATEWAY_OPTION] !== 'isolated') problems.push('network_gateway_not_isolated');
+  const config = obj(network.IPAM).Config;
+  const subnets = (Array.isArray(config) ? config : []).map((entry) => obj(entry).Subnet).filter((subnet): subnet is string => typeof subnet === 'string');
+  if (subnets.length === 0) problems.push('network_subnet_unknown');
+  // An unreadable subnet counts as holding a host address.
+  else if (expected.hostAddresses.some((address) => subnets.some((subnet) => ipv4InSubnet(address, subnet) !== false))) problems.push('network_host_address');
   const labels = obj(network.Labels);
   if (!Object.entries(expected.labels).every(([key, value]) => labels[key] === value)) problems.push('network_labels');
   const members = Object.keys(obj(network.Containers)).sort();
