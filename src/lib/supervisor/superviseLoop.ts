@@ -772,7 +772,17 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       const uploadable = log && settled.facts.cgroupEmpty === 'empty' && reason !== 'shutdown' && reason !== 'lease_lost' && capLeft() > 0;
       evidence = uploadable ? await uploadAgentLog({call: (method, route, body, options) => session.call(method, route, body, options),
         fetch: deps.fetch, monoMs: () => deps.clock.monoMs(), deadlineMono: Math.min(cap, deps.clock.monoMs() + EVIDENCE_BUDGET_MS),
-        route: `/api/v1/work-items/${workItem.id}/execution-attempts/${attemptId}/evidence-manifest`, claimToken, log}) : {acknowledged: false};
+        route: `/api/v1/work-items/${workItem.id}/execution-attempts/${attemptId}/evidence-manifest`, claimToken, log,
+        signal: deps.shutdown}) : {acknowledged: false};
+      if (evidence.cancelled) {
+        // Shutdown arrived mid-upload: nothing is decided or posted. The undecided evidence and the settlement wait
+        // in the journal, and the next start finishes the upload under the recovered claim before settling.
+        const pending: Settlement = {reason, ...(exitCode === undefined ? {} : {exitCode}), ...(controlId ? {controlId} : {}),
+          started: true, cgroupEmpty: true, attemptReport: 'pending', work: 'pending'};
+        // The journal's state is left as the stop wrote it, so the next start sweeps again before it settles.
+        await save({...journal, settlement: pending});
+        return {kind: 'finished', reason, exitCode, facts: settled.facts, settled: false};
+      }
       if (journal.evidence) await save({...journal, evidence: {...journal.evidence, ...evidence}});
       if (!evidence.acknowledged) deps.log(`The attempt's evidence was not acknowledged; its log is kept at ${inputDir}.`);
     }

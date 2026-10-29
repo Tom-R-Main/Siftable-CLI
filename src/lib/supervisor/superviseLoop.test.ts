@@ -75,6 +75,8 @@ interface Scenario {
   evidenceAck?: (n: number) => number | 'lost';
   /** The agent's attach stream never ends, even once its container is killed. */
   stdoutNeverEnds?: boolean;
+  /** Called when evidence is declared, before the reply: a shutdown can arrive here. */
+  onDeclare?: () => void;
 }
 
 /** The API, Docker and attached processes one attempt touches, recording what happened in order. */
@@ -136,6 +138,7 @@ function world(scenario: Scenario = {}) {
     if (route.endsWith('/evidence-manifest')) {
       events.push('evidence-declare');
       evidence.declared.push(body.artifacts);
+      scenario.onDeclare?.();
       const [artifact] = body.artifacts as Array<{sha256: string}>;
       return reply(200, {manifestDigest: MANIFEST, acknowledgedAt: evidence.acknowledged ? '2026-10-29T00:00:00.000Z' : null,
         uploads: evidence.acknowledged ? [] : [{sha256: artifact.sha256, url: `${STORAGE}attempts/${ATTEMPT}/${artifact.sha256}`}]});
@@ -868,5 +871,22 @@ describe('superviseOnce', () => {
         expect(w.evidence.puts).toEqual([]);
         expect(w.events).not.toContain('review');
       });
+
+    it('stops uploading when shutdown arrives during settlement, posts nothing, and finishes on the next start', async () => {
+      const shutdown = new AbortController();
+      const first = world({onDeclare: () => shutdown.abort()});
+      expect(await superviseOnce(deps(first, {shutdown: shutdown.signal}))).toMatchObject({kind: 'finished', reason: 'workload_exited', settled: false});
+      expect(first.evidence.puts).toEqual([]);
+      expect(first.events).not.toContain('evidence-ack');
+      expect(first.events).not.toContain('review');
+      expect(first.events).not.toContain('fail');
+      expect(await fs.readFile(path.join(inputRoot, ATTEMPT, 'agent.log'), 'utf8')).toBe(WORKLOAD_OUTPUT);
+      // The next start finishes the upload under the recovered claim, then settles the clean exit as a review.
+      const second = world();
+      expect(await superviseOnce(deps(second))).toEqual({kind: 'recovered', settled: true});
+      expect(second.events.filter((e) => e === 'evidence-ack')).toHaveLength(1);
+      const review = second.posts.find((post) => post.path.endsWith('/review'))!;
+      expect(review.body.artifactRefs).toContainEqual({type: 'evidence_manifest', attemptId: ATTEMPT, manifestDigest: MANIFEST});
+    });
   });
 });

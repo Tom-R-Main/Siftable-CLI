@@ -71,12 +71,14 @@ export function captureLog(dir: string, source: NodeJS.ReadableStream): {close(d
   };
 }
 
-export type EvidenceCall = (method: 'POST', route: string, body: unknown, options: {timeoutMs: number})
+export type EvidenceCall = (method: 'POST', route: string, body: unknown, options: {timeoutMs: number; signal?: AbortSignal})
   => Promise<{status: number; body: Record<string, unknown>}>;
 
 export interface EvidenceOutcome {
   acknowledged: boolean;
   manifestDigest?: string;
+  /** Shutdown cut the upload short: nothing was decided, and the next start finishes it. */
+  cancelled?: boolean;
 }
 
 /**
@@ -95,6 +97,8 @@ export async function uploadAgentLog(input: {
   log: FrozenLog;
   /** Reads the frozen log's bytes; the file system by default. */
   read?: (file: string) => Promise<Buffer>;
+  /** Shutdown: aborts the request in flight and starts no other. */
+  signal?: AbortSignal;
 }): Promise<EvidenceOutcome> {
   const {call, log, route, claimToken} = input;
   const left = () => input.deadlineMono - input.monoMs();
@@ -103,8 +107,13 @@ export async function uploadAgentLog(input: {
   if (!body) return {acknowledged: false};
   const artifacts = [{kind: 'agent_log', sha256: log.sha256, bytes: log.bytes, contentType: EVIDENCE_CONTENT_TYPE}];
   let manifestDigest: string | undefined;
+  const signal = input.signal;
+  const cancelled = (): EvidenceOutcome => ({acknowledged: false, cancelled: true, ...(manifestDigest ? {manifestDigest} : {})});
   for (let round = 0; round < ROUNDS && left() > 0; round += 1) {
-    const declared = await call('POST', route, {claimToken, artifacts}, {timeoutMs: Math.max(1, Math.min(30_000, left()))}).catch(() => null);
+    if (signal?.aborted) return cancelled();
+    const declared = await call('POST', route, {claimToken, artifacts}, {timeoutMs: Math.max(1, Math.min(30_000, left())), signal})
+      .catch(() => null);
+    if (signal?.aborted) return cancelled();
     if (!declared || declared.status >= 500) continue;
     if (declared.status !== 200) break;
     manifestDigest = typeof declared.body.manifestDigest === 'string' ? declared.body.manifestDigest : undefined;
@@ -120,14 +129,17 @@ export async function uploadAgentLog(input: {
         headers: {'Content-Type': EVIDENCE_CONTENT_TYPE, 'x-goog-if-generation-match': '0',
           'x-goog-content-length-range': `${log.bytes},${log.bytes}`},
         body,
-        signal: AbortSignal.timeout(Math.max(1, Math.floor(Math.min(60_000, left())))),
+        signal: AbortSignal.any([AbortSignal.timeout(Math.max(1, Math.floor(Math.min(60_000, left())))), ...(signal ? [signal] : [])]),
       }).catch(() => null);
+      if (signal?.aborted) return cancelled();
       // 412: the object already exists (an earlier round's PUT landed); the acknowledge decides whether it is right.
       if (!put || !(put.ok || put.status === 412)) { uploaded = false; break; }
     }
     if (!uploaded || left() <= 0) continue;
+    if (signal?.aborted) return cancelled();
     const acknowledged = await call('POST', `${route}/acknowledge`, {claimToken, manifestDigest},
-      {timeoutMs: Math.max(1, Math.min(70_000, left()))}).catch(() => null);
+      {timeoutMs: Math.max(1, Math.min(70_000, left())), signal}).catch(() => null);
+    if (signal?.aborted && acknowledged?.status !== 200) return cancelled();
     if (acknowledged?.status === 200) return {acknowledged: true, manifestDigest};
     if (acknowledged?.status === 403) break;
   }
