@@ -63,7 +63,7 @@ function fakeDocker(options: {failRemove?: boolean; privileged?: boolean} = {}) 
             ReadonlyRootfs: true, PidMode: '', IpcMode: 'private', UTSMode: '', UsernsMode: '', CgroupnsMode: 'private',
             CgroupParent: flag(created, '--cgroup-parent')[0], Devices: [], VolumesFrom: null, PortBindings: {}, PublishAllPorts: false,
             Tmpfs: Object.fromEntries(flag(created, '--tmpfs').map((t) => [t.split(':')[0], t.slice(t.indexOf(':') + 1)])),
-            RestartPolicy: {Name: 'no'}, Memory: memory * 1024 * 1024, NanoCpus: Number(flag(created, '--cpus')[0]) * 1e9,
+            RestartPolicy: {Name: 'no'}, Memory: memory * 1024 * 1024, MemorySwap: memory * 1024 * 1024, NanoCpus: Number(flag(created, '--cpus')[0]) * 1e9,
             PidsLimit: Number(flag(created, '--pids-limit')[0])},
           Mounts: flag(created, '--mount').map((m) => {
             const parts = Object.fromEntries(m.split(',').map((p) => p.split('=') as [string, string]));
