@@ -422,3 +422,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     return finish('start_failed');
   }
 }
+
+/** The shipped sidecar and launcher programs, beside this module in dist. */
+export function supervisorAssets(): SuperviseDeps['assets'] {
+  return {sidecar: path.join(__dirname, 'relaySidecar.js'), launcher: path.join(__dirname, 'attemptLauncher.js')};
+}

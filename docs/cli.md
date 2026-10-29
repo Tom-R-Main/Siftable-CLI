@@ -164,7 +164,7 @@ The exact read is not limited by the 100-request list cap, so an older request a
 
 ## Command reference
 
-All 358 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
+All 360 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
 
 **Topics:** [General](#general) · [Agent](#agent) · [Agents](#agents) · [Ai](#ai) · [Approvals](#approvals) · [Auth](#auth) · [Billing](#billing) · [Calendar](#calendar) · [Capabilities](#capabilities) · [Code](#code) · [Codebase](#codebase) · [Codex](#codex) · [Compute](#compute) · [Context](#context) · [Crm](#crm) · [Datasets](#datasets) · [Documents](#documents) · [Env](#env) · [Events](#events) · [Evidence](#evidence) · [Grants](#grants) · [Graph](#graph) · [Lead-discovery](#lead-discovery) · [Machine](#machine) · [Notes](#notes) · [Organizations](#organizations) · [People](#people) · [Projects](#projects) · [Recipes](#recipes) · [Relationships](#relationships) · [Research](#research) · [Skills](#skills) · [Tasks](#tasks) · [Timeline](#timeline) · [Vault](#vault) · [Work](#work) · [Worker](#worker) · [Workspaces](#workspaces)
 
@@ -1988,8 +1988,23 @@ Qualify this enrolled machine: run the isolation probes in the pinned agent imag
 
 - `--start-over` — Retire a report the server refused, keeping it under retired/, and qualify again
 
+#### `sift machine service`
+Install or remove the systemd service that runs the supervisor (run as root)
+
+**Arguments**
+
+- `action` *(required)* — install writes, enables and starts the unit; uninstall stops, disables and removes it
+
 #### `sift machine status`
 Show this machine's supervisor enrollment (run as root; never prints the credential)
+
+#### `sift machine supervise`
+Run this machine's contained supervisor: claim work, run it in the sandbox, stop and clean up (run as root, normally by systemd)
+
+**Flags**
+
+- `--once` — Run at most one attempt, then exit
+- `--plan-file <value>` — Root-owned JSON plan used for every dispatch (test fixture until setup launches record plans)
 
 
 ### Notes
