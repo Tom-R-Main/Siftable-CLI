@@ -84,6 +84,10 @@ function world(scenario: Scenario = {}) {
         workItem: {id: WORK_ITEM, claimToken: 'claim-secret', claimExpiresAt: scenario.claimExpiresAt ?? inFuture(600_000), title: 't', prompt: 'p'},
         controls: []});
     }
+    if (route.endsWith('/cleanup-receipts')) {
+      events.push(`receipt:${String((body.receipt as {state?: string}).state)}`);
+      return reply(201, {});
+    }
     if (route.endsWith('/runners/heartbeat')) { events.push('runner-heartbeat'); return reply(scenario.runnerHeartbeat ?? 200, {}); }
     if (route.includes('/model/')) {
       modelKeys.push(key);
@@ -264,6 +268,9 @@ describe('superviseOnce', () => {
     expect(order('attempt:running')).toBeLessThan(order('go'));
     expect(order('go')).toBeLessThan(order('kill:c-agent'));
     expect(order('attempt:ended')).toBeLessThan(order('review'));
+    // The stop and its cleanup are reported with signed receipts once the run has settled.
+    expect(order('review')).toBeLessThan(order('receipt:execution_stopped'));
+    expect(order('receipt:execution_stopped')).toBeLessThan(order('receipt:cleaned'));
     expect(outcome).toMatchObject({settled: true});
     // The per-dispatch runtime identity, the agent's environment and nothing secret on disk.
     const attach = w.posts.find((post) => post.path.endsWith('/execution-attempts'))!;
@@ -498,7 +505,7 @@ describe('superviseOnce', () => {
 
   it('records the server refusing to end a never-recorded attempt as a surfaced conflict, then fails the start', async () => {
     const w = world({attachLost: true, terminalStatus: 409});
-    expect(await superviseOnce(deps(w))).toEqual({kind: 'refused', reason: 'attach_unknown'});
+    expect(await superviseOnce(deps(w))).toEqual({kind: 'refused', reason: 'attach_unknown', conflicts: ['attempt_report']});
     expect(w.events).toContain('ack:failed');
     expect(await journal()).toBeNull();
     const retired = await fs.readdir(path.join(root, 'retired'));

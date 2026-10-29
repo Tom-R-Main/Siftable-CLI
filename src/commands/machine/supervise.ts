@@ -29,13 +29,15 @@ function describe(outcome: SuperviseOutcome): string {
     case 'held': return `Holding resources that could not be shown gone: ${outcome.held.join(', ')}. No new work starts until they are.`
       + (outcome.held.some((item) => item.startsWith('create:'))
         ? ' A create never answered; once Docker shows no such resource, run `sudo sift machine supervise --once --release-unknown-creates`.' : '');
-    case 'refused': return `Not starting work: ${outcome.reason}.`;
+    case 'refused': return `Not starting work: ${outcome.reason}.`
+      + (outcome.conflicts?.length ? ` The server refused part of its settlement (${outcome.conflicts.join(', ')}); the record is kept under retired/ for reconciliation.` : '');
     case 'recovered': return outcome.conflicts?.length ? `An attempt left by an earlier run was settled with server conflicts (${outcome.conflicts.join(', ')}); `
       + 'its record is kept under retired/ for reconciliation. It was not relaunched.'
       : outcome.settled ? 'Settled an attempt left by an earlier run; it was not relaunched.'
       : 'An earlier attempt is torn down; telling the server how it ended is still pending. It is never relaunched.';
     case 'finished': return outcome.reason === 'shutdown' ? `Stopped the running attempt for shutdown; cgroup ${outcome.facts.cgroupEmpty}, `
-      + `resources ${outcome.facts.resourcesRemoved ? 'removed' : `held: ${outcome.facts.held.join(', ')}`}.` : `Attempt finished (${outcome.reason}${outcome.exitCode === undefined ? '' : `, exit ${outcome.exitCode}`}); `
+      + `resources ${outcome.facts.resourcesRemoved ? 'removed' : `held: ${outcome.facts.held.join(', ')}`}`
+      + `${outcome.conflicts?.length ? `; server conflicts: ${outcome.conflicts.join(', ')}` : ''}.` : `Attempt finished (${outcome.reason}${outcome.exitCode === undefined ? '' : `, exit ${outcome.exitCode}`}); `
       + `cgroup ${outcome.facts.cgroupEmpty}, resources ${outcome.facts.resourcesRemoved ? 'removed' : `held: ${outcome.facts.held.join(', ')}`}`
       + `${outcome.conflicts?.length ? `; server conflicts: ${outcome.conflicts.join(', ')}` : ''}.`;
   }

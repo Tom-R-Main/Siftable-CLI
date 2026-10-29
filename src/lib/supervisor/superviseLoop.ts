@@ -21,6 +21,7 @@ import {GO_LINE, READY_LINE} from './attemptLauncher.js';
 import {evaluateNetworkInspect, evaluateSandboxInspect, networkCreateArgs, sandboxCreateArgs, type SandboxContainerSpec} from './containerSandbox.js';
 import {DEADLINE_EXIT, type DeadlineDocker} from './hostDocker.js';
 import {type Attach, type AttachedProcess, ensureImage, readFirstLine} from './machineQualify.js';
+import {type OutboxEntry, OUTBOX, enqueueReceipts, flushReceipts, receiptsForStop} from './cleanupReceiptOutbox.js';
 import {archiveJournal, inspectMachineState, type MachineRecord, type MachineStateOptions, readCredential, readJournal, removeJournal, writeJournal} from './machineState.js';
 import {attemptRelayHandler} from './modelRelayHandler.js';
 import {DIAGNOSTIC_PATH, MODEL_PATHS, SIDECAR_PORT} from './relaySidecar.js';
@@ -117,7 +118,7 @@ export type StopReason = 'stop_control' | 'workload_exited' | 'lease_lost' | 'ac
 export type SuperviseOutcome =
   | {kind: 'idle'}
   | {kind: 'held'; held: string[]}
-  | {kind: 'refused'; reason: string}
+  | {kind: 'refused'; reason: string; conflicts?: string[]}
   | {kind: 'recovered'; settled: boolean; conflicts?: string[]}
   | {kind: 'finished'; reason: StopReason; exitCode?: number; facts: StopFacts; settled: boolean; conflicts?: string[]};
 
@@ -208,6 +209,44 @@ async function unresolvedCreates(deps: SuperviseDeps, journal: AttemptJournal): 
   return unresolved;
 }
 
+/**
+ * Queues the server-side record of this stop (U2d-3b): sent later, signed by
+ * the enrollment key, so it survives the end of the claim. An attempt that
+ * was never attached has nothing to report. Queuing never blocks the stop.
+ */
+async function queueCleanupReceipts(deps: SuperviseDeps, journal: AttemptJournal, facts: StopFacts): Promise<void> {
+  if (!journal.attemptId) return;
+  try {
+    const state = await inspectMachineState(deps.state);
+    if (state.kind !== 'enrolled') return;
+    const {machine} = state;
+    const journaled = Object.values(journal.containers).filter(Boolean).length;
+    const heldContainers = facts.held.filter((item) => item.startsWith('container:')).length;
+    const outbox = (await readJournal<{entries?: OutboxEntry[]}>(deps.state, OUTBOX))?.entries ?? [];
+    await enqueueReceipts(deps.state, machine.enrollmentId, receiptsForStop(
+      {attemptId: journal.attemptId, workItemId: journal.workItemId, dispatchId: journal.dispatchId,
+        orgId: machine.scope.type === 'workspace' ? machine.scope.id : null},
+      {cgroupEmpty: facts.cgroupEmpty, resourcesRemoved: facts.resourcesRemoved, held: facts.held,
+        containersRemoved: facts.cgroupEmpty === 'empty' ? Math.max(0, journaled - heldContainers) : 0},
+      outbox));
+  } catch (error) {
+    deps.log(`Could not queue the cleanup receipts: ${(error as Error).message}`);
+  }
+}
+
+/** Sends pending cleanup receipts, a bounded number per cycle. Never throws: they wait for the next cycle. */
+async function sendCleanupReceipts(deps: SuperviseDeps): Promise<void> {
+  try {
+    const state = await inspectMachineState(deps.state);
+    if (state.kind !== 'enrolled') return;
+    const {machine} = state;
+    await flushReceipts({fetch: deps.fetch, state: deps.state, apiUrl: machine.apiUrl, now: () => new Date(deps.clock.wallMs()),
+      workspaceId: machine.scope.type === 'workspace' ? machine.scope.id : null});
+  } catch (error) {
+    deps.log(`Could not send cleanup receipts: ${(error as Error).message}`);
+  }
+}
+
 /** Tears down a journal's run; returns what is still held. Never relaunches. */
 async function settle(
   deps: SuperviseDeps, journal: AttemptJournal, reason: StopReason, controlId?: string, pendingWrites: Promise<unknown> = Promise.resolve(),
@@ -244,6 +283,7 @@ async function settle(
   current = {...current, state: facts.held.length > 0 ? 'held' : 'stopping', stop: {...stop, facts}};
   await stoppingWritten;
   await writeAttemptJournal(deps, current).catch((error: unknown) => { journalError ??= error; });
+  await queueCleanupReceipts(deps, current, facts);
   if (journalError !== undefined) {
     throw new SuperviseError(`The attempt was stopped (cgroup ${facts.cgroupEmpty}, resources ${facts.resourcesRemoved ? 'removed' : 'held'}), `
       + `but its journal could not be written: ${(journalError as Error).message}. The earlier journal is kept for the next start.`);
@@ -377,6 +417,8 @@ async function recordDispatch(deps: SuperviseDeps, dispatchId: string): Promise<
  * is never run again, and neither is any dispatch already in the ledger.
  */
 export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutcome> {
+  // Receipts go out every cycle, held or not: the server learns what was cleaned even when nothing new can start.
+  await sendCleanupReceipts(deps);
   let earlier = await readJournal<AttemptJournal>(deps.state, JOURNAL);
   if (earlier && earlier.state !== 'settling') {
     const reason = earlier.stop?.reason ?? 'recovered';
@@ -470,15 +512,17 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     return true;
   };
   const refuseStart = async (reason: string): Promise<SuperviseOutcome> => {
+    const conflicts = (): string[] => conflictsOf(journal.settlement);
     await conclude({reason: 'start_failed', started: false, cgroupEmpty: true, attemptReport: 'skipped', work: 'pending'});
-    return {kind: 'refused', reason};
+    return {kind: 'refused', reason, ...(conflicts().length ? {conflicts: conflicts()} : {})};
   };
 
   if ((await readLedger(deps)).includes(dispatch.id)) {
     // Already started here once (its journal was settled or lost): reconcile, never run it again.
     await save(journal);
     await conclude({reason: 'recovered', started: true, cgroupEmpty: true, attemptReport: 'skipped', work: 'pending'});
-    return {kind: 'refused', reason: 'dispatch_already_executed'};
+    const conflicts = conflictsOf(journal.settlement);
+    return {kind: 'refused', reason: 'dispatch_already_executed', ...(conflicts.length ? {conflicts} : {})};
   }
   await save(journal);
   if (!(capLeft() > 0)) return refuseStart('no_confirmed_lease');
@@ -498,7 +542,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     // Only a fresh attempt in `starting` is a launch; a replay or an advanced attempt is reconciliation only.
     // Whatever the reply, the attach may have committed; the terminal report is keyed by runtime, not by attempt ID.
     await conclude({reason: 'start_failed', started: false, cgroupEmpty: true, attemptReport: 'pending', work: 'pending'});
-    return {kind: 'refused', reason: attached ? `attach_not_fresh_${attached.status}` : 'attach_unknown'};
+    const conflicts = conflictsOf(journal.settlement);
+    return {kind: 'refused', reason: attached ? `attach_not_fresh_${attached.status}` : 'attach_unknown', ...(conflicts.length ? {conflicts} : {})};
   }
   const attemptId = attempt.id;
   await save({...journal, state: 'attached', attemptId});
@@ -591,6 +636,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     }
     // During shutdown the unit's stop timeout bounds everything; settlement gets 10 s and the rest waits for the next start.
     const done = await conclude(settlement, reason === 'shutdown' ? 10_000 : 30_000);
+    if (reason !== 'shutdown') await sendCleanupReceipts(deps);
     const conflicts = conflictsOf(journal.settlement);
     return {kind: 'finished', reason, exitCode, facts: settled.facts, settled: done, ...(conflicts.length ? {conflicts} : {})};
   };
