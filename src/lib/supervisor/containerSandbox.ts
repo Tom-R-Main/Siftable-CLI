@@ -67,6 +67,12 @@ export interface SandboxExpectation {
   imageId: string;
   networkId: string;
   spec: SandboxContainerSpec;
+  /**
+   * `created` checks a container before it starts: Docker attaches the network
+   * endpoint only at start, so the requested network mode stands in for it.
+   * `running` (the default) requires the attached endpoint itself.
+   */
+  phase?: 'created' | 'running';
 }
 
 type Json = Record<string, unknown>;
@@ -125,7 +131,9 @@ export function evaluateSandboxInspect(inspect: unknown, expected: SandboxExpect
 
   const portsOk = (Object.keys(obj(host.PortBindings)).length === 0 || fail('port_bindings')) && (host.PublishAllPorts !== true || fail('publish_all'));
   const networks = Object.values(obj(obj(container.NetworkSettings).Networks)).map(obj);
-  const networkOk = (networks.length === 1 && networks[0].NetworkID === expected.networkId) || fail('networks');
+  const networkOk = expected.phase === 'created'
+    ? host.NetworkMode === expected.networkId || fail('network_mode')
+    : (networks.length === 1 && networks[0].NetworkID === expected.networkId) || fail('networks');
   const restartOk = obj(host.RestartPolicy).Name === 'no' || fail('restart_policy');
   const limitsOk = (host.Memory === spec.limits.memoryMb * 1024 * 1024 || fail('memory'))
     // Swap equal to memory means none; -1 or a larger value would let the container page past its limit.

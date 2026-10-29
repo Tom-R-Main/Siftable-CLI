@@ -167,14 +167,18 @@ export async function readJournal<T>(options: MachineStateOptions, name: string)
   return raw === null ? null : JSON.parse(raw) as T;
 }
 
-/** Moves a journal under retired/, kept as evidence; nothing is deleted. */
-export async function retireJournal(options: MachineStateOptions, name: string, now: Date): Promise<string> {
+/**
+ * Copies a journal under retired/ as evidence and leaves the active one in
+ * place, so the caller can record what it still owns before replacing it. A
+ * crash between the two leaves a duplicate copy, never a lost journal.
+ */
+export async function archiveJournal(options: MachineStateOptions, name: string, now: Date): Promise<string | null> {
+  const raw = await readRegularFile(options, name);
+  if (raw === null) return null;
   const retiredRoot = path.join(options.root, 'retired');
   await ensureStateDirectory(options, retiredRoot);
   const destination = path.join(retiredRoot, `${now.toISOString().replace(/[:.]/g, '-')}-${name}`);
-  await fs.rename(path.join(options.root, name), destination);
-  await syncDirectory(retiredRoot);
-  await syncDirectory(options.root);
+  await writeFileAtomic({...options, root: retiredRoot}, path.basename(destination), raw);
   return destination;
 }
 

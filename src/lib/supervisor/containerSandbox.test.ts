@@ -99,6 +99,13 @@ describe('evaluateSandboxInspect', () => {
     expect(result.observedIsolation).not.toEqual({...MACHINE_ISOLATION_PROFILE_V1});
   });
 
+  it('checks the requested network mode before start, and the attached endpoint once running', () => {
+    const created = inspectOf({host: {NetworkMode: 'net-1'}, networks: {'sift-net': {NetworkID: ''}}});
+    expect(evaluateSandboxInspect(created, {...expected, phase: 'created'}).problems).toEqual([]);
+    expect(evaluateSandboxInspect(created, expected).problems).toContain('networks');
+    expect(evaluateSandboxInspect(inspectOf({host: {NetworkMode: 'bridge'}}), {...expected, phase: 'created'}).problems).toContain('network_mode');
+  });
+
   it('rejects another image behind the same reference', () => {
     const result = evaluateSandboxInspect({...inspectOf(), Image: `sha256:${'c'.repeat(64)}`}, expected);
     expect(result.problems).toContain('image_id');

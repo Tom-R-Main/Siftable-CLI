@@ -6,7 +6,7 @@ import {PassThrough} from 'node:stream';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {generateMachineKey, machineKeyFingerprint, rawEd25519PublicKey} from './machineProtocol.js';
 import {type Attach, type Docker, MachineQualifyError, qualifyMachine, type QualifyDeps} from './machineQualify.js';
-import {commitMachine, ensureStateDirectory, readJournal, writeCredential, writeKey} from './machineState.js';
+import {archiveJournal, commitMachine, ensureStateDirectory, readJournal, writeCredential, writeKey} from './machineState.js';
 import {MACHINE_ISOLATION_PROFILE_V1, machineCanonicalJson, machineQualificationSignedPayload} from './qualificationProtocol.js';
 
 const API = 'https://api.example';
@@ -66,7 +66,7 @@ function fakeDocker(options: {failRemove?: boolean; privileged?: boolean} = {}) 
             Labels: Object.fromEntries(flag(created, '--label').map((l) => l.split('=') as [string, string]))},
           HostConfig: {Privileged: options.privileged === true, CapAdd: null, CapDrop: ['ALL'], SecurityOpt: ['no-new-privileges:true'],
             ReadonlyRootfs: true, PidMode: '', IpcMode: 'private', UTSMode: '', UsernsMode: '', CgroupnsMode: 'private',
-            CgroupParent: flag(created, '--cgroup-parent')[0], Devices: [], VolumesFrom: null, PortBindings: {}, PublishAllPorts: false,
+            CgroupParent: flag(created, '--cgroup-parent')[0], NetworkMode: flag(created, '--network')[0], Devices: [], VolumesFrom: null, PortBindings: {}, PublishAllPorts: false,
             Tmpfs: Object.fromEntries(flag(created, '--tmpfs').map((t) => [t.split(':')[0], t.slice(t.indexOf(':') + 1)])),
             RestartPolicy: {Name: 'no'}, Memory: memory * 1024 * 1024, MemorySwap: memory * 1024 * 1024, NanoCpus: Number(flag(created, '--cpus')[0]) * 1e9,
             PidsLimit: Number(flag(created, '--pids-limit')[0])},
@@ -74,7 +74,8 @@ function fakeDocker(options: {failRemove?: boolean; privileged?: boolean} = {}) 
             const parts = Object.fromEntries(m.split(',').map((p) => p.split('=') as [string, string]));
             return {Type: 'bind', Source: parts.source, Destination: parts.target, RW: false};
           }),
-          NetworkSettings: {Networks: {'sift-q': {NetworkID: 'net-1'}}},
+          // Docker fills the endpoint's network ID only once the container starts.
+          NetworkSettings: {Networks: {'sift-q': {NetworkID: started.has(id) ? 'net-1' : ''}}},
         };
       })));
     }
@@ -222,6 +223,22 @@ describe('qualifyMachine', () => {
     expect((posted.at(-1)!.body as {challengeId: string}).challengeId).not.toBe((posted[0].body as {challengeId: string}).challengeId);
   });
 
+  it('--start-over keeps held resources owned through a crash after archiving, and removes them first', async () => {
+    await expect(qualifyMachine(deps({docker: fakeDocker({failRemove: true}).docker, fetch: fakeFetch({refuseAfter: 0})})))
+      .rejects.toThrow(/--start-over/);
+    expect(await readJournal({root, owner: null}, 'qualify-journal.json'))
+      .toMatchObject({state: 'blocked', held: ['container:sidecar-1', 'container:probe-1']});
+    // A crash right after the archive copy leaves the active journal as it was.
+    await archiveJournal({root, owner: null}, 'qualify-journal.json', new Date('2026-10-29T05:00:00Z'));
+    const docker = fakeDocker();
+    const result = await qualifyMachine(deps({docker: docker.docker}), {startOver: true});
+    expect(result.outcome).toBe('qualified');
+    const firstCreate = docker.calls.findIndex((args) => args[1] === 'create');
+    const removedFirst = docker.calls.slice(0, firstCreate).filter((args) => args[1] === 'rm').map((args) => args.at(-1));
+    expect(removedFirst).toEqual(expect.arrayContaining(['sidecar-1', 'probe-1', 'net-1']));
+    expect((await fs.readdir(path.join(root, 'retired'))).filter((name) => name.endsWith('qualify-journal.json')).length).toBe(2);
+  });
+
   it('keeps resources it could not remove held, and will not qualify again until they are gone', async () => {
     const failing = fakeDocker({failRemove: true});
     const result = await qualifyMachine(deps({docker: failing.docker}));
@@ -239,8 +256,11 @@ describe('qualifyMachine', () => {
   });
 
   it('reports a deviation Docker shows, and malformed probe output as errors', async () => {
-    const result = await qualifyMachine(deps({docker: fakeDocker({privileged: true}).docker, attach: fakeAttach('not json').attach}));
+    const attach = fakeAttach('not json');
+    const result = await qualifyMachine(deps({docker: fakeDocker({privileged: true}).docker, attach: attach.attach}));
     expect(result.problems).toEqual(expect.arrayContaining(['relay:privileged', 'probe:privileged']));
+    // A container not created as specified is never started.
+    expect(attach.started).toEqual([]);
     const report = (posted[0].body as {report: {observedIsolation: object; probes: Record<string, {outcome: string}>}}).report;
     expect(report.observedIsolation).not.toEqual({...MACHINE_ISOLATION_PROFILE_V1});
     expect(Object.values(report.probes).every((probe) => probe.outcome === 'error')).toBe(true);

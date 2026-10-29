@@ -33,7 +33,7 @@ import {
   readJournal,
   readKey,
   removeJournal,
-  retireJournal,
+  archiveJournal,
   updateMachine,
   writeJournal,
 } from './machineState.js';
@@ -274,8 +274,15 @@ export async function qualifyMachine(deps: QualifyDeps, options: {startOver?: bo
 
     let earlier = await readJournal<QualifyJournal>(deps.state, JOURNAL);
     if (earlier?.state === 'blocked' && options.startOver) {
-      await retireJournal(deps.state, JOURNAL, deps.now());
-      earlier = earlier.held?.length ? {...earlier, state: 'held', report: undefined} : null;
+      // Archive a copy first, then make the held cleanup durable in the active journal before the report leaves it.
+      await archiveJournal(deps.state, JOURNAL, deps.now());
+      if (earlier.held?.length) {
+        earlier = {...earlier, state: 'held', report: undefined};
+        await writeJournal(deps.state, JOURNAL, earlier);
+      } else {
+        await removeJournal(deps.state, JOURNAL);
+        earlier = null;
+      }
     }
     if (earlier?.state === 'report_pending' || earlier?.state === 'blocked') return await submit(deps, known, token, earlier);
     if (earlier) {
@@ -333,21 +340,27 @@ export async function qualifyMachine(deps: QualifyDeps, options: {startOver?: bo
       journal = {...journal, containers: {...journal.containers, probe: probeId}};
       await writeJournal(deps.state, JOURNAL, journal);
 
-      const inspected = JSON.parse(await mustDocker(deps.docker, ['container', 'inspect', sidecarId, probeId])) as unknown[];
-      const byId = new Map(inspected.map((entry) => [(entry as {Id?: string}).Id, entry]));
-      const sidecarCheck = evaluateSandboxInspect(byId.get(sidecarId), {containerId: sidecarId, imageRef, imageId, networkId, spec: plan.sidecar});
-      const probeCheck = evaluateSandboxInspect(byId.get(probeId), {containerId: probeId, imageRef, imageId, networkId, spec: plan.probe});
-      problems.push(...sidecarCheck.problems.map((p) => `relay:${p}`), ...probeCheck.problems.map((p) => `probe:${p}`));
-      observedImageRef = probeCheck.observedImageRef;
-      observedIsolation = {...probeCheck.observedIsolation};
-      if (sidecarCheck.problems.length > 0) observedIsolation.network = 'unverified';
+      const inspectBoth = async (phase: 'created' | 'running') => {
+        const inspected = JSON.parse(await mustDocker(deps.docker, ['container', 'inspect', sidecarId, probeId])) as unknown[];
+        const byId = new Map(inspected.map((entry) => [(entry as {Id?: string}).Id, entry]));
+        const sidecarCheck = evaluateSandboxInspect(byId.get(sidecarId), {containerId: sidecarId, imageRef, imageId, networkId, spec: plan.sidecar, phase});
+        const probeCheck = evaluateSandboxInspect(byId.get(probeId), {containerId: probeId, imageRef, imageId, networkId, spec: plan.probe, phase});
+        problems.push(...sidecarCheck.problems.map((p) => `relay:${p}`), ...probeCheck.problems.map((p) => `probe:${p}`));
+        observedImageRef = probeCheck.observedImageRef;
+        observedIsolation = {...probeCheck.observedIsolation};
+        if (sidecarCheck.problems.length > 0) observedIsolation.network = 'unverified';
+        return sidecarCheck.problems.length + probeCheck.problems.length;
+      };
+      // Nothing starts unless both containers were created as specified.
+      if (await inspectBoth('created') > 0) throw new MachineQualifyError('the sandbox was not created as specified');
 
       sidecar = deps.attach(['start', '--attach', '--interactive', sidecarId]);
       serveSidecarFrames(sidecar.stdout, sidecar.stdin, diagnosticHandler(diagnosticNonce, DIAGNOSTIC_PATH));
       probe = deps.attach(['start', '--attach', '--interactive', probeId]);
       const line = await readFirstLine(probe.stdout, PROBE_OUTPUT_TIMEOUT_MS);
       probes = parseProbeOutput(line);
-      // Docker connects containers to their network when they start, so membership is read while both run.
+      // Docker connects containers to their network when they start, so endpoints and membership are read while both run.
+      await inspectBoth('running');
       const [networkAfter] = JSON.parse(await mustDocker(deps.docker, ['network', 'inspect', networkId])) as unknown[];
       const networkProblems = evaluateNetworkInspect(networkAfter, {networkId, labels: plan.networkLabels, containerIds: [sidecarId, probeId]});
       problems.push(...networkProblems);
@@ -375,7 +388,7 @@ export async function qualifyMachine(deps: QualifyDeps, options: {startOver?: bo
     const canonical = machineCanonicalJson(report);
     const signature = sign(null, Buffer.from(machineQualificationSignedPayload(challenge.binding, challenge.nonce, sha256(canonical))),
       createPrivateKey(pem)).toString('base64url');
-    journal = {...journal, state: 'report_pending', report: {canonical, signature}, problems, held};
+    journal = {...journal, state: 'report_pending', report: {canonical, signature}, problems: [...new Set(problems)], held};
     await writeJournal(deps.state, JOURNAL, journal);
     return await submit(deps, known, token, journal);
   } finally {
