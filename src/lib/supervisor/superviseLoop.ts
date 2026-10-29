@@ -520,7 +520,12 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   const sentMono = deps.clock.monoMs();
   const consumed = await session.call('POST', `/api/v1/work-items/runners/${machine.runnerId}/consume`, {workspaceId, consumerId: session.consumerId});
   if (consumed.status === 403) return {kind: 'refused', reason: 'not_admitted'};
-  if (consumed.status !== 200) throw new SuperviseError(`consume returned HTTP ${consumed.status}`);
+  if (consumed.status !== 200) {
+    // A 409 means the server holds a dispatch for this runner whose claim this host can no longer present,
+    // such as one that expired while the supervisor was down; only the operator can requeue it. Wait and
+    // retry instead of exiting, which under systemd is a restart loop. An earlier attempt keeps its journal.
+    return {kind: 'refused', reason: consumed.status === 409 ? 'runner_lease_changed' : `consume_http_${consumed.status}`};
+  }
   const dispatch = consumed.body.dispatch as {id?: string; workItemId?: string; computeGrantId?: unknown; computeGrantExpiresAt?: unknown} | null;
   const workItem = consumed.body.workItem as ({id?: string; claimToken?: string; claimExpiresAt?: unknown} & Record<string, unknown>) | null;
   const claimed = Boolean(dispatch?.id && workItem?.id && typeof workItem.claimToken === 'string');

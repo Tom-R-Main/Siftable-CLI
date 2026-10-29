@@ -60,6 +60,8 @@ interface Scenario {
   terminalStatus?: number;
   /** A lookup by exact name finds the resource an unanswered create made. */
   nameFound?: boolean;
+  /** Consume is answered with this status, as when the runner's lease changed (409). */
+  consumeStatus?: number;
 }
 
 /** The API, Docker and attached processes one attempt touches, recording what happened in order. */
@@ -80,6 +82,7 @@ function world(scenario: Scenario = {}) {
     }
     if (route.endsWith('/consume')) {
       events.push('consume');
+      if (scenario.consumeStatus) return reply(scenario.consumeStatus, {detail: 'Runner lease changed; reconcile the existing runtime'});
       if (scenario.dispatch === null) return reply(200, {dispatch: null});
       return reply(200, {dispatch: {id: DISPATCH, workItemId: WORK_ITEM, computeGrantExpiresAt: null, ...scenario.dispatch},
         workItem: {id: WORK_ITEM, claimToken: 'claim-secret', claimExpiresAt: scenario.claimExpiresAt ?? inFuture(600_000), title: 't', prompt: 'p'},
@@ -628,5 +631,23 @@ describe('superviseOnce', () => {
       'receipt:execution_stopped', 'receipt:cleaned', 'runner-heartbeat', 'consume', 'attempt:ended:failed', 'fail']);
     expect(w.events).not.toContain('network-create');
     expect(await journal()).toBeNull();
+  });
+
+  it('waits instead of exiting when consume reports the lease changed, keeping the earlier attempt journaled', async () => {
+    await writeJournal({root, owner: null}, JOURNAL, {version: 1, state: 'running', runId: 'abc123abc123', dispatchId: DISPATCH,
+      workItemId: WORK_ITEM, runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`, attemptId: ATTEMPT, networkId: 'net-1',
+      workspace: {repositoryId: PLAN.repositoryId, branch: PLAN.branch, baseSha: PLAN.baseSha},
+      containers: {sidecar: 'c-relay', agent: 'c-agent'}, callSeq: 3} satisfies AttemptJournal);
+    const w = world({consumeStatus: 409});
+    expect(await superviseOnce(deps(w))).toEqual({kind: 'refused', reason: 'runner_lease_changed'});
+    // Physical recovery and receipts still happen; nothing is reported with a claim this host does not hold.
+    expect(w.events).toEqual(['kill:c-relay', 'kill:c-agent', 'ls:container', 'ls:network', 'rm:c-relay', 'rm:c-agent', 'network-rm',
+      'receipt:execution_stopped', 'receipt:cleaned', 'runner-heartbeat', 'consume']);
+    expect(await journal()).toMatchObject({state: 'settling'});
+    // Once the operator requeues, consume hands back nothing for the old dispatch and the journal is archived.
+    const after = world({dispatch: null});
+    expect(await superviseOnce(deps(after))).toEqual({kind: 'recovered', settled: false});
+    expect(await journal()).toBeNull();
+    expect(await superviseOnce(deps(world({consumeStatus: 502})))).toEqual({kind: 'refused', reason: 'consume_http_502'});
   });
 });
