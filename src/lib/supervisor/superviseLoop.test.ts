@@ -24,6 +24,15 @@ const CONTROL = '99999999-9999-4999-8999-999999999999';
 const PLAN = {repositoryId: 'repo-1', branch: 'main', baseSha: 'c'.repeat(40), imageRef: IMAGE, command: ['sh', '-c', 'true']};
 const inFuture = (ms: number) => new Date(Date.now() + ms).toISOString();
 
+/** Waits for a condition instead of a fixed time, so slow hosts cannot reorder the steps a test relies on. */
+async function until(condition: () => boolean, timeoutMs = 10_000): Promise<void> {
+  const started = performance.now();
+  while (!condition()) {
+    if (performance.now() - started > timeoutMs) throw new Error('Timed out waiting for the condition');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 interface Scenario {
   dispatch?: object | null;
   claimExpiresAt?: string;
@@ -217,7 +226,18 @@ describe('superviseOnce', () => {
     await commitMachine(state, {version: 1, apiUrl: API, enrollmentId: ENROLLMENT, runnerId: RUNNER,
       fingerprint: machineKeyFingerprint(rawEd25519PublicKey(key.privateKey)), scope: {type: 'user'}, enrolledAt: '2026-10-29T05:00:00.000Z'});
   });
-  afterEach(async () => fs.rm(path.dirname(root), {recursive: true, force: true}));
+  // Runs a test started in the background are stopped and drained even when an assertion fails first.
+  let started: Array<() => Promise<unknown>> = [];
+  const background = (run: Promise<unknown>, stop: () => void) => {
+    started.push(async () => { stop(); await run.catch(() => undefined); });
+    return run;
+  };
+  afterEach(async () => {
+    await Promise.all(started.map((drain) => drain()));
+    started = [];
+    await fs.chmod(root, 0o700).catch(() => undefined);
+    await fs.rm(path.dirname(root), {recursive: true, force: true});
+  });
 
   const deps = (w: ReturnType<typeof world>, overrides: Partial<SuperviseDeps> = {}): SuperviseDeps => ({
     fetch: w.fetchImpl, docker: w.docker, attach: w.attach, clock: systemClock, readFile: w.readFile,
@@ -319,8 +339,8 @@ describe('superviseOnce', () => {
   it('stops and cleans up the running attempt when the service shuts down', async () => {
     const w = world({agentExit: 'never'});
     const shutdown = new AbortController();
-    const running = superviseOnce(deps(w, {shutdown: shutdown.signal}));
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    const running = background(superviseOnce(deps(w, {shutdown: shutdown.signal})), () => shutdown.abort());
+    await until(() => w.events.includes('go'));
     expect(w.events).toContain('go');
     shutdown.abort();
     expect(await running).toMatchObject({kind: 'finished', reason: 'shutdown', facts: {cgroupEmpty: 'empty', resourcesRemoved: true}});
@@ -382,8 +402,9 @@ describe('superviseOnce', () => {
 
   it('gives concurrent model calls distinct, journaled call IDs', async () => {
     const w = world({agentExit: 'never', controls: () => (w.modelKeys.length >= 2 ? [{id: CONTROL, action: 'stop', state: 'pending'}] : [])});
-    const running = superviseOnce(deps(w));
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    const shutdown = new AbortController();
+    const running = background(superviseOnce(deps(w, {shutdown: shutdown.signal})), () => shutdown.abort());
+    await until(() => w.events.includes('go'));
     const frame = (id: number) => `${JSON.stringify({id, method: 'POST', path: '/sift/v1/model/anthropic/v1/messages', body: Buffer.from('{}').toString('base64')})}\n`;
     w.sidecarIo.stdout?.write(frame(1) + frame(2));
     expect(await running).toMatchObject({kind: 'finished', reason: 'stop_control'});
@@ -393,8 +414,8 @@ describe('superviseOnce', () => {
   it('interrupts a startup await that never returns when the service shuts down, and still cleans up', async () => {
     const w = world({hangRunningInspect: true});
     const shutdown = new AbortController();
-    const running = superviseOnce(deps(w, {shutdown: shutdown.signal}));
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    const running = background(superviseOnce(deps(w, {shutdown: shutdown.signal})), () => shutdown.abort());
+    await until(() => w.events.includes('inspect-hung'));
     expect(w.events).toContain('inspect-hung');
     const stoppedAt = performance.now();
     shutdown.abort();
@@ -424,8 +445,8 @@ describe('superviseOnce', () => {
   it('records a create that answers after shutdown and removes it, instead of trusting an empty sweep', async () => {
     const w = world({agentCreateDelay: 600});
     const shutdown = new AbortController();
-    const running = superviseOnce(deps(w, {shutdown: shutdown.signal}));
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    const running = background(superviseOnce(deps(w, {shutdown: shutdown.signal})), () => shutdown.abort());
+    await until(() => w.events.includes('create:c-agent'));
     expect(w.events).toContain('create:c-agent');
     shutdown.abort();
     expect(await running).toMatchObject({kind: 'finished', reason: 'shutdown', facts: {resourcesRemoved: true, held: []}});
@@ -437,8 +458,8 @@ describe('superviseOnce', () => {
   it('holds a create that never answers, and blocks new work until a later start sweeps it', async () => {
     const w = world({agentCreateDelay: 'never'});
     const shutdown = new AbortController();
-    const running = superviseOnce(deps(w, {shutdown: shutdown.signal}));
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    const running = background(superviseOnce(deps(w, {shutdown: shutdown.signal})), () => shutdown.abort());
+    await until(() => w.events.includes('create:c-agent'));
     shutdown.abort();
     const outcome = await running;
     expect(outcome).toMatchObject({kind: 'finished', reason: 'shutdown', settled: false, facts: {resourcesRemoved: false}});
@@ -458,8 +479,8 @@ describe('superviseOnce', () => {
   it('lets the operator release an unknown create that Docker shows was never made', async () => {
     const w = world({agentCreateDelay: 'never'});
     const shutdown = new AbortController();
-    const running = superviseOnce(deps(w, {shutdown: shutdown.signal}));
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    const running = background(superviseOnce(deps(w, {shutdown: shutdown.signal})), () => shutdown.abort());
+    await until(() => w.events.includes('create:c-agent'));
     shutdown.abort();
     await running;
     expect(await superviseOnce(deps(world()))).toMatchObject({kind: 'held'});
@@ -488,8 +509,8 @@ describe('superviseOnce', () => {
   it('kills and removes even when the journal cannot be written, then raises the write failure', async () => {
     const w = world({agentExit: 'never'});
     const shutdown = new AbortController();
-    const running = superviseOnce(deps(w, {shutdown: shutdown.signal}));
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    const running = background(superviseOnce(deps(w, {shutdown: shutdown.signal})), () => shutdown.abort());
+    await until(() => w.events.includes('go'));
     expect(w.events).toContain('go');
     await fs.chmod(root, 0o500);
     try {
@@ -513,12 +534,12 @@ describe('superviseOnce', () => {
       if (hang) await held;
       await writeJournal({root, owner: null}, JOURNAL, next);
     };
-    const running = superviseOnce(deps(w, {shutdown: shutdown.signal, writeJournal: writer}));
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    const running = background(superviseOnce(deps(w, {shutdown: shutdown.signal, writeJournal: writer})), () => { shutdown.abort(); releaseWrites(); });
+    await until(() => w.events.includes('go'));
     expect(w.events).toContain('go');
     hang = true;
     shutdown.abort();
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await until(() => w.events.includes('kill:c-agent') && w.events.includes('kill:c-relay'));
     // The journal is stuck, yet both known containers were killed.
     expect(w.events).toEqual(expect.arrayContaining(['kill:c-agent', 'kill:c-relay']));
     releaseWrites();
