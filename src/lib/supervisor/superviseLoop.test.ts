@@ -573,6 +573,28 @@ describe('superviseOnce', () => {
     expect(outbox?.entries.map((entry) => entry.facts.operationKey)).toEqual([`${ATTEMPT}:execution_stopped:1`, `${ATTEMPT}:cleaned:1`]);
   });
 
+  it('keeps the receipt obligation when working out the receipts fails, and settles it once that works', async () => {
+    let stopNow = false;
+    const w = world({agentExit: 'never', controls: () => (stopNow ? [{id: CONTROL, action: 'stop', state: 'pending'}] : [])});
+    const shutdown = new AbortController();
+    const running = background(superviseOnce(deps(w, {shutdown: shutdown.signal})), () => shutdown.abort());
+    await until(() => w.events.includes('go'));
+    // The machine record cannot be read while the stop is handled.
+    await fs.chmod(path.join(root, 'machine.json'), 0o000);
+    stopNow = true;
+    try {
+      expect(await running).toMatchObject({kind: 'finished', reason: 'stop_control', settled: false});
+    } finally {
+      await fs.chmod(path.join(root, 'machine.json'), 0o600);
+    }
+    expect(await journal()).toMatchObject({receiptsDerived: false, receiptsQueued: false});
+    const next = world();
+    expect(await superviseOnce(deps(next))).toMatchObject({kind: 'recovered', settled: true});
+    expect(await journal()).toBeNull();
+    const outbox = await readJournal<{entries: Array<{facts: {state: string}}>}>({root, owner: null}, OUTBOX);
+    expect(outbox?.entries.map((entry) => entry.facts.state)).toEqual(['execution_stopped', 'cleaned']);
+  });
+
   it('tears down a run left by a crash by exact ID and never relaunches it', async () => {
     await writeJournal({root, owner: null}, JOURNAL, {version: 1, state: 'running', runId: 'abc123abc123', dispatchId: DISPATCH,
       workItemId: WORK_ITEM, runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`, attemptId: ATTEMPT, networkId: 'net-1',

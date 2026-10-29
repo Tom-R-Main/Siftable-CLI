@@ -112,6 +112,8 @@ export interface AttemptJournal {
   receipts?: CleanupFacts[];
   /** True once `receipts` are durably in the outbox; until then the journal is never archived. */
   receiptsQueued?: boolean;
+  /** False when working out this stop's receipts failed; they are worked out again from `stop.facts` before archiving. */
+  receiptsDerived?: boolean;
 }
 
 /** Dispatches this machine has started an attempt for; none is ever executed twice. */
@@ -242,20 +244,31 @@ async function receiptsOwed(deps: SuperviseDeps, journal: AttemptJournal, facts:
 }
 
 /**
- * Hands a journal's frozen receipts to the outbox. False when that could not
- * be done; the caller then keeps the journal active, so the obligation is
- * retried with the same facts and keys instead of being archived away.
+ * Settles a journal's receipt obligation: works out this stop's receipts if
+ * that failed earlier, then hands every frozen receipt to the outbox. Returns
+ * the journal as written, or null when either step failed; the caller then
+ * keeps the journal active, so the same facts and keys are retried instead
+ * of being archived away.
  */
-async function ensureReceiptsQueued(deps: SuperviseDeps, journal: AttemptJournal): Promise<boolean> {
-  if (journal.receiptsQueued !== false || !journal.receipts?.length) return true;
+async function ensureReceiptsQueued(deps: SuperviseDeps, journal: AttemptJournal): Promise<AttemptJournal | null> {
+  let current = journal;
   try {
+    if (current.receiptsDerived === false) {
+      if (!current.stop?.facts) return null;
+      const receipts = await receiptsOwed(deps, current, current.stop.facts);
+      current = {...current, receipts, receiptsDerived: true, receiptsQueued: false};
+      await writeAttemptJournal(deps, current);
+    }
+    if (current.receiptsQueued !== false || !current.receipts?.length) return current;
     const state = await inspectMachineState(deps.state);
-    if (state.kind !== 'enrolled') return false;
-    await enqueueReceipts(deps.state, state.machine.enrollmentId, journal.receipts);
-    return true;
+    if (state.kind !== 'enrolled') return null;
+    await enqueueReceipts(deps.state, state.machine.enrollmentId, current.receipts);
+    current = {...current, receiptsQueued: true};
+    await writeAttemptJournal(deps, current);
+    return current;
   } catch (error) {
     deps.log(`Could not queue the cleanup receipts; the attempt stays journaled until they are: ${(error as Error).message}`);
-    return false;
+    return null;
   }
 }
 
@@ -307,18 +320,20 @@ async function settle(
     (deadlineMono) => ownedResources(deps, journaled, deadlineMono));
   }
   current = {...current, state: facts.held.length > 0 ? 'held' : 'stopping', stop: {...stop, facts}};
+  // A failure to work out the receipts is an obligation, never an empty list: the frozen ones are kept, and
+  // this stop's are worked out again from stop.facts before the journal may be archived.
+  let derived = true;
   const receipts = await receiptsOwed(deps, current, facts).catch((error: unknown) => {
     deps.log(`Could not work out the cleanup receipts: ${(error as Error).message}`);
-    return current.receiptsQueued ? [] : current.receipts ?? [];
+    derived = false;
+    return current.receipts ?? [];
   });
   const added = receipts.length > (current.receipts?.length ?? 0);
-  current = {...current, receipts, receiptsQueued: added ? false : current.receiptsQueued ?? true};
+  current = {...current, receipts, receiptsDerived: derived,
+    receiptsQueued: !derived || added ? false : current.receiptsQueued ?? true};
   await stoppingWritten;
   await writeAttemptJournal(deps, current).catch((error: unknown) => { journalError ??= error; });
-  if (journalError === undefined && await ensureReceiptsQueued(deps, current)) {
-    current = {...current, receiptsQueued: true};
-    await writeAttemptJournal(deps, current).catch((error: unknown) => { journalError ??= error; });
-  }
+  if (journalError === undefined) current = await ensureReceiptsQueued(deps, current) ?? current;
   if (journalError !== undefined) {
     throw new SuperviseError(`The attempt was stopped (cgroup ${facts.cgroupEmpty}, resources ${facts.resourcesRemoved ? 'removed' : 'held'}), `
       + `but its journal could not be written: ${(journalError as Error).message}. The earlier journal is kept for the next start.`);
@@ -512,7 +527,9 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       await writeAttemptJournal(deps, earlier);
       if (!settled) return {kind: 'recovered', settled: false};
     }
-    if (!await ensureReceiptsQueued(deps, earlier)) return {kind: 'recovered', settled: false};
+    const ready = await ensureReceiptsQueued(deps, earlier);
+    if (!ready) return {kind: 'recovered', settled: false};
+    earlier = ready;
     await archiveJournal(deps.state, JOURNAL, new Date(deps.clock.wallMs()));
     await removeJournal(deps.state, JOURNAL);
     const conflicts = conflictsOf(earlier.settlement);
@@ -547,7 +564,9 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     const posted = capLeft() > 0 ? await postSettlement(session, journal, claimToken, within(budgetMs)) : settlement;
     await save({...journal, settlement: posted});
     if (!isSettled(posted)) return false;
-    if (!await ensureReceiptsQueued(deps, journal)) return false;
+    const ready = await ensureReceiptsQueued(deps, journal);
+    if (!ready) return false;
+    journal = ready;
     await archiveJournal(deps.state, JOURNAL, new Date(deps.clock.wallMs()));
     await removeJournal(deps.state, JOURNAL);
     return true;
