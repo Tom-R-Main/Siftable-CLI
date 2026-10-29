@@ -195,6 +195,33 @@ describe('enrollMachine', () => {
     expect(await inspectMachineState(state)).toMatchObject({kind: 'enrolled', machine: {enrollmentId: ENROLLMENT_ID}});
   });
 
+  it('never starts a new approval when the token was handed out and lost before it was saved', async () => {
+    const server = fakeServer([{status: 200}]);
+    // Stop right after the delivered journal is written, before credential.json.
+    const original = fs.rename;
+    let stopped = false;
+    (fs as {rename: typeof fs.rename}).rename = (async (from: Parameters<typeof fs.rename>[0], to: Parameters<typeof fs.rename>[1]) => {
+      if (String(to).endsWith('credential.json') && !stopped) {
+        stopped = true;
+        throw new Error('process killed');
+      }
+      return original(from, to);
+    }) as typeof fs.rename;
+    try {
+      await expect(enrollMachine(deps(server.fetchImpl), options)).rejects.toThrow(/process killed/);
+    } finally {
+      (fs as {rename: typeof fs.rename}).rename = original;
+    }
+    const runnerId = server.requests[0].runnerId;
+    expect(await inspectMachineState(state)).toMatchObject({kind: 'pending', pending: {state: 'delivered', enrollmentId: ENROLLMENT_ID}});
+    const rerun = fakeServer([]);
+    await expect(enrollMachine(deps(rerun.fetchImpl), options)).rejects.toThrow(`--abandon-runner ${runnerId}`);
+    expect(rerun.calls).toEqual([]);
+    const fresh = fakeServer([{status: 200}]);
+    await enrollMachine(deps(fresh.fetchImpl), {...options, replace: true, abandonRunner: runnerId});
+    expect(fresh.requests[0].runnerId).not.toBe(runnerId);
+  });
+
   it('replaces an enrollment whose credential stopped working only when the operator names the revoked runner', async () => {
     await enrollMachine(deps(fakeServer([{status: 200}]).fetchImpl), options);
     const {machine} = await inspectMachineState(state) as {machine: {runnerId: string}};

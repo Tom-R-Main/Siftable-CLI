@@ -128,7 +128,13 @@ async function startOrResume(deps: MachineEnrollDeps, options: MachineEnrollOpti
     await retireMachineState(deps.state, deps.now());
     state = {kind: 'empty'};
   } else if (state.kind === 'pending') {
-    if (state.pending.state === 'delivery_unknown') {
+    if (state.pending.state === 'delivered') {
+      // The token was handed out and the run stopped before saving it: it is gone, the enrollment is live.
+      requireAbandon(options, state.pending.runnerId, `Enrollment ${state.pending.enrollmentId} for runner ${state.pending.runnerId} `
+        + 'was approved, but its credential was lost before it was saved. Revoke that runner in the browser.');
+      await retireMachineState(deps.state, deps.now());
+      state = {kind: 'empty'};
+    } else if (state.pending.state === 'delivery_unknown') {
       requireAbandon(options, state.pending.runnerId, `An approval for runner ${state.pending.runnerId} may have completed, `
         + 'but its credential was lost. Revoke that runner in the browser.');
       await retireMachineState(deps.state, deps.now());
