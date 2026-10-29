@@ -28,7 +28,8 @@ function describe(outcome: SuperviseOutcome): string {
     case 'idle': return 'No work for this machine.';
     case 'held': return `Holding resources that could not be shown gone: ${outcome.held.join(', ')}. No new work starts until they are.`;
     case 'refused': return `Not starting work: ${outcome.reason}.`;
-    case 'recovered': return 'Tore down an attempt left by an earlier run; it was not relaunched.';
+    case 'recovered': return outcome.settled ? 'Settled an attempt left by an earlier run; it was not relaunched.'
+      : 'An earlier attempt is torn down; telling the server how it ended is still pending. It is never relaunched.';
     case 'finished': return outcome.reason === 'shutdown' ? `Stopped the running attempt for shutdown; cgroup ${outcome.facts.cgroupEmpty}, `
       + `resources ${outcome.facts.resourcesRemoved ? 'removed' : `held: ${outcome.facts.held.join(', ')}`}.` : `Attempt finished (${outcome.reason}${outcome.exitCode === undefined ? '' : `, exit ${outcome.exitCode}`}); `
       + `cgroup ${outcome.facts.cgroupEmpty}, resources ${outcome.facts.resourcesRemoved ? 'removed' : `held: ${outcome.facts.held.join(', ')}`}.`;
@@ -88,7 +89,8 @@ export default class MachineSupervise extends BaseCommand {
         this.log(describe(outcome));
         if (flags.once || shutdown.signal.aborted) return outcome;
         if (outcome.kind === 'idle') await pause(IDLE_MS);
-        if (outcome.kind === 'refused' || outcome.kind === 'held') await pause(BLOCKED_MS);
+        // Held resources, a refusal, or a server settlement still pending: wait before trying again.
+        if (outcome.kind === 'refused' || outcome.kind === 'held' || (outcome.kind !== 'idle' && !outcome.settled)) await pause(BLOCKED_MS);
         if (shutdown.signal.aborted) return outcome;
       }
     } finally {

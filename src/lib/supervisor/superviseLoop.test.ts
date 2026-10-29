@@ -33,11 +33,18 @@ interface Scenario {
   populated?: () => string;
   privileged?: boolean;
   agentExit?: number | 'never';
+  runnerHeartbeat?: number;
+  attachReplay?: boolean;
+  runningStatus?: number;
+  reviewStatus?: number;
+  readyDelayMs?: number;
 }
 
 /** The API, Docker and attached processes one attempt touches, recording what happened in order. */
 function world(scenario: Scenario = {}) {
   const events: string[] = [];
+  const modelKeys: Array<string | undefined> = [];
+  const sidecarIo: {stdin?: PassThrough; stdout?: PassThrough} = {};
   const posts: Array<{path: string; body: Record<string, unknown>; key?: string}> = [];
   const fetchImpl = (async (url: string, init: RequestInit) => {
     const route = url.slice(API.length);
@@ -52,9 +59,17 @@ function world(scenario: Scenario = {}) {
         workItem: {id: WORK_ITEM, claimToken: 'claim-secret', claimExpiresAt: scenario.claimExpiresAt ?? inFuture(600_000), title: 't', prompt: 'p'},
         controls: []});
     }
+    if (route.endsWith('/runners/heartbeat')) { events.push('runner-heartbeat'); return reply(scenario.runnerHeartbeat ?? 200, {}); }
+    if (route.includes('/model/')) {
+      modelKeys.push(key);
+      return new Response('event: done\n\n', {status: 200});
+    }
+    if (route.endsWith('/review')) { events.push('review'); return reply(scenario.reviewStatus ?? 200, {}); }
+    if (route.endsWith('/fail')) { events.push('fail'); return reply(200, {}); }
     if (route.endsWith('/execution-attempts')) {
       events.push(`attempt:${String(body.state)}${body.endReason ? `:${String(body.endReason)}` : ''}`);
-      return reply(200, {attempt: {id: ATTEMPT}});
+      if (body.state === 'running' && scenario.runningStatus) return reply(scenario.runningStatus, {});
+      return reply(200, {attempt: {id: ATTEMPT, state: scenario.attachReplay ? 'ended' : body.state}, replayed: scenario.attachReplay === true});
     }
     if (route.endsWith('/controls/ack')) { events.push(`control-ack:${String(body.state)}`); return reply(200, {}); }
     if (route.endsWith('/ack')) {
@@ -132,9 +147,13 @@ function world(scenario: Scenario = {}) {
     events.push(`start:${id}`);
     const stdin = new PassThrough();
     const stdout = new PassThrough();
-    if (id === 'c-relay') return {stdin, stdout, exited: new Promise(() => {}), kill: () => stdout.end()};
+    if (id === 'c-relay') {
+      sidecarIo.stdin = stdin;
+      sidecarIo.stdout = stdout;
+      return {stdin, stdout, exited: new Promise(() => {}), kill: () => stdout.end()};
+    }
     const exited = new Promise<number>((resolve) => { resolveExit = resolve; });
-    setImmediate(() => stdout.write(`${READY_LINE}\n`));
+    setTimeout(() => stdout.write(`${READY_LINE}\n`), scenario.readyDelayMs ?? 0);
     stdin.on('data', (chunk: Buffer) => {
       if (!chunk.toString().includes(GO_LINE)) return;
       events.push('go');
@@ -148,7 +167,7 @@ function world(scenario: Scenario = {}) {
     if (file.endsWith('cgroup.events')) return (scenario.populated ?? (() => 'populated 0\n'))();
     throw Object.assign(new Error('missing'), {code: 'ENOENT'});
   };
-  return {events, posts, fetchImpl, docker, attach, readFile};
+  return {events, posts, fetchImpl, docker, attach, readFile, modelKeys, sidecarIo};
 }
 
 describe('superviseOnce', () => {
@@ -187,12 +206,14 @@ describe('superviseOnce', () => {
     expect(outcome).toMatchObject({kind: 'finished', reason: 'workload_exited', exitCode: 0,
       facts: {processesStopped: true, cgroupEmpty: 'empty', resourcesRemoved: true, held: []}});
     const order = (event: string) => w.events.indexOf(event);
+    expect(order('runner-heartbeat')).toBeLessThan(order('consume'));
     expect(order('attempt:starting')).toBeLessThan(order('network-create'));
     expect(order('start:c-agent')).toBeLessThan(order('ack:acknowledged'));
     expect(order('ack:acknowledged')).toBeLessThan(order('attempt:running'));
     expect(order('attempt:running')).toBeLessThan(order('go'));
     expect(order('go')).toBeLessThan(order('kill:c-agent'));
-    expect(w.events).toContain('attempt:ended');
+    expect(order('attempt:ended')).toBeLessThan(order('review'));
+    expect(outcome).toMatchObject({settled: true});
     // The per-dispatch runtime identity, the agent's environment and nothing secret on disk.
     const attach = w.posts.find((post) => post.path.endsWith('/execution-attempts'))!;
     expect(attach.body).toMatchObject({runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`, leaseGeneration: 1, state: 'starting', dispatchId: DISPATCH});
@@ -277,14 +298,78 @@ describe('superviseOnce', () => {
     expect(await journal()).toBeNull();
   });
 
+  it('never runs a dispatch twice: a ledgered dispatch handed back again is only reconciled', async () => {
+    await superviseOnce(deps(world()));
+    const again = world();
+    expect(await superviseOnce(deps(again))).toEqual({kind: 'refused', reason: 'dispatch_already_executed'});
+    expect(again.events).not.toContain('network-create');
+    expect(again.events).toContain('fail');
+  });
+
+  it('treats a replayed or advanced attach as reconciliation, never a launch', async () => {
+    const w = world({attachReplay: true});
+    expect(await superviseOnce(deps(w))).toMatchObject({kind: 'refused', reason: 'attach_not_fresh_200'});
+    expect(w.events).not.toContain('network-create');
+  });
+
+  it('sends no go unless the server confirms the attempt running', async () => {
+    const w = world({runningStatus: 409});
+    expect(await superviseOnce(deps(w))).toMatchObject({kind: 'finished', reason: 'start_failed'});
+    expect(w.events).toContain('ack:acknowledged');
+    expect(w.events).not.toContain('go');
+  });
+
+  it('keeps an unconfirmed settlement and completes it later with the recovered claim, without relaunching', async () => {
+    const first = world({reviewStatus: 503});
+    expect(await superviseOnce(deps(first))).toMatchObject({kind: 'finished', reason: 'workload_exited', settled: false});
+    expect(await journal()).toMatchObject({state: 'settling', settlement: {attemptReport: 'done', work: 'pending', exitCode: 0}});
+    const second = world();
+    expect(await superviseOnce(deps(second))).toEqual({kind: 'recovered', settled: true});
+    expect(second.events).toEqual(['runner-heartbeat', 'consume', 'review']);
+    expect(await journal()).toBeNull();
+  });
+
+  it('enforces the confirmed lease during startup: no ack and no go once it has passed', async () => {
+    // About 0.3 s of confirmed lease; the launcher reports ready only after a second.
+    const w = world({claimExpiresAt: inFuture(45_300), readyDelayMs: 1_000});
+    expect(await superviseOnce(deps(w))).toMatchObject({kind: 'finished', reason: 'lease_lost'});
+    expect(w.events).not.toContain('ack:acknowledged');
+    expect(w.events).not.toContain('go');
+  });
+
+  it('refuses a dispatch with no confirmed lease left before creating anything', async () => {
+    const w = world({claimExpiresAt: inFuture(30_000)});
+    expect(await superviseOnce(deps(w))).toEqual({kind: 'refused', reason: 'no_confirmed_lease'});
+    expect(w.events).not.toContain('network-create');
+  });
+
+  it('announces the runner before consuming, and stops if the machine is not admitted', async () => {
+    const w = world({runnerHeartbeat: 403});
+    expect(await superviseOnce(deps(w))).toEqual({kind: 'refused', reason: 'not_admitted'});
+    expect(w.events).toEqual(['runner-heartbeat']);
+  });
+
+  it('gives concurrent model calls distinct, journaled call IDs', async () => {
+    const w = world({agentExit: 'never', controls: () => (w.modelKeys.length >= 2 ? [{id: CONTROL, action: 'stop', state: 'pending'}] : [])});
+    const running = superviseOnce(deps(w));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const frame = (id: number) => `${JSON.stringify({id, method: 'POST', path: '/sift/v1/model/anthropic/v1/messages', body: Buffer.from('{}').toString('base64')})}\n`;
+    w.sidecarIo.stdout?.write(frame(1) + frame(2));
+    expect(await running).toMatchObject({kind: 'finished', reason: 'stop_control'});
+    expect([...w.modelKeys].sort()).toEqual([`${ATTEMPT}:1`, `${ATTEMPT}:2`]);
+  });
+
   it('tears down a run left by a crash by exact ID and never relaunches it', async () => {
     await writeJournal({root, owner: null}, JOURNAL, {version: 1, state: 'running', runId: 'abc123abc123', dispatchId: DISPATCH,
       workItemId: WORK_ITEM, runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`, attemptId: ATTEMPT, networkId: 'net-1',
+      workspace: {repositoryId: PLAN.repositoryId, branch: PLAN.branch, baseSha: PLAN.baseSha},
       containers: {sidecar: 'c-relay', agent: 'c-agent'}, callSeq: 3} satisfies AttemptJournal);
     const w = world();
-    expect(await superviseOnce(deps(w))).toEqual({kind: 'recovered'});
-    // Journaled IDs are killed before any discovery listing runs.
-    expect(w.events).toEqual(['kill:c-relay', 'kill:c-agent', 'ls:container', 'ls:network', 'rm:c-relay', 'rm:c-agent', 'network-rm']);
+    expect(await superviseOnce(deps(w))).toEqual({kind: 'recovered', settled: true});
+    // Journaled IDs are killed before any discovery listing runs; the server is then told with the recovered claim.
+    expect(w.events).toEqual(['kill:c-relay', 'kill:c-agent', 'ls:container', 'ls:network', 'rm:c-relay', 'rm:c-agent', 'network-rm',
+      'runner-heartbeat', 'consume', 'attempt:ended:failed', 'fail']);
+    expect(w.events).not.toContain('network-create');
     expect(await journal()).toBeNull();
   });
 });
