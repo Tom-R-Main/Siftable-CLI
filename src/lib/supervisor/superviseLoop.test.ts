@@ -44,6 +44,10 @@ interface Scenario {
   attachLost?: boolean;
   /** The agent container create answers late, or never. */
   agentCreateDelay?: number | 'never';
+  /** Every call after the attach is answered with this status (401 for a revoked credential). */
+  afterAttach?: number;
+  /** The terminal report for the attempt is answered with this status. */
+  terminalStatus?: number;
 }
 
 /** The API, Docker and attached processes one attempt touches, recording what happened in order. */
@@ -58,6 +62,10 @@ function world(scenario: Scenario = {}) {
     const key = (init.headers as Record<string, string>)['Idempotency-Key'];
     const reply = (status: number, value: object) => new Response(JSON.stringify(value), {status});
     if (init.method === 'POST') posts.push({path: route, body, key});
+    if (scenario.afterAttach && events.includes('attempt:starting') && !route.endsWith('/consume') && !route.endsWith('/runners/heartbeat')) {
+      events.push(`denied:${route.split('/').at(-1)}`);
+      return reply(scenario.afterAttach, {});
+    }
     if (route.endsWith('/consume')) {
       events.push('consume');
       if (scenario.dispatch === null) return reply(200, {dispatch: null});
@@ -76,6 +84,7 @@ function world(scenario: Scenario = {}) {
       events.push(`attempt:${String(body.state)}${body.endReason ? `:${String(body.endReason)}` : ''}`);
       if (body.state === 'running' && scenario.runningStatus) return reply(scenario.runningStatus, {});
       if (body.state === 'starting' && scenario.attachLost) throw new TypeError('fetch failed');
+      if ((body.state === 'ended' || body.state === 'interrupted') && scenario.terminalStatus) return reply(scenario.terminalStatus, {});
       return reply(200, {attempt: {id: ATTEMPT, state: scenario.attachReplay ? 'ended' : body.state}, replayed: scenario.attachReplay === true});
     }
     if (route.endsWith('/controls/ack')) { events.push(`control-ack:${String(body.state)}`); return reply(200, {}); }
@@ -433,6 +442,40 @@ describe('superviseOnce', () => {
     expect(await superviseOnce(deps(next))).toMatchObject({kind: 'recovered'});
     expect(next.events.slice(0, 2)).toEqual(['kill:c-relay', 'ls:container']);
   }, 30_000);
+
+  it('keeps settlement pending, never archived, when the credential is refused after an attach', async () => {
+    const w = world({attachLost: true, afterAttach: 401});
+    expect(await superviseOnce(deps(w))).toEqual({kind: 'refused', reason: 'attach_unknown'});
+    expect(await journal()).toMatchObject({state: 'settling', settlement: {attemptReport: 'pending', work: 'pending'}});
+  });
+
+  it('records the server refusing to end a never-recorded attempt as a surfaced conflict, then fails the start', async () => {
+    const w = world({attachLost: true, terminalStatus: 409});
+    expect(await superviseOnce(deps(w))).toEqual({kind: 'refused', reason: 'attach_unknown'});
+    expect(w.events).toContain('ack:failed');
+    expect(await journal()).toBeNull();
+    const retired = await fs.readdir(path.join(root, 'retired'));
+    const archived = JSON.parse(await fs.readFile(path.join(root, 'retired', retired.find((name) => name.endsWith(JOURNAL))!), 'utf8')) as AttemptJournal;
+    expect(archived.settlement).toMatchObject({attemptReport: 'conflict', work: 'done'});
+  });
+
+  it('kills and removes even when the journal cannot be written, then raises the write failure', async () => {
+    const w = world({agentExit: 'never'});
+    const shutdown = new AbortController();
+    const running = superviseOnce(deps(w, {shutdown: shutdown.signal}));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(w.events).toContain('go');
+    await fs.chmod(root, 0o500);
+    try {
+      shutdown.abort();
+      await expect(running).rejects.toThrow(/was stopped .*journal could not be written/);
+    } finally {
+      await fs.chmod(root, 0o700);
+    }
+    expect(w.events).toEqual(expect.arrayContaining(['kill:c-relay', 'kill:c-agent', 'rm:c-relay', 'rm:c-agent']));
+    // The earlier journal survives for the next start.
+    expect(await journal()).toMatchObject({state: 'running'});
+  });
 
   it('tears down a run left by a crash by exact ID and never relaunches it', async () => {
     await writeJournal({root, owner: null}, JOURNAL, {version: 1, state: 'running', runId: 'abc123abc123', dispatchId: DISPATCH,

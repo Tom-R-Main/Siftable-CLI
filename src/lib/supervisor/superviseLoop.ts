@@ -108,8 +108,8 @@ export type SuperviseOutcome =
   | {kind: 'idle'}
   | {kind: 'held'; held: string[]}
   | {kind: 'refused'; reason: string}
-  | {kind: 'recovered'; settled: boolean}
-  | {kind: 'finished'; reason: StopReason; exitCode?: number; facts: StopFacts; settled: boolean};
+  | {kind: 'recovered'; settled: boolean; conflicts?: string[]}
+  | {kind: 'finished'; reason: StopReason; exitCode?: number; facts: StopFacts; settled: boolean; conflicts?: string[]};
 
 export class SuperviseError extends Error {}
 
@@ -180,7 +180,9 @@ async function ownedResources(deps: SuperviseDeps, journal: AttemptJournal, dead
 async function settle(deps: SuperviseDeps, journal: AttemptJournal, reason: StopReason, controlId?: string): Promise<{facts: StopFacts; journal: AttemptJournal}> {
   const stop = {reason, ...(controlId ? {controlId} : {})};
   let current: AttemptJournal = {...journal, state: 'stopping', stop};
-  await writeJournal(deps.state, JOURNAL, current);
+  // The physical stop never waits on the journal: a failed write is raised only after kills and removal.
+  let journalError: unknown;
+  await writeJournal(deps.state, JOURNAL, current).catch((error: unknown) => { journalError ??= error; });
   let facts: StopFacts;
   if (!current.attemptId) {
     const owned = await ownedResources(deps, current, deps.clock.monoMs() + STOP_BUDGET_MS);
@@ -202,7 +204,11 @@ async function settle(deps: SuperviseDeps, journal: AttemptJournal, reason: Stop
     (deadlineMono) => ownedResources(deps, journaled, deadlineMono));
   }
   current = {...current, state: facts.held.length > 0 ? 'held' : 'stopping', stop: {...stop, facts}};
-  await writeJournal(deps.state, JOURNAL, current);
+  await writeJournal(deps.state, JOURNAL, current).catch((error: unknown) => { journalError ??= error; });
+  if (journalError !== undefined) {
+    throw new SuperviseError(`The attempt was stopped (cgroup ${facts.cgroupEmpty}, resources ${facts.resourcesRemoved ? 'removed' : 'held'}), `
+      + `but its journal could not be written: ${(journalError as Error).message}. The earlier journal is kept for the next start.`);
+  }
   return {facts, journal: current};
 }
 
@@ -245,12 +251,21 @@ function terminalReport(settlement: Settlement): {state: 'ended' | 'interrupted'
   }
 }
 
-/** 200 confirms; any other definitive 4xx is a recorded conflict; no reply, 408, 429 or 5xx stays pending. */
+/**
+ * 200 confirms. 409 is the server's definitive refusal (for example an
+ * attempt that was never recorded cannot be ended) and is kept as a surfaced
+ * conflict. Everything else, including 401 and 403 from a revoked credential,
+ * leaves the item pending: no transition happened on the server.
+ */
 const settledStatus = (status: number | undefined): 'done' | 'conflict' | 'pending' => {
   if (status === 200) return 'done';
-  if (status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429) return 'conflict';
+  if (status === 409) return 'conflict';
   return 'pending';
 };
+
+const conflictsOf = (settlement: Settlement | undefined): string[] => (settlement
+  ? [...(settlement.attemptReport === 'conflict' ? ['attempt_report'] : []), ...(settlement.work === 'conflict' ? ['work_result'] : [])]
+  : []);
 
 /**
  * Tells the server how the attempt ended, using the dispatch's live claim.
@@ -372,7 +387,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     }
     await archiveJournal(deps.state, JOURNAL, new Date(deps.clock.wallMs()));
     await removeJournal(deps.state, JOURNAL);
-    if (!claimed || dispatch?.id === earlier.dispatchId) return {kind: 'recovered', settled};
+    const conflicts = conflictsOf(earlier.settlement);
+    if (!claimed || dispatch?.id === earlier.dispatchId) return {kind: 'recovered', settled, ...(conflicts.length ? {conflicts} : {})};
   }
   if (setupProblem) return {kind: 'refused', reason: setupProblem};
   if (!claimed || !dispatch?.id || !workItem?.id) return {kind: 'idle'};
@@ -390,8 +406,10 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   // One writer: every write persists the latest journal, in order, so no snapshot can overwrite a later one.
   let writing: Promise<void> = Promise.resolve();
   const persist = () => {
-    writing = writing.then(() => writeJournal(deps.state, JOURNAL, journal));
-    return writing;
+    // A failed write is returned to its caller but never poisons the writes queued after it.
+    const next = writing.catch(() => undefined).then(() => writeJournal(deps.state, JOURNAL, journal));
+    writing = next;
+    return next;
   };
   const save = async (next: AttemptJournal) => { journal = next; await persist(); };
 
@@ -497,7 +515,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     agent?.stdin.end();
     // Wait, within the stop budget, for creates still in flight, so their IDs are torn down too.
     await Promise.race([Promise.allSettled([...inflight]), sleep(STOP_BUDGET_MS)]);
-    await writing;
+    await writing.catch(() => undefined);
     const settled = await settle(deps, journal, reason, controlId);
     sidecar?.kill();
     agent?.kill();
@@ -519,7 +537,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     }
     // During shutdown the unit's stop timeout bounds everything; settlement gets 10 s and the rest waits for the next start.
     const done = await conclude(settlement, reason === 'shutdown' ? 10_000 : 30_000);
-    return {kind: 'finished', reason, exitCode, facts: settled.facts, settled: done};
+    const conflicts = conflictsOf(journal.settlement);
+    return {kind: 'finished', reason, exitCode, facts: settled.facts, settled: done, ...(conflicts.length ? {conflicts} : {})};
   };
   const expired = () => capLeft() <= 0;
 
