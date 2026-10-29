@@ -1,7 +1,7 @@
 import type {Server} from 'node:http';
 import {PassThrough} from 'node:stream';
 import {afterEach, describe, expect, it} from 'vitest';
-import {DIAGNOSTIC_PATH, startRelaySidecar} from './relaySidecar.js';
+import {DIAGNOSTIC_PATH, MODEL_PATHS, startRelaySidecar} from './relaySidecar.js';
 import {diagnosticHandler, serveSidecarFrames} from './sidecarBridge.js';
 
 let server: Server | undefined;
@@ -41,5 +41,56 @@ describe('relay sidecar and bridge', () => {
   it('turns a failing supervisor handler into 502, not a hang', async () => {
     const {base} = await wired(async () => { throw new Error('relay down'); });
     expect((await fetch(`${base}${DIAGNOSTIC_PATH}`)).status).toBe(502);
+  });
+
+  it('forwards a model request body and streams the answer back in order', async () => {
+    let received = '';
+    const {base} = await wired(async (frame) => {
+      received = Buffer.from(frame.body, 'base64').toString();
+      async function* events() {
+        yield Buffer.from('event: a\n\n');
+        yield Buffer.alloc(200 * 1024, 'x');
+        yield Buffer.from('event: done\n\n');
+      }
+      return {status: 200, stream: events()};
+    });
+    const response = await fetch(`${base}${MODEL_PATHS.anthropic}`, {method: 'POST', body: '{"model":"m"}'});
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(received).toBe('{"model":"m"}');
+    expect(text.startsWith('event: a\n\n')).toBe(true);
+    expect(text.endsWith('event: done\n\n')).toBe(true);
+    expect(text.length).toBe('event: a\n\n'.length + 200 * 1024 + 'event: done\n\n'.length);
+  });
+
+  it('cancels the supervisor\'s call when the agent disconnects mid-stream', async () => {
+    let aborted: () => void = () => {};
+    const abortedPromise = new Promise<void>((resolve) => { aborted = resolve; });
+    const {base} = await wired(async (_frame, signal) => {
+      signal.addEventListener('abort', () => aborted());
+      async function* events() {
+        yield Buffer.from('event: a\n\n');
+        await abortedPromise;
+      }
+      return {status: 200, stream: events()};
+    });
+    const controller = new AbortController();
+    const response = await fetch(`${base}${MODEL_PATHS.openai}`, {method: 'POST', body: '{}', signal: controller.signal});
+    const reader = response.body!.getReader();
+    await reader.read();
+    controller.abort();
+    await expect(abortedPromise).resolves.toBeUndefined();
+  });
+
+  it('ends a broken upstream stream as a broken response, never a clean one', async () => {
+    const {base} = await wired(async () => {
+      async function* events() {
+        yield Buffer.from('event: a\n\n');
+        throw new Error('upstream reset');
+      }
+      return {status: 200, stream: events()};
+    });
+    // Depending on timing the connection breaks before or after the head; either way it never ends cleanly.
+    await expect(fetch(`${base}${MODEL_PATHS.anthropic}`, {method: 'POST', body: '{}'}).then((response) => response.text())).rejects.toThrow();
   });
 });
