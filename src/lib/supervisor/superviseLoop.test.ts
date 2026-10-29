@@ -42,6 +42,8 @@ interface Scenario {
   hangRunningInspect?: boolean;
   /** The attach commits on the server but its reply is lost. */
   attachLost?: boolean;
+  /** The agent container create answers late, or never. */
+  agentCreateDelay?: number | 'never';
 }
 
 /** The API, Docker and attached processes one attempt touches, recording what happened in order. */
@@ -112,6 +114,11 @@ function world(scenario: Scenario = {}) {
       const id = flag(args, '--name')[0].endsWith('-relay') ? 'c-relay' : 'c-agent';
       containers.set(id, args);
       events.push(`create:${id}`);
+      if (id === 'c-agent' && scenario.agentCreateDelay === 'never') return new Promise(() => {});
+      if (id === 'c-agent' && scenario.agentCreateDelay) {
+        await new Promise((resolve) => setTimeout(resolve, scenario.agentCreateDelay as number));
+        events.push('create-answered:c-agent');
+      }
       return ok(`${id}\n`);
     }
     if (a === 'container' && b === 'inspect' && args[2] === '--format') return ok(args.at(-1) === 'c-relay' ? '101\n' : '102\n');
@@ -398,6 +405,34 @@ describe('superviseOnce', () => {
     expect(await superviseOnce(deps(w))).toEqual({kind: 'recovered', settled: true});
     expect(w.events).toEqual(['ls:container', 'ls:network', 'runner-heartbeat', 'consume', 'attempt:ended:failed', 'ack:failed']);
   });
+
+  it('records a create that answers after shutdown and removes it, instead of trusting an empty sweep', async () => {
+    const w = world({agentCreateDelay: 600});
+    const shutdown = new AbortController();
+    const running = superviseOnce(deps(w, {shutdown: shutdown.signal}));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(w.events).toContain('create:c-agent');
+    shutdown.abort();
+    expect(await running).toMatchObject({kind: 'finished', reason: 'shutdown', facts: {resourcesRemoved: true, held: []}});
+    const answered = w.events.indexOf('create-answered:c-agent');
+    expect(answered).toBeGreaterThan(-1);
+    expect(w.events.indexOf('rm:c-agent')).toBeGreaterThan(answered);
+  });
+
+  it('holds a create that never answers, and blocks new work until a later start sweeps it', async () => {
+    const w = world({agentCreateDelay: 'never'});
+    const shutdown = new AbortController();
+    const running = superviseOnce(deps(w, {shutdown: shutdown.signal}));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    shutdown.abort();
+    const outcome = await running;
+    expect(outcome).toMatchObject({kind: 'finished', reason: 'shutdown', settled: false, facts: {resourcesRemoved: false}});
+    expect((outcome as {facts: {held: string[]}}).facts.held).toContain('create:agent');
+    expect(await journal()).toMatchObject({state: 'held', pendingCreates: ['agent']});
+    const next = world();
+    expect(await superviseOnce(deps(next))).toMatchObject({kind: 'recovered'});
+    expect(next.events.slice(0, 2)).toEqual(['kill:c-relay', 'ls:container']);
+  }, 30_000);
 
   it('tears down a run left by a crash by exact ID and never relaunches it', async () => {
     await writeJournal({root, owner: null}, JOURNAL, {version: 1, state: 'running', runId: 'abc123abc123', dispatchId: DISPATCH,

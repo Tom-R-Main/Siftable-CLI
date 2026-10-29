@@ -19,7 +19,7 @@ import path from 'node:path';
 import {attemptSliceName, cgroupSetupProblem, isInsideAttemptSlice, parseCgroupV2, type ReadFile} from './attemptCgroup.js';
 import {GO_LINE, READY_LINE} from './attemptLauncher.js';
 import {evaluateNetworkInspect, evaluateSandboxInspect, networkCreateArgs, sandboxCreateArgs, type SandboxContainerSpec} from './containerSandbox.js';
-import type {DeadlineDocker} from './hostDocker.js';
+import {DEADLINE_EXIT, type DeadlineDocker} from './hostDocker.js';
 import {type Attach, type AttachedProcess, ensureImage, readFirstLine} from './machineQualify.js';
 import {archiveJournal, inspectMachineState, type MachineRecord, type MachineStateOptions, readCredential, readJournal, removeJournal, writeJournal} from './machineState.js';
 import {attemptRelayHandler} from './modelRelayHandler.js';
@@ -95,6 +95,8 @@ export interface AttemptJournal {
   callSeq: number;
   stop?: {reason: StopReason; controlId?: string; facts?: StopFacts};
   settlement?: Settlement;
+  /** Creates sent but not yet answered. Their IDs are recorded whenever they resolve; an unresolved one is held. */
+  pendingCreates?: Array<'network' | 'sidecar' | 'agent'>;
 }
 
 /** Dispatches this machine has started an attempt for; none is ever executed twice. */
@@ -324,7 +326,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   let earlier = await readJournal<AttemptJournal>(deps.state, JOURNAL);
   if (earlier && earlier.state !== 'settling') {
     const reason = earlier.stop?.reason ?? 'recovered';
-    const {facts, journal} = await settle(deps, earlier, reason, earlier.stop?.controlId);
+    // A new process has no create in flight; the run-label sweep in settle is authoritative for any that finished.
+    const {facts, journal} = await settle(deps, {...earlier, pendingCreates: []}, reason, earlier.stop?.controlId);
     if (facts.held.length > 0) return {kind: 'held', held: facts.held};
     earlier = {...journal, state: 'settling', settlement: {...(journal.settlement ?? {
       reason, ...(journal.stop?.controlId ? {controlId: journal.stop.controlId} : {}),
@@ -455,16 +458,27 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   // Startup Docker work runs inside the confirmed lease.
   const boundedDocker = (args: string[]) => deps.docker(args, {deadlineMono: cap});
   const must = async (args: string[]) => {
-    const call = boundedDocker(args);
-    if (args[1] === 'create') {
-      // A create that completes after an interruption is removed at once; the run-label sweep is the backstop.
-      void call.then((created) => {
-        if (!life.signal.aborted || created.code !== 0 || !created.stdout.trim()) return;
-        const id = created.stdout.trim();
-        void deps.docker(args[0] === 'network' ? ['network', 'rm', id] : ['container', 'rm', '--force', '--volumes', id]);
-      });
-    }
-    const result = await guard(call);
+    const result = await guard(boundedDocker(args));
+    if (result.code !== 0) throw new SuperviseError(`docker ${args.slice(0, 2).join(' ')} failed: ${result.stderr.trim().slice(0, 200) || `exit ${result.code}`}`);
+    return result.stdout.trim();
+  };
+  // A create is journaled before it is sent, and its ID is recorded whenever it answers, even after an interruption,
+  // so teardown sees it. One cut off by the deadline may still complete in the daemon, so it stays pending.
+  const inflight = new Set<Promise<unknown>>();
+  const create = async (role: 'network' | 'sidecar' | 'agent', args: string[]) => {
+    await save({...journal, pendingCreates: [...(journal.pendingCreates ?? []), role]});
+    const recorded = boundedDocker(args).then(async (created) => {
+      const id = created.code === 0 ? created.stdout.trim() : '';
+      const pendingCreates = created.code === DEADLINE_EXIT ? journal.pendingCreates : (journal.pendingCreates ?? []).filter((r) => r !== role);
+      journal = role === 'network'
+        ? {...journal, pendingCreates, ...(id ? {networkId: id} : {})}
+        : {...journal, pendingCreates, containers: {...journal.containers, ...(id ? {[role]: id} : {})}};
+      await persist();
+      return created;
+    });
+    inflight.add(recorded);
+    void recorded.finally(() => inflight.delete(recorded));
+    const result = await guard(recorded);
     if (result.code !== 0) throw new SuperviseError(`docker ${args.slice(0, 2).join(' ')} failed: ${result.stderr.trim().slice(0, 200) || `exit ${result.code}`}`);
     return result.stdout.trim();
   };
@@ -481,11 +495,20 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     deps.shutdown?.removeEventListener('abort', onShutdown);
     if (!life.signal.aborted) life.abort('finished');
     agent?.stdin.end();
+    // Wait, within the stop budget, for creates still in flight, so their IDs are torn down too.
+    await Promise.race([Promise.allSettled([...inflight]), sleep(STOP_BUDGET_MS)]);
     await writing;
     const settled = await settle(deps, journal, reason, controlId);
     sidecar?.kill();
     agent?.kill();
     journal = settled.journal;
+    const unresolved = journal.pendingCreates ?? [];
+    if (unresolved.length > 0) {
+      // A create that never answered may still finish in the daemon: one empty sweep proves nothing. Hold until the next start.
+      const facts = {...settled.facts, resourcesRemoved: false, held: [...settled.facts.held, ...unresolved.map((role) => `create:${role}`)]};
+      settled.facts = facts;
+      await save({...journal, state: 'held', stop: {reason, ...(controlId ? {controlId} : {}), facts}});
+    }
     await fs.rm(inputDir, {recursive: true, force: true}).catch(() => undefined);
     const settlement: Settlement = {reason, ...(exitCode === undefined ? {} : {exitCode}), ...(controlId ? {controlId} : {}),
       started: Boolean(sidecar || agent), cgroupEmpty: settled.facts.cgroupEmpty === 'empty', attemptReport: 'pending', work: 'pending'};
@@ -509,13 +532,11 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       acceptanceCriteria: workItem.acceptanceCriteria, writeScope: workItem.writeScope, plan}), {mode: 0o444});
 
     const labelsOnly = attemptSpecs(deps, journal, attemptId, plan, '', nonce, inputFile).networkLabels;
-    const networkId = await must(networkCreateArgs(`sift-a-${journal.runId}`, labelsOnly));
-    await save({...journal, networkId});
+    const networkId = await create('network', networkCreateArgs(`sift-a-${journal.runId}`, labelsOnly));
     const specs = attemptSpecs(deps, journal, attemptId, plan, networkId, nonce, inputFile);
-    const sidecarId = await must(sandboxCreateArgs(specs.sidecar));
-    await save({...journal, containers: {...journal.containers, sidecar: sidecarId}});
-    const agentId = await must(sandboxCreateArgs(specs.agent));
-    await save({...journal, state: 'created', containers: {...journal.containers, agent: agentId}});
+    const sidecarId = await create('sidecar', sandboxCreateArgs(specs.sidecar));
+    const agentId = await create('agent', sandboxCreateArgs(specs.agent));
+    await save({...journal, state: 'created'});
 
     const inspectBoth = async (phase: 'created' | 'running') => {
       const inspected = JSON.parse(await must(['container', 'inspect', sidecarId, agentId])) as unknown[];
