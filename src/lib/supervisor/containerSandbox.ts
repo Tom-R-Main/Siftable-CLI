@@ -1,0 +1,174 @@
+/**
+ * The agent container sandbox (first-run U2d-1), isolation profile v1.
+ *
+ * Patterned on Taster's provider launcher and the runtime daemon's digest and
+ * network checks, but not a copy of either: containers here start as uid
+ * 10001 with every capability dropped and none added, an explicit entrypoint
+ * and working directory, a read-only root, and one internal network. What the
+ * container is actually running under is read back from `docker inspect`,
+ * never from the container, and every deviation is named.
+ */
+
+export const SANDBOX_USER = '10001:10001';
+export const SANDBOX_LABEL_PREFIX = 'sift.machine.';
+export const IMAGE_REF_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9./:_-]{0,254}@sha256:[0-9a-f]{64}$/;
+
+export interface SandboxMount {
+  source: string;
+  target: string;
+}
+
+export interface SandboxContainerSpec {
+  name: string;
+  imageRef: string;
+  networkId: string;
+  labels: Record<string, string>;
+  entrypoint: string;
+  command: string[];
+  /** Read-only binds; the only host paths the container sees. */
+  mounts: SandboxMount[];
+  /** Writable scratch, as `target` paths; mounted noexec, nosuid. */
+  tmpfs: string[];
+  env: Record<string, string>;
+  limits: {cpus: number; memoryMb: number; pidsLimit: number};
+  cgroupParent: string;
+  /** The relay sidecar keeps stdin open for its frames. */
+  interactive?: boolean;
+}
+
+const TMPFS_OPTIONS = 'rw,noexec,nosuid,nodev,size=64m';
+
+export function sandboxCreateArgs(spec: SandboxContainerSpec): string[] {
+  if (!IMAGE_REF_PATTERN.test(spec.imageRef)) throw new Error('The sandbox image must be pinned by sha256 digest');
+  for (const key of Object.keys(spec.labels)) {
+    if (!key.startsWith(SANDBOX_LABEL_PREFIX)) throw new Error(`Sandbox label ${key} is outside ${SANDBOX_LABEL_PREFIX}`);
+  }
+  return [
+    'container', 'create', '--pull', 'never', '--name', spec.name,
+    '--user', SANDBOX_USER, '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
+    '--network', spec.networkId, '--ipc', 'private', '--cgroupns', 'private', '--cgroup-parent', spec.cgroupParent,
+    '--restart', 'no', '--pids-limit', String(spec.limits.pidsLimit),
+    '--memory', `${spec.limits.memoryMb}m`, '--memory-swap', `${spec.limits.memoryMb}m`, '--cpus', String(spec.limits.cpus),
+    '--entrypoint', spec.entrypoint, '--workdir', '/tmp',
+    ...spec.tmpfs.flatMap((target) => ['--tmpfs', `${target}:${TMPFS_OPTIONS}`]),
+    ...spec.mounts.flatMap((mount) => ['--mount', `type=bind,source=${mount.source},target=${mount.target},readonly`]),
+    ...Object.entries(spec.labels).flatMap(([key, value]) => ['--label', `${key}=${value}`]),
+    ...Object.entries(spec.env).flatMap(([key, value]) => ['--env', `${key}=${value}`]),
+    ...(spec.interactive ? ['--interactive'] : []),
+    spec.imageRef, ...spec.command,
+  ];
+}
+
+export interface SandboxExpectation {
+  containerId: string;
+  imageRef: string;
+  /** The local image ID (`sha256:…`) that `docker image inspect` gave for imageRef. */
+  imageId: string;
+  networkId: string;
+  spec: SandboxContainerSpec;
+}
+
+type Json = Record<string, unknown>;
+const obj = (value: unknown): Json => (value && typeof value === 'object' && !Array.isArray(value) ? value as Json : {});
+const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
+/**
+ * Checks `docker container inspect` against the spec it was created from, and
+ * maps what it shows onto isolation profile v1. A field reports the profile's
+ * value only when every check behind it passed.
+ */
+export function evaluateSandboxInspect(inspect: unknown, expected: SandboxExpectation): {
+  problems: string[];
+  observedImageRef: string;
+  observedIsolation: Record<string, string | number | boolean>;
+} {
+  const container = obj(inspect);
+  const config = obj(container.Config);
+  const host = obj(container.HostConfig);
+  const problems: string[] = [];
+  const fail = (code: string) => { problems.push(code); return false; };
+  const {spec} = expected;
+
+  if (container.Id !== expected.containerId) fail('container_id');
+  const imageOk = (container.Image === expected.imageId || fail('image_id')) && (config.Image === expected.imageRef || fail('image_ref'));
+
+  const userOk = config.User === SANDBOX_USER || fail('user');
+  const capsOk = (list(host.CapAdd).length === 0 || fail('cap_add'))
+    && ((list(host.CapDrop).length === 1 && String(list(host.CapDrop)[0]).toUpperCase() === 'ALL') || fail('cap_drop'));
+  const privilegedOk = host.Privileged === false || fail('privileged');
+  const noNewPrivileges = list(host.SecurityOpt).some((option) => option === 'no-new-privileges:true' || option === 'no-new-privileges')
+    || fail('no_new_privileges');
+  const readOnlyRoot = host.ReadonlyRootfs === true || fail('read_only_root');
+  const namespacesOk = (!['host'].includes(String(host.PidMode)) && !String(host.PidMode ?? '').startsWith('container:') || fail('pid_mode'))
+    && (host.IpcMode === 'private' || fail('ipc_mode'))
+    && (['', undefined, null].includes(host.UTSMode as never) || fail('uts_mode'))
+    && (['', undefined, null].includes(host.UsernsMode as never) || fail('userns_mode'))
+    && (host.CgroupnsMode === 'private' || fail('cgroupns_mode'));
+
+  // Mounts: exactly the declared read-only binds plus the declared tmpfs targets; nothing from image defaults.
+  const allowed = new Map(spec.mounts.map((mount) => [mount.target, mount.source]));
+  const mounts = list(container.Mounts).map(obj);
+  const mountsOk = mounts.every((mount) => {
+    if (mount.Type !== 'bind') return fail(`mount_type:${String(mount.Destination)}`);
+    if (allowed.get(String(mount.Destination)) !== mount.Source) return fail(`mount_unexpected:${String(mount.Destination)}`);
+    if (mount.RW !== false) return fail(`mount_writable:${String(mount.Destination)}`);
+    return true;
+  }) && (mounts.length === spec.mounts.length || fail('mount_count'));
+  const tmpfsTargets = Object.keys(obj(host.Tmpfs)).sort();
+  const tmpfsOk = JSON.stringify(tmpfsTargets) === JSON.stringify([...spec.tmpfs].sort()) || fail('tmpfs');
+  const devicesOk = (list(host.Devices).length === 0 || fail('devices')) && (list(host.VolumesFrom).length === 0 || fail('volumes_from'));
+  const socketMounted = mounts.some((mount) => /docker\.sock|containerd\.sock/.test(`${String(mount.Source)} ${String(mount.Destination)}`));
+  const homeMounted = mounts.some((mount) => /^\/(root|home)(\/|$)/.test(String(mount.Source)) || /siftable-supervisor/.test(String(mount.Source)));
+
+  const portsOk = (Object.keys(obj(host.PortBindings)).length === 0 || fail('port_bindings')) && (host.PublishAllPorts !== true || fail('publish_all'));
+  const networks = Object.values(obj(obj(container.NetworkSettings).Networks)).map(obj);
+  const networkOk = (networks.length === 1 && networks[0].NetworkID === expected.networkId) || fail('networks');
+  const restartOk = obj(host.RestartPolicy).Name === 'no' || fail('restart_policy');
+  const limitsOk = (host.Memory === spec.limits.memoryMb * 1024 * 1024 || fail('memory'))
+    && (host.NanoCpus === Math.round(spec.limits.cpus * 1e9) || fail('cpus'))
+    && (host.PidsLimit === spec.limits.pidsLimit || fail('pids_limit'));
+  const cgroupOk = host.CgroupParent === spec.cgroupParent || fail('cgroup_parent');
+  const entrypointOk = JSON.stringify(list(config.Entrypoint)) === JSON.stringify([spec.entrypoint]) || fail('entrypoint');
+  const labels = obj(config.Labels);
+  const labelsOk = Object.entries(spec.labels).every(([key, value]) => labels[key] === value) || fail('labels');
+
+  const contained = imageOk && capsOk && privilegedOk && namespacesOk && devicesOk && portsOk && restartOk && limitsOk
+    && entrypointOk && labelsOk;
+  return {
+    problems,
+    observedImageRef: imageOk ? expected.imageRef : String(config.Image ?? ''),
+    observedIsolation: {
+      version: 1,
+      user: userOk && contained ? 'unprivileged' : `observed:${String(config.User ?? 'root') || 'root'}`,
+      readOnlyRoot: Boolean(readOnlyRoot),
+      noNewPrivileges: Boolean(noNewPrivileges),
+      hostHome: !(mountsOk && !homeMounted),
+      dockerSocket: !(mountsOk && !socketMounted),
+      network: networkOk && contained ? 'relay_only' : 'unverified',
+      repository: mountsOk && tmpfsOk ? 'read_only_except_write_scope' : 'unverified',
+      cgroup: cgroupOk && namespacesOk ? 'per_attempt' : 'unverified',
+    },
+  };
+}
+
+/** The attempt network must be ours, internal, bridged, IPv4-only and hold exactly the expected containers. */
+export function evaluateNetworkInspect(inspect: unknown, expected: {networkId: string; labels: Record<string, string>; containerIds: string[]}): string[] {
+  const network = obj(inspect);
+  const problems: string[] = [];
+  if (network.Id !== expected.networkId) problems.push('network_id');
+  if (network.Driver !== 'bridge') problems.push('network_driver');
+  if (network.Internal !== true) problems.push('network_not_internal');
+  if (network.EnableIPv6 === true) problems.push('network_ipv6');
+  if (network.Scope !== 'local') problems.push('network_scope');
+  if (network.Attachable === true || network.Ingress === true) problems.push('network_shared');
+  const labels = obj(network.Labels);
+  if (!Object.entries(expected.labels).every(([key, value]) => labels[key] === value)) problems.push('network_labels');
+  const members = Object.keys(obj(network.Containers)).sort();
+  if (JSON.stringify(members) !== JSON.stringify([...expected.containerIds].sort())) problems.push('network_members');
+  return problems;
+}
+
+export function networkCreateArgs(name: string, labels: Record<string, string>): string[] {
+  return ['network', 'create', '--driver', 'bridge', '--internal',
+    ...Object.entries(labels).flatMap(([key, value]) => ['--label', `${key}=${value}`]), name];
+}

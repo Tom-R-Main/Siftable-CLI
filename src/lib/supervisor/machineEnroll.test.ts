@@ -12,6 +12,7 @@ import {ensureSupervisorAccount, type Exec} from './systemAccount.js';
 const API = 'https://api.example';
 const ENROLLMENT_ID = '99999999-8888-4777-8666-555555555555';
 const TOKEN = 'sift_pat_test_token_never_printed';
+const CREDENTIAL_ID = '66666666-6666-4666-8666-666666666666';
 
 type Reply = {status: number; body?: unknown} | 'network-error';
 
@@ -28,6 +29,12 @@ function fakeServer(polls: Reply[], extra: Record<string, Reply> = {}) {
       return new Response(value.body === undefined ? '' : JSON.stringify(value.body), {status: value.status});
     };
     if (extra[target]) return reply(extra[target]);
+    if (target === `${API}/api/v1/machines/enrollments/${ENROLLMENT_ID}` && init.method === 'GET') {
+      const request = requests[requests.length - 1];
+      expect(init.headers).toEqual({Authorization: `Bearer ${TOKEN}`});
+      return reply({status: 200, body: {enrollmentId: ENROLLMENT_ID, runnerId: request.runnerId,
+        keyFingerprint: request.fingerprint, credentialId: CREDENTIAL_ID, qualifiedAt: null}});
+    }
     if (target === `${API}/auth/device/machine`) {
       const body = JSON.parse(String(init.body)) as MachineEnrollmentRequest;
       const spki = Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(body.publicKey, 'base64')]);
@@ -79,7 +86,7 @@ describe('enrollMachine', () => {
     const server = fakeServer([{status: 400, body: {error: 'authorization_pending'}}, {status: 200}]);
     const result = await enrollMachine(deps(server.fetchImpl), options);
     expect(result).toMatchObject({enrollmentId: ENROLLMENT_ID, runnerId: server.requests[0].runnerId, qualified: false});
-    expect(await inspectMachineState(state)).toMatchObject({kind: 'enrolled', machine: {enrollmentId: ENROLLMENT_ID, apiUrl: API}});
+    expect(await inspectMachineState(state)).toMatchObject({kind: 'enrolled', machine: {enrollmentId: ENROLLMENT_ID, apiUrl: API, credentialId: CREDENTIAL_ID}});
     expect(await mode('.')).toBe('700');
     for (const name of ['enrollment-key.pem', 'credential.json', 'machine.json']) expect(await mode(name)).toBe('600');
     expect(JSON.parse(await fs.readFile(path.join(root, 'credential.json'), 'utf8'))).toEqual({token: TOKEN});
@@ -90,6 +97,17 @@ describe('enrollMachine', () => {
     expect(JSON.stringify(status)).not.toContain(TOKEN);
     // Enrolling again without --replace is refused.
     await expect(enrollMachine(deps(fakeServer([]).fetchImpl), options)).rejects.toThrow(/already enrolled/);
+  });
+
+  it('keeps the enrollment but records no credential id when the server describes another enrollment', async () => {
+    const identityUrl = `${API}/api/v1/machines/enrollments/${ENROLLMENT_ID}`;
+    const server = fakeServer([{status: 200}], {[identityUrl]: {status: 200, body: {enrollmentId: ENROLLMENT_ID,
+      runnerId: '00000000-0000-4000-8000-000000000000', keyFingerprint: 'a'.repeat(64), credentialId: CREDENTIAL_ID}}});
+    await enrollMachine(deps(server.fetchImpl), options);
+    const recorded = await inspectMachineState(state);
+    expect(recorded).toMatchObject({kind: 'enrolled'});
+    expect((recorded as {machine: {credentialId?: string}}).machine.credentialId).toBeUndefined();
+    expect(logged.join('\n')).toContain('qualify` reads it');
   });
 
   it('reuses the key and runner on a retry after the code expired, with a fresh proof', async () => {

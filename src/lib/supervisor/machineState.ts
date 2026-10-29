@@ -52,6 +52,8 @@ export interface MachineRecord {
   scope: MachineScope;
   setupId?: string;
   enrolledAt: string;
+  /** The enrolling PAT's id, as the server reports it to that PAT; challenges are bound to it. */
+  credentialId?: string;
 }
 
 export type MachineStateKind =
@@ -147,6 +149,11 @@ export async function commitMachine(options: MachineStateOptions, machine: Machi
   await writeFileAtomic(options, FILES.machine, `${JSON.stringify(machine, null, 2)}\n`);
   await fs.rm(path.join(options.root, FILES.pending), {force: true});
   await syncDirectory(options.root);
+}
+
+/** Rewrites the committed record, for fields learned after the commit. */
+export async function updateMachine(options: MachineStateOptions, machine: MachineRecord): Promise<void> {
+  await writeFileAtomic(options, FILES.machine, `${JSON.stringify(machine, null, 2)}\n`);
 }
 
 /** What the directory holds. Anything that is not exactly empty, pending or enrolled is partial. */

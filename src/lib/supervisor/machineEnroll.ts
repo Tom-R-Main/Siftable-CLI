@@ -26,6 +26,7 @@ import {
 import {
   acquireStateLock,
   commitMachine,
+  updateMachine,
   ensureStateDirectory,
   inspectMachineState,
   type MachineRecord,
@@ -83,6 +84,24 @@ async function readJson(response: Response): Promise<Record<string, unknown> | n
   } catch {
     return null;
   }
+}
+
+/**
+ * Reads this machine's enrollment with its own credential (first-run U2d-1):
+ * the server answers only the enrolling PAT, so the credential id is the
+ * caller's own. Refuses a reply that names another enrollment or key.
+ */
+export async function fetchOwnEnrollment(fetchImpl: typeof fetch, machine: MachineRecord, token: string): Promise<{credentialId: string; qualifiedAt: string | null}> {
+  const response = await fetchImpl(`${machine.apiUrl}/api/v1/machines/enrollments/${machine.enrollmentId}`, {
+    method: 'GET', redirect: 'error', headers: {Authorization: `Bearer ${token}`},
+  });
+  if (!response.ok) throw new MachineEnrollError(`Could not read this machine's enrollment (HTTP ${response.status}).`);
+  const body = await response.json() as {enrollmentId?: unknown; runnerId?: unknown; keyFingerprint?: unknown; credentialId?: unknown; qualifiedAt?: unknown};
+  if (body.enrollmentId !== machine.enrollmentId || body.runnerId !== machine.runnerId || body.keyFingerprint !== machine.fingerprint
+    || typeof body.credentialId !== 'string' || body.credentialId.length === 0) {
+    throw new MachineEnrollError('The server described a different enrollment than this machine holds.');
+  }
+  return {credentialId: body.credentialId, qualifiedAt: typeof body.qualifiedAt === 'string' ? body.qualifiedAt : null};
 }
 
 /** Revokes the recorded enrollment with its own credential, at its own API. */
@@ -303,6 +322,16 @@ async function enrollLocked(deps: MachineEnrollDeps, options: MachineEnrollOptio
   await writePending(deps.state, recorded);
   await writeCredential(deps.state, delivered.token);
   await commitDelivered(deps, recorded, delivered.enrollmentId);
+  // The credential id binds qualification challenges; if this read fails, qualify reads it later.
+  const committed = await inspectMachineState(deps.state);
+  if (committed.kind === 'enrolled') {
+    try {
+      const own = await fetchOwnEnrollment(deps.fetch, committed.machine, delivered.token);
+      await updateMachine(deps.state, {...committed.machine, credentialId: own.credentialId});
+    } catch {
+      deps.log('Could not read the credential id yet; `sift machine qualify` reads it.');
+    }
+  }
   return {enrollmentId: delivered.enrollmentId, runnerId: pending.runnerId, fingerprint: pending.fingerprint, qualified: false,
     ...(started.replaced ? {replaced: started.replaced} : {})};
 }
