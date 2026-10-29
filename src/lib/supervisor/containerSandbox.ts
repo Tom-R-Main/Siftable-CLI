@@ -36,7 +36,8 @@ export interface SandboxContainerSpec {
   interactive?: boolean;
 }
 
-const TMPFS_OPTIONS = 'rw,noexec,nosuid,nodev,size=64m';
+/** Scratch is bounded and cannot hold executables, setuid binaries or devices. */
+export const TMPFS_OPTIONS = 'rw,noexec,nosuid,nodev,size=64m';
 
 export function sandboxCreateArgs(spec: SandboxContainerSpec): string[] {
   if (!IMAGE_REF_PATTERN.test(spec.imageRef)) throw new Error('The sandbox image must be pinned by sha256 digest');
@@ -114,8 +115,10 @@ export function evaluateSandboxInspect(inspect: unknown, expected: SandboxExpect
     if (mount.RW !== false) return fail(`mount_writable:${String(mount.Destination)}`);
     return true;
   }) && (mounts.length === spec.mounts.length || fail('mount_count'));
-  const tmpfsTargets = Object.keys(obj(host.Tmpfs)).sort();
-  const tmpfsOk = JSON.stringify(tmpfsTargets) === JSON.stringify([...spec.tmpfs].sort()) || fail('tmpfs');
+  // Targets and their options: an exec-enabled or unbounded scratch is a different sandbox.
+  const tmpfs = obj(host.Tmpfs);
+  const tmpfsOk = (JSON.stringify(Object.keys(tmpfs).sort()) === JSON.stringify([...spec.tmpfs].sort()) || fail('tmpfs'))
+    && (spec.tmpfs.every((target) => tmpfs[target] === TMPFS_OPTIONS) || fail('tmpfs_options'));
   const devicesOk = (list(host.Devices).length === 0 || fail('devices')) && (list(host.VolumesFrom).length === 0 || fail('volumes_from'));
   const socketMounted = mounts.some((mount) => /docker\.sock|containerd\.sock/.test(`${String(mount.Source)} ${String(mount.Destination)}`));
   const homeMounted = mounts.some((mount) => /^\/(root|home)(\/|$)/.test(String(mount.Source)) || /siftable-supervisor/.test(String(mount.Source)));
@@ -125,6 +128,8 @@ export function evaluateSandboxInspect(inspect: unknown, expected: SandboxExpect
   const networkOk = (networks.length === 1 && networks[0].NetworkID === expected.networkId) || fail('networks');
   const restartOk = obj(host.RestartPolicy).Name === 'no' || fail('restart_policy');
   const limitsOk = (host.Memory === spec.limits.memoryMb * 1024 * 1024 || fail('memory'))
+    // Swap equal to memory means none; -1 or a larger value would let the container page past its limit.
+    && (host.MemorySwap === spec.limits.memoryMb * 1024 * 1024 || fail('memory_swap'))
     && (host.NanoCpus === Math.round(spec.limits.cpus * 1e9) || fail('cpus'))
     && (host.PidsLimit === spec.limits.pidsLimit || fail('pids_limit'));
   const cgroupOk = host.CgroupParent === spec.cgroupParent || fail('cgroup_parent');
