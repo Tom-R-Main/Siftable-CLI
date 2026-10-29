@@ -180,6 +180,15 @@ describe('enrollMachine', () => {
     const contenders = await Promise.allSettled(Array.from({length: 6}, () => acquireStateLock(state, process.pid, 'supervise')));
     expect(contenders.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
     expect(JSON.parse(await fs.readFile(lock, 'utf8'))).toMatchObject({pid: process.pid, purpose: 'supervise'});
+    // A claimant that linked its marker and died before replacing the lock does not block the next one.
+    await fs.rm(root, {recursive: true, force: true});
+    await fs.mkdir(root, {recursive: true, mode: 0o700});
+    await fs.writeFile(lock, dead('supervise'), {mode: 0o600});
+    await fs.writeFile(path.join(root, `.enroll.lock.takeover-${'a'.repeat(32)}`),
+      JSON.stringify({pid: 2 ** 22 + 23456, nonce: 'c'.repeat(32), purpose: 'supervise'}), {mode: 0o600});
+    const release = await acquireStateLock(state, process.pid, 'supervise');
+    expect(JSON.parse(await fs.readFile(lock, 'utf8'))).toMatchObject({pid: process.pid, purpose: 'supervise'});
+    await release();
     await fs.rm(root, {recursive: true, force: true});
     await fs.mkdir(root, {recursive: true, mode: 0o700});
     await fs.writeFile(lock, dead('qualify'), {mode: 0o600});

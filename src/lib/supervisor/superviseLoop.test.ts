@@ -38,6 +38,8 @@ interface Scenario {
   runningStatus?: number;
   reviewStatus?: number;
   readyDelayMs?: number;
+  /** The running inspect never returns, as a wedged Docker daemon would. */
+  hangRunningInspect?: boolean;
 }
 
 /** The API, Docker and attached processes one attempt touches, recording what happened in order. */
@@ -110,6 +112,10 @@ function world(scenario: Scenario = {}) {
       return ok(`${id}\n`);
     }
     if (a === 'container' && b === 'inspect' && args[2] === '--format') return ok(args.at(-1) === 'c-relay' ? '101\n' : '102\n');
+    if (a === 'container' && b === 'inspect' && scenario.hangRunningInspect && started.size > 0) {
+      events.push('inspect-hung');
+      return new Promise(() => {});
+    }
     if (a === 'container' && b === 'inspect') {
       return ok(JSON.stringify(args.slice(2).map((id) => {
         const created = containers.get(id)!;
@@ -357,6 +363,21 @@ describe('superviseOnce', () => {
     w.sidecarIo.stdout?.write(frame(1) + frame(2));
     expect(await running).toMatchObject({kind: 'finished', reason: 'stop_control'});
     expect([...w.modelKeys].sort()).toEqual([`${ATTEMPT}:1`, `${ATTEMPT}:2`]);
+  });
+
+  it('interrupts a startup await that never returns when the service shuts down, and still cleans up', async () => {
+    const w = world({hangRunningInspect: true});
+    const shutdown = new AbortController();
+    const running = superviseOnce(deps(w, {shutdown: shutdown.signal}));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(w.events).toContain('inspect-hung');
+    const stoppedAt = performance.now();
+    shutdown.abort();
+    expect(await running).toMatchObject({kind: 'finished', reason: 'shutdown', facts: {cgroupEmpty: 'empty', resourcesRemoved: true}});
+    expect(performance.now() - stoppedAt).toBeLessThan(5_000);
+    expect(w.events).toEqual(expect.arrayContaining(['kill:c-relay', 'kill:c-agent']));
+    expect(w.events).not.toContain('ack:acknowledged');
+    expect(w.events).not.toContain('go');
   });
 
   it('tears down a run left by a crash by exact ID and never relaunches it', async () => {

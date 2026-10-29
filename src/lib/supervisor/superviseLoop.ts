@@ -111,6 +111,13 @@ export type SuperviseOutcome =
 
 export class SuperviseError extends Error {}
 
+/** Startup was cut short by shutdown or by the confirmed lease running out. */
+class Interrupted extends Error {
+  constructor(readonly reason: 'shutdown' | 'lease_lost') {
+    super(reason);
+  }
+}
+
 interface ApiResult {status: number; body: Record<string, unknown>}
 
 /** Machine identity and the authenticated API, read once per attempt. */
@@ -119,7 +126,7 @@ interface Session {
   token: string;
   workspaceId: string | null;
   consumerId: string;
-  call(method: 'GET' | 'POST', route: string, body?: unknown, options?: {key?: string; timeoutMs?: number}): Promise<ApiResult>;
+  call(method: 'GET' | 'POST', route: string, body?: unknown, options?: {key?: string; timeoutMs?: number; signal?: AbortSignal}): Promise<ApiResult>;
 }
 
 async function openSession(deps: SuperviseDeps): Promise<Session> {
@@ -137,7 +144,8 @@ async function openSession(deps: SuperviseDeps): Promise<Session> {
     async call(method, route, body, options = {}) {
       const response = await deps.fetch(`${machine.apiUrl}${route}`, {
         // AbortSignal.timeout takes whole milliseconds; monotonic arithmetic is fractional.
-        method, redirect: 'error', signal: AbortSignal.timeout(Math.max(1, Math.floor(options.timeoutMs ?? 30_000))),
+        method, redirect: 'error',
+        signal: AbortSignal.any([AbortSignal.timeout(Math.max(1, Math.floor(options.timeoutMs ?? 30_000))), ...(options.signal ? [options.signal] : [])]),
         headers: {
           'Authorization': `Bearer ${token}`,
           ...(body === undefined ? {} : {'Content-Type': 'application/json'}),
@@ -379,9 +387,9 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   const save = async (next: AttemptJournal) => { journal = next; await persist(); };
 
   // Settles with the live claim, archiving once the server has confirmed everything.
-  const conclude = async (settlement: Settlement): Promise<boolean> => {
+  const conclude = async (settlement: Settlement, budgetMs = 30_000): Promise<boolean> => {
     await save({...journal, state: 'settling', settlement});
-    const posted = capLeft() > 0 ? await postSettlement(session, journal, claimToken, within(30_000)) : settlement;
+    const posted = capLeft() > 0 ? await postSettlement(session, journal, claimToken, within(budgetMs)) : settlement;
     await save({...journal, settlement: posted});
     if (!isSettled(posted)) return false;
     await archiveJournal(deps.state, JOURNAL, new Date(deps.clock.wallMs()));
@@ -421,10 +429,35 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   const attemptId = attempt.id;
   await save({...journal, state: 'attached', attemptId});
 
+  // One lifetime signal: aborted by shutdown or when the confirmed lease runs out. Every startup await races it.
+  const life = new AbortController();
+  const onShutdown = () => life.abort('shutdown');
+  if (deps.shutdown?.aborted) life.abort('shutdown');
+  deps.shutdown?.addEventListener('abort', onShutdown, {once: true});
+  let capTimer = setTimeout(() => life.abort('lease_lost'), Math.max(0, Math.floor(capLeft())));
+  const rearmCap = () => {
+    clearTimeout(capTimer);
+    capTimer = setTimeout(() => life.abort('lease_lost'), Math.max(0, Math.floor(capLeft())));
+  };
+  const guard = <T>(work: Promise<T>): Promise<T> => Promise.race([work, new Promise<never>((_, reject) => {
+    const interrupt = () => reject(new Interrupted(life.signal.reason === 'shutdown' ? 'shutdown' : 'lease_lost'));
+    if (life.signal.aborted) interrupt();
+    else life.signal.addEventListener('abort', interrupt, {once: true});
+  })]);
+
   // Startup Docker work runs inside the confirmed lease.
   const boundedDocker = (args: string[]) => deps.docker(args, {deadlineMono: cap});
   const must = async (args: string[]) => {
-    const result = await boundedDocker(args);
+    const call = boundedDocker(args);
+    if (args[1] === 'create') {
+      // A create that completes after an interruption is removed at once; the run-label sweep is the backstop.
+      void call.then((created) => {
+        if (!life.signal.aborted || created.code !== 0 || !created.stdout.trim()) return;
+        const id = created.stdout.trim();
+        void deps.docker(args[0] === 'network' ? ['network', 'rm', id] : ['container', 'rm', '--force', '--volumes', id]);
+      });
+    }
+    const result = await guard(call);
     if (result.code !== 0) throw new SuperviseError(`docker ${args.slice(0, 2).join(' ')} failed: ${result.stderr.trim().slice(0, 200) || `exit ${result.code}`}`);
     return result.stdout.trim();
   };
@@ -437,6 +470,9 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   const finish = async (reason: StopReason, exitCode?: number, controlId?: string): Promise<SuperviseOutcome> => {
     modelsOpen = false;
     clearInterval(runnerBeat);
+    clearTimeout(capTimer);
+    deps.shutdown?.removeEventListener('abort', onShutdown);
+    if (!life.signal.aborted) life.abort('finished');
     agent?.stdin.end();
     await writing;
     const settled = await settle(deps, journal, reason, controlId);
@@ -451,13 +487,14 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       await save({...journal, settlement});
       return {kind: 'finished', reason, exitCode, facts: settled.facts, settled: false};
     }
-    const done = await conclude(settlement);
+    // During shutdown the unit's stop timeout bounds everything; settlement gets 10 s and the rest waits for the next start.
+    const done = await conclude(settlement, reason === 'shutdown' ? 10_000 : 30_000);
     return {kind: 'finished', reason, exitCode, facts: settled.facts, settled: done};
   };
   const expired = () => capLeft() <= 0;
 
   try {
-    const imageId = await ensureImage(boundedDocker, plan.imageRef);
+    const imageId = await guard(ensureImage(boundedDocker, plan.imageRef));
     const nonce = randomBytes(16).toString('hex');
     await fs.mkdir(inputDir, {recursive: true, mode: 0o755});
     const inputFile = path.join(inputDir, 'input.json');
@@ -508,7 +545,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     await save({...journal, state: 'started'});
 
     // Readiness: the launcher reached the relay through the sidecar and saw this run's nonce.
-    const ready = await readFirstLine(agent.stdout, within(deps.timing?.readyTimeoutMs ?? READY_TIMEOUT_MS));
+    const ready = await guard(readFirstLine(agent.stdout, within(deps.timing?.readyTimeoutMs ?? READY_TIMEOUT_MS)));
     // Keep the workload's output flowing; U5b collects it as evidence.
     agent.stdout.resume();
     const running = await inspectBoth('running');
@@ -517,7 +554,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     const cgroups: Record<string, string | null> = {};
     for (const [role, id] of [['sidecar', sidecarId], ['agent', agentId]] as const) {
       const pid = Number(await must(['container', 'inspect', '--format', '{{.State.Pid}}', id]));
-      cgroups[role] = Number.isInteger(pid) && pid > 0 ? parseCgroupV2(await deps.readFile(`/proc/${pid}/cgroup`).catch(() => '')) : null;
+      cgroups[role] = Number.isInteger(pid) && pid > 0 ? parseCgroupV2(await guard(deps.readFile(`/proc/${pid}/cgroup`).catch(() => ''))) : null;
       if (!isInsideAttemptSlice(cgroups[role], attemptId)) running.push(`${role}:cgroup_membership`);
     }
     await save({...journal, cgroups: {sidecar: cgroups.sidecar ?? undefined, agent: cgroups.agent ?? undefined}});
@@ -535,16 +572,20 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     let acknowledged = false;
     for (let attemptNo = 0; attemptNo < ACK_ATTEMPTS && !acknowledged && !expired(); attemptNo++) {
       const ack = await session.call('POST', `/api/v1/work-items/dispatches/${dispatch.id}/ack`,
-        {workspaceId, claimToken, state: 'acknowledged'}, {key: `${dispatch.id}:ack`, timeoutMs: within(30_000)}).catch(() => null);
+        {workspaceId, claimToken, state: 'acknowledged'}, {key: `${dispatch.id}:ack`, timeoutMs: within(30_000), signal: life.signal}).catch(() => null);
+      if (life.signal.aborted) break;
       if (ack?.status === 200) acknowledged = true;
       else if (ack && ack.status >= 400 && ack.status < 500) break;
     }
-    if (!acknowledged) return await finish('ack_unknown');
+    if (deps.shutdown?.aborted) return await finish('shutdown');
+    if (!acknowledged) return await finish(expired() ? 'lease_lost' : 'ack_unknown');
     if (expired()) return await finish('lease_lost');
     await save({...journal, state: 'running'});
     const reported = await session.call('POST', `/api/v1/work-items/${workItem.id}/execution-attempts`, {
       runtimeId: journal.runtimeId, leaseGeneration: 1, state: 'running', claimOwner, claimToken, dispatchId: dispatch.id, workspace,
-    }, {key: `${journal.runtimeId}:1:running`, timeoutMs: within(30_000)}).catch(() => null);
+    }, {key: `${journal.runtimeId}:1:running`, timeoutMs: within(30_000), signal: life.signal}).catch(() => null);
+    if (deps.shutdown?.aborted) return await finish('shutdown');
+    if (expired()) return await finish('lease_lost');
     if (reported?.status !== 200 || (reported.body.attempt as {state?: string} | undefined)?.state !== 'running') {
       deps.log(`The server did not confirm the attempt as running (HTTP ${reported?.status ?? 'unknown'}).`);
       return await finish('start_failed');
@@ -571,7 +612,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
         pollAt = deps.clock.monoMs() + (deps.timing?.controlPollMs ?? CONTROL_POLL_MS);
         const scope = workspaceId ?? 'personal';
         const controls = await session.call('GET', `/api/v1/work-items/dispatches/${dispatch.id}/controls?workspaceId=${scope}`, undefined,
-          {timeoutMs: within(10_000)}).catch(() => null);
+          {timeoutMs: within(10_000), signal: life.signal}).catch(() => null);
         const stop = (controls?.body.controls as Array<{id: string; action: string; state: string}> | undefined)
           ?.find((control) => control.action === 'stop' && control.state === 'pending');
         if (stop) return await finish('stop_control', undefined, stop.id);
@@ -581,9 +622,11 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
         const renewal = await session.call('POST', `/api/v1/work-items/dispatches/${dispatch.id}/heartbeat`, {
           workspaceId, runnerId: machine.runnerId, consumerId: session.consumerId, workItemId: workItem.id,
           claimOwner, claimToken, deadlineAt: heartbeatDeadlineAt(deps.clock),
-        }, {timeoutMs: within(HEARTBEAT_BUDGET_MS)}).catch(() => null);
+        }, {timeoutMs: within(HEARTBEAT_BUDGET_MS), signal: life.signal}).catch(() => null);
+        if (life.signal.aborted) return await finish(deps.shutdown?.aborted ? 'shutdown' : 'lease_lost');
         if (renewal?.status === 200) {
           cap = renewedCap(deps.clock, (renewal.body.authority as {claimExpiresAt?: unknown} | undefined)?.claimExpiresAt, sent, grantCap);
+          rearmCap();
         } else if (renewal && (renewal.status === 403 || renewal.status === 409)) {
           return await finish('lease_lost');
         }
@@ -592,6 +635,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       }
     }
   } catch (error) {
+    if (error instanceof Interrupted) return finish(error.reason);
     deps.log(`The attempt failed: ${(error as Error).message}`);
     return finish(expired() ? 'lease_lost' : 'start_failed');
   }

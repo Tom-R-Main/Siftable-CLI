@@ -245,11 +245,22 @@ export async function acquireStateLock(
       throw new MachineStateError(`Another machine command (${holder.purpose ?? 'enroll'}) is running here (pid ${holder.pid}). Wait for it to finish.`);
     }
     if (purpose === 'supervise' && holder?.purpose === 'supervise') {
-      try {
-        await fs.link(temp, path.join(options.root, `.enroll.lock.takeover-${holder.nonce}`));
-      } catch (takeover) {
-        if ((takeover as NodeJS.ErrnoException).code === 'EEXIST') throw new MachineStateError('Another supervisor is taking over the lock left by a stopped one.');
-        throw takeover;
+      // Each claimant links a marker named for the nonce it replaces; only one link can succeed.
+      // A marker whose claimant died before replacing the lock is itself replaced the same way.
+      let stale = holder.nonce;
+      for (let hop = 0; ; hop++) {
+        const marker = path.join(options.root, `.enroll.lock.takeover-${stale}`);
+        try {
+          await fs.link(temp, marker);
+          break;
+        } catch (takeover) {
+          if ((takeover as NodeJS.ErrnoException).code !== 'EEXIST') throw takeover;
+          const claimant = await readLock(marker);
+          if (!claimant || processAlive(claimant.pid) || hop >= 16) {
+            throw new MachineStateError('Another supervisor is taking over the lock left by a stopped one.');
+          }
+          stale = claimant.nonce;
+        }
       }
       await fs.rename(temp, lock);
       await syncDirectory(options.root);
