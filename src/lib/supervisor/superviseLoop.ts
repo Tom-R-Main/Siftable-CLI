@@ -104,6 +104,8 @@ export interface AttemptJournal {
   cgroups?: {sidecar?: string; agent?: string};
   /** The workspace the attempt was attached with; terminal reports repeat it. */
   workspace?: {repositoryId: string; branch: string; baseSha: string};
+  /** The server's digest of the attempt's frozen input, the task the agent was given. */
+  inputSha256?: string;
   /** The last model call ID handed out; journaled before the call is sent. */
   callSeq: number;
   stop?: {reason: StopReason; controlId?: string; facts?: StopFacts};
@@ -718,12 +720,24 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   const expired = () => capLeft() <= 0;
 
   try {
+    // The frozen input: the server derives the task from the work item once per attempt and returns the same one on
+    // every later request. The agent gets exactly that, never the consume body. Its digest is the server's, over
+    // Postgres's rendering of the payload, so it is recorded as given.
+    const accepted = await guard(session.call('POST', `/api/v1/work-items/${workItem.id}/execution-attempts/${attemptId}/input`,
+      {claimToken}, {timeoutMs: within(30_000), signal: life.signal}).catch(() => null));
+    const input = accepted?.body as {payloadSha256?: unknown; task?: unknown} | undefined;
+    if (accepted?.status !== 200 || typeof input?.payloadSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(input.payloadSha256)
+      || !input.task || typeof input.task !== 'object') {
+      deps.log(`The server did not return the attempt's input (HTTP ${accepted?.status ?? 'unknown'}).`);
+      return await finish('start_failed');
+    }
+    await save({...journal, inputSha256: input.payloadSha256});
     const imageId = await guard(ensureImage(boundedDocker, plan.imageRef));
     const nonce = randomBytes(16).toString('hex');
     await fs.mkdir(inputDir, {recursive: true, mode: 0o755});
     const inputFile = path.join(inputDir, 'input.json');
-    await fs.writeFile(inputFile, JSON.stringify({attemptId, workItemId: workItem.id, title: workItem.title, prompt: workItem.prompt,
-      acceptanceCriteria: workItem.acceptanceCriteria, writeScope: workItem.writeScope, plan}), {mode: 0o444});
+    await fs.writeFile(inputFile, JSON.stringify({version: 1, attemptId, workItemId: workItem.id,
+      inputSha256: input.payloadSha256, task: input.task, plan}), {mode: 0o444});
 
     const labelsOnly = attemptSpecs(deps, journal, attemptId, plan, '', nonce, inputFile).networkLabels;
     const networkId = await create('network', networkCreateArgs(`sift-a-${journal.runId}`, labelsOnly));

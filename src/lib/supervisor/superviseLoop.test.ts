@@ -21,6 +21,7 @@ const RUNNER = '7a0c2a59-4f3e-4c1d-9b2e-5d6f7a8b9c0d';
 const DISPATCH = '66666666-6666-4666-8666-666666666666';
 const WORK_ITEM = '77777777-7777-4777-8777-777777777777';
 const ATTEMPT = '88888888-8888-4888-8888-888888888888';
+const INPUT_SHA = 'f'.repeat(64);
 const CONTROL = '99999999-9999-4999-8999-999999999999';
 const PLAN = {repositoryId: 'repo-1', branch: 'main', baseSha: 'c'.repeat(40), imageRef: IMAGE, command: ['sh', '-c', 'true']};
 const inFuture = (ms: number) => new Date(Date.now() + ms).toISOString();
@@ -62,6 +63,8 @@ interface Scenario {
   nameFound?: boolean;
   /** Consume is answered with this status, as when the runner's lease changed (409). */
   consumeStatus?: number;
+  /** The frozen-input request is answered with this status. */
+  inputStatus?: number;
 }
 
 /** The API, Docker and attached processes one attempt touches, recording what happened in order. */
@@ -69,6 +72,7 @@ function world(scenario: Scenario = {}) {
   const events: string[] = [];
   const modelKeys: Array<string | undefined> = [];
   const sidecarIo: {stdin?: PassThrough; stdout?: PassThrough} = {};
+  const agentInput: {value?: Record<string, unknown>} = {};
   const posts: Array<{path: string; body: Record<string, unknown>; key?: string}> = [];
   const fetchImpl = (async (url: string, init: RequestInit) => {
     const route = url.slice(API.length);
@@ -96,6 +100,11 @@ function world(scenario: Scenario = {}) {
     if (route.includes('/model/')) {
       modelKeys.push(key);
       return new Response('event: done\n\n', {status: 200});
+    }
+    if (route.endsWith('/input')) {
+      events.push('input');
+      if (scenario.inputStatus) return reply(scenario.inputStatus, {});
+      return reply(200, {payloadSha256: INPUT_SHA, task: {version: 2, title: 'From the server'}, replayed: false});
     }
     if (route.endsWith('/review')) { events.push('review'); return reply(scenario.reviewStatus ?? 200, {}); }
     if (route.endsWith('/fail')) { events.push('fail'); return reply(200, {}); }
@@ -142,6 +151,9 @@ function world(scenario: Scenario = {}) {
       const id = flag(args, '--name')[0].endsWith('-relay') ? 'c-relay' : 'c-agent';
       containers.set(id, args);
       events.push(`create:${id}`);
+      // What the agent is handed, read while it still exists (the supervisor removes it on finish).
+      const input = flag(args, '--mount').map((m) => /source=([^,]+),target=\/sift\/input\.json/.exec(m)?.[1]).find(Boolean);
+      if (input) agentInput.value = JSON.parse(await fs.readFile(input, 'utf8')) as Record<string, unknown>;
       if (id === 'c-agent' && scenario.agentCreateDelay === 'never') return new Promise(() => {});
       if (id === 'c-agent' && scenario.agentCreateDelay) {
         await new Promise((resolve) => setTimeout(resolve, scenario.agentCreateDelay as number));
@@ -215,7 +227,7 @@ function world(scenario: Scenario = {}) {
     if (file.endsWith('cgroup.events')) return (scenario.populated ?? (() => 'populated 0\n'))();
     throw Object.assign(new Error('missing'), {code: 'ENOENT'});
   };
-  return {events, posts, fetchImpl, docker, attach, readFile, modelKeys, sidecarIo};
+  return {events, posts, fetchImpl, docker, attach, readFile, modelKeys, sidecarIo, agentInput};
 }
 
 describe('superviseOnce', () => {
@@ -284,6 +296,25 @@ describe('superviseOnce', () => {
     const archived = await fs.readFile(path.join(root, 'retired', retired.find((name) => name.endsWith(JOURNAL))!), 'utf8');
     expect(archived).not.toContain('claim-secret');
     expect(await fs.readdir(inputRoot)).toEqual([]);
+  });
+
+  it('hands the agent the frozen input the server recorded for the attempt, fetched before any container', async () => {
+    const w = world();
+    await superviseOnce(deps(w));
+    const order = (event: string) => w.events.indexOf(event);
+    expect(order('attempt:starting')).toBeLessThan(order('input'));
+    expect(order('input')).toBeLessThan(order('network-create'));
+    expect(w.posts.find((post) => post.path.endsWith('/input'))?.body).toEqual({claimToken: 'claim-secret'});
+    // The server's task and digest, not the consume body.
+    expect(w.agentInput.value).toEqual({version: 1, attemptId: ATTEMPT, workItemId: WORK_ITEM, inputSha256: INPUT_SHA,
+      task: {version: 2, title: 'From the server'}, plan: PLAN});
+  });
+
+  it('starts nothing when the server does not return the frozen input, and fails the start truthfully', async () => {
+    const w = world({inputStatus: 409});
+    expect(await superviseOnce(deps(w))).toMatchObject({kind: 'finished', reason: 'start_failed'});
+    expect(w.events).not.toContain('network-create');
+    expect(w.events).toContain('ack:failed');
   });
 
   it('stops on a Stop control, acknowledges it only after the cgroup is empty, and reports terminated', async () => {
