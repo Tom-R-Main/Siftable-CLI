@@ -1,8 +1,8 @@
 /**
  * The machine supervisor enrollment protocol, client side (first-run U2c).
  *
- * The published CLI does not depend on @execufunction/shared, so this file
- * keeps its own copy of the server's `machineSupervisorProofBinding`
+ * The published CLI ships without the monorepo's shared contracts package, so
+ * this file keeps its own copy of the server's `machineSupervisorProofBinding`
  * (exf-app/src/services/machineSupervisorDeviceFlow.ts). A golden vector in
  * both packages' tests pins the two to the same bytes.
  */
