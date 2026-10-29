@@ -59,7 +59,7 @@ export interface SuperviseDeps {
   inputRoot: string;
   resolvePlan: (workItem: Record<string, unknown>) => Promise<AttemptPlan | null>;
   /** Tests shorten these; production uses the defaults. */
-  timing?: {controlPollMs?: number; readyTimeoutMs?: number};
+  timing?: {controlPollMs?: number; readyTimeoutMs?: number; logDrainMs?: number};
   /** Aborted when the service is stopping: the running attempt is stopped and cleaned up before return. */
   shutdown?: AbortSignal;
   /**
@@ -741,6 +741,11 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     await Promise.race([Promise.allSettled([...inflight]), sleep(Math.max(0, killBy - deps.clock.monoMs()))]);
     finished = true;
     const settled = await settle(deps, journal, reason, controlId, writing);
+    // The killed container closes its attach stream: the log is frozen at that end, before the attach client is killed.
+    const frozenLog = agentLog ? await agentLog.close(deps.timing?.logDrainMs).catch((error: unknown) => {
+      deps.log(`The attempt's log was not captured whole: ${(error as Error).message}`);
+      return undefined;
+    }) : undefined;
     sidecar?.kill();
     agent?.kill();
     journal = settled.journal;
@@ -754,7 +759,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     // Evidence, once every process has stopped and while the attempt's own claim still holds: settlement comes after.
     let evidence: EvidenceOutcome | undefined;
     if (agentLog) {
-      const log = await agentLog.close().catch(() => undefined);
+      const log = frozenLog;
       if (log) await save({...journal, evidence: log});
       const uploadable = log && settled.facts.cgroupEmpty === 'empty' && reason !== 'shutdown' && reason !== 'lease_lost' && capLeft() > 0;
       evidence = uploadable ? await uploadAgentLog({call: (method, route, body, options) => session.call(method, route, body, options),

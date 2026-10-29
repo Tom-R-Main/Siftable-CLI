@@ -27,15 +27,23 @@ export interface FrozenLog {
   bytes: number;
 }
 
-/** Copies a stream into the attempt's log up to the cap, then keeps draining it. */
-export function captureLog(dir: string, source: NodeJS.ReadableStream): {close(): Promise<FrozenLog>} {
+/**
+ * Copies a stream into the attempt's log up to the cap, then keeps draining it. Closing waits, within
+ * `drainMs`, for the stream's own end, so the frozen file is the whole output; a stream that has not ended,
+ * or a file that could not be written, rejects instead of freezing a partial log.
+ */
+export function captureLog(dir: string, source: NodeJS.ReadableStream): {close(drainMs?: number): Promise<FrozenLog>} {
   const file = path.join(dir, AGENT_LOG);
   const sink = createWriteStream(file, {mode: 0o600});
+  let failure: Error | undefined;
+  sink.on('error', (error) => { failure ??= error; });
+  let ended = false;
+  const end = new Promise<void>((resolve) => source.once('end', () => { ended = true; resolve(); }));
   const room = MAX_LOG_BYTES - TRUNCATED.length;
   let written = 0;
   let cut = false;
   source.on('data', (chunk: Buffer | string) => {
-    if (cut) return;
+    if (cut || failure) return;
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     if (written + bytes.length > room) {
       sink.write(bytes.subarray(0, room - written));
@@ -48,10 +56,15 @@ export function captureLog(dir: string, source: NodeJS.ReadableStream): {close()
     written += bytes.length;
   });
   return {
-    async close() {
+    async close(drainMs = 5_000) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([end, new Promise<void>((resolve) => { timer = setTimeout(resolve, drainMs); })]);
+      clearTimeout(timer);
       source.removeAllListeners('data');
       source.resume();
-      await new Promise<void>((resolve, reject) => sink.end((error?: Error | null) => (error ? reject(error) : resolve())));
+      await new Promise<void>((resolve) => sink.end(() => resolve()));
+      if (failure) throw new Error(`The log could not be written: ${failure.message}`);
+      if (!ended) throw new Error('The workload\'s output did not reach its end; the log is incomplete');
       const content = await fs.readFile(file);
       return {path: file, sha256: createHash('sha256').update(content).digest('hex'), bytes: content.length};
     },
@@ -95,7 +108,8 @@ export async function uploadAgentLog(input: {
     const uploads = Array.isArray(declared.body.uploads) ? declared.body.uploads as Array<{sha256?: unknown; url?: unknown}> : [];
     let uploaded = true;
     for (const upload of uploads) {
-      if (upload.sha256 !== log.sha256 || typeof upload.url !== 'string') { uploaded = false; break; }
+      // Every request is admitted only while the deadline holds, not just each round.
+      if (upload.sha256 !== log.sha256 || typeof upload.url !== 'string' || left() <= 0) { uploaded = false; break; }
       const put = await input.fetch(upload.url, {
         method: 'PUT',
         headers: {'Content-Type': EVIDENCE_CONTENT_TYPE, 'x-goog-if-generation-match': '0',
@@ -106,7 +120,7 @@ export async function uploadAgentLog(input: {
       // 412: the object already exists (an earlier round's PUT landed); the acknowledge decides whether it is right.
       if (!put || !(put.ok || put.status === 412)) { uploaded = false; break; }
     }
-    if (!uploaded) continue;
+    if (!uploaded || left() <= 0) continue;
     const acknowledged = await call('POST', `${route}/acknowledge`, {claimToken, manifestDigest},
       {timeoutMs: Math.max(1, Math.min(70_000, left()))}).catch(() => null);
     if (acknowledged?.status === 200) return {acknowledged: true, manifestDigest};

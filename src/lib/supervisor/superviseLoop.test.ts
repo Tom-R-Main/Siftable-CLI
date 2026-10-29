@@ -73,6 +73,8 @@ interface Scenario {
   putStatus?: number | ((n: number) => number);
   /** Each evidence acknowledge is answered with this, or its reply is lost. */
   evidenceAck?: (n: number) => number | 'lost';
+  /** The agent's attach stream never ends, even once its container is killed. */
+  stdoutNeverEnds?: boolean;
 }
 
 /** The API, Docker and attached processes one attempt touches, recording what happened in order. */
@@ -225,13 +227,19 @@ function world(scenario: Scenario = {}) {
       events.push(byName ? `ls-name:${a}` : `ls:${a}`);
       return ok(byName && scenario.nameFound ? 'c-agent\n' : '');
     }
-    if (a === 'container' && b === 'kill') { events.push(`kill:${args.at(-1)}`); return ok(); }
+    if (a === 'container' && b === 'kill') {
+      events.push(`kill:${args.at(-1)}`);
+      // A killed container closes its attach stream.
+      if (args.at(-1) === 'c-agent' && !scenario.stdoutNeverEnds) agentStdout?.end();
+      return ok();
+    }
     if (a === 'container' && b === 'rm') { events.push(`rm:${args.at(-1)}`); return ok(); }
     if (a === 'network' && b === 'rm') { events.push('network-rm'); return ok(); }
     throw new Error(`unexpected docker ${args.join(' ')}`);
   };
 
   let resolveExit: (code: number) => void = () => {};
+  let agentStdout: PassThrough | undefined;
   const attach: Attach = (args) => {
     const id = args.at(-1)!;
     started.add(id);
@@ -243,6 +251,7 @@ function world(scenario: Scenario = {}) {
       sidecarIo.stdout = stdout;
       return {stdin, stdout, exited: new Promise(() => {}), kill: () => stdout.end()};
     }
+    agentStdout = stdout;
     const exited = new Promise<number>((resolve) => { resolveExit = resolve; });
     setTimeout(() => stdout.write(`${READY_LINE}\n`), scenario.readyDelayMs ?? 0);
     stdin.on('data', (chunk: Buffer) => {
@@ -294,7 +303,7 @@ describe('superviseOnce', () => {
   const deps = (w: ReturnType<typeof world>, overrides: Partial<SuperviseDeps> = {}): SuperviseDeps => ({
     fetch: w.fetchImpl, docker: w.docker, attach: w.attach, clock: systemClock, readFile: w.readFile, hostAddresses: () => ['127.0.0.1', '10.84.15.113'],
     state: {root, owner: null}, log: () => {}, assets: {sidecar: '/opt/sift/relaySidecar.js', launcher: '/opt/sift/attemptLauncher.js'},
-    inputRoot, resolvePlan: async () => PLAN, timing: {controlPollMs: 20, readyTimeoutMs: 1_000}, ...overrides,
+    inputRoot, resolvePlan: async () => PLAN, timing: {controlPollMs: 20, readyTimeoutMs: 1_000, logDrainMs: 200}, ...overrides,
   });
   const journal = () => readJournal<AttemptJournal>({root, owner: null}, JOURNAL);
 
@@ -818,6 +827,23 @@ describe('superviseOnce', () => {
       const fail = w.posts.find((post) => post.path.endsWith('/fail'))!;
       expect(String(fail.body.failureReason)).toContain('evidence_upload_failed');
       expect(w.events).toContain('attempt:ended:failed');
+    });
+
+    it('fails the work, without crashing, when the log cannot be written', async () => {
+      // The log's path is taken by a directory: opening it fails.
+      await fs.mkdir(path.join(inputRoot, ATTEMPT, 'agent.log'), {recursive: true});
+      const w = world();
+      expect(await superviseOnce(deps(w))).toMatchObject({kind: 'finished', reason: 'workload_exited', settled: true});
+      expect(w.events).not.toContain('evidence-declare');
+      expect(String(w.posts.find((post) => post.path.endsWith('/fail'))!.body.failureReason)).toContain('evidence_upload_failed');
+    });
+
+    it('never declares a log whose stream did not reach its end', async () => {
+      const w = world({stdoutNeverEnds: true});
+      expect(await superviseOnce(deps(w))).toMatchObject({kind: 'finished', reason: 'workload_exited', settled: true});
+      expect(w.events).not.toContain('evidence-declare');
+      expect(w.events).not.toContain('review');
+      expect(String(w.posts.find((post) => post.path.endsWith('/fail'))!.body.failureReason)).toContain('evidence_upload_failed');
     });
   });
 });
