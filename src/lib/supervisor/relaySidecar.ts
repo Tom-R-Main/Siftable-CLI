@@ -22,6 +22,12 @@ export const MODEL_PATHS = {
   anthropic: '/sift/v1/model/anthropic/v1/messages',
   openai: '/sift/v1/model/openai/v1/responses',
 } as const;
+/** Needs you (U5b-3): ask, a long poll of at most 25 s for the answer, and the writer's receipt of it. */
+export const QUESTION_PATHS = {
+  ask: '/sift/v1/questions',
+  poll: '/sift/v1/questions/poll',
+  received: '/sift/v1/questions/received',
+} as const;
 
 export interface SidecarRequestFrame {id: number; method: string; path: string; body: string}
 export type SidecarResponseFrame =
@@ -40,6 +46,9 @@ export const SIDECAR_ROUTES: ReadonlyArray<Route> = [
   // The server accepts 16 MB relay bodies; a model's first byte can take minutes.
   {method: 'POST', path: MODEL_PATHS.anthropic, maxBodyBytes: 16 * 1024 * 1024, headTimeoutMs: 600_000},
   {method: 'POST', path: MODEL_PATHS.openai, maxBodyBytes: 16 * 1024 * 1024, headTimeoutMs: 600_000},
+  {method: 'POST', path: QUESTION_PATHS.ask, maxBodyBytes: 512 * 1024, headTimeoutMs: 10_000},
+  {method: 'POST', path: QUESTION_PATHS.poll, maxBodyBytes: 4096, headTimeoutMs: 30_000},
+  {method: 'POST', path: QUESTION_PATHS.received, maxBodyBytes: 4096, headTimeoutMs: 10_000},
 ];
 
 interface Pending {

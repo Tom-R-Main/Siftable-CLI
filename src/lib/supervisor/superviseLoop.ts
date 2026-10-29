@@ -18,6 +18,7 @@ import {hostname} from 'node:os';
 import path from 'node:path';
 import {attemptSliceName, cgroupSetupProblem, isInsideAttemptSlice, parseCgroupV2, type ReadFile} from './attemptCgroup.js';
 import {captureLog, type EvidenceOutcome, uploadAgentLog} from './attemptEvidence.js';
+import {type JournalQuestion, QuestionDesk} from './attemptQuestions.js';
 import {GO_LINE, READY_LINE} from './attemptLauncher.js';
 import {dockerVersionProblem, evaluateNetworkInspect, evaluateSandboxInspect, networkCreateArgs, sandboxCreateArgs, type SandboxContainerSpec} from './containerSandbox.js';
 import {DEADLINE_EXIT, type DeadlineDocker} from './hostDocker.js';
@@ -109,6 +110,8 @@ export interface AttemptJournal {
   workspace?: {repositoryId: string; branch: string; baseSha: string};
   /** The server's digest of the attempt's frozen input, the task the agent was given. */
   inputSha256?: string;
+  /** The writer's questions (Needs you) and how far each got; closed and reconciled at any stop. */
+  questions?: JournalQuestion[];
   /** Set once the workload ran: its evidence is owed, so a crash before the log is frozen still fails the work. */
   evidenceOwed?: boolean;
   /** The frozen workload log and how its upload ended; the file is kept on the machine unless acknowledged. */
@@ -131,7 +134,8 @@ export interface AttemptJournal {
 const LEDGER = 'dispatches-journal.json';
 const LEDGER_LIMIT = 500;
 
-export type StopReason = 'stop_control' | 'workload_exited' | 'lease_lost' | 'ack_unknown' | 'start_failed' | 'shutdown' | 'recovered';
+export type StopReason = 'stop_control' | 'workload_exited' | 'lease_lost' | 'ack_unknown' | 'start_failed' | 'shutdown' | 'recovered'
+  | 'question_timeout';
 export type SuperviseOutcome =
   | {kind: 'idle'}
   | {kind: 'held'; held: string[]}
@@ -596,6 +600,13 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
         Math.min(recoveredCap, deps.clock.monoMs() + EVIDENCE_BUDGET_MS));
       if (resumed === 'cancelled') return {kind: 'recovered', settled: false};
       earlier = resumed;
+      // The attempt stopped with the restart: its questions are closed and reconciled, never offered again.
+      if (earlier.questions?.length) {
+        await new QuestionDesk(earlier.questions, async () => undefined, () => deps.clock.monoMs()).close(
+          (method, route, body, options) => session.call(method, route, body, options), earlier.workItemId,
+          {runtimeId: earlier.runtimeId, leaseGeneration: 1, claimOwner: `mobile-runner:${machine.runnerId}`,
+            claimToken: workItem?.claimToken as string});
+      }
       const settlement = await postSettlement(session, earlier, workItem?.claimToken as string, 30_000);
       earlier = {...earlier, settlement};
       settled = isSettled(settlement);
@@ -734,6 +745,10 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   let sidecar: AttachedProcess | undefined;
   let agent: AttachedProcess | undefined;
   let agentLog: ReturnType<typeof captureLog> | undefined;
+  const call = (method: 'GET' | 'POST', route: string, body?: unknown, options?: {key?: string; timeoutMs?: number}) =>
+    session.call(method, route, body, options);
+  const credential = {runtimeId: journal.runtimeId, leaseGeneration: 1, claimOwner: `mobile-runner:${machine.runnerId}`, claimToken};
+  const desk = new QuestionDesk(journal.questions ?? [], (questions) => save({...journal, questions}), () => deps.clock.monoMs());
   let modelsOpen = false;
   const inputDir = path.join(deps.inputRoot, attemptId);
   const finish = async (reason: StopReason, exitCode?: number, controlId?: string): Promise<SuperviseOutcome> => {
@@ -790,6 +805,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       if (journal.evidence) await save({...journal, evidence: {...journal.evidence, ...evidence}});
       if (!evidence.acknowledged) deps.log(`The attempt's evidence was not acknowledged; its log is kept at ${inputDir}.`);
     }
+    // Questions are closed while the claim holds: received answers recorded delivered, unconfirmed ones failed.
+    await desk.close(call, journal.workItemId, credential);
     // An unacknowledged log stays on the machine for the operator; nothing else is kept.
     if (!evidence || evidence.acknowledged) await fs.rm(inputDir, {recursive: true, force: true}).catch(() => undefined);
     const settlement: Settlement = {reason, ...(exitCode === undefined ? {} : {exitCode}), ...(controlId ? {controlId} : {}),
@@ -865,6 +882,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
         if (!modelsOpen) throw new SuperviseError('Model calls are closed.');
         return `${attemptId}:${seq}`;
       },
+      questions: desk,
     }));
     agent = deps.attach(['start', '--attach', '--interactive', agentId]);
     await save({...journal, state: 'started'});
@@ -943,6 +961,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
         const stop = (controls?.body.controls as Array<{id: string; action: string; state: string}> | undefined)
           ?.find((control) => control.action === 'stop' && control.state === 'pending');
         if (stop) return await finish('stop_control', undefined, stop.id);
+        if (await desk.tick(call, journal.workItemId, credential)) return await finish('question_timeout');
       }
       if (deps.clock.monoMs() >= renewAt) {
         const sent = deps.clock.monoMs();

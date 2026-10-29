@@ -77,6 +77,8 @@ interface Scenario {
   stdoutNeverEnds?: boolean;
   /** Called when evidence is declared, before the reply: a shutdown can arrive here. */
   onDeclare?: () => void;
+  /** Whether the person has answered the writer's question yet. */
+  answered?: () => boolean;
 }
 
 /** The API, Docker and attached processes one attempt touches, recording what happened in order. */
@@ -97,6 +99,19 @@ function world(scenario: Scenario = {}) {
     }
     const route = url.slice(API.length);
     const body = init.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+    if (route.includes('/runtime-requests')) {
+      if (init.method === 'POST') posts.push({path: route, body, key: (init.headers as Record<string, string>)['Idempotency-Key']});
+      if (route.endsWith('/runtime-requests/sync')) {
+        events.push(`rr-sync:${(body.observations as Array<{type: string}>)[0].type}`);
+        return new Response(JSON.stringify({version: 1, changed: 1}), {status: 200});
+      }
+      if (route.endsWith('/delivery')) {
+        events.push(`rr-delivery:${(body.delivery as {outcome: string}).outcome}`);
+        return new Response(JSON.stringify({version: 1}), {status: 200});
+      }
+      const requests = scenario.answered?.() ? [{id: 'req-1', providerRequestId: 'q-1', resolution: {answers: {branch: 'main'}}}] : [];
+      return new Response(JSON.stringify({requests, truncated: false}), {status: 200});
+    }
     const key = (init.headers as Record<string, string>)['Idempotency-Key'];
     const reply = (status: number, value: object) => new Response(JSON.stringify(value), {status});
     if (init.method === 'POST') posts.push({path: route, body, key});
@@ -895,6 +910,63 @@ describe('superviseOnce', () => {
       expect(second.events.filter((e) => e === 'evidence-ack')).toHaveLength(1);
       const review = second.posts.find((post) => post.path.endsWith('/review'))!;
       expect(review.body.artifactRefs).toContainEqual({type: 'evidence_manifest', attemptId: ATTEMPT, manifestDigest: MANIFEST});
+    });
+  });
+
+  describe('Needs you (U5b-3)', () => {
+    it('opens the writer\'s question, hands it the answer, records delivery on its receipt, and closes at the stop', async () => {
+      let answered = false;
+      const w = world({agentExit: 'never', answered: () => answered,
+        controls: () => (w.events.includes('rr-delivery:delivered') ? [{id: CONTROL, action: 'stop', state: 'pending'}] : [])});
+      const shutdown = new AbortController();
+      const running = background(superviseOnce(deps(w, {shutdown: shutdown.signal})), () => shutdown.abort());
+      await until(() => w.events.includes('go'));
+      const replies: Array<{id: number; status?: number; body?: string}> = [];
+      w.sidecarIo.stdin?.on('data', (chunk: Buffer) => chunk.toString().split('\n').filter(Boolean)
+        .forEach((line) => replies.push(JSON.parse(line) as {id: number; status?: number; body?: string})));
+      const send = (id: number, path: string, body: object) => w.sidecarIo.stdout?.write(
+        `${JSON.stringify({id, method: 'POST', path, body: Buffer.from(JSON.stringify(body)).toString('base64')})}\n`);
+      const replyTo = async (id: number) => {
+        await until(() => replies.some((r) => r.id === id));
+        const found = replies.find((r) => r.id === id)!;
+        return {status: found.status, body: found.body ? JSON.parse(Buffer.from(found.body, 'base64').toString() || '{}') : undefined};
+      };
+      send(1, '/sift/v1/questions', {questionId: 'q-1', questions: [{id: 'branch', header: 'Branch', question: 'Which branch?', options: []}]});
+      expect((await replyTo(1)).status).toBe(202);
+      await until(() => w.events.includes('rr-sync:opened'));
+      answered = true;
+      send(2, '/sift/v1/questions/poll', {questionId: 'q-1'});
+      const answer = await replyTo(2);
+      expect(answer).toMatchObject({status: 200, body: {answers: {branch: 'main'}}});
+      send(3, '/sift/v1/questions/received', {questionId: 'q-1', answerId: answer.body.answerId});
+      expect((await replyTo(3)).status).toBe(200);
+      expect(await running).toMatchObject({kind: 'finished', reason: 'stop_control'});
+      const delivered = w.posts.filter((post) => post.path.endsWith('/delivery'));
+      expect(delivered).toHaveLength(1);
+      expect(delivered[0]).toMatchObject({path: `/api/v1/work-items/${WORK_ITEM}/runtime-requests/req-1/delivery`, key: 'req-1:delivered',
+        body: {runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`, leaseGeneration: 1, claimOwner: `mobile-runner:${RUNNER}`, delivery: {outcome: 'delivered'}}});
+      // The stop closes the session's requests.
+      expect(w.events.indexOf('rr-sync:session_ended')).toBeGreaterThan(w.events.indexOf('rr-delivery:delivered'));
+    });
+
+    it('after a restart, records a received answer delivered and an unconfirmed one failed, closing the session first', async () => {
+      const question = {questions: [{question: 'Which branch?'}], summary: 'Which branch?', answers: {branch: 'main'}};
+      await writeJournal({root, owner: null}, JOURNAL, {version: 1, state: 'stopping', runId: 'abc123abc123', dispatchId: DISPATCH,
+        workItemId: WORK_ITEM, runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`, attemptId: ATTEMPT, networkId: 'net-1',
+        workspace: {repositoryId: PLAN.repositoryId, branch: PLAN.branch, baseSha: PLAN.baseSha},
+        containers: {sidecar: 'c-relay', agent: 'c-agent'}, callSeq: 0, stop: {reason: 'workload_exited', exitCode: 0},
+        evidenceOwed: true, evidence: {path: '/gone', sha256: 'a'.repeat(64), bytes: 1, acknowledged: true, manifestDigest: MANIFEST},
+        questions: [{...question, questionId: 'q-1', state: 'received', requestId: 'req-1', answerId: 'req-1:x'},
+          {...question, questionId: 'q-2', state: 'offered', requestId: 'req-2', answerId: 'req-2:x'}],
+      } satisfies AttemptJournal);
+      const w = world();
+      expect(await superviseOnce(deps(w))).toEqual({kind: 'recovered', settled: true});
+      expect(w.posts.filter((post) => post.path.endsWith('/delivery')).map((post) => [post.path.split('/').at(-2), post.key,
+        post.body.delivery])).toEqual([
+        ['req-1', 'req-1:delivered', {outcome: 'delivered'}],
+        ['req-2', 'req-2:not_received', {outcome: 'failed', error: 'not_received'}],
+      ]);
+      expect(w.events.indexOf('rr-sync:session_ended')).toBeLessThan(w.events.indexOf('review'));
     });
   });
 });

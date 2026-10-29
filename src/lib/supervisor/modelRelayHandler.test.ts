@@ -1,6 +1,7 @@
 import {describe, expect, it} from 'vitest';
 import {attemptRelayHandler} from './modelRelayHandler.js';
-import {DIAGNOSTIC_PATH, MODEL_PATHS} from './relaySidecar.js';
+import {QuestionDesk} from './attemptQuestions.js';
+import {DIAGNOSTIC_PATH, MODEL_PATHS, QUESTION_PATHS} from './relaySidecar.js';
 
 const target = {
   apiUrl: 'https://api.example', token: 'pat-value', workspaceId: '11111111-1111-4111-8111-111111111111',
@@ -61,5 +62,17 @@ describe('attemptRelayHandler', () => {
     const handler = attemptRelayHandler({fetch: (() => { throw new Error('no fetch'); }) as never, diagnosticNonce: 'n'}, target, control());
     expect((await handler(frame('/sift/v1/model/other'), signal)).status).toBe(404);
     expect((await handler(frame(MODEL_PATHS.anthropic, 'GET'), signal)).status).toBe(404);
+  });
+
+  it('routes the writer\'s questions to the desk only while the attempt is running, never to the API', async () => {
+    const noFetch = (() => { throw new Error('no fetch'); }) as never;
+    const desk = new QuestionDesk([], async () => undefined, () => performance.now());
+    const ask = frame(QUESTION_PATHS.ask, 'POST', JSON.stringify({questionId: 'q-1', questions: [{question: 'Which branch?'}]}));
+    const closed = attemptRelayHandler({fetch: noFetch, diagnosticNonce: 'n'}, target, {...control(false), questions: desk});
+    expect((await closed(ask, signal)).status).toBe(503);
+    expect(desk.list()).toEqual([]);
+    const running = attemptRelayHandler({fetch: noFetch, diagnosticNonce: 'n'}, target, {...control(), questions: desk});
+    expect((await running(ask, signal)).status).toBe(202);
+    expect(desk.list().map((q) => q.questionId)).toEqual(['q-1']);
   });
 });

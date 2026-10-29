@@ -7,6 +7,7 @@
  * journaled call ID that only the supervisor holds. A call whose delivery is
  * unknown is never retried; the agent sees the failure.
  */
+import {QUESTION_PATHS, type QuestionDesk} from './attemptQuestions.js';
 import {DIAGNOSTIC_PATH, MODEL_PATHS} from './relaySidecar.js';
 import type {SidecarHandler} from './sidecarBridge.js';
 
@@ -24,6 +25,8 @@ export interface ModelRelayControl {
   open(): boolean;
   /** The next call's durable ID, journaled before it is returned. */
   nextCallId(): Promise<string>;
+  /** Needs you: the writer's questions, open with the model routes. */
+  questions?: QuestionDesk;
 }
 
 const UPSTREAM: Record<string, string> = {
@@ -41,6 +44,10 @@ export function attemptRelayHandler(
   return async (frame, signal) => {
     if (frame.method === 'GET' && frame.path === DIAGNOSTIC_PATH) {
       return {status: 200, body: JSON.stringify({nonce: deps.diagnosticNonce})};
+    }
+    if (frame.method === 'POST' && (Object.values(QUESTION_PATHS) as string[]).includes(frame.path)) {
+      if (!control.questions || !control.open()) return json(503, 'The attempt is not running; questions are closed.');
+      return control.questions.handle(frame.path, Buffer.from(frame.body, 'base64').toString('utf8'), signal);
     }
     const upstream = frame.method === 'POST' ? UPSTREAM[frame.path] : undefined;
     if (!upstream) return {status: 404, body: ''};
