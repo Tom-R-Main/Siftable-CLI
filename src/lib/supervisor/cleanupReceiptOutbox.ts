@@ -7,10 +7,12 @@
  * Receipts wait in a durable outbox. Each one's facts and operation key are
  * frozen when it is queued; a send signs them with a fresh signedAt, so a
  * receipt whose reply was lost is re-sent as the same receipt, never under a
- * new key. Only an accepted answer or a definitive conflict ends it; no
- * reply, 429, 5xx or "still holds a live claim" leaves it pending. Each
- * cycle sends a bounded number, oldest first, so the outbox always makes
- * progress.
+ * new key. Only an accepted answer, a refusal of different facts under its
+ * key, or a malformed or unbound receipt ends it; everything else, including
+ * a signedAt outside the server's window, leaves it pending to be signed
+ * again. Each cycle sends a bounded number, least recently tried first, so a
+ * receipt that keeps failing cannot hold back the ones behind it; the order
+ * is kept across restarts.
  *
  * The CLI keeps its own copy of the receipt protocol, asserted against the
  * same golden vector as the server's.
@@ -45,6 +47,8 @@ export interface OutboxEntry {
   status: 'pending' | 'accepted' | 'conflict' | 'refused';
   sends: number;
   lastStatus?: number;
+  /** When it was last sent, for least-recently-tried order. */
+  lastTriedAt?: string;
 }
 
 interface Outbox {
@@ -103,20 +107,43 @@ export async function pendingReceipts(state: MachineStateOptions): Promise<Outbo
   return (await readOutbox(state)).entries.filter((entry) => entry.status === 'pending');
 }
 
+/** How the server's answer settles a receipt. Only explicit answers end it; anything unclear keeps it pending. */
+export function classifyReceiptReply(status: number | undefined, body: string): OutboxEntry['status'] {
+  if (status === 200 || status === 201) return 'accepted';
+  if (status === 409 && /different receipt was already recorded/i.test(body)) return 'conflict';
+  // A signedAt outside the window is about this send, not the receipt: sign it again next time.
+  if (status === 400 && /signedAt/i.test(body)) return 'pending';
+  // A malformed receipt, or an attempt this enrollment did not reserve, does not improve by resending.
+  if (status === 400 || status === 403) return 'refused';
+  return 'pending';
+}
+
 /**
- * Sends up to SEND_PER_CYCLE pending receipts, oldest first, each signed
- * now. Returns how many it sent and how many stay pending.
+ * Sends up to SEND_PER_CYCLE pending receipts, never-tried and least
+ * recently tried first, each signed now, within one total budget and
+ * stopping at once when `signal` aborts. Returns how many it sent and how
+ * many stay pending.
  */
 export async function flushReceipts(deps: {
   fetch: typeof fetch; state: MachineStateOptions; apiUrl: string; now: () => Date; workspaceId: string | null;
+  signal?: AbortSignal; budgetMs?: number;
 }): Promise<{sent: number; pending: number}> {
   const outbox = await readOutbox(deps.state);
-  const due = outbox.entries.filter((entry) => entry.status === 'pending').slice(0, SEND_PER_CYCLE);
+  const due = outbox.entries
+    .map((entry, index) => ({entry, index}))
+    .filter(({entry}) => entry.status === 'pending')
+    .sort((a, b) => (a.entry.lastTriedAt ?? '').localeCompare(b.entry.lastTriedAt ?? '') || a.index - b.index)
+    .slice(0, SEND_PER_CYCLE)
+    .map(({entry}) => entry);
   if (due.length === 0) return {sent: 0, pending: 0};
   const pem = await readKey(deps.state);
   if (!pem) return {sent: 0, pending: due.length};
   const key = createPrivateKey(pem);
+  const deadline = Date.now() + (deps.budgetMs ?? 20_000);
+  let sent = 0;
   for (const entry of due) {
+    const left = deadline - Date.now();
+    if (deps.signal?.aborted || left <= 0) break;
     const receipt = {context: MACHINE_CLEANUP_RECEIPT_CONTEXT, version: MACHINE_CLEANUP_RECEIPT_VERSION,
       enrollmentId: entry.enrollmentId, ...entry.facts, signedAt: deps.now().toISOString()};
     const signature = sign(null, Buffer.from(cleanupReceiptSignedPayload(receipt)), key).toString('base64url');
@@ -124,7 +151,8 @@ export async function flushReceipts(deps: {
     let detail = '';
     try {
       const response = await deps.fetch(`${deps.apiUrl}/api/v1/machines/enrollments/${entry.enrollmentId}/cleanup-receipts`, {
-        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000),
+        method: 'POST', redirect: 'error',
+        signal: AbortSignal.any([AbortSignal.timeout(Math.max(1, Math.min(5_000, Math.floor(left)))), ...(deps.signal ? [deps.signal] : [])]),
         headers: {'Content-Type': 'application/json', ...(deps.workspaceId ? {'X-Workspace-Id': deps.workspaceId} : {})},
         body: JSON.stringify({receipt, signature}),
       });
@@ -135,12 +163,10 @@ export async function flushReceipts(deps: {
     }
     entry.sends += 1;
     entry.lastStatus = status;
-    if (status === 200 || status === 201) entry.status = 'accepted';
-    // 409 for a dispatch that still holds its claim is not an answer about this receipt: try again later.
-    else if (status === 409 && !/live claim/i.test(detail)) entry.status = 'conflict';
-    // 400 is a malformed receipt and 403 an attempt this enrollment did not reserve: neither improves by resending.
-    else if (status === 400 || status === 403) entry.status = 'refused';
+    entry.lastTriedAt = deps.now().toISOString();
+    entry.status = classifyReceiptReply(status, detail);
+    sent += 1;
     await writeJournal(deps.state, OUTBOX, outbox);
   }
-  return {sent: due.length, pending: outbox.entries.filter((entry) => entry.status === 'pending').length};
+  return {sent, pending: outbox.entries.filter((entry) => entry.status === 'pending').length};
 }

@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
+  classifyReceiptReply,
   cleanupReceiptSignedPayload,
   enqueueReceipts,
   flushReceipts,
@@ -101,6 +102,39 @@ describe('outbox', () => {
     await flush(answers.fetchImpl);
     const outbox = await readJournal<{entries: Array<{status: string}>}>({root, owner: null}, OUTBOX);
     expect(outbox?.entries.map((entry) => entry.status)).toEqual(['pending', 'conflict', 'refused']);
+  });
+
+  it('ends a receipt only on a clear answer, and signs again after a freshness refusal', () => {
+    expect(classifyReceiptReply(201, '{}')).toBe('accepted');
+    expect(classifyReceiptReply(409, '{"message":"A different receipt was already recorded under this operation key"}')).toBe('conflict');
+    expect(classifyReceiptReply(409, '{"message":"The dispatch still holds a live claim"}')).toBe('pending');
+    expect(classifyReceiptReply(409, '')).toBe('pending');
+    expect(classifyReceiptReply(400, '{"message":"signedAt is outside the accepted window; sign the same receipt again"}')).toBe('pending');
+    expect(classifyReceiptReply(400, '{"message":"Invalid receipt fields: state"}')).toBe('refused');
+    expect(classifyReceiptReply(403, '{}')).toBe('refused');
+    expect(classifyReceiptReply(undefined, '')).toBe('pending');
+  });
+
+  it('visits later receipts while the oldest keep failing, and keeps that order across restarts', async () => {
+    const many = Array.from({length: 12}, (_, i) => ({...ATTEMPT, state: 'cleaned' as const, reason: null, containersRemoved: 1,
+      recoveryVolumeRetained: false, operationKey: `${ATTEMPT.attemptId}:cleaned:${i + 1}`}));
+    await enqueueReceipts({root, owner: null}, ENROLLMENT, many);
+    const first = server(Array.from({length: 10}, () => 503));
+    await flush(first.fetchImpl, '2026-10-29T08:00:00.000Z');
+    const second = server([201, 201]);
+    await flush(second.fetchImpl, '2026-10-29T08:01:00.000Z');
+    expect(second.sent.slice(0, 2).map((s) => s.receipt.operationKey)).toEqual([`${ATTEMPT.attemptId}:cleaned:11`, `${ATTEMPT.attemptId}:cleaned:12`]);
+  });
+
+  it('stops sending when shut down', async () => {
+    await enqueueReceipts({root, owner: null}, ENROLLMENT,
+      receiptsForStop(ATTEMPT, {cgroupEmpty: 'empty', resourcesRemoved: true, held: [], containersRemoved: 2}, []));
+    const answers = server([]);
+    const stopped = new AbortController();
+    stopped.abort();
+    expect(await flushReceipts({fetch: answers.fetchImpl, state: {root, owner: null}, apiUrl: 'https://api.example',
+      now: () => new Date(), workspaceId: null, signal: stopped.signal})).toEqual({sent: 0, pending: 2});
+    expect(answers.sent).toEqual([]);
   });
 
   it('never queues the same key twice, and sends at most ten a cycle, oldest first', async () => {

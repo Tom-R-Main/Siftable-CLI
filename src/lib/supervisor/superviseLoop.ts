@@ -21,7 +21,7 @@ import {GO_LINE, READY_LINE} from './attemptLauncher.js';
 import {evaluateNetworkInspect, evaluateSandboxInspect, networkCreateArgs, sandboxCreateArgs, type SandboxContainerSpec} from './containerSandbox.js';
 import {DEADLINE_EXIT, type DeadlineDocker} from './hostDocker.js';
 import {type Attach, type AttachedProcess, ensureImage, readFirstLine} from './machineQualify.js';
-import {type OutboxEntry, OUTBOX, enqueueReceipts, flushReceipts, receiptsForStop} from './cleanupReceiptOutbox.js';
+import {type CleanupFacts, type OutboxEntry, enqueueReceipts, flushReceipts, receiptsForStop} from './cleanupReceiptOutbox.js';
 import {archiveJournal, inspectMachineState, type MachineRecord, type MachineStateOptions, readCredential, readJournal, removeJournal, writeJournal} from './machineState.js';
 import {attemptRelayHandler} from './modelRelayHandler.js';
 import {DIAGNOSTIC_PATH, MODEL_PATHS, SIDECAR_PORT} from './relaySidecar.js';
@@ -108,6 +108,10 @@ export interface AttemptJournal {
   settlement?: Settlement;
   /** Creates sent but not yet answered. Their IDs are recorded whenever they resolve; an unresolved one is held. */
   pendingCreates?: Array<'network' | 'sidecar' | 'agent'>;
+  /** Every cleanup receipt this attempt has owed, frozen here before it is handed to the outbox. */
+  receipts?: CleanupFacts[];
+  /** True once `receipts` are durably in the outbox; until then the journal is never archived. */
+  receiptsQueued?: boolean;
 }
 
 /** Dispatches this machine has started an attempt for; none is ever executed twice. */
@@ -210,27 +214,48 @@ async function unresolvedCreates(deps: SuperviseDeps, journal: AttemptJournal): 
 }
 
 /**
- * Queues the server-side record of this stop (U2d-3b): sent later, signed by
- * the enrollment key, so it survives the end of the claim. An attempt that
- * was never attached has nothing to report. Queuing never blocks the stop.
+ * Every receipt this attempt owes after this stop (U2d-3b): the ones the
+ * journal already froze, plus what this stop adds. Keys are numbered from the
+ * journal's own record, so the obligation never depends on reading the
+ * outbox. A create that never answered counts as held, so `cleaned` is never
+ * claimed while a daemon request might still finish. An attempt that was
+ * never attached has nothing to report.
  */
-async function queueCleanupReceipts(deps: SuperviseDeps, journal: AttemptJournal, facts: StopFacts): Promise<void> {
-  if (!journal.attemptId) return;
+async function receiptsOwed(deps: SuperviseDeps, journal: AttemptJournal, facts: StopFacts): Promise<CleanupFacts[]> {
+  const carried = journal.receipts ?? [];
+  if (!journal.attemptId) return carried;
+  const state = await inspectMachineState(deps.state);
+  if (state.kind !== 'enrolled') return carried;
+  const {machine} = state;
+  const unresolved = (journal.pendingCreates ?? []).map((role) => `create:${role}`);
+  const held = [...facts.held, ...unresolved];
+  const journaled = Object.values(journal.containers).filter(Boolean).length;
+  const heldContainers = held.filter((item) => item.startsWith('container:')).length;
+  const known: OutboxEntry[] = carried.map((owed) => ({enrollmentId: machine.enrollmentId, facts: owed, status: 'pending', sends: 0}));
+  const fresh = receiptsForStop(
+    {attemptId: journal.attemptId, workItemId: journal.workItemId, dispatchId: journal.dispatchId,
+      orgId: machine.scope.type === 'workspace' ? machine.scope.id : null},
+    {cgroupEmpty: facts.cgroupEmpty, resourcesRemoved: facts.resourcesRemoved && unresolved.length === 0, held,
+      containersRemoved: facts.cgroupEmpty === 'empty' ? Math.max(0, journaled - heldContainers) : 0},
+    known);
+  return [...carried, ...fresh];
+}
+
+/**
+ * Hands a journal's frozen receipts to the outbox. False when that could not
+ * be done; the caller then keeps the journal active, so the obligation is
+ * retried with the same facts and keys instead of being archived away.
+ */
+async function ensureReceiptsQueued(deps: SuperviseDeps, journal: AttemptJournal): Promise<boolean> {
+  if (journal.receiptsQueued !== false || !journal.receipts?.length) return true;
   try {
     const state = await inspectMachineState(deps.state);
-    if (state.kind !== 'enrolled') return;
-    const {machine} = state;
-    const journaled = Object.values(journal.containers).filter(Boolean).length;
-    const heldContainers = facts.held.filter((item) => item.startsWith('container:')).length;
-    const outbox = (await readJournal<{entries?: OutboxEntry[]}>(deps.state, OUTBOX))?.entries ?? [];
-    await enqueueReceipts(deps.state, machine.enrollmentId, receiptsForStop(
-      {attemptId: journal.attemptId, workItemId: journal.workItemId, dispatchId: journal.dispatchId,
-        orgId: machine.scope.type === 'workspace' ? machine.scope.id : null},
-      {cgroupEmpty: facts.cgroupEmpty, resourcesRemoved: facts.resourcesRemoved, held: facts.held,
-        containersRemoved: facts.cgroupEmpty === 'empty' ? Math.max(0, journaled - heldContainers) : 0},
-      outbox));
+    if (state.kind !== 'enrolled') return false;
+    await enqueueReceipts(deps.state, state.machine.enrollmentId, journal.receipts);
+    return true;
   } catch (error) {
-    deps.log(`Could not queue the cleanup receipts: ${(error as Error).message}`);
+    deps.log(`Could not queue the cleanup receipts; the attempt stays journaled until they are: ${(error as Error).message}`);
+    return false;
   }
 }
 
@@ -240,8 +265,9 @@ async function sendCleanupReceipts(deps: SuperviseDeps): Promise<void> {
     const state = await inspectMachineState(deps.state);
     if (state.kind !== 'enrolled') return;
     const {machine} = state;
+    if (deps.shutdown?.aborted) return;
     await flushReceipts({fetch: deps.fetch, state: deps.state, apiUrl: machine.apiUrl, now: () => new Date(deps.clock.wallMs()),
-      workspaceId: machine.scope.type === 'workspace' ? machine.scope.id : null});
+      workspaceId: machine.scope.type === 'workspace' ? machine.scope.id : null, signal: deps.shutdown, budgetMs: 20_000});
   } catch (error) {
     deps.log(`Could not send cleanup receipts: ${(error as Error).message}`);
   }
@@ -281,9 +307,18 @@ async function settle(
     (deadlineMono) => ownedResources(deps, journaled, deadlineMono));
   }
   current = {...current, state: facts.held.length > 0 ? 'held' : 'stopping', stop: {...stop, facts}};
+  const receipts = await receiptsOwed(deps, current, facts).catch((error: unknown) => {
+    deps.log(`Could not work out the cleanup receipts: ${(error as Error).message}`);
+    return current.receiptsQueued ? [] : current.receipts ?? [];
+  });
+  const added = receipts.length > (current.receipts?.length ?? 0);
+  current = {...current, receipts, receiptsQueued: added ? false : current.receiptsQueued ?? true};
   await stoppingWritten;
   await writeAttemptJournal(deps, current).catch((error: unknown) => { journalError ??= error; });
-  await queueCleanupReceipts(deps, current, facts);
+  if (journalError === undefined && await ensureReceiptsQueued(deps, current)) {
+    current = {...current, receiptsQueued: true};
+    await writeAttemptJournal(deps, current).catch((error: unknown) => { journalError ??= error; });
+  }
   if (journalError !== undefined) {
     throw new SuperviseError(`The attempt was stopped (cgroup ${facts.cgroupEmpty}, resources ${facts.resourcesRemoved ? 'removed' : 'held'}), `
       + `but its journal could not be written: ${(journalError as Error).message}. The earlier journal is kept for the next start.`);
@@ -417,8 +452,6 @@ async function recordDispatch(deps: SuperviseDeps, dispatchId: string): Promise<
  * is never run again, and neither is any dispatch already in the ledger.
  */
 export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutcome> {
-  // Receipts go out every cycle, held or not: the server learns what was cleaned even when nothing new can start.
-  await sendCleanupReceipts(deps);
   let earlier = await readJournal<AttemptJournal>(deps.state, JOURNAL);
   if (earlier && earlier.state !== 'settling') {
     const reason = earlier.stop?.reason ?? 'recovered';
@@ -431,7 +464,11 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       journal = {...journal, state: 'held', stop: {...(journal.stop ?? {reason}), facts}};
       await writeAttemptJournal(deps, journal);
     }
-    if (facts.held.length > 0) return {kind: 'held', held: facts.held};
+    if (facts.held.length > 0) {
+      // Physical recovery came first; receipts still go out while resources are held.
+      await sendCleanupReceipts(deps);
+      return {kind: 'held', held: facts.held};
+    }
     earlier = {...journal, state: 'settling', settlement: {...(journal.settlement ?? {
       reason, ...(journal.stop?.controlId ? {controlId: journal.stop.controlId} : {}),
       started: Boolean(journal.containers.sidecar || journal.containers.agent),
@@ -441,6 +478,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     await writeAttemptJournal(deps, earlier);
   }
 
+  // Receipts go out every cycle, after any recovery above has stopped what it had to, within a short budget.
+  await sendCleanupReceipts(deps);
   const info = await deps.docker(['info', '--format', '{{json .}}']);
   const setupProblem = info.code === 0 ? cgroupSetupProblem(JSON.parse(info.stdout || '{}') as Record<string, unknown>) : 'docker_unavailable';
   if (setupProblem && !earlier) return {kind: 'refused', reason: setupProblem};
@@ -473,6 +512,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       await writeAttemptJournal(deps, earlier);
       if (!settled) return {kind: 'recovered', settled: false};
     }
+    if (!await ensureReceiptsQueued(deps, earlier)) return {kind: 'recovered', settled: false};
     await archiveJournal(deps.state, JOURNAL, new Date(deps.clock.wallMs()));
     await removeJournal(deps.state, JOURNAL);
     const conflicts = conflictsOf(earlier.settlement);
@@ -507,6 +547,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     const posted = capLeft() > 0 ? await postSettlement(session, journal, claimToken, within(budgetMs)) : settlement;
     await save({...journal, settlement: posted});
     if (!isSettled(posted)) return false;
+    if (!await ensureReceiptsQueued(deps, journal)) return false;
     await archiveJournal(deps.state, JOURNAL, new Date(deps.clock.wallMs()));
     await removeJournal(deps.state, JOURNAL);
     return true;

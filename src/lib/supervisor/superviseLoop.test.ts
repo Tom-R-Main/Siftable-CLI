@@ -9,6 +9,7 @@ import type {DeadlineDocker} from './hostDocker.js';
 import type {Attach} from './machineQualify.js';
 import {generateMachineKey, machineKeyFingerprint, rawEd25519PublicKey} from './machineProtocol.js';
 import {commitMachine, ensureStateDirectory, readJournal, writeCredential, writeJournal, writeKey} from './machineState.js';
+import {OUTBOX} from './cleanupReceiptOutbox.js';
 import {type AttemptJournal, JOURNAL, superviseOnce, type SuperviseDeps} from './superviseLoop.js';
 import {systemClock} from './superviseAuthority.js';
 
@@ -472,6 +473,10 @@ describe('superviseOnce', () => {
     expect(outcome).toMatchObject({kind: 'finished', reason: 'shutdown', settled: false, facts: {resourcesRemoved: false}});
     expect((outcome as {facts: {held: string[]}}).facts.held).toContain('create:agent');
     expect(await journal()).toMatchObject({state: 'held', pendingCreates: ['agent']});
+    // The receipts owed say so: stopped, but cleanup failed on the unanswered create; never cleaned.
+    const outbox = await readJournal<{entries: Array<{facts: {state: string; reason: string | null}}>}>({root, owner: null}, OUTBOX);
+    expect(outbox?.entries.map((entry) => entry.facts.state)).toEqual(['execution_stopped', 'cleanup_failed']);
+    expect(outbox?.entries[1].facts.reason).toContain('create:agent');
     // An empty sweep proves nothing: still held, and no new work.
     const empty = world();
     expect(await superviseOnce(deps(empty))).toMatchObject({kind: 'held', held: expect.arrayContaining(['create:agent'])});
@@ -553,6 +558,21 @@ describe('superviseOnce', () => {
     expect(await running).toMatchObject({kind: 'finished', reason: 'shutdown'});
   });
 
+  it('keeps the attempt journaled while its receipts cannot reach the outbox, and archives only once they do', async () => {
+    // A directory where the outbox file belongs makes every outbox write fail.
+    await fs.mkdir(path.join(root, OUTBOX));
+    const w = world();
+    expect(await superviseOnce(deps(w))).toMatchObject({kind: 'finished', reason: 'workload_exited', settled: false});
+    expect(await journal()).toMatchObject({receiptsQueued: false,
+      receipts: [expect.objectContaining({state: 'execution_stopped'}), expect.objectContaining({state: 'cleaned'})]});
+    await fs.rmdir(path.join(root, OUTBOX));
+    const next = world();
+    expect(await superviseOnce(deps(next))).toMatchObject({kind: 'recovered', settled: true});
+    expect(await journal()).toBeNull();
+    const outbox = await readJournal<{entries: Array<{facts: {operationKey: string}}>}>({root, owner: null}, OUTBOX);
+    expect(outbox?.entries.map((entry) => entry.facts.operationKey)).toEqual([`${ATTEMPT}:execution_stopped:1`, `${ATTEMPT}:cleaned:1`]);
+  });
+
   it('tears down a run left by a crash by exact ID and never relaunches it', async () => {
     await writeJournal({root, owner: null}, JOURNAL, {version: 1, state: 'running', runId: 'abc123abc123', dispatchId: DISPATCH,
       workItemId: WORK_ITEM, runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`, attemptId: ATTEMPT, networkId: 'net-1',
@@ -561,8 +581,9 @@ describe('superviseOnce', () => {
     const w = world();
     expect(await superviseOnce(deps(w))).toEqual({kind: 'recovered', settled: true});
     // Journaled IDs are killed before any discovery listing runs; the server is then told with the recovered claim.
+    // Receipts go out only after the physical recovery, never before it.
     expect(w.events).toEqual(['kill:c-relay', 'kill:c-agent', 'ls:container', 'ls:network', 'rm:c-relay', 'rm:c-agent', 'network-rm',
-      'runner-heartbeat', 'consume', 'attempt:ended:failed', 'fail']);
+      'receipt:execution_stopped', 'receipt:cleaned', 'runner-heartbeat', 'consume', 'attempt:ended:failed', 'fail']);
     expect(w.events).not.toContain('network-create');
     expect(await journal()).toBeNull();
   });
