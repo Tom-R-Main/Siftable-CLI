@@ -164,7 +164,7 @@ The exact read is not limited by the 100-request list cap, so an older request a
 
 ## Command reference
 
-All 357 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
+All 358 commands, grouped by topic. Every command also accepts the [global flags](#global-flags) (`--json`, `--token`, `--api-url`, `--workspace`, `--no-input`).
 
 **Topics:** [General](#general) · [Agent](#agent) · [Agents](#agents) · [Ai](#ai) · [Approvals](#approvals) · [Auth](#auth) · [Billing](#billing) · [Calendar](#calendar) · [Capabilities](#capabilities) · [Code](#code) · [Codebase](#codebase) · [Codex](#codex) · [Compute](#compute) · [Context](#context) · [Crm](#crm) · [Datasets](#datasets) · [Documents](#documents) · [Env](#env) · [Events](#events) · [Evidence](#evidence) · [Grants](#grants) · [Graph](#graph) · [Lead-discovery](#lead-discovery) · [Machine](#machine) · [Notes](#notes) · [Organizations](#organizations) · [People](#people) · [Projects](#projects) · [Recipes](#recipes) · [Relationships](#relationships) · [Research](#research) · [Skills](#skills) · [Tasks](#tasks) · [Timeline](#timeline) · [Vault](#vault) · [Work](#work) · [Worker](#worker) · [Workspaces](#workspaces)
 
@@ -1980,6 +1980,9 @@ Enroll this Linux machine as a contained supervisor (run as root)
 - `--abandon-runner <value>` *(needs replace)* — With --replace: the runner you revoked in the browser, when the old state cannot revoke itself
 - `--replace` — Revoke and retire this machine's current enrollment, then enroll again
 - `--setup <value>` — Setup session this machine is enrolled for (recorded locally)
+
+#### `sift machine qualify`
+Qualify this enrolled machine: run the isolation probes in the pinned agent image and report them (run as root)
 
 #### `sift machine status`
 Show this machine's supervisor enrollment (run as root; never prints the credential)

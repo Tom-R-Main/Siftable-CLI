@@ -156,6 +156,22 @@ export async function updateMachine(options: MachineStateOptions, machine: Machi
   await writeFileAtomic(options, FILES.machine, `${JSON.stringify(machine, null, 2)}\n`);
 }
 
+/** A named JSON journal beside the enrollment (e.g. qualify-journal.json), with the same atomic, 0600 writes. */
+export async function writeJournal(options: MachineStateOptions, name: string, value: unknown): Promise<void> {
+  if (!/^[a-z-]+-journal\.json$/.test(name)) throw new MachineStateError(`${name} is not a journal name`);
+  await writeFileAtomic(options, name, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+export async function readJournal<T>(options: MachineStateOptions, name: string): Promise<T | null> {
+  const raw = await readRegularFile(options, name);
+  return raw === null ? null : JSON.parse(raw) as T;
+}
+
+export async function removeJournal(options: MachineStateOptions, name: string): Promise<void> {
+  await fs.rm(path.join(options.root, name), {force: true});
+  await syncDirectory(options.root);
+}
+
 /** What the directory holds. Anything that is not exactly empty, pending or enrolled is partial. */
 export async function inspectMachineState(options: MachineStateOptions): Promise<MachineStateKind> {
   const present: string[] = [];
