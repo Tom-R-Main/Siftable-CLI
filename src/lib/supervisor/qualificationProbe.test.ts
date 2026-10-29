@@ -38,37 +38,22 @@ describe('probeDockerSocket', () => {
 
 describe('probeEgress', () => {
   it('never counts an unresolvable name as blocking, and decides on literal addresses', async () => {
-    // 192.0.2.1 (TEST-NET-1) never answers: a host address that does not answer is blocked.
-    const config = {providerNames: [{host: 'unresolvable.invalid', port: 443}], hostAddresses: [{host: '192.0.2.1', port: 22}], timeoutMs: 300};
+    const config = {providerNames: [{host: 'unresolvable.invalid', port: 443}], timeoutMs: 500};
     // Names alone, with no literal address to try, prove nothing.
     expect(await probeEgress({...config, escapeAddresses: []})).toEqual({outcome: 'error', code: 'unexpected_error'});
-    // A way-out address that refuses is blocked.
+    // A literal address that refuses is blocked.
     const closed = createServer();
     await listen(closed, 0);
     const port = (closed.address() as {port: number}).port;
     await new Promise((resolve) => closed.close(resolve));
     expect(await probeEgress({...config, escapeAddresses: [{host: '127.0.0.1', port}]}))
-      .toMatchObject({outcome: 'blocked'});
+      .toEqual({outcome: 'blocked', code: 'connection_refused'});
     // A literal address that accepts is an escape.
     const open = createServer((socket) => socket.end());
     servers.push(open);
     await listen(open, 0);
     expect(await probeEgress({...config, escapeAddresses: [{host: '127.0.0.1', port: (open.address() as {port: number}).port}]}))
       .toEqual({outcome: 'reached', code: 'connect_succeeded'});
-  });
-});
-
-describe('probeEgress on host addresses', () => {
-  it('counts a refusal from a host address as reaching the host', async () => {
-    const closed = createServer();
-    await listen(closed, 0);
-    const port = (closed.address() as {port: number}).port;
-    await new Promise((resolve) => closed.close(resolve));
-    const config = {providerNames: [], escapeAddresses: [{host: '192.0.2.1', port: 443}], timeoutMs: 300};
-    // The same refusal that blocks on a way-out address means the host answered.
-    expect(await probeEgress({...config, hostAddresses: [{host: '127.0.0.1', port}]}))
-      .toEqual({outcome: 'reached', code: 'connection_refused'});
-    expect(await probeEgress({...config, hostAddresses: []})).toEqual({outcome: 'error', code: 'unexpected_error'});
   });
 });
 

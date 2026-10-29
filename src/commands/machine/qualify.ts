@@ -5,6 +5,7 @@ import {
   MachineQualifyError,
   qualifyMachine,
   readProcCgroup,
+  readWildcardListeningPorts,
   shippedAssets,
 } from '../../lib/supervisor/machineQualify.js';
 import {MachineStateError, SUPERVISOR_STATE_DIR} from '../../lib/supervisor/machineState.js';
@@ -32,6 +33,7 @@ export default class MachineQualify extends BaseCommand {
         now: () => new Date(),
         log: (line) => (this.jsonEnabled() ? process.stderr.write(`${line}\n`) : this.log(line)),
         readHostCgroup: readProcCgroup,
+        readHostListeningPorts: readWildcardListeningPorts,
         assets: shippedAssets(),
       }, {startOver: flags['start-over']});
       if (!this.jsonEnabled()) {
