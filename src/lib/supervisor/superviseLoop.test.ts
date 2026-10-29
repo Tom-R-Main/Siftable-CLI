@@ -48,6 +48,8 @@ interface Scenario {
   afterAttach?: number;
   /** The terminal report for the attempt is answered with this status. */
   terminalStatus?: number;
+  /** A lookup by exact name finds the resource an unanswered create made. */
+  nameFound?: boolean;
 }
 
 /** The API, Docker and attached processes one attempt touches, recording what happened in order. */
@@ -158,7 +160,11 @@ function world(scenario: Scenario = {}) {
         };
       })));
     }
-    if ((a === 'container' || a === 'network') && b === 'ls') { events.push(`ls:${a}`); return ok(''); }
+    if ((a === 'container' || a === 'network') && b === 'ls') {
+      const byName = args.some((arg) => arg.startsWith('name='));
+      events.push(byName ? `ls-name:${a}` : `ls:${a}`);
+      return ok(byName && scenario.nameFound ? 'c-agent\n' : '');
+    }
     if (a === 'container' && b === 'kill') { events.push(`kill:${args.at(-1)}`); return ok(); }
     if (a === 'container' && b === 'rm') { events.push(`rm:${args.at(-1)}`); return ok(); }
     if (a === 'network' && b === 'rm') { events.push('network-rm'); return ok(); }
@@ -438,9 +444,29 @@ describe('superviseOnce', () => {
     expect(outcome).toMatchObject({kind: 'finished', reason: 'shutdown', settled: false, facts: {resourcesRemoved: false}});
     expect((outcome as {facts: {held: string[]}}).facts.held).toContain('create:agent');
     expect(await journal()).toMatchObject({state: 'held', pendingCreates: ['agent']});
-    const next = world();
-    expect(await superviseOnce(deps(next))).toMatchObject({kind: 'recovered'});
-    expect(next.events.slice(0, 2)).toEqual(['kill:c-relay', 'ls:container']);
+    // An empty sweep proves nothing: still held, and no new work.
+    const empty = world();
+    expect(await superviseOnce(deps(empty))).toMatchObject({kind: 'held', held: expect.arrayContaining(['create:agent'])});
+    expect(empty.events).toContain('ls-name:container');
+    expect(empty.events).not.toContain('consume');
+    // Found by its exact name: resolved, removed by the sweep, and settled.
+    const found = world({nameFound: true});
+    expect(await superviseOnce(deps(found))).toMatchObject({kind: 'recovered'});
+    expect(await journal()).toBeNull();
+  }, 30_000);
+
+  it('lets the operator release an unknown create that Docker shows was never made', async () => {
+    const w = world({agentCreateDelay: 'never'});
+    const shutdown = new AbortController();
+    const running = superviseOnce(deps(w, {shutdown: shutdown.signal}));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    shutdown.abort();
+    await running;
+    expect(await superviseOnce(deps(world()))).toMatchObject({kind: 'held'});
+    const released = world();
+    expect(await superviseOnce(deps(released, {releaseUnknownCreates: true}))).toMatchObject({kind: 'recovered'});
+    expect(released.events).not.toContain('ls-name:container');
+    expect(await journal()).toBeNull();
   }, 30_000);
 
   it('keeps settlement pending, never archived, when the credential is refused after an attach', async () => {

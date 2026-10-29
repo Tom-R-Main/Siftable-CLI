@@ -26,7 +26,9 @@ async function readPlanFile(file: string): Promise<AttemptPlan> {
 function describe(outcome: SuperviseOutcome): string {
   switch (outcome.kind) {
     case 'idle': return 'No work for this machine.';
-    case 'held': return `Holding resources that could not be shown gone: ${outcome.held.join(', ')}. No new work starts until they are.`;
+    case 'held': return `Holding resources that could not be shown gone: ${outcome.held.join(', ')}. No new work starts until they are.`
+      + (outcome.held.some((item) => item.startsWith('create:'))
+        ? ' A create never answered; once Docker shows no such resource, run `sudo sift machine supervise --once --release-unknown-creates`.' : '');
     case 'refused': return `Not starting work: ${outcome.reason}.`;
     case 'recovered': return outcome.conflicts?.length ? `An attempt left by an earlier run was settled with server conflicts (${outcome.conflicts.join(', ')}); `
       + 'its record is kept under retired/ for reconciliation. It was not relaunched.'
@@ -46,6 +48,8 @@ export default class MachineSupervise extends BaseCommand {
     ...BaseCommand.baseFlags,
     once: Flags.boolean({default: false, description: 'Run at most one attempt, then exit'}),
     'plan-file': Flags.string({description: 'Root-owned JSON plan used for every dispatch (test fixture until setup launches record plans)'}),
+    'release-unknown-creates': Flags.boolean({default: false,
+      description: 'After checking Docker yourself: treat held creates whose result was never known, and that are not found by name, as never made'}),
   };
 
   async run(): Promise<unknown> {
@@ -74,7 +78,7 @@ export default class MachineSupervise extends BaseCommand {
     const deps = {
       fetch: globalThis.fetch, docker: createHostDocker(), attach: hostAttach, clock: systemClock,
       readFile: (file: string) => fs.readFile(file, 'utf8'),
-      state, shutdown: shutdown.signal,
+      state, shutdown: shutdown.signal, releaseUnknownCreates: flags['release-unknown-creates'],
       log: (line: string) => process.stderr.write(`${line}\n`),
       assets: supervisorAssets(),
       inputRoot: INPUT_ROOT,

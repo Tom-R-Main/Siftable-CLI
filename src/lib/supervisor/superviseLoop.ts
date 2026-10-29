@@ -58,6 +58,11 @@ export interface SuperviseDeps {
   timing?: {controlPollMs?: number; readyTimeoutMs?: number};
   /** Aborted when the service is stopping: the running attempt is stopped and cleaned up before return. */
   shutdown?: AbortSignal;
+  /**
+   * Operator decision (`--release-unknown-creates`): creates whose result was never known and whose
+   * resources are not found by name are treated as never made. Without it they stay held.
+   */
+  releaseUnknownCreates?: boolean;
 }
 
 type JournalState = 'claimed' | 'attached' | 'created' | 'started' | 'acknowledging' | 'running' | 'stopping' | 'held' | 'settling';
@@ -174,6 +179,28 @@ async function ownedResources(deps: SuperviseDeps, journal: AttemptJournal, dead
   const networkIds = new Set([...(journal.networkId ? [journal.networkId] : []),
     ...(networks.code === 0 ? networks.stdout.split('\n').map((id) => id.trim()).filter(Boolean) : [])]);
   return {containers: [...containers], networkIds: [...networkIds], complete: listed.code === 0 && networks.code === 0};
+}
+
+/** The fixed name each create used, so an unanswered create can be looked for later. */
+function createName(runId: string, role: 'network' | 'sidecar' | 'agent'): string {
+  return role === 'network' ? `sift-a-${runId}` : `sift-a-${runId}-${role === 'sidecar' ? 'relay' : 'agent'}`;
+}
+
+/**
+ * Roles of unanswered creates still unresolved: a resource found under the
+ * create's exact name settles it (the label sweep then removes it); one not
+ * found stays unknown, because an outstanding request may still finish.
+ */
+async function unresolvedCreates(deps: SuperviseDeps, journal: AttemptJournal): Promise<Array<'network' | 'sidecar' | 'agent'>> {
+  const unresolved: Array<'network' | 'sidecar' | 'agent'> = [];
+  for (const role of journal.pendingCreates ?? []) {
+    const name = createName(journal.runId, role);
+    const found = role === 'network'
+      ? await deps.docker(['network', 'ls', '--quiet', '--no-trunc', '--filter', `name=^${name}$`])
+      : await deps.docker(['container', 'ls', '--all', '--quiet', '--no-trunc', '--filter', `name=^/${name}$`]);
+    if (found.code !== 0 || !found.stdout.trim()) unresolved.push(role);
+  }
+  return unresolved;
 }
 
 /** Tears down a journal's run; returns what is still held. Never relaunches. */
@@ -341,8 +368,15 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   let earlier = await readJournal<AttemptJournal>(deps.state, JOURNAL);
   if (earlier && earlier.state !== 'settling') {
     const reason = earlier.stop?.reason ?? 'recovered';
-    // A new process has no create in flight; the run-label sweep in settle is authoritative for any that finished.
-    const {facts, journal} = await settle(deps, {...earlier, pendingCreates: []}, reason, earlier.stop?.controlId);
+    // An unanswered create is settled only by finding its resource by name, or by the operator's explicit release.
+    const unknown = deps.releaseUnknownCreates ? [] : await unresolvedCreates(deps, earlier);
+    const swept = await settle(deps, {...earlier, pendingCreates: unknown}, reason, earlier.stop?.controlId);
+    let {facts, journal} = swept;
+    if (unknown.length > 0) {
+      facts = {...facts, resourcesRemoved: false, held: [...facts.held, ...unknown.map((role) => `create:${role}`)]};
+      journal = {...journal, state: 'held', stop: {...(journal.stop ?? {reason}), facts}};
+      await writeJournal(deps.state, JOURNAL, journal);
+    }
     if (facts.held.length > 0) return {kind: 'held', held: facts.held};
     earlier = {...journal, state: 'settling', settlement: {...(journal.settlement ?? {
       reason, ...(journal.stop?.controlId ? {controlId: journal.stop.controlId} : {}),
@@ -483,9 +517,12 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   // A create is journaled before it is sent, and its ID is recorded whenever it answers, even after an interruption,
   // so teardown sees it. One cut off by the deadline may still complete in the daemon, so it stays pending.
   const inflight = new Set<Promise<unknown>>();
+  let finished = false;
   const create = async (role: 'network' | 'sidecar' | 'agent', args: string[]) => {
     await save({...journal, pendingCreates: [...(journal.pendingCreates ?? []), role]});
     const recorded = boundedDocker(args).then(async (created) => {
+      // After this run has finished its journal belongs to recovery, which looks for the resource by name.
+      if (finished) return created;
       const id = created.code === 0 ? created.stdout.trim() : '';
       const pendingCreates = created.code === DEADLINE_EXIT ? journal.pendingCreates : (journal.pendingCreates ?? []).filter((r) => r !== role);
       journal = role === 'network'
@@ -515,6 +552,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     agent?.stdin.end();
     // Wait, within the stop budget, for creates still in flight, so their IDs are torn down too.
     await Promise.race([Promise.allSettled([...inflight]), sleep(STOP_BUDGET_MS)]);
+    finished = true;
     await writing.catch(() => undefined);
     const settled = await settle(deps, journal, reason, controlId);
     sidecar?.kill();

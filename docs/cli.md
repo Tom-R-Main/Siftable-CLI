@@ -2005,6 +2005,7 @@ Run this machine's contained supervisor: claim work, run it in the sandbox, stop
 
 - `--once` — Run at most one attempt, then exit
 - `--plan-file <value>` — Root-owned JSON plan used for every dispatch (test fixture until setup launches record plans)
+- `--release-unknown-creates` — After checking Docker yourself: treat held creates whose result was never known, and that are not found by name, as never made
 
 
 ### Notes

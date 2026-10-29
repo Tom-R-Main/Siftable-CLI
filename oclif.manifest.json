@@ -34450,6 +34450,12 @@
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
+        },
+        "release-unknown-creates": {
+          "description": "After checking Docker yourself: treat held creates whose result was never known, and that are not found by name, as never made",
+          "name": "release-unknown-creates",
+          "allowNo": false,
+          "type": "boolean"
         }
       },
       "hasDynamicHelp": false,
