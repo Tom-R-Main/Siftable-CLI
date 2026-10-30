@@ -185,9 +185,10 @@ describe('review phase', () => {
     expect(outcome).toMatchObject({head: HEAD, outcome: 'passed', receipt: {completion: 'complete', revision: {head: HEAD}},
       calls: [{key: 'a1:1', status: 200, callId: 'call-1'}]});
     // Release R15: the head is durable before the first call, and each call as it is forwarded.
-    // ...then once more as the phase closes, after every in-flight call has been recorded.
+    // The key is recorded as unknown before the call is sent (R17), then its answer replaces it; once more as the phase
+    // closes, after every in-flight call has been recorded.
     const done = {head: HEAD, calls: [{key: 'a1:1', status: 200, callId: 'call-1'}]};
-    expect(journaled).toEqual([{head: HEAD, calls: []}, done, done]);
+    expect(journaled).toEqual([{head: HEAD, calls: []}, {head: HEAD, calls: [{key: 'a1:1', status: 0}]}, done, done]);
     expect(events.indexOf('journal:0')).toBeLessThan(events.indexOf('start:c-reviewer'));
     // One model call, billed to the reviewer under a journaled key; the writer's questions are not there.
     expect(relayed).toEqual([{role: 'reviewer', key: 'a1:1'}]);
@@ -217,12 +218,20 @@ describe('review phase', () => {
     expect(aborted.journaled.at(-1)).toEqual({head: HEAD, calls: [{key: 'a1:1', status: 0}]});
     const late = reviewWorld({callThenHang: 'ignores-abort'});
     const returned = await runReview({...late.ctx, timeoutMs: 100, drainMs: 20}, {baseSha: BASE, treeId: 'f'.repeat(40)});
-    expect(returned.outcome).toBe('review_timeout');
+    // Release R17: a call still running past the drain window is in the result and the last journal write as unknown.
+    expect(returned).toMatchObject({outcome: 'review_timeout', calls: [{key: 'a1:1', status: 0}]});
+    expect(late.journaled.at(-1)).toEqual({head: HEAD, calls: [{key: 'a1:1', status: 0}]});
+    const envelope = reviewEnvelope({attemptId: 'a1', baseSha: BASE, treeId: 'f'.repeat(40), patchSha256: '9'.repeat(64), runs: [], model: 'm'}, returned);
+    const frozen = JSON.stringify(envelope);
+    expect(envelope.calls).toEqual([{key: 'a1:1', status: 0}]);
     const writes = late.journaled.length;
-    // The relay answers long after the phase returned: the late record is fenced off from the journal.
+    // The relay answers long after the phase returned: nothing changes, neither the journal nor the returned record.
     late.release();
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(late.journaled).toHaveLength(writes);
+    expect(returned.calls).toEqual([{key: 'a1:1', status: 0}]);
+    expect(JSON.stringify(reviewEnvelope({attemptId: 'a1', baseSha: BASE, treeId: 'f'.repeat(40), patchSha256: '9'.repeat(64), runs: [], model: 'm'},
+      returned))).toBe(frozen);
   });
 
   it('fails a non-complete verdict but keeps its receipt', async () => {

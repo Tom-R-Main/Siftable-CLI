@@ -199,11 +199,24 @@ export async function runReview(ctx: ReviewContext, input: {baseSha: string; tre
     if (networkProblems.length > 0) throw new WorkspaceRefused('review_failed', `the review network is not as specified: ${networkProblems.join(', ')}`);
     stopped(ctx);
     sidecar = ctx.attach(['start', '--attach', '--interactive', sidecarId]);
+    // Every call is in the record from the moment its key is reserved, as status 0 (delivery unknown), before it is
+    // sent (Release R17); its answer replaces that entry. Once the phase is fenced the record no longer changes.
     const relay = attemptRelayHandler({fetch: ctx.fetch, diagnosticNonce: ''}, {...ctx.relay, role: 'reviewer'},
-      {open: () => open && !fenced && !ctx.signal?.aborted, nextCallId: ctx.nextCallId, recorded: async (call) => {
-        calls.push(call);
-        if (head && !fenced) await ctx.journal?.({head, calls: [...calls]});
-      }});
+      {open: () => open && !fenced && !ctx.signal?.aborted,
+        nextCallId: async () => {
+          const key = await ctx.nextCallId();
+          if (fenced) return key;
+          calls.push({key, status: 0});
+          if (head) await ctx.journal?.({head, calls: [...calls]});
+          return key;
+        },
+        recorded: async (call) => {
+          if (fenced) return;
+          const at = calls.findIndex((entry) => entry.key === call.key);
+          if (at >= 0) calls[at] = call;
+          else calls.push(call);
+          if (head) await ctx.journal?.({head, calls: [...calls]});
+        }});
     serveSidecarFrames(sidecar.stdout, sidecar.stdin, (frame, signal) => {
       const running = relay(frame, AbortSignal.any([signal, relayLife.signal]));
       inFlight.add(running);
