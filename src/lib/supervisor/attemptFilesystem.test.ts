@@ -216,6 +216,14 @@ describe('attempt filesystem', () => {
     expect(await releaseAttemptFs(foreign.sys, r2)).toEqual([`mount_foreign:${r2.mountPoint}`]);
     expect(foreign.calls.some((c) => c.startsWith('umount') || c.startsWith('unlink'))).toBe(false);
 
+    // The journaled device name and UUID now belong to a copy of the image at another path: never unmounted.
+    const copied = host();
+    const r3 = await createAttemptFs(copied.sys, ROOT, 'r1', journal().persist);
+    copied.loops.set(r3.loop!, {image: `${ROOT}/copy.img`, ino: 4242});
+    copied.uuidOf.set(4242, r3.uuid!);
+    expect(await releaseAttemptFs(copied.sys, r3)).toEqual([`mount_foreign:${r3.mountPoint}`]);
+    expect(copied.calls.some((c) => c.startsWith('umount') || c.startsWith('unlink'))).toBe(false);
+
     // A path never verified (a crash before its identity was journaled): held for the operator.
     const unverified = host();
     unverified.files.set(`${ROOT}/r9.img`, {dev: 7, ino: 3, blocks: 8});

@@ -217,16 +217,18 @@ export async function releaseAttemptFs(sys: AttemptFsSystem, record: AttemptFsRe
   if (stat && (record.imageIno === undefined || stat.dev !== record.imageDev || stat.ino !== record.imageIno)) {
     return [`image_unverified:${record.image}`];
   }
+  // Which devices back the journaled inode is known before anything is unmounted: a device name and UUID alone could
+  // belong to a copy of the image attached later.
+  const loops = await loopsOf(sys, record).catch(() => null);
+  if (loops === null) return [`loop:${record.image}`];
+  if (loops.foreign.length > 0) return loops.foreign.map((loop) => `loop_foreign:${loop}`);
   const source = await mountedSource(sys, record.mountPoint).catch(() => 'unknown');
   if (source !== null) {
-    if (!record.loop || source !== record.loop) return [`mount_foreign:${record.mountPoint}`];
+    if (!record.loop || source !== record.loop || !loops.ours.includes(source)) return [`mount_foreign:${record.mountPoint}`];
     if (!record.uuid || await uuidOf(sys, source).catch(() => null) !== record.uuid) return [`mount_foreign:${record.mountPoint}`];
     const unmounted = await sys.run(tools.umount, [record.mountPoint]);
     if (unmounted.code !== 0 || await mountedSource(sys, record.mountPoint).catch(() => 'unknown') !== null) return [`mount:${record.mountPoint}`];
   }
-  const loops = await loopsOf(sys, record).catch(() => null);
-  if (loops === null) return [`loop:${record.image}`];
-  if (loops.foreign.length > 0) return loops.foreign.map((loop) => `loop_foreign:${loop}`);
   for (const loop of loops.ours) await sys.run(tools.losetup, ['--detach', loop]);
   const left = await loopsOf(sys, record).catch(() => null);
   if (left === null || left.ours.length + left.foreign.length > 0) return [`loop:${record.image}`];
