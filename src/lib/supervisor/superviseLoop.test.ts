@@ -1501,6 +1501,32 @@ describe('superviseOnce', () => {
       });
     });
 
+    it('sends attempt reports exactly as the contract fixture the server checks against its route schema', async () => {
+      const reports: Array<{case: string; body: unknown}> = [];
+      const collect = (label: string, w: ReturnType<typeof world>) => {
+        for (const post of w.posts.filter((p) => p.path.endsWith('/execution-attempts'))) {
+          reports.push({case: `${label}:${String(post.body.state)}`, body: post.body});
+        }
+      };
+      const plain = world();
+      await superviseOnce(deps(plain));
+      collect('plain', plain);
+      // The same dispatch again, as a fresh machine would see it: the executed-dispatch ledger starts empty.
+      await fs.rm(path.join(root, 'dispatches-journal.json'), {force: true});
+      const {w, run} = await checkoutWorld();
+      await run();
+      collect('checkout', w);
+      const fixture = path.resolve(__dirname, '../../../test/fixtures/attempt-reports.json');
+      // The server's contract test (exf-app agentWorkExecutionReportContract.vitest.ts) parses this file with the
+      // real route schema. Regenerate with UPDATE_ATTEMPT_REPORT_FIXTURE=1 only for an intended body change.
+      if (process.env.UPDATE_ATTEMPT_REPORT_FIXTURE === '1') await fs.writeFile(fixture, `${JSON.stringify(reports, null, 2)}\n`);
+      expect(reports).toEqual(JSON.parse(await fs.readFile(fixture, 'utf8')));
+      // Every report carries the attach workspace object, never the writer's mounts.
+      for (const report of reports) {
+        expect((report.body as {workspace: unknown}).workspace).toEqual({repositoryId: PLAN.repositoryId, branch: PLAN.branch, baseSha: PLAN.baseSha});
+      }
+    });
+
     it('refuses a checkout plan it cannot run, before anything is attached', async () => {
       for (const bad of [{writeScope: ['../etc']}, {repositoryUrl: 'http://github.com/acme/widgets'}, {writeScope: ['src', 'src/lib']}]) {
         const {w, host} = await checkoutWorld();

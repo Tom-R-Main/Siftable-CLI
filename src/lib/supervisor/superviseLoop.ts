@@ -753,7 +753,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       inputSha256: input.payloadSha256, task: input.task, plan}), {mode: 0o444});
 
     // The checkout comes first: the writer's mounts name its volumes. A refusal ends the start before any writer exists.
-    let workspace: SandboxVolume[] | undefined;
+    // The writer's mounts. Not `workspace`: that name is the attach workspace every attempt report carries.
+    let writerMounts: SandboxVolume[] | undefined;
     let installLog: Buffer | undefined;
     if (checkout) {
       helperImageId = imageId;
@@ -782,11 +783,11 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       await save({...journal, preparing: false});
       // The writer's handoff, like every helper's: the volume is still exactly ours before its container is made.
       if (journal.fs) await guard(checkAttemptVolume(helpers, journal.fs));
-      workspace = writerVolumes(journal.runId, checkout.writeScope, Boolean(plan.install));
+      writerMounts = writerVolumes(journal.runId, checkout.writeScope, Boolean(plan.install));
     }
     const labelsOnly = attemptSpecs(deps, journal, attemptId, plan, '', nonce, inputFile).networkLabels;
     const networkId = await create('network', networkCreateArgs(`sift-a-${journal.runId}`, labelsOnly));
-    const specs = attemptSpecs(deps, journal, attemptId, plan, networkId, nonce, inputFile, workspace);
+    const specs = attemptSpecs(deps, journal, attemptId, plan, networkId, nonce, inputFile, writerMounts);
     const sidecarId = await create('sidecar', sandboxCreateArgs(specs.sidecar));
     const agentId = await create('agent', sandboxCreateArgs(specs.agent));
     await save({...journal, state: 'created'});
