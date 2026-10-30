@@ -25,15 +25,20 @@ import {
   AttemptFsError, type AttemptFsRecord, type AttemptFsSystem, attemptVolumeCreateArgs, attemptVolumeName, attemptVolumeProblem, createAttemptFs,
   releaseAttemptFs,
 } from './attemptFilesystem.js';
-import {MAX_PATCH_BYTES, PATCH_FILE} from './checkoutHelper.js';
-import {evaluateSandboxInspect, sandboxCreateArgs, type SandboxContainerSpec, type SandboxVolume} from './containerSandbox.js';
+import {admitDependencies, DependencyRefused, MAX_MANIFEST_BYTES} from './attemptDependencies.js';
+import {INSTALL_LOG, MAX_INSTALL_LOG_BYTES, MAX_PATCH_BYTES, PATCH_FILE} from './checkoutHelper.js';
+import {evaluateNetworkInspect, evaluateSandboxInspect, networkCreateArgs, sandboxCreateArgs, type SandboxContainerSpec,
+  type SandboxVolume} from './containerSandbox.js';
+import {PROXY_PORT} from './registryProxy.js';
+import {SANDBOX_UID} from './attemptFilesystem.js';
 import type {Attach} from './machineQualify.js';
 
 export const CHECKOUT_TIMEOUT_MS = 180_000;
 export const PATCH_TIMEOUT_MS = 10_000;
+export const INSTALL_TIMEOUT_MS = 300_000;
 const RESULT_LIMIT = 64 * 1024;
 
-export type HelperRole = 'fetch' | 'checkout' | 'patch' | 'volume';
+export type HelperRole = 'fetch' | 'checkout' | 'patch' | 'volume' | 'install-net' | 'egress' | 'proxy' | 'install';
 
 export interface WorkspaceContext {
   runId: string;
@@ -45,6 +50,10 @@ export interface WorkspaceContext {
   checkout: CheckoutPlan;
   /** The shipped checkout helper program, bind-mounted read-only. */
   helperAsset: string;
+  /** The shipped registry proxy program; needed only to install dependencies. */
+  proxyAsset?: string;
+  /** The host's own addresses, which the registry proxy refuses to reach. */
+  hostAddresses?: string[];
   docker: (args: string[]) => Promise<{code: number; stdout: string; stderr: string}>;
   attach: Attach;
   /** The caller's journaled create: records the request before sending and the ID when it answers. */
@@ -53,7 +62,7 @@ export interface WorkspaceContext {
   attemptRoot: string;
   persistFs: (record: AttemptFsRecord) => Promise<void>;
   /** Tests shorten these; production uses the contract's bounds. */
-  timeouts?: {checkoutMs?: number; patchMs?: number};
+  timeouts?: {checkoutMs?: number; patchMs?: number; installMs?: number};
   /** The attempt's lifetime: once aborted, no new step starts and a running helper is killed. */
   signal?: AbortSignal;
   /** Told of anything a step made that could not be shown removed (a helper container, the fetch bridge). */
@@ -84,12 +93,14 @@ const labels = (ctx: Pick<WorkspaceContext, 'runId' | 'attemptId'>, role: string
   ({'sift.machine.run': ctx.runId, 'sift.machine.role': role, 'sift.machine.attempt': ctx.attemptId});
 
 /**
- * The writer's view of the attempt volume: the checkout (subpath `work`) read-only, and each write scope writable
- * over it by its literal `work/<scope>` subpath. The volume's root is never mounted.
+ * The writer's view of the attempt volume: the checkout (subpath `work`) read-only, the installed dependencies
+ * (subpath `deps/node_modules`) read-only at node_modules when there are any, and each write scope writable over it
+ * by its literal `work/<scope>` subpath. The volume's root is never mounted.
  */
-export function writerVolumes(runId: string, writeScope: string[]): SandboxVolume[] {
+export function writerVolumes(runId: string, writeScope: string[], dependencies = false): SandboxVolume[] {
   const volume = attemptVolumeName(runId);
   return [{volume, target: '/workspace', readonly: true, subpath: 'work'},
+    ...(dependencies ? [{volume, target: '/workspace/node_modules', readonly: true, subpath: 'deps/node_modules'}] : []),
     ...writeScope.map((scope) => ({volume, target: `/workspace/${scope}`, readonly: false, subpath: `work/${scope}`}))];
 }
 
@@ -103,7 +114,7 @@ export async function checkAttemptVolume(ctx: WorkspaceContext, record: AttemptF
   if (problem) throw new WorkspaceRefused('attempt_volume', problem);
 }
 
-function helperSpec(ctx: WorkspaceContext, role: 'checkout' | 'patch', networkId: string, volumes: SandboxVolume[],
+function helperSpec(ctx: WorkspaceContext, role: 'checkout' | 'patch' | 'install', networkId: string, volumes: SandboxVolume[],
   env: Record<string, string>): SandboxContainerSpec {
   return {
     name: `sift-a-${ctx.runId}-${role}`, imageRef: ctx.imageRef, networkId, labels: labels(ctx, role),
@@ -115,7 +126,7 @@ function helperSpec(ctx: WorkspaceContext, role: 'checkout' | 'patch', networkId
 }
 
 /** Creates, checks, runs and removes one helper; returns its JSON result line. Never leaves it running. */
-async function runHelper(ctx: WorkspaceContext, role: 'checkout' | 'patch', spec: SandboxContainerSpec, timeoutMs: number) {
+async function runHelper(ctx: WorkspaceContext, role: 'checkout' | 'patch' | 'install', spec: SandboxContainerSpec, timeoutMs: number) {
   stopped(ctx);
   const id = await ctx.create(role, sandboxCreateArgs(spec));
   try {
@@ -239,4 +250,108 @@ export async function releaseWorkspace(docker: WorkspaceContext['docker'], fsSys
   }
   if (held.length > 0) return held;
   return releaseAttemptFs(fsSystem, record);
+}
+
+/** Reads a regular file the checkout or a helper wrote, without following links, within a cap. */
+async function readBounded(file: string, cap: number): Promise<Buffer | null> {
+  const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (!handle) return null;
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > cap) throw new WorkspaceRefused('unsupported_dependency_source', `${path.basename(file)} is not a bounded regular file`);
+    return await handle.readFile();
+  } finally {
+    await handle.close();
+  }
+}
+
+const networkArgs = (ctx: WorkspaceContext, role: string, name: string, internal: boolean) => (internal
+  ? networkCreateArgs(name, labels(ctx, role))
+  : ['network', 'create', '--driver', 'bridge', ...Object.entries(labels(ctx, role)).flatMap(([key, value]) => ['--label', `${key}=${value}`]), name]);
+
+/**
+ * Admits and installs the checkout's npm dependencies (dependency install
+ * contract rev 3), after the checkout and before the writer. The manifests are
+ * read from the checkout as data and admitted; their exact bytes go to the deps
+ * volume, where the install helper runs npm ci on an internal network whose
+ * only route out is the registry proxy. The proxy, both networks and the helper
+ * are removed before the writer's network exists. Returns the install log.
+ */
+export async function installDependencies(ctx: WorkspaceContext, record: AttemptFsRecord): Promise<Buffer> {
+  if (!ctx.proxyAsset) throw new WorkspaceRefused('dependency_install_failed', 'the registry proxy program is missing');
+  const work = path.join(record.mountPoint, 'work');
+  const deps = path.join(record.mountPoint, 'deps');
+  const manifest = await readBounded(path.join(work, 'package.json'), MAX_MANIFEST_BYTES);
+  const lock = await readBounded(path.join(work, 'package-lock.json'), MAX_MANIFEST_BYTES);
+  if (!manifest || !lock) throw new WorkspaceRefused('unsupported_dependency_source', 'the checkout has no package.json and package-lock.json at its root');
+  try {
+    admitDependencies(manifest.toString('utf8'), lock.toString('utf8'));
+  } catch (error) {
+    if (error instanceof DependencyRefused) throw new WorkspaceRefused(error.code, error.message);
+    throw error;
+  }
+  // The writer's node_modules is the installed one, mounted over an empty directory; a committed one is not admitted.
+  if (await fs.lstat(path.join(work, 'node_modules')).then(() => true, () => false)) {
+    throw new WorkspaceRefused('unsupported_dependency_source', 'the checkout commits a top-level node_modules');
+  }
+  await fs.mkdir(path.join(work, 'node_modules'), {mode: 0o755});
+  await ctx.fsSystem.chown(path.join(work, 'node_modules'), SANDBOX_UID, SANDBOX_UID);
+  for (const [name, bytes] of [['package.json', manifest], ['package-lock.json', lock]] as const) {
+    await fs.writeFile(path.join(deps, name), bytes, {mode: 0o644, flag: 'wx'});
+    await ctx.fsSystem.chown(path.join(deps, name), SANDBOX_UID, SANDBOX_UID);
+  }
+  stopped(ctx);
+  await checkAttemptVolume(ctx, record);
+
+  const proxyName = `sift-a-${ctx.runId}-proxy`;
+  stopped(ctx);
+  const installNet = await ctx.create('install-net', networkArgs(ctx, 'install-net', `sift-a-${ctx.runId}-install`, true));
+  const made2: string[] = [];
+  try {
+    stopped(ctx);
+    const egress = await ctx.create('egress', networkArgs(ctx, 'egress', `sift-a-${ctx.runId}-egress`, false));
+    made2.push(egress);
+    stopped(ctx);
+    const proxySpec: SandboxContainerSpec = {
+      name: proxyName, imageRef: ctx.imageRef, networkId: egress, labels: labels(ctx, 'proxy'),
+      entrypoint: 'node', command: ['/sift/registryProxy.js'], mounts: [{source: ctx.proxyAsset, target: '/sift/registryProxy.js'}],
+      tmpfs: ['/tmp'], env: {SIFT_DENY_ADDRESSES: (ctx.hostAddresses ?? []).join(','),
+        SIFT_PROXY_LIFETIME_MS: String((ctx.timeouts?.installMs ?? INSTALL_TIMEOUT_MS) + 30_000)},
+      limits: {cpus: 0.5, memoryMb: 256, pidsLimit: 64}, cgroupParent: ctx.slice,
+    };
+    const proxy = await ctx.create('proxy', sandboxCreateArgs(proxySpec));
+    try {
+      const inspected = await ctx.docker(['container', 'inspect', proxy]);
+      const [entry] = inspected.code === 0 ? JSON.parse(inspected.stdout) as unknown[] : [];
+      const problems = evaluateSandboxInspect(entry, {containerId: proxy, imageRef: ctx.imageRef, imageId: ctx.imageId, networkId: egress,
+        spec: proxySpec, phase: 'created'}).problems;
+      if (problems.length > 0) throw new WorkspaceRefused('proxy_sandbox', problems.join(', '));
+      const joined = await ctx.docker(['network', 'connect', installNet, proxy]);
+      if (joined.code !== 0) throw new WorkspaceRefused('dependency_install_failed', `the proxy could not join the install network: ${joined.stderr.trim().slice(0, 200)}`);
+      stopped(ctx);
+      const started = await ctx.docker(['container', 'start', proxy]);
+      if (started.code !== 0) throw new WorkspaceRefused('dependency_install_failed', `the proxy did not start: ${started.stderr.trim().slice(0, 200)}`);
+      // The install network gets the attempt network's checks: ours, internal, no gateway or host address, and only the proxy on it.
+      const network = await ctx.docker(['network', 'inspect', installNet]);
+      const [networkEntry] = network.code === 0 ? JSON.parse(network.stdout) as unknown[] : [];
+      const networkProblems = evaluateNetworkInspect(networkEntry, {networkId: installNet, labels: labels(ctx, 'install-net'),
+        containerIds: [proxy], hostAddresses: ctx.hostAddresses ?? []});
+      if (networkProblems.length > 0) throw new WorkspaceRefused('install_network', networkProblems.join(', '));
+      await runHelper(ctx, 'install', helperSpec(ctx, 'install', installNet, [
+        {volume: attemptVolumeName(ctx.runId), target: '/build', readonly: false, subpath: 'deps'},
+      ], {HOME: '/tmp/h', SIFT_MODE: 'install', SIFT_PROXY: `http://${proxyName}:${PROXY_PORT}`}), ctx.timeouts?.installMs ?? INSTALL_TIMEOUT_MS);
+    } finally {
+      const removed = await ctx.docker(['container', 'rm', '--force', proxy]);
+      if (!gone(removed)) ctx.held?.(`container:${proxy}`);
+    }
+  } finally {
+    for (const network of [...made2, installNet]) {
+      const removed = await ctx.docker(['network', 'rm', network]);
+      if (!gone(removed)) ctx.held?.(`network:${network}`);
+    }
+  }
+  return (await readBounded(path.join(deps, INSTALL_LOG), MAX_INSTALL_LOG_BYTES + 4096)) ?? Buffer.alloc(0);
 }

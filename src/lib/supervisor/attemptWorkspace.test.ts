@@ -5,7 +5,7 @@ import {PassThrough} from 'node:stream';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {ATTEMPT_FS_BYTES, type AttemptFsRecord, type AttemptFsSystem, attemptVolumeCreateArgs} from './attemptFilesystem.js';
 import {
-  freezePatch, type HelperRole, prepareWorkspace, releaseWorkspace, type WorkspaceContext, WorkspaceRefused, writerVolumes,
+  freezePatch, type HelperRole, installDependencies, prepareWorkspace, releaseWorkspace, type WorkspaceContext, WorkspaceRefused, writerVolumes,
 } from './attemptWorkspace.js';
 import {PATCH_FILE} from './checkoutHelper.js';
 import type {Attach} from './machineQualify.js';
@@ -82,6 +82,10 @@ function inspectFrom(id: string, created: string[], tamper?: (inspect: Record<st
 
 interface Scenario {
   result?: Record<string, unknown> | 'hang';
+  /** Another container sits on the install network. */
+  strangerOnInstallNet?: boolean;
+  /** The install helper's own result, when it differs from the others'. */
+  installResult?: Record<string, unknown>;
   exit?: number;
   tamper?: (inspect: Record<string, unknown>) => void;
   /** Writes the patch helper's output into the attempt filesystem, as the helper would. */
@@ -109,13 +113,20 @@ function context(scenario: Scenario = {}) {
         Options: {...opts, ...(scenario.volumeDevice ? {device: scenario.volumeDevice} : {})}}]));
     }
     if (a === 'volume' && b === 'ls') return ok('sift-a-r1-fs\n');
+    if (a === 'network' && b === 'inspect') {
+      const made = created.get(args[2])!;
+      return ok(JSON.stringify([{Id: args[2], Driver: 'bridge', Internal: made.includes('--internal'), EnableIPv6: false, Scope: 'local',
+        Attachable: false, Ingress: false, Options: {'com.docker.network.bridge.gateway_mode_ipv4': made.includes('--internal') ? 'isolated' : ''},
+        IPAM: {Config: [{Subnet: '172.30.0.0/16'}]}, Labels: Object.fromEntries(flag(made, '--label').map((l) => l.split('=') as [string, string])),
+        Containers: {'c-proxy': {}, ...(scenario.strangerOnInstallNet ? {'c-stranger': {}} : {})}}]));
+    }
     if (a === 'volume' && b === 'rm' && scenario.volumeRm) return {code: scenario.volumeRm, stdout: '', stderr: 'volume is in use'};
     return ok();
   };
   const create = async (role: HelperRole, args: string[]) => {
     events.push(`create:${role}`);
     if (role === 'volume') { volumeArgs = args; return args.at(-1)!; }
-    const id = role === 'fetch' ? 'net-fetch' : `c-${role}`;
+    const id = ['fetch', 'install-net', 'egress'].includes(role) ? `net-${role}` : `c-${role}`;
     created.set(id, args);
     return id;
   };
@@ -127,15 +138,21 @@ function context(scenario: Scenario = {}) {
       if (scenario.result === 'hang') return;
       void (async () => {
         if (id === 'c-patch') await scenario.patch?.(path.join(root, 'r1', 'src'));
-        stdout.end(`${JSON.stringify(scenario.result ?? {ok: true})}\n`);
-        resolve(scenario.exit ?? 0);
+        if (id === 'c-install' && scenario.installResult?.ok !== false) {
+          await fs.mkdir(path.join(root, 'r1', 'deps', 'node_modules', 'left-pad'), {recursive: true});
+          await fs.writeFile(path.join(root, 'r1', 'deps', 'install.log'), 'added 1 package in 1s\n');
+        }
+        const result = id === 'c-install' && scenario.installResult ? scenario.installResult : scenario.result ?? {ok: true};
+        stdout.end(`${JSON.stringify(result)}\n`);
+        resolve((result as {ok?: boolean}).ok === false ? 2 : scenario.exit ?? 0);
       })();
     });
     return {stdin: new PassThrough(), stdout, exited, kill: () => { events.push(`detach:${id}`); }};
   };
   const ctx: WorkspaceContext = {
     runId: 'r1', attemptId: 'a1', imageRef: IMAGE, imageId: IMAGE_ID, slice: 'siftable-a1.slice', checkout,
-    helperAsset: '/usr/lib/sift/checkoutHelper.js', docker, attach, create, fsSystem: fsHost(), attemptRoot: root,
+    helperAsset: '/usr/lib/sift/checkoutHelper.js', proxyAsset: '/usr/lib/sift/registryProxy.js', hostAddresses: ['10.0.0.4'],
+    docker, attach, create, fsSystem: fsHost(), attemptRoot: root,
     persistFs: async () => undefined, timeouts: {checkoutMs: 200, patchMs: 200},
   };
   return {ctx, events, created};
@@ -249,5 +266,75 @@ describe('attempt workspace', () => {
     expect(await releaseWorkspace(moved.ctx.docker, moved.ctx.fsSystem, moved.ctx, record)).toEqual(['volume_unverified:sift-a-r1-fs']);
     expect(moved.events).not.toContain('volume rm');
     expect(fsCalls.calls.some((c) => c.startsWith('unlink') || c.startsWith('umount'))).toBe(false);
+  });
+
+  describe('dependency install', () => {
+    const LOCK = JSON.stringify({name: 'w', lockfileVersion: 3, packages: {'': {name: 'w', dependencies: {'left-pad': '^1.3.0'}},
+      'node_modules/left-pad': {version: '1.3.0', resolved: 'https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz',
+        integrity: `sha512-${'A'.repeat(86)}==`}}});
+    /** A prepared workspace whose checkout holds these files at its root. */
+    async function checkedOut(files: Record<string, string>, scenario: Scenario = {}) {
+      const c = context(scenario);
+      const record = await prepareWorkspace(c.ctx);
+      for (const [name, text] of Object.entries(files)) {
+        await fs.mkdir(path.dirname(path.join(record.mountPoint, 'work', name)), {recursive: true});
+        await fs.writeFile(path.join(record.mountPoint, 'work', name), text);
+      }
+      c.events.length = 0;
+      return {...c, record};
+    }
+
+    it('installs behind the proxy on an internal network, then removes the proxy and both networks', async () => {
+      const {ctx, events, created, record} = await checkedOut({'package.json': '{"name":"w","dependencies":{"left-pad":"^1.3.0"}}', 'package-lock.json': LOCK});
+      const log = await installDependencies(ctx, record);
+      expect(log.toString()).toBe('added 1 package in 1s\n');
+      expect(events).toEqual(['volume inspect', 'create:install-net', 'create:egress', 'create:proxy', 'container inspect',
+        'network connect', 'container start', 'network inspect', 'create:install', 'container inspect', 'start:c-install', 'container rm', 'container rm',
+        'network rm', 'network rm']);
+      // The install network is internal with no gateway; the proxy alone also has egress.
+      expect(created.get('net-install-net')).toEqual(expect.arrayContaining(['--internal']));
+      expect(created.get('net-egress')).not.toContain('--internal');
+      const install = created.get('c-install')!;
+      expect(flag(install, '--network')).toEqual(['net-install-net']);
+      expect(flag(install, '--env')).toEqual(expect.arrayContaining(['SIFT_MODE=install', 'SIFT_PROXY=http://sift-a-r1-proxy:3128']));
+      expect(flag(install, '--mount')).toContain('type=volume,source=sift-a-r1-fs,target=/build,volume-subpath=deps');
+      expect(flag(created.get('c-proxy')!, '--env')).toContain('SIFT_DENY_ADDRESSES=10.0.0.4');
+      // The exact admitted bytes went to the deps volume; the writer's mount target exists and is empty.
+      expect(await fs.readFile(path.join(record.mountPoint, 'deps', 'package-lock.json'), 'utf8')).toBe(LOCK);
+      expect(await fs.readdir(path.join(record.mountPoint, 'work', 'node_modules'))).toEqual([]);
+      expect(writerVolumes('r1', ['src'], true)).toContainEqual(
+        {volume: 'sift-a-r1-fs', target: '/workspace/node_modules', readonly: true, subpath: 'deps/node_modules'});
+    });
+
+    it('refuses before any network when the lockfile, the manifests or a committed node_modules cannot be admitted', async () => {
+      const git = JSON.stringify({lockfileVersion: 3, packages: {'': {}, 'node_modules/x': {version: '1.0.0', resolved: 'git+ssh://git@github.com/a/x.git'}}});
+      for (const files of [{'package.json': '{}', 'package-lock.json': git}, {'package.json': '{}'},
+        {'package.json': '{}', 'package-lock.json': LOCK, 'node_modules/left-pad/index.js': ''}]) {
+        const {ctx, events, record} = await checkedOut(files);
+        expect(await refusal(installDependencies(ctx, record))).toBe('unsupported_dependency_source');
+        expect(events).toEqual([]);
+        await fs.rm(record.mountPoint, {recursive: true, force: true});
+      }
+    });
+
+    it('refuses a manifest that is a link instead of a file', async () => {
+      const {ctx, record} = await checkedOut({'package-lock.json': LOCK});
+      await fs.symlink('/etc/hosts', path.join(record.mountPoint, 'work', 'package.json'));
+      await expect(installDependencies(ctx, record)).rejects.toThrow(/ELOOP|symbolic/);
+    });
+
+    it('never starts the install when its network is not the one specified', async () => {
+      const {ctx, events, record} = await checkedOut({'package.json': '{}', 'package-lock.json': LOCK}, {strangerOnInstallNet: true});
+      expect(await refusal(installDependencies(ctx, record))).toBe('install_network');
+      expect(events).not.toContain('create:install');
+      expect(events.slice(-3)).toEqual(['container rm', 'network rm', 'network rm']);
+    });
+
+    it('fails the start when npm ci fails, and still removes the proxy and both networks', async () => {
+      const {ctx, events, record} = await checkedOut({'package.json': '{}', 'package-lock.json': LOCK},
+        {installResult: {ok: false, code: 'dependency_install_failed', detail: 'npm ci exited 1'}});
+      expect(await refusal(installDependencies(ctx, record))).toBe('dependency_install_failed');
+      expect(events.slice(-4)).toEqual(['container rm', 'container rm', 'network rm', 'network rm']);
+    });
   });
 });

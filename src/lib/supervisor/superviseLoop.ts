@@ -20,13 +20,14 @@ import {attemptSliceName, cgroupSetupProblem, isInsideAttemptSlice, parseCgroupV
 import {checkoutPlanProblem} from './attemptCheckout.js';
 import {captureLog, type EvidenceOutcome, type FrozenArtifact, uploadAgentLog} from './attemptEvidence.js';
 import type {AttemptFsRecord, AttemptFsSystem} from './attemptFilesystem.js';
-import {checkAttemptVolume, freezePatch, prepareWorkspace, releaseWorkspace, type WorkspaceContext, writerVolumes} from './attemptWorkspace.js';
+import {checkAttemptVolume, freezePatch, installDependencies, prepareWorkspace, releaseWorkspace, type WorkspaceContext,
+  writerVolumes} from './attemptWorkspace.js';
 import {closeRecoveredQuestions, type JournalQuestion, QuestionDesk} from './attemptQuestions.js';
 import {GO_LINE, READY_LINE} from './attemptLauncher.js';
 import {dockerVersionProblem, evaluateNetworkInspect, evaluateSandboxInspect, networkCreateArgs, sandboxCreateArgs, type SandboxContainerSpec,
   type SandboxVolume} from './containerSandbox.js';
-import {type CreateRole, ensureReceiptsQueued, JOURNAL, rederiveReceipts, sendCleanupReceipts, settle, SuperviseError, unresolvedCreates,
-  writeAttemptJournal} from './attemptSettle.js';
+import {type CreateRole, ensureReceiptsQueued, JOURNAL, NETWORK_ROLES, rederiveReceipts, sendCleanupReceipts, settle, SuperviseError,
+  unresolvedCreates, writeAttemptJournal} from './attemptSettle.js';
 import {DEADLINE_EXIT, type DeadlineDocker} from './hostDocker.js';
 import {type Attach, type AttachedProcess, ensureImage, readFirstLine} from './machineQualify.js';
 import type {CleanupFacts} from './cleanupReceiptOutbox.js';
@@ -52,6 +53,8 @@ export interface AttemptPlan {
   /** The checkout (U5b-2c): a public GitHub repository at baseSha, and the directories the writer may change. */
   repositoryUrl?: string;
   writeScope?: string[];
+  /** Install the checkout's npm dependencies behind the registry-only proxy before the writer starts. */
+  install?: {manager: 'npm'};
 }
 
 export interface SuperviseDeps {
@@ -64,7 +67,7 @@ export interface SuperviseDeps {
   hostAddresses: () => string[];
   state: MachineStateOptions;
   log: (line: string) => void;
-  assets: {sidecar: string; launcher: string; checkoutHelper?: string};
+  assets: {sidecar: string; launcher: string; checkoutHelper?: string; registryProxy?: string};
   /** Where attempt filesystems live and how they are made (U5b-2c); a checkout plan is refused without it. */
   attemptFs?: {system: AttemptFsSystem; root: string};
   /** Root-owned directory for read-only attempt inputs, outside the supervisor's state and any home. */
@@ -112,9 +115,9 @@ export interface AttemptJournal {
   runtimeId: string;
   attemptId?: string;
   networkId?: string;
-  containers: Partial<Record<'sidecar' | 'agent' | 'checkout' | 'patch', string>>;
-  /** The checkout helper's own bridge; the run-label sweep removes it too. */
-  fetchNetworkId?: string;
+  containers: Partial<Record<'sidecar' | 'agent' | 'checkout' | 'patch' | 'proxy' | 'install', string>>;
+  /** The helpers' own networks (checkout bridge, install network, proxy egress); the run-label sweep removes them too. */
+  helperNetworks?: Partial<Record<'fetch' | 'install-net' | 'egress', string>>;
   /** The attempt's own filesystem (U5b-2c): kept, with its volumes, when the evidence was not acknowledged. */
   fs?: AttemptFsRecord;
   /** The write scope's patch, frozen beside the log for the evidence manifest. */
@@ -562,6 +565,9 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   const checkout = plan.repositoryUrl === undefined && plan.writeScope === undefined ? undefined
     : {repositoryUrl: plan.repositoryUrl as string, baseSha: plan.baseSha, writeScope: plan.writeScope as string[]};
   if (checkout && (checkoutPlanProblem(checkout) || !deps.attemptFs || !deps.assets.checkoutHelper)) return refuseStart('plan_invalid');
+  // Dependencies need a checkout, npm, the proxy program, and no write scope over the installed node_modules.
+  if (plan.install !== undefined && (!checkout || plan.install?.manager !== 'npm' || !deps.assets.registryProxy
+    || checkout.writeScope.some((scope) => scope.split('/')[0] === 'node_modules'))) return refuseStart('plan_invalid');
   const workspace = {repositoryId: plan.repositoryId, branch: plan.branch, baseSha: plan.baseSha};
 
   await recordDispatch(deps, dispatch.id);
@@ -616,7 +622,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       const pendingCreates = created.code === DEADLINE_EXIT ? journal.pendingCreates : (journal.pendingCreates ?? []).filter((r) => r !== role);
       journal = role === 'volume' ? {...journal, pendingCreates}
         : role === 'network' ? {...journal, pendingCreates, ...(id ? {networkId: id} : {})}
-        : role === 'fetch' ? {...journal, pendingCreates, ...(id ? {fetchNetworkId: id} : {})}
+        : NETWORK_ROLES.has(role) ? {...journal, pendingCreates, helperNetworks: {...journal.helperNetworks, ...(id ? {[role]: id} : {})}}
           : {...journal, pendingCreates, containers: {...journal.containers, ...(id ? {[role]: id} : {})}};
       await persist();
       return created;
@@ -659,7 +665,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   const workspaceContext = (make: WorkspaceContext['create'], deadlineMono: () => number, signal?: AbortSignal): WorkspaceContext | undefined =>
     (checkout && deps.attemptFs && deps.assets.checkoutHelper && helperImageId ? {
       runId: journal.runId, attemptId, imageRef: plan.imageRef, imageId: helperImageId, slice: attemptSliceName(attemptId), checkout,
-      helperAsset: deps.assets.checkoutHelper, docker: (args) => deps.docker(args, {deadlineMono: deadlineMono()}), attach: deps.attach,
+      helperAsset: deps.assets.checkoutHelper, proxyAsset: deps.assets.registryProxy, hostAddresses: deps.hostAddresses(),
+      docker: (args) => deps.docker(args, {deadlineMono: deadlineMono()}), attach: deps.attach,
       create: make, fsSystem: deps.attemptFs.system, attemptRoot: deps.attemptFs.root, persistFs: (record) => save({...journal, fs: record}),
       signal, held: (item) => { helperHeld.push(item); },
     } : undefined);
@@ -799,6 +806,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
 
     // The checkout comes first: the writer's mounts name its volumes. A refusal ends the start before any writer exists.
     let workspace: SandboxVolume[] | undefined;
+    let installLog: Buffer | undefined;
     if (checkout) {
       helperImageId = imageId;
       const helpers = workspaceContext((role, args) => create(role, args), () => cap);
@@ -806,13 +814,17 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       await save({...journal, preparing: true});
       const runId = journal.runId;
       preparations.add(runId);
-      const prepared = prepareWorkspace({...helpers, signal: life.signal});
+      const lifetime = {...helpers, signal: life.signal};
+      // Preparation is the checkout and, when planned, the dependency install: one lifetime, waited out as one.
+      const prepared = prepareWorkspace(lifetime).then(async (record) => {
+        if (plan.install) installLog = await installDependencies(lifetime, record);
+      });
       preparing = prepared.then(() => undefined, () => undefined).finally(() => preparations.delete(runId));
       await guard(prepared);
       await save({...journal, preparing: false});
       // The writer's handoff, like every helper's: the volume is still exactly ours before its container is made.
       if (journal.fs) await guard(checkAttemptVolume(helpers, journal.fs));
-      workspace = writerVolumes(journal.runId, checkout.writeScope);
+      workspace = writerVolumes(journal.runId, checkout.writeScope, Boolean(plan.install));
     }
     const labelsOnly = attemptSpecs(deps, journal, attemptId, plan, '', nonce, inputFile).networkLabels;
     const networkId = await create('network', networkCreateArgs(`sift-a-${journal.runId}`, labelsOnly));
@@ -859,7 +871,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     // Readiness: the launcher reached the relay through the sidecar and saw this run's nonce.
     const ready = await guard(readFirstLine(agent.stdout, within(deps.timing?.readyTimeoutMs ?? READY_TIMEOUT_MS)));
     // The workload's output (stdout and stderr, merged by the launcher) is the attempt's log.
-    agentLog = captureLog(inputDir, agent.stdout);
+    agentLog = captureLog(inputDir, agent.stdout, installLog?.length
+      ? Buffer.concat([Buffer.from('[sift: dependency install]\n'), installLog, Buffer.from('\n[sift: workload]\n')]) : undefined);
     await save({...journal, evidenceOwed: true});
     const running = await inspectBoth('running');
     const [network] = JSON.parse(await must(['network', 'inspect', networkId])) as unknown[];
@@ -959,5 +972,5 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
 /** The shipped sidecar and launcher programs, beside this module in dist. */
 export function supervisorAssets(): SuperviseDeps['assets'] {
   return {sidecar: path.join(__dirname, 'relaySidecar.js'), launcher: path.join(__dirname, 'attemptLauncher.js'),
-    checkoutHelper: path.join(__dirname, 'checkoutHelper.js')};
+    checkoutHelper: path.join(__dirname, 'checkoutHelper.js'), registryProxy: path.join(__dirname, 'registryProxy.js')};
 }

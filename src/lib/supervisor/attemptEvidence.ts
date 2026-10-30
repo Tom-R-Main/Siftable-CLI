@@ -40,15 +40,17 @@ export interface FrozenArtifact extends FrozenLog {
  * `drainMs`, for the stream's own end, so the frozen file is the whole output; a stream that has not ended,
  * or a file that could not be written, rejects instead of freezing a partial log.
  */
-export function captureLog(dir: string, source: NodeJS.ReadableStream): {close(drainMs?: number): Promise<FrozenLog>} {
+export function captureLog(dir: string, source: NodeJS.ReadableStream, prefix?: Buffer): {close(drainMs?: number): Promise<FrozenLog>} {
   const file = path.join(dir, AGENT_LOG);
   const sink = createWriteStream(file, {mode: 0o600});
+  // The dependency install's output heads the log, inside the same cap (it is itself capped at 4 MiB).
+  if (prefix?.length) sink.write(prefix);
   let failure: Error | undefined;
   sink.on('error', (error) => { failure ??= error; });
   let ended = false;
   const end = new Promise<void>((resolve) => source.once('end', () => { ended = true; resolve(); }));
   const room = MAX_LOG_BYTES - TRUNCATED.length;
-  let written = 0;
+  let written = prefix?.length ?? 0;
   let cut = false;
   source.on('data', (chunk: Buffer | string) => {
     if (cut || failure) return;

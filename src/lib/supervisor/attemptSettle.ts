@@ -28,12 +28,14 @@ export async function ownedResources(deps: SuperviseDeps, journal: AttemptJourna
 }
 
 /** The fixed name each create used, so an unanswered create can be looked for later. */
-export type CreateRole = 'network' | 'sidecar' | 'agent' | 'fetch' | 'checkout' | 'patch' | 'volume';
-const NETWORK_ROLES = new Set<CreateRole>(['network', 'fetch']);
+export type CreateRole = 'network' | 'sidecar' | 'agent' | 'fetch' | 'checkout' | 'patch' | 'volume' | 'install-net' | 'egress' | 'proxy'
+  | 'install';
+export const NETWORK_ROLES = new Set<CreateRole>(['network', 'fetch', 'install-net', 'egress']);
 
 export function createName(runId: string, role: CreateRole): string {
   if (role === 'volume') return `sift-a-${runId}-fs`;
-  return role === 'network' ? `sift-a-${runId}` : `sift-a-${runId}-${role === 'sidecar' ? 'relay' : role}`;
+  if (role === 'network') return `sift-a-${runId}`;
+  return `sift-a-${runId}-${role === 'sidecar' ? 'relay' : role === 'install-net' ? 'install' : role}`;
 }
 
 /**

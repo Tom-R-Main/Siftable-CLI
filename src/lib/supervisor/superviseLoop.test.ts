@@ -93,7 +93,9 @@ interface Scenario {
     /** After this many inspections, Docker shows the volume on another device (it was replaced under us). */
     volumeMovesAfter?: number;
     /** Volumes that already exist, left by an earlier run. */
-    seedVolumes?: string[]};
+    seedVolumes?: string[];
+    /** Files the checkout leaves at the repository root (package.json, package-lock.json). */
+    files?: Record<string, string>};
 }
 
 /** An attempt filesystem host where every step succeeds; mount points and directories are real, under the test's root. */
@@ -258,7 +260,8 @@ function world(scenario: Scenario = {}) {
     if (a === 'info') return ok(JSON.stringify({CgroupDriver: 'systemd', CgroupVersion: '2', ServerVersion: '28.5.1'}));
     if (a === 'image' && b === 'inspect') return ok(JSON.stringify([{Id: IMAGE_ID, RepoDigests: [IMAGE]}]));
     if (a === 'network' && b === 'create') {
-      if (args.at(-1)!.endsWith('-fetch')) { events.push('fetch-network-create'); return ok('net-fetch\n'); }
+      const helperNet = ['fetch', 'install', 'egress'].find((role) => args.at(-1)!.endsWith(`-${role}`));
+      if (helperNet) { events.push(`${helperNet}-network-create`); return ok(`net-${helperNet}\n`); }
       events.push('network-create');
       return ok('net-1\n');
     }
@@ -278,6 +281,14 @@ function world(scenario: Scenario = {}) {
       if (b === 'rm') volumes.splice(volumes.indexOf(args.at(-1)!), 1);
       return ok(b === 'ls' ? volumes.join('\n') : '');
     }
+    if (a === 'network' && b === 'inspect' && args[2] === 'net-install') {
+      return ok(JSON.stringify([{Id: 'net-install', Driver: 'bridge', Internal: true, EnableIPv6: false, Scope: 'local', Attachable: false,
+        Ingress: false, Options: {'com.docker.network.bridge.gateway_mode_ipv4': 'isolated'}, IPAM: {Config: [{Subnet: '172.31.0.0/16'}]},
+        // The same run and attempt labels as the proxy, with the network's own role.
+        Labels: {...Object.fromEntries(flag(containers.get('c-proxy') ?? [], '--label').map((l) => l.split('=') as [string, string])),
+          'sift.machine.role': 'install-net'},
+        Containers: {'c-proxy': {}}}]));
+    }
     if (a === 'network' && b === 'inspect') {
       return ok(JSON.stringify([{Id: 'net-1', Driver: 'bridge', Internal: true, EnableIPv6: false, Options: {'com.docker.network.bridge.gateway_mode_ipv4': 'isolated'}, IPAM: {Config: [{Subnet: '172.18.0.0/16'}]}, Scope: 'local', Attachable: false, Ingress: false,
         Labels: {'sift.machine.run': flag(containers.get('c-relay') ?? [], '--label').find((l) => l.startsWith('sift.machine.run='))?.split('=')[1],
@@ -287,7 +298,7 @@ function world(scenario: Scenario = {}) {
     }
     if (a === 'container' && b === 'create') {
       const name = flag(args, '--name')[0];
-      const id = `c-${['relay', 'checkout', 'patch'].find((role) => name.endsWith(`-${role}`)) ?? 'agent'}`;
+      const id = `c-${['relay', 'checkout', 'patch', 'proxy', 'install'].find((role) => name.endsWith(`-${role}`)) ?? 'agent'}`;
       // The daemon may have made it, but the answer never came back within the deadline.
       if (id === 'c-patch' && scenario.checkout?.patchCreateLost) return {code: 124, stdout: '', stderr: 'deadline passed'};
       containers.set(id, args);
@@ -343,6 +354,7 @@ function world(scenario: Scenario = {}) {
       if (args.at(-1) === 'c-agent' && !scenario.stdoutNeverEnds) agentStdout?.end();
       return ok();
     }
+    if ((a === 'network' && b === 'connect') || (a === 'container' && b === 'start')) { events.push(`${a}-${b}:${args.at(-1)}`); return ok(); }
     if (a === 'container' && b === 'rm') {
       events.push(`rm:${args.at(-1)}`);
       if (args.at(-1) === 'c-patch' && scenario.checkout?.patchRmFails) return {code: 124, stdout: '', stderr: 'deadline passed'};
@@ -360,14 +372,20 @@ function world(scenario: Scenario = {}) {
     events.push(`start:${id}`);
     const stdin = new PassThrough();
     const stdout = new PassThrough();
-    if (id === 'c-checkout' || id === 'c-patch') {
+    if (id === 'c-checkout' || id === 'c-patch' || id === 'c-install') {
       const exited = (async () => {
-        const result = (id === 'c-checkout' ? scenario.checkout?.result : scenario.checkout?.patchResult) ?? {ok: true};
-        if (id === 'c-patch' && (result as {ok?: boolean}).ok !== false) {
-          // The helper writes the patch into the attempt filesystem's src directory.
-          const [run] = (await fs.readdir(scenario.checkout!.root, {withFileTypes: true})).filter((entry) => entry.isDirectory());
-          await fs.writeFile(path.join(scenario.checkout!.root, run.name, 'src', 'sift.patch'), '# sift patch v1\n+change\n');
+        const result = (id === 'c-checkout' ? scenario.checkout?.result : id === 'c-patch' ? scenario.checkout?.patchResult : undefined) ?? {ok: true};
+        const [run] = (await fs.readdir(scenario.checkout!.root, {withFileTypes: true})).filter((entry) => entry.isDirectory());
+        const mount = path.join(scenario.checkout!.root, run.name);
+        if (id === 'c-checkout') {
+          for (const [name, text] of Object.entries(scenario.checkout?.files ?? {})) await fs.writeFile(path.join(mount, 'work', name), text);
         }
+        if (id === 'c-install') {
+          await fs.mkdir(path.join(mount, 'deps', 'node_modules', 'left-pad'), {recursive: true});
+          await fs.writeFile(path.join(mount, 'deps', 'install.log'), 'added 1 package in 1s\n');
+        }
+        // The patch helper writes the patch into the attempt filesystem's src directory.
+        if (id === 'c-patch' && (result as {ok?: boolean}).ok !== false) await fs.writeFile(path.join(mount, 'src', 'sift.patch'), '# sift patch v1\n+change\n');
         stdout.end(`${JSON.stringify(result)}\n`);
         return (result as {ok?: boolean}).ok === false ? 2 : 0;
       })();
@@ -1372,6 +1390,39 @@ describe('superviseOnce', () => {
       const outbox = await readJournal<{entries: Array<{facts: {state: string}}>}>({root, owner: null}, OUTBOX);
       expect(outbox?.entries.map((entry) => entry.facts.state)).toEqual(['execution_stopped', 'cleanup_failed']);
       expect(w.events).not.toContain('review');
+    });
+
+    describe('with dependencies', () => {
+      const LOCK = JSON.stringify({name: 'w', lockfileVersion: 3, packages: {'': {name: 'w', dependencies: {'left-pad': '^1.3.0'}},
+        'node_modules/left-pad': {version: '1.3.0', resolved: 'https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz',
+          integrity: `sha512-${'A'.repeat(86)}==`}}});
+      const files = {'package.json': '{"name":"w","dependencies":{"left-pad":"^1.3.0"}}', 'package-lock.json': LOCK};
+      const ASSETS = {sidecar: '/opt/sift/relaySidecar.js', launcher: '/opt/sift/attemptLauncher.js', checkoutHelper: '/opt/sift/checkoutHelper.js',
+        registryProxy: '/opt/sift/registryProxy.js'};
+
+      it('installs before the writer, mounts node_modules read-only, and heads the log with the install output', async () => {
+        const {w, run} = await checkoutWorld({files}, {}, {}, {resolvePlan: async () => ({...CHECKOUT_PLAN, install: {manager: 'npm'}}),
+          assets: ASSETS});
+        expect(await run()).toMatchObject({kind: 'finished', reason: 'workload_exited', exitCode: 0, settled: true});
+        const order = (event: string) => w.events.indexOf(event);
+        expect(order('start:c-checkout')).toBeLessThan(order('start:c-install'));
+        expect(order('start:c-install')).toBeLessThan(order('network-create'));
+        expect(mounts(w, 'c-agent').map((m) => m.replace(/sift-a-[0-9a-f]+-/g, ''))).toContain(
+          'type=volume,source=fs,target=/workspace/node_modules,volume-subpath=deps/node_modules,readonly');
+        const log = w.evidence.puts.find((put) => put.headers['Content-Type'] === 'text/plain')!.body;
+        expect(log.startsWith('[sift: dependency install]\nadded 1 package in 1s\n\n[sift: workload]\n')).toBe(true);
+      });
+
+      it('refuses an install plan it cannot run, before anything is attached', async () => {
+        for (const plan of [{...PLAN, install: {manager: 'npm'}}, {...CHECKOUT_PLAN, install: {manager: 'yarn'}},
+          {...CHECKOUT_PLAN, writeScope: ['node_modules/left-pad'], install: {manager: 'npm'}}]) {
+          const {w, host} = await checkoutWorld();
+          const outcome = await superviseOnce(deps(w, {resolvePlan: async () => plan as typeof CHECKOUT_PLAN,
+            attemptFs: {system: host.system, root: path.dirname(root)}, assets: ASSETS}));
+          expect(outcome).toMatchObject({kind: 'refused', reason: 'plan_invalid'});
+          expect(w.events).not.toContain('attempt:starting');
+        }
+      });
     });
 
     it('refuses a checkout plan it cannot run, before anything is attached', async () => {
