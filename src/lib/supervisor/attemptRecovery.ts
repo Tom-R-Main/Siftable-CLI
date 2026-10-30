@@ -7,7 +7,7 @@
 import {createHash} from 'node:crypto';
 import {promises as fs} from 'node:fs';
 import path from 'node:path';
-import type {Session} from './attemptReport.js';
+import {observeAttemptState, observeWorkStatus, type Session, SETTLED_WORK_STATUSES} from './attemptReport.js';
 import {type EvidenceOutcome, uploadAgentLog} from './attemptEvidence.js';
 import {mountAttemptFs} from './attemptFilesystem.js';
 import {writeAttemptJournal} from './attemptSettle.js';
@@ -99,4 +99,25 @@ export async function resumeVerification(deps: SuperviseDeps, session: Session, 
       await writeAttemptJournal(deps, next);
     });
   return sent.some((entry) => entry.state === 'pending') ? 'pending' : next;
+}
+
+/**
+ * An earlier attempt whose claim is gone cannot report anything, but its reports may have landed before the
+ * crash or with a reply that was lost. Read the server's work status and attempt state, record what was seen,
+ * and treat the attempt as settled when the server already shows it ended (work item bbebed05). Nothing is sent
+ * or relaunched.
+ */
+export async function reconcileUnclaimed(deps: SuperviseDeps, session: Session, journal: AttemptJournal):
+  Promise<{journal: AttemptJournal; settled: boolean}> {
+  const settlement = journal.settlement;
+  if (!settlement) return {journal, settled: false};
+  const status = settlement.work === 'pending' ? await observeWorkStatus(session, journal.workItemId, 10_000) : undefined;
+  const state = settlement.attemptReport === 'pending' ? await observeAttemptState(session, journal, 10_000) : undefined;
+  const next = {...settlement,
+    ...(status && SETTLED_WORK_STATUSES.includes(status) ? {work: 'done' as const, observedWorkStatus: status} : {}),
+    ...(state === 'ended' || state === 'interrupted' ? {attemptReport: 'done' as const, observedAttemptState: state} : {})};
+  if (next.work === settlement.work && next.attemptReport === settlement.attemptReport) return {journal, settled: false};
+  const updated = {...journal, settlement: next};
+  await writeAttemptJournal(deps, updated);
+  return {journal: updated, settled: next.work !== 'pending' && next.attemptReport !== 'pending'};
 }

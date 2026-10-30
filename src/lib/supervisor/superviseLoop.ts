@@ -20,7 +20,7 @@ import {attemptSliceName, cgroupSetupProblem, isInsideAttemptSlice, parseCgroupV
 import {checkoutPlanProblem} from './attemptCheckout.js';
 import {conflictsOf, postSettlement, type Session} from './attemptReport.js';
 import {captureLog, type EvidenceOutcome, type FrozenArtifact, uploadAgentLog} from './attemptEvidence.js';
-import {resumeEvidence, resumeVerification, saveInstallOutput} from './attemptRecovery.js';
+import {reconcileUnclaimed, resumeEvidence, resumeVerification, saveInstallOutput} from './attemptRecovery.js';
 import {type BaseVerification, freezeVerifierLog, type RunRecord, type TestPlan, VERIFIER_LOG_CONTENT_TYPE, verifyBase, VerifyFailed,
   verifyResult} from './attemptVerify.js';
 import {buildSubmissions, pinOf, sendSubmissions, stepResults, testPlanProblem, type VerificationJournal} from './attemptVerifyRecords.js';
@@ -114,6 +114,8 @@ export interface Settlement {
   work: 'pending' | 'done' | 'conflict';
   /** The workload's evidence (U5b-2b): absent when nothing ran; unacknowledged fails the work. */
   evidence?: EvidenceOutcome;
+  /** What the server showed when a report's outcome was read instead of assumed (after a 409, or with the claim gone). */
+  observedWorkStatus?: string; observedAttemptState?: string;
 }
 
 export interface AttemptJournal {
@@ -407,6 +409,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       await writeAttemptJournal(deps, earlier);
       if (!settled) return {kind: 'recovered', settled: false};
     }
+    if (!settled) ({journal: earlier, settled} = await reconcileUnclaimed(deps, session, earlier));
     const ready = await ensureReceiptsQueued(deps, earlier);
     if (!ready) return {kind: 'recovered', settled: false};
     earlier = ready;
