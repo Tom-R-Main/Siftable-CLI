@@ -1,6 +1,7 @@
 import {Flags} from '@oclif/core';
 import {arch, hostname, platform} from 'node:os';
 import {BaseCommand, DEFAULT_API_URL} from '../../lib/base-command.js';
+import {linkMachineCommand} from '../../lib/setupSession.js';
 import {enrollMachine, MachineEnrollError} from '../../lib/supervisor/machineEnroll.js';
 import {machineHostLabels, parseMachineScope} from '../../lib/supervisor/machineProtocol.js';
 import {MachineStateError, SUPERVISOR_STATE_DIR} from '../../lib/supervisor/machineState.js';
@@ -54,15 +55,16 @@ export default class MachineEnroll extends BaseCommand {
         ...(flags['abandon-runner'] ? {abandonRunner: flags['abandon-runner']} : {}),
         host: machineHostLabels({hostname: hostname(), os: platform(), arch: arch(), agentVersion: this.config.version}),
       });
+      const workspaceId = scope.type === 'workspace' ? scope.id : null;
+      const next = flags.setup ? linkMachineCommand(flags.setup, result.runnerId, workspaceId) : undefined;
       if (!this.jsonEnabled()) {
         this.log(`Enrolled. Enrollment ${result.enrollmentId}, runner ${result.runnerId}.`);
         this.log('The machine is not qualified yet, so it cannot run work or call models until it qualifies.');
         if (!account.dockerGroup) this.log('Docker is not installed (no docker group); install it before qualifying.');
         // The plan is changed with the person's own credential, never the machine's, so this runs without sudo.
-        if (flags.setup) this.log(`Link it to your setup as yourself, without sudo: sift setup link-machine ${flags.setup} --runner ${result.runnerId}`);
+        if (next) this.log(`Link it to your setup as yourself, without sudo: ${next}`);
       }
-      return {...result, dockerGroup: account.dockerGroup,
-        ...(flags.setup ? {next: `sift setup link-machine ${flags.setup} --runner ${result.runnerId}`} : {})};
+      return {...result, dockerGroup: account.dockerGroup, ...(next ? {next} : {})};
     } catch (error) {
       if (error instanceof MachineEnrollError || error instanceof MachineStateError) this.error(error.message);
       throw error;

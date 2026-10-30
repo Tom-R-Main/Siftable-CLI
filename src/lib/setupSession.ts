@@ -24,10 +24,23 @@ export const setupWorkspace = (workspaceId: string | undefined): string => works
 export const planPageUrl = (apiUrl: string, sessionId: string): string =>
   `${apiUrl.replace(/\/+$/, '')}/app/setup/${encodeURIComponent(sessionId)}`;
 
+/** ` --workspace <id>` for a workspace setup: the enroll and link commands otherwise act in Personal or the saved selection. */
+const workspaceFlag = (workspaceId: string | null): string => (workspaceId ? ` --workspace ${workspaceId}` : '');
+
+/** The command that enrolls a machine for this setup, in the setup's workspace. */
+export const enrollCommand = (sessionId: string, workspaceId: string | null): string =>
+  `sudo sift machine enroll${workspaceFlag(workspaceId)} --setup ${sessionId}`;
+
+/** The command the person runs, without sudo, to name the enrolled runner in the setup. */
+export const linkMachineCommand = (sessionId: string, runnerId: string, workspaceId: string | null): string =>
+  `sift setup link-machine ${sessionId} --runner ${runnerId}${workspaceFlag(workspaceId)}`;
+
 /** What to do about each unmet requirement, in the words the plan page uses. */
-export function unmetLine(item: SetupUnmet): string {
+export function unmetLine(item: SetupUnmet, session: Pick<SetupSession, 'id' | 'workspaceId'>): string {
   if (item.code === 'missing_configuration') return `${item.field}: the server has no reviewer image configured; an operator must set it`;
-  if (item.field === 'machine.runnerId' && item.code === 'missing_value') return `${item.field}: enroll a Linux machine with \`sudo sift machine enroll --setup <id>\``;
+  if (item.field === 'machine.runnerId' && item.code === 'missing_value') {
+    return `${item.field}: enroll a Linux machine with \`${enrollCommand(session.id, session.workspaceId)}\``;
+  }
   return `${item.field}: ${item.code === 'missing_value' ? 'needs a value' : item.detail ?? item.code}`;
 }
 
@@ -35,7 +48,7 @@ export function unmetLine(item: SetupUnmet): string {
 export function describeSession(session: SetupSession, apiUrl: string): string[] {
   const lines = [`Setup ${session.id}: ${session.status}, version ${session.currentVersion}${session.workItemId ? `, work item ${session.workItemId}` : ''}`];
   if (session.plan.unmet.length) {
-    lines.push('Still needed:', ...session.plan.unmet.map((item) => `  ${unmetLine(item).replace('<id>', session.id)}`));
+    lines.push('Still needed:', ...session.plan.unmet.map((item) => `  ${unmetLine(item, session)}`));
   } else if (session.status === 'ready') {
     lines.push('Nothing is missing. Review the plan and press Run on the plan page.');
   }

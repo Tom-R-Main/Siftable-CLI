@@ -1,5 +1,5 @@
 import {describe, expect, it, vi} from 'vitest';
-import {describeSession, parseSetPairs, planPageUrl, type SetupSession} from '../../lib/setupSession.js';
+import {describeSession, enrollCommand, linkMachineCommand, parseSetPairs, planPageUrl, type SetupSession} from '../../lib/setupSession.js';
 import SetupContinue from './continue.js';
 import SetupLinkMachine from './link-machine.js';
 import SetupPrepare from './prepare.js';
@@ -37,6 +37,17 @@ describe('setup session helpers', () => {
     });
     expect(() => parseSetPairs(['novalue'])).toThrow(/field=value/);
     expect(() => parseSetPairs(['=x'])).toThrow(/field=value/);
+  });
+
+  // Release U6-R8: commands printed for a workspace setup act in that workspace.
+  it('names the setup\'s workspace in the enroll and link commands', () => {
+    const ws = '90000000-0000-4000-8000-0000000000c3';
+    expect(enrollCommand(ID, null)).toBe(`sudo sift machine enroll --setup ${ID}`);
+    expect(enrollCommand(ID, ws)).toBe(`sudo sift machine enroll --workspace ${ws} --setup ${ID}`);
+    expect(linkMachineCommand(ID, RUNNER, null)).toBe(`sift setup link-machine ${ID} --runner ${RUNNER}`);
+    expect(linkMachineCommand(ID, RUNNER, ws)).toBe(`sift setup link-machine ${ID} --runner ${RUNNER} --workspace ${ws}`);
+    expect(describeSession(session({workspaceId: ws}), API))
+      .toContain(`  machine.runnerId: enroll a Linux machine with \`sudo sift machine enroll --workspace ${ws} --setup ${ID}\``);
   });
 
   it('says what each unmet value needs and where to review the plan', () => {
