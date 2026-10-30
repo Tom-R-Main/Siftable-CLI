@@ -42,6 +42,7 @@ async function until(condition: () => boolean, timeoutMs = 10_000): Promise<void
 }
 
 interface VerifyScenarioRun {cases?: Array<[string, 'passed' | 'failed' | 'skipped']>; exit?: number; changed?: string[]}
+const REVIEW_HEAD = 'e'.repeat(40);
 const STEP_ID = (n: number) => `5e000000-0000-4000-8000-00000000000${n}`;
 
 interface Scenario {
@@ -101,7 +102,9 @@ interface Scenario {
     /** Docker refuses a call whose deadline has passed, as the host adapter does. */
     honorDeadlines?: boolean;
     /** The nth test-container create never answers (the daemon may still make it). */
-    loseVerifierCreate?: number};
+    loseVerifierCreate?: number;
+    /** The reviewer's result line (U3-2), or a review that never ends. */
+    review?: object | 'hang'};
   /** A checkout plan (U5b-2c): the attempt filesystem lives under `root`; the helpers answer with these results. */
   checkout?: {root: string; result?: object; patchResult?: object; patchRmFails?: boolean; patchCreateLost?: boolean;
     /** Removing the attempt's volumes fails, as when one is still in use. */
@@ -155,6 +158,7 @@ function attemptFsHost(options: {stallFallocate?: Promise<void>} = {}) {
 function world(scenario: Scenario = {}) {
   const events: string[] = [];
   const modelKeys: Array<string | undefined> = [];
+  const modelRoles: Array<string | undefined> = [];
   const sidecarIo: {stdin?: PassThrough; stdout?: PassThrough} = {};
   const agentInput: {value?: Record<string, unknown>} = {};
   const posts: Array<{path: string; body: Record<string, unknown>; key?: string}> = [];
@@ -215,6 +219,7 @@ function world(scenario: Scenario = {}) {
     if (route.endsWith('/runners/heartbeat')) { events.push('runner-heartbeat'); return reply(scenario.runnerHeartbeat ?? 200, {}); }
     if (route.includes('/model/')) {
       modelKeys.push(key);
+      modelRoles.push((init.headers as Record<string, string>)['X-Sift-Model-Role']);
       return new Response('event: done\n\n', {status: 200});
     }
     if (route.endsWith('/input')) {
@@ -281,6 +286,8 @@ function world(scenario: Scenario = {}) {
   const containers = new Map<string, string[]>();
   const started = new Set<string>();
   let verifierCreates = 0;
+  let reviewNetArgs: string[] = [];
+  let reviewSidecar: {out: PassThrough; answered: Map<number, number>} | undefined;
   const volumes: string[] = [...(scenario.checkout?.seedVolumes ?? [])];
   let volumeInspections = 0;
   /** What each volume was created with; a seeded one is as the earlier run made it. */
@@ -302,7 +309,8 @@ function world(scenario: Scenario = {}) {
     if (a === 'info') return ok(JSON.stringify({CgroupDriver: 'systemd', CgroupVersion: '2', ServerVersion: '28.5.1'}));
     if (a === 'image' && b === 'inspect') return ok(JSON.stringify([{Id: IMAGE_ID, RepoDigests: [IMAGE]}]));
     if (a === 'network' && b === 'create') {
-      const helperNet = ['fetch', 'install', 'egress'].find((role) => args.at(-1)!.endsWith(`-${role}`));
+      const helperNet = ['fetch', 'install', 'egress', 'review-net'].find((role) => args.at(-1)!.endsWith(`-${role}`));
+      if (helperNet === 'review-net') reviewNetArgs = args;
       if (helperNet) { events.push(`${helperNet}-network-create`); return ok(`net-${helperNet}\n`); }
       events.push('network-create');
       return ok('net-1\n');
@@ -323,6 +331,11 @@ function world(scenario: Scenario = {}) {
       if (b === 'rm') volumes.splice(volumes.indexOf(args.at(-1)!), 1);
       return ok(b === 'ls' ? volumes.join('\n') : '');
     }
+    if (a === 'network' && b === 'inspect' && args[2] === 'net-review-net') {
+      return ok(JSON.stringify([{Id: 'net-review-net', Driver: 'bridge', Internal: true, EnableIPv6: false, Scope: 'local', Attachable: false,
+        Ingress: false, Options: {'com.docker.network.bridge.gateway_mode_ipv4': 'isolated'}, IPAM: {Config: [{Subnet: '172.30.0.0/16'}]},
+        Labels: Object.fromEntries(flag(reviewNetArgs, '--label').map((l) => l.split('=') as [string, string])), Containers: {}}]));
+    }
     if (a === 'network' && b === 'inspect' && args[2] === 'net-install') {
       return ok(JSON.stringify([{Id: 'net-install', Driver: 'bridge', Internal: true, EnableIPv6: false, Scope: 'local', Attachable: false,
         Ingress: false, Options: {'com.docker.network.bridge.gateway_mode_ipv4': 'isolated'}, IPAM: {Config: [{Subnet: '172.31.0.0/16'}]},
@@ -340,7 +353,8 @@ function world(scenario: Scenario = {}) {
     }
     if (a === 'container' && b === 'create') {
       const name = flag(args, '--name')[0];
-      const id = `c-${['verify-checkout', 'tree-check', 'report', 'verifier', 'relay', 'checkout', 'patch', 'proxy', 'install']
+      const id = `c-${['verify-checkout', 'tree-check', 'report', 'verifier', 'result-commit', 'review-relay', 'reviewer', 'relay', 'checkout',
+        'patch', 'proxy', 'install']
         .find((role) => name.endsWith(`-${role}`)) ?? 'agent'}`;
       // The daemon may have made it, but the answer never came back within the deadline.
       if (id === 'c-patch' && scenario.checkout?.patchCreateLost) return {code: 124, stdout: '', stderr: 'deadline passed'};
@@ -437,6 +451,35 @@ function world(scenario: Scenario = {}) {
       })();
       return {stdin, stdout, exited, kill: () => stdout.end()};
     }
+    if (id === 'c-review-relay') {
+      const answered = new Map<number, number>();
+      reviewSidecar = {out: stdout, answered};
+      let buffer = '';
+      stdin.on('data', (chunk: Buffer) => {
+        buffer += chunk.toString();
+        for (let nl = buffer.indexOf('\n'); nl >= 0; nl = buffer.indexOf('\n')) {
+          const frame = JSON.parse(buffer.slice(0, nl)) as {id: number; status?: number};
+          buffer = buffer.slice(nl + 1);
+          if (frame.status !== undefined) answered.set(frame.id, frame.status);
+        }
+      });
+      return {stdin, stdout, exited: new Promise(() => {}), kill: () => stdout.end()};
+    }
+    if (id === 'c-result-commit' || id === 'c-reviewer') {
+      const exited = (async () => {
+        if (id === 'c-result-commit') { stdout.end(`${JSON.stringify({ok: true, head: REVIEW_HEAD})}\n`); return 0; }
+        if (scenario.verify?.review === 'hang') return new Promise<number>(() => {});
+        // One model call through the reviewer's sidecar, then the result line.
+        reviewSidecar?.out.write(`${JSON.stringify({id: 1, method: 'POST', path: '/sift/v1/model/openai/v1/responses',
+          body: Buffer.from('{"model":"gpt-6.1-sol"}').toString('base64')})}\n`);
+        for (let i = 0; i < 200 && !reviewSidecar?.answered.has(1); i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+        events.push(`review-call:${reviewSidecar?.answered.get(1)}`);
+        stdout.end(`${JSON.stringify(scenario.verify?.review ?? {version: 'sift.review-result/v1', ok: true,
+          receipt: {schema: 'taster.local-receipt/v1', verdict: {kind: 'complete', reviewedSha: REVIEW_HEAD}}})}\n`);
+        return 0;
+      })();
+      return {stdin, stdout, exited, kill: () => stdout.end()};
+    }
     if (['c-verify-checkout', 'c-verifier', 'c-report', 'c-tree-check'].includes(id)) {
       const exited = (async () => {
         const made = containers.get(id) ?? [];
@@ -486,7 +529,7 @@ function world(scenario: Scenario = {}) {
     if (file.endsWith('cgroup.events')) return (scenario.populated ?? (() => 'populated 0\n'))();
     throw Object.assign(new Error('missing'), {code: 'ENOENT'});
   };
-  return {events, posts, fetchImpl, docker, attach, readFile, modelKeys, sidecarIo, agentInput, evidence, receipts, containers, scenario};
+  return {events, posts, fetchImpl, docker, attach, readFile, modelKeys, modelRoles, sidecarIo, agentInput, evidence, receipts, containers, scenario};
 }
 
 describe('superviseOnce', () => {
@@ -1649,6 +1692,50 @@ describe('superviseOnce', () => {
           expect((await journal())?.verification?.outcome).toBe('verification_interrupted');
           expect(w.events).not.toContain('review');
         }, 15_000);
+
+        describe('review (U3-2b)', () => {
+          const REVIEW = {imageRef: IMAGE, model: 'gpt-6.1-sol'};
+          const reviewWorld = (scenario: Scenario) => checkoutWorld({files}, scenario, {}, {resolvePlan: async () => ({...CHECKOUT_PLAN,
+            install: {manager: 'npm'}, test: TEST, review: REVIEW}), assets: VERIFY_ASSETS});
+          const verifierJson = (w: ReturnType<typeof world>) => JSON.parse(w.evidence.puts.find((put) => put.headers['Content-Type'] === 'application/json')!.body) as
+            {outcome: string; review?: {outcome: string; head: string; receipt?: {verdict: {kind: string}}}};
+
+          it('reviews the verified result as the reviewer after verification, and carries the receipt in the verifier log', async () => {
+            const {w, run} = await reviewWorld({verify: {base: failing, selected: fixed, regression: fixed}});
+            expect(await run()).toMatchObject({kind: 'finished', reason: 'workload_exited', settled: true});
+            const order = (event: string) => w.events.indexOf(event);
+            expect(w.events.lastIndexOf('start:c-verifier')).toBeLessThan(order('start:c-result-commit'));
+            expect(order('review-net-network-create')).toBeLessThan(order('start:c-review-relay'));
+            expect(order('start:c-review-relay')).toBeLessThan(order('start:c-reviewer'));
+            expect(w.events).toContain('review-call:200');
+            // The writer's calls bill the writer; the review's bills the reviewer.
+            expect(w.modelRoles.at(-1)).toBe('reviewer');
+            expect(order('rm:c-reviewer')).toBeLessThan(order('evidence-declare'));
+            expect(verifierJson(w)).toMatchObject({outcome: 'passed', review: {outcome: 'passed', head: REVIEW_HEAD, receipt: {verdict: {kind: 'complete'}}}});
+            expect(w.events).toContain('review');
+          });
+
+          it('fails the work when the review does not complete, keeping its receipt', async () => {
+            const {w, run} = await reviewWorld({verify: {base: failing, selected: fixed, regression: fixed,
+              review: {version: 'sift.review-result/v1', ok: true, receipt: {verdict: {kind: 'incomplete', reviewedSha: REVIEW_HEAD}}}}});
+            expect(await run()).toMatchObject({kind: 'finished', settled: true});
+            expect(verifierJson(w)).toMatchObject({outcome: 'review_failed', review: {outcome: 'review_failed', receipt: {verdict: {kind: 'incomplete'}}}});
+            // The verification steps passed and are recorded as passed; the work fails on the review.
+            expect(w.events.filter((e) => e.startsWith('verify-record:'))).toEqual(
+              ['verify-record:base:passed', 'verify-record:selected:passed', 'verify-record:regression:passed']);
+            const fail = w.posts.find((p) => p.path.endsWith('/fail'))!;
+            expect(String(fail.body.failureReason)).toMatch(/^Verification failed: review_failed: the review of the verified result did not complete/);
+            expect(w.events).not.toContain('review');
+          });
+
+          it('refuses a review plan without a pinned image or without verification', async () => {
+            const {run} = await checkoutWorld({files}, {}, {}, {resolvePlan: async () => ({...CHECKOUT_PLAN, install: {manager: 'npm'}, test: TEST,
+              review: {imageRef: 'reviewer:latest', model: 'gpt-6.1-sol'}}), assets: VERIFY_ASSETS});
+            expect(await run()).toMatchObject({kind: 'refused', reason: 'plan_invalid'});
+            const {run: noTest} = await checkoutWorld({files}, {}, {}, {resolvePlan: async () => ({...CHECKOUT_PLAN, review: REVIEW}), assets: VERIFY_ASSETS});
+            expect(await noTest()).toMatchObject({kind: 'refused', reason: 'plan_invalid'});
+          });
+        });
 
         // Codex connector P1 on #1386: a verification create that never answered after the stop is held, like the patch's.
         it('holds a post-stop verification create that never answered, and keeps the journal for the next start', async () => {

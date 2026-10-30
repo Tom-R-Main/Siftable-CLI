@@ -24,6 +24,7 @@ import {resumeEvidence, resumeVerification, saveInstallOutput} from './attemptRe
 import {type BaseVerification, freezeVerifierLog, type RunRecord, type TestPlan, VERIFIER_LOG_CONTENT_TYPE, verifyBase, VerifyFailed,
   verifyResult} from './attemptVerify.js';
 import {buildSubmissions, pinOf, sendSubmissions, stepResults, testPlanProblem, type VerificationJournal} from './attemptVerifyRecords.js';
+import {reviewPlanProblem, type ReviewOutcome, runReview} from './attemptReview.js';
 import type {AttemptFsRecord, AttemptFsSystem} from './attemptFilesystem.js';
 import {checkAttemptVolume, freezePatch, installDependencies, prepareWorkspace, releaseWorkspace, type WorkspaceContext, WorkspaceRefused,
   writerVolumes} from './attemptWorkspace.js';
@@ -62,6 +63,8 @@ export interface AttemptPlan {
   install?: {manager: 'npm'};
   /** Verification (U3-1): the test command, the selector for the failing test, and the test files to freeze. */
   test?: TestPlan;
+  /** Review (U3-2): the pinned reviewer image and the reviewer model; needs `test`. */
+  review?: {imageRef: string; model: string};
 }
 
 export interface SuperviseDeps {
@@ -474,6 +477,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   // Verification needs the checkout, its installed dependencies and the report reader; the work item's verification
   // plan is pinned now, before the attach, so a plan without its three steps refuses with nothing run.
   if (plan.test !== undefined && (testPlanProblem(plan.test) || !checkout || !plan.install || !deps.assets.junitReport)) return refuseStart('plan_invalid');
+  if (plan.review !== undefined && (reviewPlanProblem(plan.review) || !plan.test)) return refuseStart('plan_invalid');
   const pin = plan.test ? pinOf(await session.call('GET', `/api/v1/work-items/${workItem.id}/verification-plan`, undefined,
     {timeoutMs: within(15_000)}).then((reply) => (reply.status === 200 ? reply.body : undefined), () => undefined)) : undefined;
   if (plan.test && !pin) return refuseStart('plan_invalid');
@@ -558,6 +562,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   let modelsOpen = false;
   const inputDir = path.join(deps.inputRoot, attemptId);
   let helperImageId: string | undefined;
+  let reviewImageId: string | undefined;
   // Helpers made after the run has finished (the patch) still journal their requests and IDs, so a crash leaves them to the sweep.
   const helperCreate = async (role: CreateRole, args: string[]) => {
     await save({...journal, pendingCreates: [...(journal.pendingCreates ?? []), role]});
@@ -650,6 +655,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
         let runs: RunRecord[] = baseVerified ? [baseVerified.run] : [];
         let outcome = 'not_run';
         let failure: VerifyFailed | undefined = verifyFailure;
+        let review: ReviewOutcome | undefined;
         const base = baseVerified;
         const verifying = !failure && base && patch && journal.fs && plan.test && deps.assets.junitReport && reason === 'workload_exited'
           && exitCode === 0 ? workspaceContext(helperCreate, () => deps.clock.monoMs() + STOP_BUDGET_MS) : undefined;
@@ -661,24 +667,42 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
           const onShutdown = () => verifyLife.abort();
           if (deps.shutdown?.aborted) verifyLife.abort();
           else deps.shutdown?.addEventListener('abort', onShutdown, {once: true});
-          runs = await verifyResult({...verifying, signal: verifyLife.signal, record: journal.fs, test: plan.test, reportAsset: deps.assets.junitReport,
-            dependencies: Boolean(plan.install)}, base, patch).catch((error: unknown) => {
-            failure = error instanceof VerifyFailed ? error : new VerifyFailed('verify_failed', (error as Error).message, [base.run]);
-            return failure.runs;
-          }).finally(() => {
+          const fs0 = journal.fs;
+          try {
+            runs = await verifyResult({...verifying, signal: verifyLife.signal, record: fs0, test: plan.test, reportAsset: deps.assets.junitReport,
+              dependencies: Boolean(plan.install)}, base, patch).catch((error: unknown) => {
+              failure = error instanceof VerifyFailed ? error : new VerifyFailed('verify_failed', (error as Error).message, [base.run]);
+              return failure.runs;
+            });
+            outcome = 'passed';
+            // The review (U3-2) follows a passed verification, within the same lifetime; it never throws.
+            const selectedTree = runs.find((run) => run.role === 'selected')?.treeId;
+            if (!failure && plan.review && reviewImageId && selectedTree) {
+              review = await runReview({...verifying, signal: verifyLife.signal, record: fs0, reviewImageRef: plan.review.imageRef, reviewImageId,
+                model: plan.review.model, sidecarAsset: deps.assets.sidecar, fetch: deps.fetch, hostAddresses: deps.hostAddresses(),
+                relay: {apiUrl: machine.apiUrl, token: session.token, workspaceId, workItemId: journal.workItemId, attemptId, claimToken},
+                nextCallId: async () => {
+                  const seq = journal.callSeq + 1;
+                  journal = {...journal, callSeq: seq};
+                  await persist();
+                  return `${attemptId}:${seq}`;
+                }}, {baseSha: plan.baseSha, treeId: selectedTree});
+              if (review.outcome !== 'passed') outcome = review.outcome;
+            }
+          } finally {
             clearTimeout(stopAt);
             deps.shutdown?.removeEventListener('abort', onShutdown);
-          });
-          outcome = 'passed';
+          }
         }
         if (failure) {
           runs = failure.runs;
           outcome = failure.code === 'interrupted' ? 'verification_interrupted' : failure.code;
         }
-        verifierLog = await freezeVerifierLog(inputDir, {runs, frozen: baseVerified?.frozen ?? [], outcome});
+        verifierLog = await freezeVerifierLog(inputDir, {runs, frozen: baseVerified?.frozen ?? [], outcome, ...(review ? {review: {...review}} : {})});
         const submissions = buildSubmissions({pin: journal.verification.pin, executionAttemptId: attemptId, environmentLabel: `sift-machine:${machine.runnerId}`,
           claimOwner, ranAt: new Date(deps.clock.wallMs()).toISOString(), results: stepResults(runs, failure?.step, !plan.test?.selector)});
-        await save({...journal, verifierLog, verification: {...journal.verification, outcome, ...(failure ? {detail: failure.detail} : {}), submissions},
+        const detail = failure?.detail ?? (review && review.outcome !== 'passed' ? review.detail : undefined);
+        await save({...journal, verifierLog, verification: {...journal.verification, outcome, ...(detail ? {detail} : {}), submissions},
           // With no workload log, the verifier log is what is owed and resumed after a restart.
           ...(log ? {} : {evidence: {path: verifierLog.path, sha256: verifierLog.sha256, bytes: verifierLog.bytes, kind: 'verifier_log' as const},
             evidenceOwed: true})});
@@ -765,6 +789,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     }
     await save({...journal, inputSha256: input.payloadSha256});
     const imageId = await guard(ensureImage(boundedDocker, plan.imageRef));
+    // The reviewer image is pulled now, so a missing one refuses the start rather than the review.
+    if (plan.review) reviewImageId = await guard(ensureImage(boundedDocker, plan.review.imageRef));
     const nonce = randomBytes(16).toString('hex');
     await fs.mkdir(inputDir, {recursive: true, mode: 0o755});
     const inputFile = path.join(inputDir, 'input.json');

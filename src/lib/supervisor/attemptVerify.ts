@@ -325,8 +325,11 @@ export function canonicalJson(value: unknown): string {
 }
 
 /** The one verifier log (rev 2, R2): every run with its report, the frozen set and the outcome, written and frozen. */
-export async function freezeVerifierLog(outDir: string, input: {runs: RunRecord[]; frozen: FrozenPath[]; outcome: string}): Promise<FrozenArtifact> {
-  const content = Buffer.from(`${canonicalJson({version: 1, runs: input.runs, frozen: input.frozen, outcome: input.outcome})}\n`);
+export async function freezeVerifierLog(outDir: string, input: {runs: RunRecord[]; frozen: FrozenPath[]; outcome: string;
+  /** The review (U3-2): the result head, its outcome and the reviewer's receipt, carried in this one log. */
+  review?: Record<string, unknown>}): Promise<FrozenArtifact> {
+  const content = Buffer.from(`${canonicalJson({version: 1, runs: input.runs, frozen: input.frozen, outcome: input.outcome,
+    ...(input.review ? {review: input.review} : {})})}\n`);
   await fs.mkdir(outDir, {recursive: true, mode: 0o755});
   const target = path.join(outDir, VERIFIER_LOG);
   await fs.writeFile(target, content, {mode: 0o600});

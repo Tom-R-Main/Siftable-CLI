@@ -23,6 +23,16 @@ import {MODEL_PATHS, SIDECAR_PORT} from './relaySidecar.js';
 import {serveSidecarFrames} from './sidecarBridge.js';
 
 export const REVIEW_TIMEOUT_MS = 15 * 60_000;
+
+/** The plan's review (U3-2): the pinned reviewer image and the model the relay bills to the reviewer, or why it is refused. */
+export function reviewPlanProblem(review: unknown): string | undefined {
+  const value = review as {imageRef?: unknown; model?: unknown};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return 'review is not an object';
+  if (Object.keys(value).some((key) => key !== 'imageRef' && key !== 'model')) return 'review has an unknown field';
+  if (typeof value.imageRef !== 'string' || !/^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$/.test(value.imageRef)) return 'review.imageRef must be pinned by digest';
+  if (typeof value.model !== 'string' || !/^[A-Za-z0-9._:/-]{1,200}$/.test(value.model)) return 'review.model must be a provider model id';
+  return undefined;
+}
 const MAX_REVIEW_RESULT_BYTES = 8 * 1024 * 1024;
 const SHA = /^[0-9a-f]{40}$/;
 

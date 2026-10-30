@@ -66,6 +66,10 @@ const EXPLAINED: Record<string, string> = {
   test_timeout: 'a test run passed its time limit',
   verification_interrupted: 'the supervisor restarted during verification; no step was repeated',
   verification_record_conflict: 'the server refused a verification record (the plan may have changed)',
+  review_failed: 'the review of the verified result did not complete',
+  review_head_mismatch: 'the review was not of the verified result',
+  review_timeout: 'the review of the verified result ran past its time limit',
+  review_interrupted: 'the review stopped before it finished; it was not run again',
 };
 
 export const failureText = (code: string, detail?: string) =>
