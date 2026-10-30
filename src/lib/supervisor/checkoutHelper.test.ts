@@ -5,7 +5,7 @@ import path from 'node:path';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {createHash} from 'node:crypto';
 import {admitBase, buildPatch, CheckoutRefused, checkGit, checkTree, fetchBase, frozenChanges, type Git, gitEnvironment, hostGit, INSTALL_LOG,
-  materialize, materializeVerify, NPM_CI_ARGS, hostNpm, type Npm, PATCH_FILE, pinBase, repoPath, resolveFrozen, runInstall} from './checkoutHelper.js';
+  materialize, materializeVerify, NPM_CI_ARGS, writeResultCommit, hostNpm, type Npm, PATCH_FILE, pinBase, repoPath, resolveFrozen, runInstall} from './checkoutHelper.js';
 
 /** Fixture setup uses plain git; the code under test uses only the controlled environment. */
 const plain = (cwd: string, ...args: string[]) => execFileSync('git', args, {cwd, env: {...process.env, GIT_CONFIG_GLOBAL: '/dev/null',
@@ -335,6 +335,32 @@ describe('checkout helper', () => {
       const candidates = [{path: 'test', source: 'files' as const}];
       expect(await resolveFrozen(git, env, base, candidates, 100)).toEqual([{path: 'test', kind: 'dir'}]);
       expect(await refusal(resolveFrozen(git, env, base, candidates, 10))).toBe('frozen_path_invalid');
+    });
+
+    // U3-2 contract rev 2 R-D3/R9: the reviewer sees the base and result through the git directory alone.
+    it('writes a deterministic result commit whose whole closure a reader reaches through the alternates file alone', async () => {
+      const {git, objects, patch, runs} = await patched('v-result');
+      await fs.mkdir(runs);
+      const {treeId, env} = await materializeVerify(git, objects, path.join(runs, 'selected'), base, patch);
+      const head = await writeResultCommit(git, env, treeId, base, objects);
+      const again = await writeResultCommit(git, env, treeId, base, objects);
+      expect(again).toBe(head);
+      // The reader: only GIT_DIR and GIT_WORK_TREE, no alternates variable.
+      const reader = {GIT_DIR: env.GIT_DIR, GIT_WORK_TREE: env.GIT_WORK_TREE, GIT_INDEX_FILE: env.GIT_INDEX_FILE};
+      const read = (args: string[]) => git(args, {env: reader});
+      const blob = (spec: string) => plain(fixture, 'rev-parse', spec);
+      for (const object of [base, head, `${head}^{tree}`, blob(`${base}:notes.txt`)]) {
+        expect((await read(['cat-file', '-e', object])).code, object).toBe(0);
+      }
+      const changed = (await read(['rev-parse', `${head}:src/lib/a.ts`])).stdout.toString().trim();
+      expect(changed).not.toBe(blob(`${base}:src/lib/a.ts`));
+      expect((await read(['cat-file', '-p', changed])).stdout.toString()).toBe('export const a = 3;\n');
+      expect((await read(['merge-base', base, head])).stdout.toString().trim()).toBe(base);
+      expect((await read(['rev-parse', 'HEAD'])).stdout.toString().trim()).toBe(head);
+      expect((await read(['log', '-1', '--format=%an %ae %at %P', head])).stdout.toString().trim()).toBe(`sift sift@localhost 0 ${base}`);
+      // Without the alternates file the base commit is out of reach.
+      await fs.rm(path.join(env.GIT_DIR as string, 'objects', 'info', 'alternates'));
+      expect((await read(['cat-file', '-e', base])).code).not.toBe(0);
     });
 
     it('names the changed paths that are frozen', async () => {

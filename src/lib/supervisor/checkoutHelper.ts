@@ -481,6 +481,29 @@ export async function runPatch(request: CheckoutRequest, paths = {work: '/worksp
   }
 }
 
+/** Where every container that reads a verify git directory mounts the base objects (the writer's checkout, read-only). */
+export const BASE_OBJECTS = '/workspace/.git/objects';
+
+/**
+ * The result head (U3-2 contract rev 2, R-D3): a commit of the verified tree with the base as its parent, and a fixed
+ * author, committer and date, so the same tree always yields the same id. The git directory gets a file-based
+ * alternates entry naming the base objects at the path every reader mounts them, so a reader needs no alternates
+ * variable to see the base commit and the unchanged blobs.
+ */
+export async function writeResultCommit(git: Git, env: NodeJS.ProcessEnv, treeId: string, baseSha: string,
+  objects = BASE_OBJECTS): Promise<string> {
+  const gitDir = env.GIT_DIR as string;
+  await fs.mkdir(path.join(gitDir, 'objects', 'info'), {recursive: true});
+  await fs.writeFile(path.join(gitDir, 'objects', 'info', 'alternates'), `${objects}\n`, {mode: 0o644});
+  const fixed = {...env, GIT_AUTHOR_NAME: 'sift', GIT_AUTHOR_EMAIL: 'sift@localhost', GIT_AUTHOR_DATE: '@0 +0000',
+    GIT_COMMITTER_NAME: 'sift', GIT_COMMITTER_EMAIL: 'sift@localhost', GIT_COMMITTER_DATE: '@0 +0000'};
+  const head = (await must(git, 'verify_failed', ['commit-tree', treeId, '-p', baseSha, '-m', 'sift verified result'], {env: fixed}))
+    .toString().trim();
+  await must(git, 'verify_failed', ['update-ref', 'refs/heads/sift-result', head], {env});
+  await must(git, 'verify_failed', ['symbolic-ref', 'HEAD', 'refs/heads/sift-result'], {env});
+  return head;
+}
+
 export interface VerifyRequest {
   baseSha: string;
   /** The frozen patch's digest; absent for the base run. */
@@ -491,7 +514,7 @@ export interface VerifyRequest {
   dependencies?: boolean;
 }
 
-const VERIFY_PATHS = {objects: '/workspace/.git/objects', dir: '/verify', patch: '/out/sift.patch', home: '/tmp/h'};
+const VERIFY_PATHS = {objects: BASE_OBJECTS, dir: '/verify', patch: '/out/sift.patch', home: '/tmp/h'};
 
 async function refusalOf(work: () => Promise<Record<string, unknown>>, fallback: string): Promise<Record<string, unknown>> {
   try {
@@ -527,12 +550,21 @@ export function runTreeCheck(request: {treeId: string; baseSha?: string; frozen?
   }, 'verify_failed');
 }
 
+/** SIFT_MODE=result-commit: the result head for the selected run's verified tree (writable /verify). */
+export function runResultCommit(request: {treeId: string; baseSha: string}, paths = VERIFY_PATHS,
+  git: Git = hostGit(paths.home)): Promise<Record<string, unknown>> {
+  return refusalOf(async () => {
+    await fs.mkdir(paths.home, {recursive: true});
+    return {ok: true, head: await writeResultCommit(git, verifyEnv(paths.dir, paths.objects), request.treeId, request.baseSha)};
+  }, 'verify_failed');
+}
+
 if (require.main === module) {
   const request = JSON.parse(process.env.SIFT_CHECKOUT ?? '{}') as CheckoutRequest;
   const verify = JSON.parse(process.env.SIFT_VERIFY ?? '{}') as VerifyRequest & {treeId: string};
   const mode = process.env.SIFT_MODE;
   (mode === 'patch' ? runPatch(request) : mode === 'install' ? runInstall() : mode === 'verify-checkout' ? runVerifyCheckout(verify)
-    : mode === 'tree-check' ? runTreeCheck(verify) : runCheckout(request)).then((result) => {
+    : mode === 'tree-check' ? runTreeCheck(verify) : mode === 'result-commit' ? runResultCommit(verify) : runCheckout(request)).then((result) => {
     process.stdout.write(`${JSON.stringify(result)}\n`);
     process.exit(result.ok ? 0 : 2);
   }, () => process.exit(1));
