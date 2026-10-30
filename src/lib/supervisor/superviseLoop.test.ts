@@ -94,8 +94,12 @@ interface Scenario {
    */
   verify?: {base?: VerifyScenarioRun; selected?: VerifyScenarioRun; regression?: VerifyScenarioRun; plan?: 'missing';
     record?: (step: string, n: number) => number | 'lost';
-    /** Called as each run's test container starts, before it reports. */
-    onStart?: (run: string) => void};
+    /** Called, and awaited, as each run's test container starts, before it reports. */
+    onStart?: (run: string) => void | Promise<void>;
+    /** The supervisor dies right after the base run: every Docker call from then on never answers. */
+    crashAfterBase?: boolean;
+    /** Docker refuses a call whose deadline has passed, as the host adapter does. */
+    honorDeadlines?: boolean};
   /** A checkout plan (U5b-2c): the attempt filesystem lives under `root`; the helpers answer with these results. */
   checkout?: {root: string; result?: object; patchResult?: object; patchRmFails?: boolean; patchCreateLost?: boolean;
     /** Removing the attempt's volumes fails, as when one is still in use. */
@@ -282,8 +286,15 @@ function world(scenario: Scenario = {}) {
     '--label', 'sift.machine.role=volume', '--label', `sift.machine.attempt=${ATTEMPT}`, name]]));
   const mountParts = (m: string) => Object.fromEntries(m.split(',').map((p) => (p.includes('=') ? p.split('=') : [p, 'true']) as [string, string]));
   const flag = (args: string[], name: string) => args.flatMap((arg, i) => (arg === name ? [args[i + 1]] : []));
-  const docker: DeadlineDocker = async (args) => {
+  const docker: DeadlineDocker = async (args, options) => {
     const ok = (stdout = '') => ({code: 0, stdout, stderr: ''});
+    if (scenario.verify?.honorDeadlines && options?.deadlineMono !== undefined && options.deadlineMono <= performance.now()) {
+      return {code: 124, stdout: '', stderr: 'deadline passed'};
+    }
+    if (scenario.verify?.crashAfterBase && events.includes('rm:c-tree-check')) {
+      if (!events.includes('crashed')) events.push('crashed');
+      return new Promise(() => {});
+    }
     const [a, b] = args;
     if (a === 'info') return ok(JSON.stringify({CgroupDriver: 'systemd', CgroupVersion: '2', ServerVersion: '28.5.1'}));
     if (a === 'image' && b === 'inspect') return ok(JSON.stringify([{Id: IMAGE_ID, RepoDigests: [IMAGE]}]));
@@ -432,7 +443,7 @@ function world(scenario: Scenario = {}) {
         let line: object = {ok: true};
         if (id === 'c-verify-checkout') line = {ok: true, treeId: verifyRun === 'base' ? 'd'.repeat(40) : 'f'.repeat(40)};
         if (id === 'c-verifier') {
-          scenario.verify?.onStart?.(verifyRun);
+          await scenario.verify?.onStart?.(verifyRun);
           if (scenario.verify?.onStart) await new Promise((resolve) => setTimeout(resolve, 20));
           await fs.writeFile(reportFile, `<testsuites>${(runScenario.cases ?? []).map(([name, outcome]) => `<testcase name="${name}" classname="test">${
             outcome === 'failed' ? '<failure/>' : outcome === 'skipped' ? '<skipped/>' : ''}</testcase>`).join('')}</testsuites>`);
@@ -1590,6 +1601,50 @@ describe('superviseOnce', () => {
           expect(String(fail.body.failureReason)).toMatch(/^Verification failed: verification_interrupted/);
           expect(second.events).not.toContain('review');
         });
+
+        // Release U3-R7: a crash between a refused base and its evidence keeps the reports held and never reruns them.
+        it('keeps a refused base\'s reports held when the supervisor dies before freezing them', async () => {
+          const attemptRoot = await fs.mkdtemp(path.join(path.dirname(root), 'attempts-'));
+          const host = attemptFsHost({});
+          const shared = (w: ReturnType<typeof world>) => superviseOnce(deps(w, {
+            resolvePlan: async () => ({...CHECKOUT_PLAN, install: {manager: 'npm'}, test: TEST}), attemptFs: {system: host.system, root: attemptRoot},
+            assets: VERIFY_ASSETS}));
+          const first = world({verify: {base: fixed, crashAfterBase: true}, checkout: {root: attemptRoot, files}});
+          void shared(first);
+          for (let i = 0; i < 200 && !first.events.includes('crashed'); i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+          expect(first.events).toContain('crashed');
+          const crashed = await journal();
+          expect(crashed).toMatchObject({evidenceOwed: true});
+          expect(crashed?.verification?.outcome).toBeUndefined();
+          const [dir] = (await fs.readdir(attemptRoot, {withFileTypes: true})).filter((entry) => entry.isDirectory());
+          const report = path.join(attemptRoot, dir.name, 'verify', 'base', 'report', 'junit.xml');
+          const unlinkedBefore = host.calls.filter((c) => c.startsWith('unlink')).length;
+          const second = world({checkout: {root: attemptRoot}});
+          await shared(second);
+          // Never run again; the filesystem holding the base report is kept, not released; the start fails as interrupted.
+          expect(second.events).not.toContain('start:c-verifier');
+          expect(host.calls.filter((c) => c.startsWith('unlink')).length).toBe(unlinkedBefore);
+          expect(await fs.readFile(report, 'utf8')).toContain('<testcase name="adds"');
+          expect(second.events).toContain('ack:failed:verification_interrupted');
+        });
+
+        // Release U3-R6: verification stops at the confirmed claim; the run in progress is killed and removed, and no later run starts.
+        it('stops verification at the confirmed claim, killing the running tests and starting no further run', async () => {
+          // The cap is the expiry less the 30 s clock allowance and the 15 s teardown margin: about 3 s from now.
+          const expires = new Date(Date.now() + 30_000 + 15_000 + 3_000).toISOString();
+          const {w, run} = await verifyWorld({claimExpiresAt: expires, heartbeat: () => ({status: 200, body: {authority: {claimExpiresAt: expires}}}),
+            verify: {base: failing, selected: fixed, regression: fixed, honorDeadlines: true,
+              onStart: async (step) => { if (step === 'selected') await new Promise((resolve) => setTimeout(resolve, 3_500)); }}});
+          const outcome = await run();
+          expect(outcome).toMatchObject({kind: 'finished', reason: 'workload_exited'});
+          expect(w.events.filter((e) => e === 'start:c-verifier')).toHaveLength(2);
+          // The selected run's container is killed and removed after it started, under a budget of its own.
+          const selectedStart = w.events.lastIndexOf('start:c-verifier');
+          expect(w.events.lastIndexOf('kill:c-verifier')).toBeGreaterThan(selectedStart);
+          expect(w.events.lastIndexOf('rm:c-verifier')).toBeGreaterThan(w.events.lastIndexOf('kill:c-verifier'));
+          expect((await journal())?.verification?.outcome).toBe('verification_interrupted');
+          expect(w.events).not.toContain('review');
+        }, 15_000);
 
         it('keeps the attempt unsettled while a record is unanswered, and resends it unchanged after a restart', async () => {
           const {w, run} = await verifyWorld({verify: {base: failing, selected: fixed, regression: fixed,

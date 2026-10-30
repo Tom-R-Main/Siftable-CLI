@@ -238,6 +238,7 @@ async function treeCheck(ctx: VerifyContext, run: VerifyRun, treeId: string,
 
 async function oneRun(ctx: VerifyContext, run: VerifyRun, selector: string, patchSha256?: string,
   frozen?: Array<{path: string; source: FrozenSource}>): Promise<{record: RunRecord; summary: ReportSummary; frozen?: FrozenPath[]}> {
+  stopped(ctx);
   await checkAttemptVolume(ctx, ctx.record);
   await prepareRunDir(ctx, run);
   const treeId = await checkoutRun(ctx, run, patchSha256);

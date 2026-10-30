@@ -651,12 +651,23 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
         let outcome = 'not_run';
         let failure: VerifyFailed | undefined = verifyFailure;
         const base = baseVerified;
-        if (!failure && base && patch && helpers && journal.fs && plan.test && deps.assets.junitReport && reason === 'workload_exited'
-          && exitCode === 0) {
-          runs = await verifyResult({...helpers, signal: deps.shutdown, record: journal.fs, test: plan.test, reportAsset: deps.assets.junitReport,
+        const verifying = !failure && base && patch && journal.fs && plan.test && deps.assets.junitReport && reason === 'workload_exited'
+          && exitCode === 0 ? workspaceContext(helperCreate, () => deps.clock.monoMs() + STOP_BUDGET_MS) : undefined;
+        if (verifying && base && patch && journal.fs && plan.test && deps.assets.junitReport) {
+          // Verification ends at the confirmed claim or at shutdown: no run starts after either, and a running one is
+          // killed. Stopping and removing its containers has its own budget, so an expired claim cannot leave them behind.
+          const verifyLife = new AbortController();
+          const stopAt = setTimeout(() => verifyLife.abort(), Math.max(0, capLeft()));
+          const onShutdown = () => verifyLife.abort();
+          if (deps.shutdown?.aborted) verifyLife.abort();
+          else deps.shutdown?.addEventListener('abort', onShutdown, {once: true});
+          runs = await verifyResult({...verifying, signal: verifyLife.signal, record: journal.fs, test: plan.test, reportAsset: deps.assets.junitReport,
             dependencies: Boolean(plan.install)}, base, patch).catch((error: unknown) => {
             failure = error instanceof VerifyFailed ? error : new VerifyFailed('verify_failed', (error as Error).message, [base.run]);
             return failure.runs;
+          }).finally(() => {
+            clearTimeout(stopAt);
+            deps.shutdown?.removeEventListener('abort', onShutdown);
           });
           outcome = 'passed';
         }
@@ -785,13 +796,13 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
           });
         }
         if (plan.test && deps.assets.junitReport) {
+          // Owed before the first test runs: a crash from here on keeps the attempt filesystem, with its reports, held.
+          await save({...journal, evidenceOwed: true});
           baseVerified = await verifyBase({...lifetime, record, test: plan.test, reportAsset: deps.assets.junitReport,
-            dependencies: Boolean(plan.install)}).catch(async (error: unknown) => {
-            // A stop mid-run is an interruption, not a verification result.
-            if (error instanceof VerifyFailed && error.code !== 'interrupted') {
-              verifyFailure = error;
-              await save({...journal, verification: {...journal.verification as VerificationJournal, outcome: error.code, detail: error.detail}});
-            }
+            dependencies: Boolean(plan.install)}).catch((error: unknown) => {
+            // A stop mid-run is an interruption, not a verification result. The outcome is journaled only with the
+            // frozen verifier log and its records, in one write (finish), never before them.
+            if (error instanceof VerifyFailed && error.code !== 'interrupted') verifyFailure = error;
             throw error;
           });
         }
