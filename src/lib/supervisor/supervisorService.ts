@@ -4,13 +4,18 @@
  * the CLI must be installed outside them; no PATH or nvm lookup happens at
  * start. The unit runs as root because Docker access is root-equivalent; the
  * hardening options keep the service itself away from homes and shared /tmp.
+ *
+ * Attempt inputs, and what is kept when evidence is not acknowledged (the agent
+ * log, the patch, a failed install's output), live on persistent storage under
+ * INPUT_ROOT, not in a systemd RuntimeDirectory: that is emptied on every unit
+ * stop and lost on reboot, so recovery after a restart would find nothing to upload.
  */
 import {realpathSync} from 'node:fs';
 import path from 'node:path';
 
 export const SERVICE_NAME = 'siftable-supervisor.service';
 export const UNIT_PATH = `/etc/systemd/system/${SERVICE_NAME}`;
-export const INPUT_ROOT = '/run/siftable-attempts';
+export const INPUT_ROOT = '/var/lib/siftable/inputs';
 
 export class ServicePathError extends Error {}
 
@@ -42,8 +47,6 @@ export function serviceUnit(paths: {node: string; cli: string}): string {
     'ProtectHome=yes',
     'PrivateTmp=yes',
     'NoNewPrivileges=yes',
-    `RuntimeDirectory=${path.basename(INPUT_ROOT)}`,
-    'RuntimeDirectoryMode=0755',
     // SIGTERM goes to the supervisor, which stops the running attempt (10 s kill budget,
     // then removal) before exiting; whatever it cannot remove stays journaled as held.
     // Only after the timeout are the docker attach clients killed too.

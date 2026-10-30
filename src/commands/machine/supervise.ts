@@ -63,12 +63,14 @@ export default class MachineSupervise extends BaseCommand {
     if (process.platform !== 'linux') this.error('The supervisor runs on Linux only.');
     if (typeof process.getuid !== 'function' || process.getuid() !== 0) this.error('Run this as root; it reads the supervisor\'s credential and starts containers.');
     const account = await ensureSupervisorAccount();
-    await fs.mkdir(INPUT_ROOT, {recursive: true, mode: 0o755});
     // A fresh machine has no /var/lib/siftable: made here, root-only, and checked, before any attempt needs it.
-    await ensureAttemptRoot(ATTEMPT_ROOT).catch((error: unknown) => {
-      if (error instanceof AttemptFsError) this.error(`The attempt root is not usable: ${error.message}`);
-      throw error;
-    });
+    // Inputs and kept evidence sit beside the attempt images, on storage a restart or reboot does not empty.
+    for (const root of [ATTEMPT_ROOT, INPUT_ROOT]) {
+      await ensureAttemptRoot(root).catch((error: unknown) => {
+        if (error instanceof AttemptFsError) this.error(`The supervisor directory ${root} is not usable: ${error.message}`);
+        throw error;
+      });
+    }
     const state = {root: SUPERVISOR_STATE_DIR, owner: {uid: account.uid, gid: account.gid}};
     // One machine command at a time, for the life of this process: no second supervisor, no qualify alongside.
     let release: () => Promise<void>;
