@@ -21,7 +21,7 @@ import {checkoutPlanProblem} from './attemptCheckout.js';
 import {type AttemptPlan, planSha256, WRITER_ENTRY, writerPlanProblem} from './attemptPlan.js';
 import {type ApiResult, conflictsOf, postSettlement, type Session} from './attemptReport.js';
 import {captureLog, type EvidenceOutcome, type FrozenArtifact, uploadAgentLog} from './attemptEvidence.js';
-import {resumeEvidence, resumeVerification, saveInstallOutput} from './attemptRecovery.js';
+import {reconcileUnclaimed, resumeEvidence, resumeVerification, saveInstallOutput} from './attemptRecovery.js';
 import {type BaseVerification, freezeVerifierLog, type RunRecord, VERIFIER_LOG_CONTENT_TYPE, verifyBase, VerifyFailed,
   verifyResult} from './attemptVerify.js';
 import {buildSubmissions, pinOf, sendSubmissions, stepResults, testPlanProblem, type VerificationJournal} from './attemptVerifyRecords.js';
@@ -100,6 +100,8 @@ export interface Settlement {
   work: 'pending' | 'done' | 'conflict';
   /** The workload's evidence (U5b-2b): absent when nothing ran; unacknowledged fails the work. */
   evidence?: EvidenceOutcome;
+  /** What the server showed when a report's outcome was read instead of assumed (after a 409, or with the claim gone). */
+  observedWorkStatus?: string; observedAttemptState?: string;
 }
 
 export interface AttemptJournal {
@@ -398,7 +400,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     }
     const ready = await ensureReceiptsQueued(deps, earlier);
     if (!ready) return {kind: 'recovered', settled: false};
-    earlier = ready;
+    ({journal: earlier, settled} = settled ? {journal: ready, settled} : await reconcileUnclaimed(deps, session, ready));
+    if (!settled) return {kind: 'recovered', settled: false}; // kept, and no new work, until the server shows it closed
     await archiveJournal(deps.state, JOURNAL, new Date(deps.clock.wallMs()));
     await removeJournal(deps.state, JOURNAL);
     const conflicts = conflictsOf(earlier.settlement);

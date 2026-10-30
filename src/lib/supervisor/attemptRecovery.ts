@@ -7,7 +7,7 @@
 import {createHash} from 'node:crypto';
 import {promises as fs} from 'node:fs';
 import path from 'node:path';
-import type {Session} from './attemptReport.js';
+import {observeAttemptState, observeWorkStatus, type Session} from './attemptReport.js';
 import {type EvidenceOutcome, uploadAgentLog} from './attemptEvidence.js';
 import {mountAttemptFs} from './attemptFilesystem.js';
 import {writeAttemptJournal} from './attemptSettle.js';
@@ -15,6 +15,10 @@ import {VERIFIER_LOG_CONTENT_TYPE} from './attemptVerify.js';
 import {sendSubmissions} from './attemptVerifyRecords.js';
 import {INSTALL_LOG, MAX_INSTALL_LOG_BYTES} from './checkoutHelper.js';
 import type {AttemptJournal, SuperviseDeps} from './superviseLoop.js';
+
+const CLOSED_ATTEMPT_STATES: readonly string[] = ['ended', 'interrupted', 'superseded'];
+/** The statuses in which the item's lease is live; this attempt's claim is gone, so the lease is not its own. */
+const LIVE_WORK_STATUSES: readonly string[] = ['claimed', 'running'];
 
 /**
  * Finishes an evidence upload a crash cut off, under the attempt's own recovered claim and before its
@@ -99,4 +103,31 @@ export async function resumeVerification(deps: SuperviseDeps, session: Session, 
       await writeAttemptJournal(deps, next);
     });
   return sent.some((entry) => entry.state === 'pending') ? 'pending' : next;
+}
+
+/**
+ * An earlier attempt whose claim is gone cannot report anything, but its reports may have landed before the
+ * crash or with a reply that was lost, and a requeue closes it once its cleaned receipt arrives (V501). Read the
+ * server's attempt state and work status and record what was seen (work item bbebed05). The attempt report is
+ * owed until the server shows the attempt closed. The work report is owed while the item is still claimed or
+ * running under this attempt: a settled or requeued item, or any item once the attempt is closed, owes nothing.
+ * A failed read decides nothing. The caller keeps the journal until both are settled; nothing is sent or relaunched.
+ */
+export async function reconcileUnclaimed(deps: SuperviseDeps, session: Session, journal: AttemptJournal):
+  Promise<{journal: AttemptJournal; settled: boolean}> {
+  const settlement = journal.settlement;
+  if (!settlement) return {journal, settled: false};
+  const state = settlement.attemptReport === 'pending' ? await observeAttemptState(session, journal, 10_000) : undefined;
+  const closedNow = state !== undefined && CLOSED_ATTEMPT_STATES.includes(state);
+  const closed = closedNow || settlement.observedAttemptState !== undefined;
+  const status = settlement.work === 'pending' ? await observeWorkStatus(session, journal.workItemId, 10_000) : undefined;
+  const workDone = status !== undefined && (closed || !LIVE_WORK_STATUSES.includes(status));
+  const next = {...settlement,
+    ...(workDone ? {work: 'done' as const, observedWorkStatus: status} : {}),
+    ...(closedNow ? {attemptReport: 'done' as const, observedAttemptState: state} : {})};
+  const settled = next.work !== 'pending' && next.attemptReport !== 'pending';
+  if (!workDone && !closedNow) return {journal, settled};
+  const updated = {...journal, settlement: next};
+  await writeAttemptJournal(deps, updated);
+  return {journal: updated, settled};
 }

@@ -58,6 +58,9 @@ interface Scenario {
   dispatch?: object | null;
   /** The server's frozen plan for the work item (U6); absent answers 404. */
   serverPlan?: {plan: object; sha256: string};
+  /** What GET work item and GET attempt evidence report (work item bbebed05); absent reads fail. */
+  observed?: {workStatus?: string; attemptState?: string};
+  failStatus?: number;
   claimExpiresAt?: string | 'none';
   controls?: () => Array<{id: string; action: string; state: string}>;
   heartbeat?: () => {status: number; body: object} | 'throw';
@@ -255,7 +258,15 @@ function world(scenario: Scenario = {}) {
         uploads: evidence.acknowledged ? [] : artifacts.map((artifact) => ({sha256: artifact.sha256, url: `${STORAGE}attempts/${ATTEMPT}/${artifact.sha256}`}))});
     }
     if (route.endsWith('/review')) { events.push('review'); return reply(scenario.reviewStatus ?? 200, {}); }
-    if (route.endsWith('/fail')) { events.push('fail'); return reply(200, {}); }
+    if (route.endsWith('/fail')) { events.push('fail'); return reply(scenario.failStatus ?? 200, {}); }
+    if (init.method === 'GET' && route.startsWith(`/api/v1/work-items/${WORK_ITEM}?`) && scenario.observed?.workStatus) {
+      events.push(`observe-work:${scenario.observed.workStatus}`);
+      return reply(200, {workItem: {id: WORK_ITEM, status: scenario.observed.workStatus}});
+    }
+    if (init.method === 'GET' && route.endsWith(`/execution-attempts/${ATTEMPT}/evidence`) && scenario.observed?.attemptState) {
+      events.push(`observe-attempt:${scenario.observed.attemptState}`);
+      return reply(200, {attempt: {id: ATTEMPT, state: scenario.observed.attemptState}});
+    }
     if (route.endsWith('/execution-attempts')) {
       events.push(`attempt:${String(body.state)}${body.endReason ? `:${String(body.endReason)}` : ''}`);
       if (body.state === 'running' && scenario.runningStatus) return reply(scenario.runningStatus, {});
@@ -1019,11 +1030,66 @@ describe('superviseOnce', () => {
     expect(w.events).toEqual(['kill:c-relay', 'kill:c-agent', 'ls:container', 'ls:network', 'rm:c-relay', 'rm:c-agent', 'network-rm',
       'receipt:execution_stopped', 'receipt:cleaned', 'runner-heartbeat', 'consume']);
     expect(await journal()).toMatchObject({state: 'settling'});
-    // Once the operator requeues, consume hands back nothing for the old dispatch and the journal is archived.
-    const after = world({dispatch: null});
-    expect(await superviseOnce(deps(after))).toEqual({kind: 'recovered', settled: false});
+    // Once the operator requeues, consume hands back nothing for the old dispatch; the cleaned receipt closes the
+    // attempt on the server (V501) and the journal is archived.
+    const after = world({dispatch: null, observed: {workStatus: 'queued', attemptState: 'interrupted'}});
+    expect(await superviseOnce(deps(after))).toEqual({kind: 'recovered', settled: true});
     expect(await journal()).toBeNull();
     expect(await superviseOnce(deps(world({consumeStatus: 502})))).toEqual({kind: 'refused', reason: 'consume_http_502'});
+  });
+
+  // Work item bbebed05: with the claim gone, the server's record decides whether the earlier reports landed.
+  it('settles an earlier attempt whose claim is gone when the server shows it ended, and never relaunches it', async () => {
+    const earlier = () => writeJournal({root, owner: null}, JOURNAL, {version: 1, state: 'settling', runId: 'abc123abc123', dispatchId: DISPATCH,
+      workItemId: WORK_ITEM, runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`, attemptId: ATTEMPT,
+      workspace: {repositoryId: PLAN.repositoryId, branch: PLAN.branch, baseSha: PLAN.baseSha}, containers: {}, callSeq: 3,
+      settlement: {reason: 'workload_exited', exitCode: 1, started: true, cgroupEmpty: true, attemptReport: 'pending', work: 'pending'},
+    } satisfies AttemptJournal);
+    await earlier();
+    const landed = world({dispatch: null, observed: {workStatus: 'failed', attemptState: 'ended'}});
+    expect(await superviseOnce(deps(landed))).toEqual({kind: 'recovered', settled: true});
+    expect(landed.events).toContain('observe-work:failed');
+    expect(landed.events).toContain('observe-attempt:ended');
+    expect(landed.events.some((event) => event.startsWith('create:') || event === 'fail' || event.startsWith('attempt:'))).toBe(false);
+    const retired = await fs.readdir(path.join(root, 'retired'));
+    const archived = JSON.parse(await fs.readFile(path.join(root, 'retired', retired.find((name) => name.endsWith(JOURNAL))!), 'utf8')) as AttemptJournal;
+    expect(archived.settlement).toMatchObject({work: 'done', observedWorkStatus: 'failed', attemptReport: 'done', observedAttemptState: 'ended'});
+  });
+
+  it('keeps an unclaimed earlier attempt journaled, and starts no new work, until the server shows it closed', async () => {
+    await writeJournal({root, owner: null}, JOURNAL, {version: 1, state: 'settling', runId: 'abc123abc123', dispatchId: DISPATCH,
+      workItemId: WORK_ITEM, runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`, attemptId: ATTEMPT,
+      workspace: {repositoryId: PLAN.repositoryId, branch: PLAN.branch, baseSha: PLAN.baseSha}, containers: {}, callSeq: 3,
+      settlement: {reason: 'workload_exited', exitCode: 1, started: true, cgroupEmpty: true, attemptReport: 'pending', work: 'pending'},
+    } satisfies AttemptJournal);
+    const started = (events: string[]) => events.some((event) => event.startsWith('create:') || event.startsWith('attempt:') || event === 'fail');
+    // Nothing readable: the journal stays as it was.
+    const unread = world({dispatch: null});
+    expect(await superviseOnce(deps(unread))).toEqual({kind: 'recovered', settled: false});
+    expect(await journal()).toMatchObject({settlement: {work: 'pending', attemptReport: 'pending'}});
+    // Another dispatch is offered while the attempt still runs on the server under a live item: it is not started.
+    const running = world({dispatch: {id: '00000000-0000-4000-8000-00000000d1d2'}, observed: {workStatus: 'running', attemptState: 'running'}});
+    expect(await superviseOnce(deps(running))).toEqual({kind: 'recovered', settled: false});
+    expect(started(running.events)).toBe(false);
+    expect(await journal()).toMatchObject({settlement: {work: 'pending', attemptReport: 'pending'}});
+    // Requeued but the attempt is not yet closed: the work report is no longer owed, the attempt report still is.
+    const requeued = world({dispatch: null, observed: {workStatus: 'queued', attemptState: 'running'}});
+    expect(await superviseOnce(deps(requeued))).toEqual({kind: 'recovered', settled: false});
+    expect(await journal()).toMatchObject({settlement: {work: 'done', observedWorkStatus: 'queued', attemptReport: 'pending'}});
+    // Closed: the attempt report settles without the work being read again, and the journal is archived.
+    const closed = world({dispatch: null, observed: {workStatus: 'claimed', attemptState: 'interrupted'}});
+    expect(await superviseOnce(deps(closed))).toEqual({kind: 'recovered', settled: true});
+    expect(closed.events).not.toContain('observe-work:claimed');
+    expect(started(closed.events)).toBe(false);
+    expect(await journal()).toBeNull();
+  });
+
+  it('reads the work status after a 409 on its report and records it done when the result already landed', async () => {
+    const w = world({agentExit: 1, failStatus: 409, observed: {workStatus: 'failed'}});
+    const outcome = await superviseOnce(deps(w));
+    expect(outcome).toMatchObject({kind: 'finished', reason: 'workload_exited', settled: true});
+    expect(outcome).not.toHaveProperty('conflicts');
+    expect(w.events.indexOf('fail')).toBeLessThan(w.events.indexOf('observe-work:failed'));
   });
 
   describe('evidence (U5b-2b, log only)', () => {

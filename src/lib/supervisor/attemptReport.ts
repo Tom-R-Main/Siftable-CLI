@@ -47,6 +47,30 @@ export function failedStartAck(workspaceId: string | null, claimToken: string, j
   return {workspaceId, claimToken, state: 'failed' as const, ...(blocked ? {reason: blocked.reason, detail: blocked.detail} : {})};
 }
 
+/** Work statuses that mean the attempt's result was recorded (needs_review, later done) or the work ended (failed, cancelled). */
+export const SETTLED_WORK_STATUSES: readonly string[] = ['needs_review', 'done', 'failed', 'cancelled'];
+
+/**
+ * The work item's status as the server holds it, or undefined when it cannot be read. Used instead of assuming
+ * after a 409 on the work report (a replay after the receipt expired, or a reply lost after it landed) and when
+ * the claim is gone (work item bbebed05).
+ */
+export async function observeWorkStatus(session: Session, workItemId: string, timeoutMs: number): Promise<string | undefined> {
+  const reply = await session.call('GET', `/api/v1/work-items/${workItemId}?workspaceId=${session.workspaceId ?? 'personal'}`, undefined,
+    {timeoutMs}).catch(() => null);
+  const status = (reply?.body.workItem as {status?: unknown} | undefined)?.status;
+  return reply?.status === 200 && typeof status === 'string' ? status : undefined;
+}
+
+/** The attempt's state as the server holds it, or undefined when it cannot be read. */
+export async function observeAttemptState(session: Session, journal: AttemptJournal, timeoutMs: number): Promise<string | undefined> {
+  if (!journal.attemptId) return undefined;
+  const reply = await session.call('GET', `/api/v1/work-items/${journal.workItemId}/execution-attempts/${journal.attemptId}/evidence`,
+    undefined, {timeoutMs}).catch(() => null);
+  const state = (reply?.body.attempt as {state?: unknown} | undefined)?.state;
+  return reply?.status === 200 && typeof state === 'string' ? state : undefined;
+}
+
 export const conflictsOf = (settlement: Settlement | undefined): string[] => (settlement
   ? [...(settlement.attemptReport === 'conflict' ? ['attempt_report'] : []), ...(settlement.work === 'conflict' ? ['work_result'] : [])]
   : []);
@@ -111,6 +135,11 @@ export async function postSettlement(
       }, options(`${journal.dispatchId}:fail`)).catch(() => null);
     }
     settlement.work = settledStatus(reply?.status);
+    if (settlement.work === 'conflict') {
+      // A 409 can mean the report already landed (its reply was lost, or its receipt expired): read before concluding.
+      const status = await observeWorkStatus(session, journal.workItemId, timeoutMs);
+      if (status && SETTLED_WORK_STATUSES.includes(status)) Object.assign(settlement, {work: 'done', observedWorkStatus: status});
+    }
   }
   return settlement;
 }

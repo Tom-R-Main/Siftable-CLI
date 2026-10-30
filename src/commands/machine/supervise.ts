@@ -15,6 +15,16 @@ const IDLE_MS = 15_000;
 /** Each attempt's preallocated filesystem image and its mount point live here, root-only (U5b-2c). */
 const ATTEMPT_ROOT = '/var/lib/siftable/attempts';
 const BLOCKED_MS = 60_000;
+/** Consecutive recoveries that settle nothing before the machine says an operator is needed and slows its retries. */
+export const NEEDS_OPERATOR_AFTER = 5;
+const NEEDS_OPERATOR_MS = 600_000;
+
+/** One line for an operator once recovery has stopped making progress; the attempt is still never relaunched. */
+export function needsOperatorLine(unsettled: number): string | undefined {
+  if (unsettled !== NEEDS_OPERATOR_AFTER) return undefined;
+  return `Needs an operator: an earlier attempt has not settled after ${NEEDS_OPERATOR_AFTER} tries. Its record is under the supervisor `
+    + 'state directory; check the work item in Siftable, then requeue or release it. No new work starts until it settles; retrying every 10 minutes.';
+}
 
 /** A test-only plan file; without one, the plan is the one the server froze when the setup launched (U6). */
 async function readPlanFile(file: string): Promise<AttemptPlan> {
@@ -100,6 +110,7 @@ export default class MachineSupervise extends BaseCommand {
       resolvePlan: async (workItem: Record<string, unknown>, get: Parameters<typeof serverPlan>[0]) => (flags['plan-file']
         ? readPlanFile(flags['plan-file']) : serverPlan(get, String(workItem.id), typeof workItem.orgId === 'string' ? workItem.orgId : null)),
     };
+    let unsettled = 0;
     try {
       for (;;) {
         let outcome: SuperviseOutcome;
@@ -110,10 +121,15 @@ export default class MachineSupervise extends BaseCommand {
           throw error;
         }
         this.log(describe(outcome));
+        unsettled = outcome.kind === 'recovered' && !outcome.settled ? unsettled + 1 : 0;
+        const operator = needsOperatorLine(unsettled);
+        if (operator) this.log(operator);
         if (flags.once || shutdown.signal.aborted) return outcome;
         if (outcome.kind === 'idle') await pause(IDLE_MS);
         // Held resources, a refusal, or a server settlement still pending: wait before trying again.
-        if (outcome.kind === 'refused' || outcome.kind === 'held' || (outcome.kind !== 'idle' && !outcome.settled)) await pause(BLOCKED_MS);
+        if (outcome.kind === 'refused' || outcome.kind === 'held' || (outcome.kind !== 'idle' && !outcome.settled)) {
+          await pause(unsettled >= NEEDS_OPERATOR_AFTER ? NEEDS_OPERATOR_MS : BLOCKED_MS);
+        }
         if (shutdown.signal.aborted) return outcome;
       }
     } finally {
