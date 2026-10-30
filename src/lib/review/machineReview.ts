@@ -76,9 +76,18 @@ export async function startForwarder(responsesUrl: string, fetchImpl: typeof fet
       }
       response.writeHead(upstream.status, {'Content-Type': upstream.headers.get('content-type') ?? 'application/octet-stream'});
       if (!upstream.body) { response.end(); return; }
-      for await (const chunk of upstream.body as unknown as AsyncIterable<Uint8Array>) response.write(chunk);
-      response.end();
-    })();
+      try {
+        for await (const chunk of upstream.body as unknown as AsyncIterable<Uint8Array>) response.write(chunk);
+        response.end();
+      } catch {
+        // The relay dropped mid-stream (Release R12): codex sees a broken stream, never a silently complete one.
+        await upstream.body.cancel().catch(() => undefined);
+        response.destroy();
+      }
+    })().catch(() => {
+      if (!response.headersSent) response.writeHead(502);
+      response.destroy();
+    });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   return {baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, server};

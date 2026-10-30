@@ -501,6 +501,10 @@ export async function writeResultCommit(git: Git, env: NodeJS.ProcessEnv, treeId
     .toString().trim();
   await must(git, 'verify_failed', ['update-ref', 'refs/heads/sift-result', head], {env});
   await must(git, 'verify_failed', ['symbolic-ref', 'HEAD', 'refs/heads/sift-result'], {env});
+  // A real work tree for every reader that starts in it, the review's own child processes included (Release R11):
+  // a gitfile naming the git directory beside it, which is no longer bare.
+  await must(git, 'verify_failed', ['config', 'core.bare', 'false'], {env});
+  await fs.writeFile(path.join(env.GIT_WORK_TREE as string, '.git'), 'gitdir: ../g\n', {mode: 0o644, flag: 'wx'});
   return head;
 }
 

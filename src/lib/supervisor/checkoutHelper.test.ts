@@ -343,8 +343,9 @@ describe('checkout helper', () => {
       await fs.mkdir(runs);
       const {treeId, env} = await materializeVerify(git, objects, path.join(runs, 'selected'), base, patch);
       const head = await writeResultCommit(git, env, treeId, base, objects);
-      const again = await writeResultCommit(git, env, treeId, base, objects);
-      expect(again).toBe(head);
+      // The same tree gives the same head, wherever it is committed.
+      const {treeId: sameTree, env: other} = await materializeVerify(git, objects, path.join(runs, 'again'), base, patch);
+      expect(await writeResultCommit(git, other, sameTree, base, objects)).toBe(head);
       // The reader: only GIT_DIR and GIT_WORK_TREE, no alternates variable.
       const reader = {GIT_DIR: env.GIT_DIR, GIT_WORK_TREE: env.GIT_WORK_TREE, GIT_INDEX_FILE: env.GIT_INDEX_FILE};
       const read = (args: string[]) => git(args, {env: reader});
@@ -358,6 +359,15 @@ describe('checkout helper', () => {
       expect((await read(['merge-base', base, head])).stdout.toString().trim()).toBe(base);
       expect((await read(['rev-parse', 'HEAD'])).stdout.toString().trim()).toBe(head);
       expect((await read(['log', '-1', '--format=%an %ae %at %P', head])).stdout.toString().trim()).toBe(`sift sift@localhost 0 ${base}`);
+      // Release R11: a process that starts in the tree with no git variables at all (the review's pre-pass and ratchet)
+      // finds the repository through the gitfile and reads the head's file list and the base.
+      const tree = env.GIT_WORK_TREE as string;
+      const bare = (args: string[]) => git(args, {cwd: tree, env: {GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_INDEX_FILE: undefined}});
+      expect((await bare(['rev-parse', 'HEAD'])).stdout.toString().trim()).toBe(head);
+      expect((await bare(['rev-parse', '--show-toplevel'])).stdout.toString().trim()).toBe(await fs.realpath(tree));
+      expect((await bare(['ls-tree', '-r', '--name-only', head])).stdout.toString()).toContain('src/lib/a.ts');
+      expect((await bare(['cat-file', '-e', base])).code).toBe(0);
+      expect((await bare(['status', '--porcelain', '--untracked-files=no'])).stdout.toString()).toBe('');
       // Without the alternates file the base commit is out of reach.
       await fs.rm(path.join(env.GIT_DIR as string, 'objects', 'info', 'alternates'));
       expect((await read(['cat-file', '-e', base])).code).not.toBe(0);

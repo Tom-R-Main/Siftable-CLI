@@ -42,6 +42,31 @@ describe('machine review (U3-2)', () => {
     }
   });
 
+  // Release R12: a relay that drops mid-stream breaks the client's stream; nothing escapes as an unhandled rejection.
+  it('breaks the stream when the relay drops after one chunk, and keeps serving', async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      let sent = false;
+      return new Response(new ReadableStream({pull(controller) {
+        if (!sent) { sent = true; controller.enqueue(new TextEncoder().encode('event: a\n\n')); return; }
+        controller.error(new Error('relay connection reset'));
+      }}), {status: 200, headers: {'content-type': 'text/event-stream'}});
+    }) as unknown as typeof fetch;
+    const {baseUrl, server} = await startForwarder(RELAY, fetchImpl);
+    try {
+      // Broken either before the headers or during the body, never read as complete.
+      const outcome = await fetch(`${baseUrl}/responses`, {method: 'POST', body: '{}'}).then((reply) => reply.text())
+        .then(() => 'complete', () => 'broken');
+      expect(outcome).toBe('broken');
+      // The forwarder is still up for the next call.
+      await fetch(`${baseUrl}/responses`, {method: 'POST', body: '{}'}).then((reply) => reply.text()).catch(() => undefined);
+      expect(calls).toBe(2);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
   it('reviews exactly the result head against the base, in proxy mode, and reports the receipt in one result', async () => {
     let options: LocalReviewOptions | undefined;
     let used: LocalReviewDeps | undefined;
