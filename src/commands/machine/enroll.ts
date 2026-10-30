@@ -56,7 +56,7 @@ export default class MachineEnroll extends BaseCommand {
         host: machineHostLabels({hostname: hostname(), os: platform(), arch: arch(), agentVersion: this.config.version}),
       });
       const workspaceId = scope.type === 'workspace' ? scope.id : null;
-      const next = flags.setup ? linkMachineCommand(flags.setup, result.runnerId, workspaceId) : undefined;
+      const next = flags.setup ? linkMachineCommand(flags.setup, result.runnerId, workspaceId, apiUrl) : undefined;
       if (!this.jsonEnabled()) {
         this.log(`Enrolled. Enrollment ${result.enrollmentId}, runner ${result.runnerId}.`);
         this.log('The machine is not qualified yet, so it cannot run work or call models until it qualifies.');

@@ -15,7 +15,7 @@ const session = (overrides: Partial<SetupSession> = {}, input: Record<string, un
 });
 
 type Ctor = {prototype: {run(): Promise<unknown>}};
-async function run(ctor: Ctor, parsed: {args?: object; flags: object}, replies: unknown[], options: {json?: boolean; confirm?: boolean} = {}) {
+async function run(ctor: Ctor, parsed: {args?: object; flags: object}, replies: unknown[], options: {json?: boolean; confirm?: boolean; resolved?: string} = {}) {
   const command = Object.create(ctor.prototype) as Record<string, unknown> & {run(): Promise<unknown>};
   const apiRequest = vi.fn();
   for (const reply of replies) apiRequest.mockResolvedValueOnce(reply);
@@ -23,7 +23,7 @@ async function run(ctor: Ctor, parsed: {args?: object; flags: object}, replies: 
   const confirmAction = vi.fn().mockResolvedValue(options.confirm ?? false);
   Object.assign(command, {
     parse: vi.fn().mockResolvedValue({args: parsed.args ?? {}, flags: {'api-url': API, ...parsed.flags}}),
-    apiRequest, log, confirmAction, jsonEnabled: () => options.json ?? false, workspaceId: (value?: string) => value,
+    apiRequest, log, confirmAction, jsonEnabled: () => options.json ?? false, workspaceId: (value?: string) => value ?? options.resolved,
     idempotencyKey: () => 'cli-key', error: (message: string) => { throw new Error(message); },
   });
   const result = await command.run();
@@ -42,10 +42,15 @@ describe('setup session helpers', () => {
   // Release U6-R8: commands printed for a workspace setup act in that workspace.
   it('names the setup\'s workspace in the enroll and link commands', () => {
     const ws = '90000000-0000-4000-8000-0000000000c3';
-    expect(enrollCommand(ID, null)).toBe(`sudo sift machine enroll --setup ${ID}`);
-    expect(enrollCommand(ID, ws)).toBe(`sudo sift machine enroll --workspace ${ws} --setup ${ID}`);
-    expect(linkMachineCommand(ID, RUNNER, null)).toBe(`sift setup link-machine ${ID} --runner ${RUNNER}`);
-    expect(linkMachineCommand(ID, RUNNER, ws)).toBe(`sift setup link-machine ${ID} --runner ${RUNNER} --workspace ${ws}`);
+    // Personal is stated, so a saved selection or SIFT_WORKSPACE_ID cannot redirect the command.
+    expect(enrollCommand(ID, null, API)).toBe(`sudo sift machine enroll --workspace personal --setup ${ID}`);
+    expect(enrollCommand(ID, ws, API)).toBe(`sudo sift machine enroll --workspace ${ws} --setup ${ID}`);
+    expect(linkMachineCommand(ID, RUNNER, null, API)).toBe(`sift setup link-machine ${ID} --runner ${RUNNER} --workspace personal`);
+    expect(linkMachineCommand(ID, RUNNER, ws, API)).toBe(`sift setup link-machine ${ID} --runner ${RUNNER} --workspace ${ws}`);
+    // A non-default API travels with the command; the default is left out.
+    expect(enrollCommand(ID, ws, 'https://staging.siftable.io/')).toBe(`sudo sift machine enroll --workspace ${ws} --api-url https://staging.siftable.io --setup ${ID}`);
+    expect(linkMachineCommand(ID, RUNNER, null, 'http://127.0.0.1:8080'))
+      .toBe(`sift setup link-machine ${ID} --runner ${RUNNER} --workspace personal --api-url http://127.0.0.1:8080`);
     expect(describeSession(session({workspaceId: ws}), API))
       .toContain(`  machine.runnerId: enroll a Linux machine with \`sudo sift machine enroll --workspace ${ws} --setup ${ID}\``);
   });
@@ -53,7 +58,7 @@ describe('setup session helpers', () => {
   it('says what each unmet value needs and where to review the plan', () => {
     const lines = describeSession(session({}, {}), API);
     expect(lines[0]).toBe(`Setup ${ID}: draft, version 2`);
-    expect(lines).toContain(`  machine.runnerId: enroll a Linux machine with \`sudo sift machine enroll --setup ${ID}\``);
+    expect(lines).toContain(`  machine.runnerId: enroll a Linux machine with \`sudo sift machine enroll --workspace personal --setup ${ID}\``);
     expect(lines.at(-1)).toBe(`Plan page: ${planPageUrl(API, ID)}`);
     expect(planPageUrl(`${API}/`, ID)).toBe(`${API}/app/setup/${ID}`);
     const ready = describeSession(session({status: 'ready', plan: {...session().plan, unmet: []}}), API);
@@ -81,6 +86,17 @@ describe('sift setup', () => {
     const {apiRequest, lines} = await run(SetupPrepare, {flags: {input: '{}', workspace: ws, 'idempotency-key': 'k-1'}}, [{session: session()}]);
     expect(apiRequest.mock.calls[0][2]).toMatchObject({idempotencyKey: 'k-1', body: {workspaceId: ws}});
     expect(lines.at(-1)).toBe(`Plan page: ${API}/app/setup/${ID}`);
+  });
+
+  // Release U6-R8: --workspace personal sends no workspace header and names personal in the body; no flag follows the saved selection.
+  it('treats --workspace personal as no workspace, and otherwise uses the resolved selection', async () => {
+    const personal = await run(SetupStatus, {args: {id: ID}, flags: {workspace: 'personal'}}, [{session: session()}]);
+    expect(personal.apiRequest.mock.calls[0][0]).toMatchObject({workspace: null});
+    expect(personal.apiRequest.mock.calls[0][1]).toBe(`/api/v1/setup/sessions/${ID}?workspaceId=personal`);
+    const ws = '90000000-0000-4000-8000-0000000000c3';
+    const saved = await run(SetupStatus, {args: {id: ID}, flags: {}}, [{session: session()}], {resolved: ws});
+    expect(saved.apiRequest.mock.calls[0][0]).toMatchObject({workspace: ws});
+    expect(saved.apiRequest.mock.calls[0][1]).toBe(`/api/v1/setup/sessions/${ID}?workspaceId=${ws}`);
   });
 
   it('reads a session in the workspace scope', async () => {

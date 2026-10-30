@@ -1,6 +1,6 @@
 import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
-import {describeSession, type SetupSession, setupWorkspace} from '../../lib/setupSession.js';
+import {describeSession, scopeFlags, setupScope, type SetupSession, setupWorkspace} from '../../lib/setupSession.js';
 
 export default class SetupPrepare extends BaseCommand {
   static description = 'Prepare a first-run setup plan to fix a failing test; review and run it on the plan page';
@@ -20,12 +20,13 @@ export default class SetupPrepare extends BaseCommand {
 
   async run(): Promise<unknown> {
     const {flags} = await this.parse(SetupPrepare);
+    const scope = setupScope(flags.workspace, (flag) => this.workspaceId(flag));
     const input = this.parseJsonInput<Record<string, unknown>>(flags.input, flags['input-file'], 'input');
     if (!input) this.error('Provide the plan with --input or --input-file.');
     const provenance = this.parseJsonFlag<Record<string, unknown>>(flags.provenance, 'provenance');
-    const body = await this.apiRequest<{session: SetupSession}>(flags, '/api/v1/setup/sessions', {
+    const body = await this.apiRequest<{session: SetupSession}>(scopeFlags(flags, scope), '/api/v1/setup/sessions', {
       method: 'POST',
-      body: {workspaceId: setupWorkspace(this.workspaceId(flags.workspace)), surface: 'cli', input: {recipe: 'fix_failing_test', ...input},
+      body: {workspaceId: setupWorkspace(scope), surface: 'cli', input: {recipe: 'fix_failing_test', ...input},
         ...(provenance ? {provenance} : {})},
       idempotencyKey: flags['idempotency-key'] ?? this.idempotencyKey(),
     });

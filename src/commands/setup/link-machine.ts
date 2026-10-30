@@ -1,6 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
-import {describeSession, type SetupSession, setupWorkspace} from '../../lib/setupSession.js';
+import {describeSession, scopeFlags, setupScope, type SetupSession, setupWorkspace} from '../../lib/setupSession.js';
 
 export default class SetupLinkMachine extends BaseCommand {
   static description = 'Name an enrolled machine as the setup plan\'s runner, with your own credential (not the machine\'s)';
@@ -17,9 +17,10 @@ export default class SetupLinkMachine extends BaseCommand {
 
   async run(): Promise<unknown> {
     const {args, flags} = await this.parse(SetupLinkMachine);
-    const workspace = setupWorkspace(this.workspaceId(flags.workspace));
+    const scope = setupScope(flags.workspace, (flag) => this.workspaceId(flag));
+    const workspace = setupWorkspace(scope);
     const route = `/api/v1/setup/sessions/${encodeURIComponent(args.id)}`;
-    const {session} = await this.apiRequest<{session: SetupSession}>(flags, `${route}?workspaceId=${encodeURIComponent(workspace)}`);
+    const {session} = await this.apiRequest<{session: SetupSession}>(scopeFlags(flags, scope), `${route}?workspaceId=${encodeURIComponent(workspace)}`);
     const current = (session.plan.input.machine as {runnerId?: string} | undefined)?.runnerId;
     if (current === flags.runner) {
       if (!this.jsonEnabled()) this.log(`The plan already runs on ${flags.runner}.`);
@@ -28,7 +29,7 @@ export default class SetupLinkMachine extends BaseCommand {
     if (current && !await this.confirmAction(`The plan runs on ${current}. Replace it with ${flags.runner}?`, flags)) {
       this.error('Not changed.');
     }
-    const body = await this.apiRequest<{session: SetupSession}>(flags, `${route}/revisions`, {
+    const body = await this.apiRequest<{session: SetupSession}>(scopeFlags(flags, scope), `${route}/revisions`, {
       method: 'POST',
       body: {workspaceId: workspace, surface: 'cli', expectedVersion: session.currentVersion, changes: {'machine.runnerId': flags.runner},
         provenance: {'machine.runnerId': {source: 'machine', detail: 'enrolled with sift machine enroll'}}},

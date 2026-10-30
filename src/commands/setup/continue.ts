@@ -1,6 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
-import {describeSession, parseSetPairs, type SetupSession, setupWorkspace} from '../../lib/setupSession.js';
+import {describeSession, parseSetPairs, scopeFlags, setupScope, type SetupSession, setupWorkspace} from '../../lib/setupSession.js';
 
 export default class SetupContinue extends BaseCommand {
   static description = 'Change values in a setup plan; each change makes a new version and clears any approval';
@@ -24,6 +24,7 @@ export default class SetupContinue extends BaseCommand {
 
   async run(): Promise<unknown> {
     const {args, flags} = await this.parse(SetupContinue);
+    const scope = setupScope(flags.workspace, (flag) => this.workspaceId(flag));
     let changes: Record<string, unknown>;
     try {
       changes = {...this.parseJsonFlag<Record<string, unknown>>(flags.changes, 'changes'), ...parseSetPairs(flags.set ?? [])};
@@ -32,9 +33,9 @@ export default class SetupContinue extends BaseCommand {
     }
     if (!Object.keys(changes).length) this.error('Name at least one change with --set or --changes.');
     const provenance = this.parseJsonFlag<Record<string, unknown>>(flags.provenance, 'provenance');
-    const body = await this.apiRequest<{session: SetupSession}>(flags, `/api/v1/setup/sessions/${encodeURIComponent(args.id)}/revisions`, {
+    const body = await this.apiRequest<{session: SetupSession}>(scopeFlags(flags, scope), `/api/v1/setup/sessions/${encodeURIComponent(args.id)}/revisions`, {
       method: 'POST',
-      body: {workspaceId: setupWorkspace(this.workspaceId(flags.workspace)), surface: 'cli', expectedVersion: flags.version, changes,
+      body: {workspaceId: setupWorkspace(scope), surface: 'cli', expectedVersion: flags.version, changes,
         ...(provenance ? {provenance} : {})},
       idempotencyKey: flags['idempotency-key'] ?? this.idempotencyKey(),
     });
