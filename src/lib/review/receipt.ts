@@ -38,7 +38,7 @@ export interface ReceiptBody {
     worktreeDirty: boolean;
   };
   policy: {name: string; revision: string};
-  model: {name: string; provider: 'codex-native'; finderPasses: 2 | 3};
+  model: {name: string; provider: ReceiptProvider; finderPasses: 2 | 3};
   verdict: {
     kind: Verdict['kind'];
     reason: string | null;
@@ -101,6 +101,9 @@ export function reviewStatus(verdict: Verdict, findings: number): ReviewStatus {
   }
 }
 
+/** codex with the user's own login (`sift review`), or through an attempt's reviewer relay (first-run U3-2). */
+export type ReceiptProvider = 'codex-native' | 'codex-proxy';
+
 export interface ReceiptContext {
   head: string;
   base: string;
@@ -109,6 +112,8 @@ export interface ReceiptContext {
   worktreeDirty: boolean;
   policy: {name: string; revision: string};
   model: string;
+  /** Default `codex-native`. */
+  provider?: ReceiptProvider;
   finderPasses: 2 | 3;
   problems: string[];
   startedAt: Date;
@@ -130,7 +135,7 @@ export function buildReceipt(context: ReceiptContext, verdict: Verdict, findings
       worktreeDirty: context.worktreeDirty,
     },
     policy: context.policy,
-    model: {name: context.model, provider: 'codex-native', finderPasses: context.finderPasses},
+    model: {name: context.model, provider: context.provider ?? 'codex-native', finderPasses: context.finderPasses},
     verdict: {
       kind: verdict.kind,
       reason: 'reason' in verdict ? String(verdict.reason) : null,
@@ -212,7 +217,7 @@ export function renderReport(receipt: Receipt, result: (Pick<ReviewResult, 'find
     'Receipt',
     `  head ${short(receipt.revision.head)}  base ${receipt.revision.baseRef} (${short(receipt.revision.base)})  merge base ${short(receipt.revision.mergeBase)}`,
     `  policy ${receipt.policy.name} ${receipt.policy.revision}`,
-    `  model ${receipt.model.name} via codex with your own login, ${receipt.model.finderPasses} finder passes`,
+    `  model ${receipt.model.name} via codex ${receipt.model.provider === 'codex-proxy' ? 'through the attempt relay' : 'with your own login'}, ${receipt.model.finderPasses} finder passes`,
     `  completion ${receipt.completion}  status ${receipt.status}`,
     `  digest ${receipt.digest}`,
   );

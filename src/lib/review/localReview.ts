@@ -10,7 +10,7 @@ import {tmpdir} from 'node:os';
 import {delimiter, dirname, isAbsolute, join} from 'node:path';
 import {accessSync, constants, statSync} from 'node:fs';
 import type {ModelClient, ReviewBudget, ReviewResult, Verdict} from '@siftable/taster';
-import {buildReceipt, failedVerdict, type Receipt, type ReceiptContext} from './receipt.js';
+import {buildReceipt, failedVerdict, type Receipt, type ReceiptContext, type ReceiptProvider} from './receipt.js';
 import {createGitExec, killActiveProcessGroups, loopbackMcpEndpoint, processRunner, runTrustedPrepassProcess} from './ports.js';
 import type {GitExec, TasterRuntime} from './runtime.js';
 import {abortable, cleanupReviewDirectories, throwIfAborted, trackReviewDirectory, untrackReviewDirectory, type RuntimeIdentity} from './lifecycle.js';
@@ -27,6 +27,8 @@ export interface LocalReviewOptions {
   /** Base ref; default: origin/main, then main. */
   baseRef?: string;
   model: string;
+  /** How the model is reached, as the receipt records it; default `codex-native`. */
+  provider?: ReceiptProvider;
   finderPasses: 2 | 3;
   budget: ReviewBudget;
 }
@@ -158,6 +160,7 @@ export async function runLocalReview(options: LocalReviewOptions, deps: LocalRev
     head: revisions.head, base: revisions.base, mergeBase: revisions.mergeBase,
     baseRef: revisions.baseRef, worktreeDirty: revisions.worktreeDirty,
     policy: {name: policy.name, revision: policy.revisionId}, model: options.model,
+    ...(options.provider ? {provider: options.provider} : {}),
     finderPasses: options.finderPasses, problems, startedAt, finishedAt: startedAt,
   });
   const preflight = deps.preflight;
@@ -178,6 +181,7 @@ export async function runLocalReview(options: LocalReviewOptions, deps: LocalRev
       worktreeDirty: revisions.worktreeDirty,
       policy: {name: policy.name, revision: policy.revisionId},
       model: options.model,
+      ...(options.provider ? {provider: options.provider} : {}),
       finderPasses: options.finderPasses,
       problems,
       startedAt,
