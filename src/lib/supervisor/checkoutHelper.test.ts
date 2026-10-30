@@ -3,7 +3,8 @@ import {mkdtempSync, promises as fs, readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
-import {admitBase, buildPatch, CheckoutRefused, checkGit, fetchBase, type Git, gitEnvironment, hostGit, materialize, PATCH_FILE, pinBase} from './checkoutHelper.js';
+import {admitBase, buildPatch, CheckoutRefused, checkGit, fetchBase, type Git, gitEnvironment, hostGit, INSTALL_LOG, materialize, NPM_CI_ARGS,
+  hostNpm, type Npm, PATCH_FILE, pinBase, runInstall} from './checkoutHelper.js';
 
 /** Fixture setup uses plain git; the code under test uses only the controlled environment. */
 const plain = (cwd: string, ...args: string[]) => execFileSync('git', args, {cwd, env: {...process.env, GIT_CONFIG_GLOBAL: '/dev/null',
@@ -163,5 +164,70 @@ describe('checkout helper', () => {
       expect(await refusal(buildPatch(git, work, out, base, ['src/lib'], 1_000))).toBe('patch_too_large');
       await expect(fs.access(path.join(out, PATCH_FILE))).rejects.toThrow();
     });
+  });
+
+  describe('install', () => {
+    const PROXY = 'http://sift-a-r1-proxy:3128';
+    async function build(name: string) {
+      const dir = path.join(root, name);
+      await fs.mkdir(path.join(dir, 'build'), {recursive: true});
+      await fs.writeFile(path.join(dir, 'build', 'package.json'), JSON.stringify({name: 'w', version: '1.0.0'}));
+      await fs.writeFile(path.join(dir, 'build', 'package-lock.json'),
+        JSON.stringify({name: 'w', version: '1.0.0', lockfileVersion: 3, requires: true, packages: {'': {name: 'w', version: '1.0.0'}}}));
+      return {build: path.join(dir, 'build'), home: path.join(dir, 'home')};
+    }
+
+    it('runs npm ci with scripts off, dev included, and an environment that inherits nothing', async () => {
+      const paths = await build('i-args');
+      const seen: Array<{args: string[]; cwd: string; env: NodeJS.ProcessEnv}> = [];
+      const configs: string[] = [];
+      const npm: Npm = async (args, options) => {
+        seen.push({args, cwd: options.cwd, env: options.env});
+        for (const file of [options.env.npm_config_userconfig!, options.env.npm_config_globalconfig!]) configs.push(await fs.readFile(file, 'utf8'));
+        await fs.mkdir(path.join(options.cwd, 'node_modules'));
+        await fs.mkdir(options.env.npm_config_cache!, {recursive: true});
+        return 0;
+      };
+      process.env.NODE_ENV = 'production';
+      try {
+        expect(await runInstall(paths, PROXY, npm)).toEqual({ok: true});
+      } finally {
+        delete process.env.NODE_ENV;
+      }
+      expect(seen[0].args).toEqual(NPM_CI_ARGS);
+      // Two distinct, existing, empty configs: npm refuses one file for both, and nothing may set the registry or scripts.
+      expect(configs).toEqual(['', '']);
+      expect(seen[0].env.npm_config_userconfig).not.toBe(seen[0].env.npm_config_globalconfig);
+      expect(NPM_CI_ARGS).toEqual(expect.arrayContaining(['ci', '--ignore-scripts', '--include=dev']));
+      expect(seen[0].cwd).toBe(paths.build);
+      expect(seen[0].env.NODE_ENV).toBeUndefined();
+      expect(seen[0].env).toMatchObject({npm_config_userconfig: path.join(paths.home, '.npmrc-user'),
+        npm_config_globalconfig: path.join(paths.home, '.npmrc-global'),
+        npm_config_registry: 'https://registry.npmjs.org/', npm_config_ignore_scripts: 'true', npm_config_https_proxy: PROXY});
+      // The cache never stays in the deps volume the writer will see.
+      await expect(fs.access(path.join(paths.build, '.npm-cache'))).rejects.toThrow();
+    });
+
+    it('refuses without a proxy, without the admitted manifests, or when npm ci fails', async () => {
+      const ok: Npm = async (_args, options) => { await fs.mkdir(path.join(options.cwd, 'node_modules')); return 0; };
+      expect(await runInstall(await build('i-noproxy'), '', ok)).toMatchObject({ok: false, code: 'dependency_install_failed'});
+      expect(await runInstall(await build('i-badproxy'), 'http://evil.example:3128/?x', ok)).toMatchObject({ok: false});
+      const missing = await build('i-missing');
+      await fs.rm(path.join(missing.build, 'package-lock.json'));
+      expect(await runInstall(missing, PROXY, ok)).toMatchObject({ok: false, detail: expect.stringContaining('package-lock.json')});
+      expect(await runInstall(await build('i-fails'), PROXY, async () => 1)).toMatchObject({ok: false, detail: expect.stringContaining('exited 1')});
+      const linked = await build('i-linked');
+      expect(await runInstall(linked, PROXY, async (_args, options) => { await fs.symlink('/etc', path.join(options.cwd, 'node_modules')); return 0; }))
+        .toMatchObject({ok: false, detail: expect.stringContaining('not a directory')});
+    });
+
+    it('works with the real npm and this exact environment, writing its output to the log', async () => {
+      const paths = await build('i-real');
+      // Only PATH differs from the container (npm lives elsewhere on this host); every npm setting is the real one.
+      const npm: Npm = (args, options) => hostNpm(args, {...options, env: {...options.env, PATH: process.env.PATH}});
+      expect(await runInstall(paths, 'http://127.0.0.1:9', npm)).toEqual({ok: true});
+      expect((await fs.stat(path.join(paths.build, 'node_modules'))).isDirectory()).toBe(true);
+      await expect(fs.access(path.join(paths.build, INSTALL_LOG))).resolves.toBeUndefined();
+    }, 60_000);
   });
 });

@@ -14,6 +14,12 @@
  * GIT_DIR on the attempt filesystem reads the base objects through
  * alternates, as data only, and diffs the write scope against the base.
  *
+ * A third mode (SIFT_MODE=install) installs the admitted dependencies:
+ * `npm ci --ignore-scripts --include=dev` in the deps volume, which holds only
+ * the admitted package.json and package-lock.json, with no user or global
+ * npm config, the public registry, and the registry-only proxy as its route.
+ * npm's own output goes to a capped log file, never stdout.
+ *
  * Output is one JSON line on stdout. Exit 0 means the step succeeded.
  */
 import {spawn} from 'node:child_process';
@@ -211,6 +217,75 @@ export async function buildPatch(git: Git, work: string, out: string, baseSha: s
   return {bytes: diff.bytes ?? 0};
 }
 
+export const INSTALL_LOG = 'install.log';
+export const MAX_INSTALL_LOG_BYTES = 4 * 1024 * 1024;
+export const NPM_CI_ARGS = ['ci', '--ignore-scripts', '--include=dev', '--no-audit', '--no-fund'];
+
+/** Empty user and global npm configs in the helper's private home; npm refuses one file (or /dev/null) for both. */
+export const NPM_USER_CONFIG = '.npmrc-user';
+export const NPM_GLOBAL_CONFIG = '.npmrc-global';
+
+/**
+ * npm's whole environment: nothing inherited, so no NODE_ENV=production can drop dev dependencies and no user,
+ * global or project config can change the registry, auth or scripts. The user and global configs are empty files
+ * the helper writes; the project directory holds only the admitted manifests, so there is no .npmrc to read either.
+ */
+export function npmEnvironment(home: string, cache: string, proxy: string): NodeJS.ProcessEnv {
+  return {
+    PATH: '/usr/local/bin:/usr/bin:/bin', HOME: home,
+    npm_config_userconfig: path.join(home, NPM_USER_CONFIG), npm_config_globalconfig: path.join(home, NPM_GLOBAL_CONFIG),
+    npm_config_registry: 'https://registry.npmjs.org/', npm_config_ignore_scripts: 'true', npm_config_audit: 'false',
+    npm_config_fund: 'false', npm_config_update_notifier: 'false', npm_config_cache: cache,
+    npm_config_https_proxy: proxy, npm_config_proxy: proxy, HTTPS_PROXY: proxy, HTTP_PROXY: proxy,
+  };
+}
+
+export type Npm = (args: string[], options: {cwd: string; env: NodeJS.ProcessEnv; logFile: string; maxLogBytes: number}) => Promise<number>;
+
+export const hostNpm: Npm = (args, options) => new Promise((resolve) => {
+  const log = createWriteStream(options.logFile, {mode: 0o644});
+  let written = 0;
+  const child = spawn('npm', args, {cwd: options.cwd, env: options.env, stdio: ['ignore', 'pipe', 'pipe']});
+  const capture = (chunk: Buffer) => {
+    if (written >= options.maxLogBytes) return;
+    const part = chunk.subarray(0, options.maxLogBytes - written);
+    written += part.length;
+    log.write(part);
+  };
+  child.stdout.on('data', capture);
+  child.stderr.on('data', capture);
+  child.once('error', () => log.end(() => resolve(127)));
+  child.once('close', (code) => log.end(() => resolve(code ?? 1)));
+});
+
+/** Installs the admitted dependencies into `<build>/node_modules`; the npm cache is removed afterwards. */
+export async function runInstall(paths = {build: '/build', home: '/tmp/h'}, proxy = process.env.SIFT_PROXY ?? '',
+  npm: Npm = hostNpm): Promise<Record<string, unknown>> {
+  try {
+    if (!/^http:\/\/[a-z0-9.-]+:\d+$/.test(proxy)) throw new CheckoutRefused('dependency_install_failed', 'no registry proxy was given');
+    for (const file of ['package.json', 'package-lock.json']) {
+      const stat = await fs.lstat(path.join(paths.build, file)).catch(() => null);
+      if (!stat?.isFile()) throw new CheckoutRefused('dependency_install_failed', `the admitted ${file} is missing`);
+    }
+    await fs.mkdir(paths.home, {recursive: true});
+    for (const config of [NPM_USER_CONFIG, NPM_GLOBAL_CONFIG]) await fs.writeFile(path.join(paths.home, config), '', {mode: 0o444});
+    const cache = path.join(paths.build, '.npm-cache');
+    const code = await npm(NPM_CI_ARGS, {cwd: paths.build, env: npmEnvironment(paths.home, cache, proxy),
+      logFile: path.join(paths.build, INSTALL_LOG), maxLogBytes: MAX_INSTALL_LOG_BYTES});
+    await fs.rm(cache, {recursive: true, force: true});
+    if (code !== 0) throw new CheckoutRefused('dependency_install_failed', `npm ci exited ${code}`);
+    // A project with no dependencies gets no node_modules from npm; the writer's read-only mount needs the directory.
+    const target = path.join(paths.build, 'node_modules');
+    const installed = await fs.lstat(target).catch(() => null);
+    if (!installed) await fs.mkdir(target);
+    else if (!installed.isDirectory()) throw new CheckoutRefused('dependency_install_failed', 'npm ci left node_modules that is not a directory');
+    return {ok: true};
+  } catch (error) {
+    if (error instanceof CheckoutRefused) return {ok: false, code: error.code, detail: error.message};
+    return {ok: false, code: 'dependency_install_failed', detail: (error as Error).message.slice(0, 500)};
+  }
+}
+
 export interface CheckoutRequest {repositoryUrl: string; baseSha: string; writeScope: string[]}
 
 export async function runCheckout(request: CheckoutRequest, paths = {src: '/src', work: '/workspace', home: '/tmp/h'},
@@ -243,7 +318,8 @@ export async function runPatch(request: CheckoutRequest, paths = {work: '/worksp
 
 if (require.main === module) {
   const request = JSON.parse(process.env.SIFT_CHECKOUT ?? '{}') as CheckoutRequest;
-  (process.env.SIFT_MODE === 'patch' ? runPatch(request) : runCheckout(request)).then((result) => {
+  const mode = process.env.SIFT_MODE;
+  (mode === 'patch' ? runPatch(request) : mode === 'install' ? runInstall() : runCheckout(request)).then((result) => {
     process.stdout.write(`${JSON.stringify(result)}\n`);
     process.exit(result.ok ? 0 : 2);
   }, () => process.exit(1));
