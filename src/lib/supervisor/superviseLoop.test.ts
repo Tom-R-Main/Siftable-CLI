@@ -11,6 +11,7 @@ import type {Attach} from './machineQualify.js';
 import {generateMachineKey, machineKeyFingerprint, rawEd25519PublicKey} from './machineProtocol.js';
 import {commitMachine, ensureStateDirectory, readJournal, writeCredential, writeJournal, writeKey} from './machineState.js';
 import {OUTBOX} from './cleanupReceiptOutbox.js';
+import {ATTEMPT_FS_BYTES, type AttemptFsSystem} from './attemptFilesystem.js';
 import {type AttemptJournal, JOURNAL, superviseOnce, type SuperviseDeps} from './superviseLoop.js';
 import {systemClock} from './superviseAuthority.js';
 
@@ -83,6 +84,40 @@ interface Scenario {
   openHangs?: boolean;
   /** Delivery receipts are answered with this status. */
   deliveryStatus?: number;
+  /** A checkout plan (U5b-2c): the attempt filesystem lives under `root`; the helpers answer with these results. */
+  checkout?: {root: string; result?: object; patchResult?: object};
+}
+
+/** An attempt filesystem host where every step succeeds; mount points and directories are real, under the test's root. */
+function attemptFsHost() {
+  let attached = false;
+  let mounted = false;
+  const calls: string[] = [];
+  const ok = (stdout = '') => ({code: 0, stdout, stderr: ''});
+  const system: AttemptFsSystem = {
+    createExclusive: async () => ({dev: 1, ino: 2}),
+    async run(file, args) {
+      const tool = file.split('/').at(-1)!;
+      calls.push(`${tool} ${args[0]}`);
+      if (tool === 'losetup' && args[0] === '--find') { attached = true; return ok('/dev/loop0\n'); }
+      if (tool === 'losetup' && args[0] === '--list') return ok(attached ? '/dev/loop0 2\n' : '');
+      if (tool === 'losetup' && args[0] === '--detach') { attached = false; return ok(); }
+      if (tool === 'mount') { mounted = true; return ok(); }
+      if (tool === 'umount') { mounted = false; return ok(); }
+      if (tool === 'findmnt') return mounted ? ok('/dev/loop0\n') : {code: 1, stdout: '', stderr: ''};
+      if (tool === 'blkid') return ok('uuid-1\n');
+      return ok();
+    },
+    stat: async () => ({dev: 1, ino: 2, blocks: ATTEMPT_FS_BYTES / 512}),
+    statfs: async () => ({bavail: 1e9, bsize: 4096, files: 400_000}),
+    readFile: async () => '0',
+    writeFile: async () => undefined,
+    mkdir: async (dir) => { await fs.mkdir(dir, {recursive: true}); },
+    chown: async () => undefined,
+    unlink: async (file) => { calls.push(`unlink ${path.basename(file)}`); },
+    rmdir: async () => undefined,
+  };
+  return {system, calls};
 }
 
 /** The API, Docker and attached processes one attempt touches, recording what happened in order. */
@@ -93,6 +128,7 @@ function world(scenario: Scenario = {}) {
   const agentInput: {value?: Record<string, unknown>} = {};
   const posts: Array<{path: string; body: Record<string, unknown>; key?: string}> = [];
   const evidence = {puts: [] as Array<{url: string; headers: Record<string, string>; body: string}>, acknowledged: false, declared: [] as unknown[]};
+  const receipts: Array<Record<string, unknown>> = [];
   const fetchImpl = (async (url: string, init: RequestInit) => {
     if (url.startsWith(STORAGE)) {
       const n = evidence.puts.length + 1;
@@ -141,6 +177,7 @@ function world(scenario: Scenario = {}) {
         controls: []});
     }
     if (route.endsWith('/cleanup-receipts')) {
+      receipts.push(body.receipt as Record<string, unknown>);
       events.push(`receipt:${String((body.receipt as {state?: string}).state)}`);
       return reply(201, {});
     }
@@ -166,9 +203,9 @@ function world(scenario: Scenario = {}) {
       events.push('evidence-declare');
       evidence.declared.push(body.artifacts);
       scenario.onDeclare?.();
-      const [artifact] = body.artifacts as Array<{sha256: string}>;
+      const artifacts = body.artifacts as Array<{sha256: string}>;
       return reply(200, {manifestDigest: MANIFEST, acknowledgedAt: evidence.acknowledged ? '2026-10-29T00:00:00.000Z' : null,
-        uploads: evidence.acknowledged ? [] : [{sha256: artifact.sha256, url: `${STORAGE}attempts/${ATTEMPT}/${artifact.sha256}`}]});
+        uploads: evidence.acknowledged ? [] : artifacts.map((artifact) => ({sha256: artifact.sha256, url: `${STORAGE}attempts/${ATTEMPT}/${artifact.sha256}`}))});
     }
     if (route.endsWith('/review')) { events.push('review'); return reply(scenario.reviewStatus ?? 200, {}); }
     if (route.endsWith('/fail')) { events.push('fail'); return reply(200, {}); }
@@ -198,21 +235,35 @@ function world(scenario: Scenario = {}) {
 
   const containers = new Map<string, string[]>();
   const started = new Set<string>();
+  const volumes: string[] = [];
+  const mountParts = (m: string) => Object.fromEntries(m.split(',').map((p) => (p.includes('=') ? p.split('=') : [p, 'true']) as [string, string]));
   const flag = (args: string[], name: string) => args.flatMap((arg, i) => (arg === name ? [args[i + 1]] : []));
   const docker: DeadlineDocker = async (args) => {
     const ok = (stdout = '') => ({code: 0, stdout, stderr: ''});
     const [a, b] = args;
     if (a === 'info') return ok(JSON.stringify({CgroupDriver: 'systemd', CgroupVersion: '2', ServerVersion: '28.5.1'}));
     if (a === 'image' && b === 'inspect') return ok(JSON.stringify([{Id: IMAGE_ID, RepoDigests: [IMAGE]}]));
-    if (a === 'network' && b === 'create') { events.push('network-create'); return ok('net-1\n'); }
+    if (a === 'network' && b === 'create') {
+      if (args.at(-1)!.endsWith('-fetch')) { events.push('fetch-network-create'); return ok('net-fetch\n'); }
+      events.push('network-create');
+      return ok('net-1\n');
+    }
+    if (a === 'volume') {
+      events.push(`volume-${b}${b === 'create' ? `:${args.at(-1)!.split('-').at(-1)}` : ''}`);
+      if (b === 'create') volumes.push(args.at(-1)!);
+      if (b === 'rm') volumes.splice(volumes.indexOf(args.at(-1)!), 1);
+      return ok(b === 'ls' ? volumes.join('\n') : '');
+    }
     if (a === 'network' && b === 'inspect') {
       return ok(JSON.stringify([{Id: 'net-1', Driver: 'bridge', Internal: true, EnableIPv6: false, Options: {'com.docker.network.bridge.gateway_mode_ipv4': 'isolated'}, IPAM: {Config: [{Subnet: '172.18.0.0/16'}]}, Scope: 'local', Attachable: false, Ingress: false,
         Labels: {'sift.machine.run': flag(containers.get('c-relay') ?? [], '--label').find((l) => l.startsWith('sift.machine.run='))?.split('=')[1],
           'sift.machine.attempt': ATTEMPT},
-        Containers: Object.fromEntries([...started].map((id) => [id, {}]))}]));
+        // Only the relay and the agent join the attempt network; the helpers have their own or none.
+        Containers: Object.fromEntries([...started].filter((id) => id === 'c-relay' || id === 'c-agent').map((id) => [id, {}]))}]));
     }
     if (a === 'container' && b === 'create') {
-      const id = flag(args, '--name')[0].endsWith('-relay') ? 'c-relay' : 'c-agent';
+      const name = flag(args, '--name')[0];
+      const id = `c-${['relay', 'checkout', 'patch'].find((role) => name.endsWith(`-${role}`)) ?? 'agent'}`;
       containers.set(id, args);
       events.push(`create:${id}`);
       // What the agent is handed, read while it still exists (the supervisor removes it on finish).
@@ -244,11 +295,13 @@ function world(scenario: Scenario = {}) {
             PortBindings: {}, PublishAllPorts: false,
             Tmpfs: Object.fromEntries(flag(created, '--tmpfs').map((t) => [t.split(':')[0], t.slice(t.indexOf(':') + 1)])),
             RestartPolicy: {Name: 'no'}, Memory: memory * 1024 * 1024, MemorySwap: memory * 1024 * 1024,
-            NanoCpus: Number(flag(created, '--cpus')[0]) * 1e9, PidsLimit: Number(flag(created, '--pids-limit')[0])},
-          Mounts: flag(created, '--mount').map((m) => {
-            const parts = Object.fromEntries(m.split(',').map((p) => p.split('=') as [string, string]));
-            return {Type: 'bind', Source: parts.source, Destination: parts.target, RW: false};
-          }),
+            NanoCpus: Number(flag(created, '--cpus')[0]) * 1e9, PidsLimit: Number(flag(created, '--pids-limit')[0]),
+            Mounts: flag(created, '--mount').map(mountParts).filter((parts) => parts.type === 'volume').map((parts) => ({Type: 'volume',
+              Source: parts.source, Target: parts.target, ...(parts.readonly ? {ReadOnly: true} : {}),
+              ...(parts['volume-subpath'] ? {VolumeOptions: {Subpath: parts['volume-subpath']}} : {})}))},
+          Mounts: flag(created, '--mount').map(mountParts).map((parts) => (parts.type === 'volume'
+            ? {Type: 'volume', Name: parts.source, Destination: parts.target, RW: !parts.readonly}
+            : {Type: 'bind', Source: parts.source, Destination: parts.target, RW: false})),
           NetworkSettings: {Networks: {'sift-a': {NetworkID: started.has(id) ? 'net-1' : ''}}},
         };
       })));
@@ -277,6 +330,19 @@ function world(scenario: Scenario = {}) {
     events.push(`start:${id}`);
     const stdin = new PassThrough();
     const stdout = new PassThrough();
+    if (id === 'c-checkout' || id === 'c-patch') {
+      const exited = (async () => {
+        const result = (id === 'c-checkout' ? scenario.checkout?.result : scenario.checkout?.patchResult) ?? {ok: true};
+        if (id === 'c-patch' && (result as {ok?: boolean}).ok !== false) {
+          // The helper writes the patch into the attempt filesystem's src directory.
+          const [run] = (await fs.readdir(scenario.checkout!.root, {withFileTypes: true})).filter((entry) => entry.isDirectory());
+          await fs.writeFile(path.join(scenario.checkout!.root, run.name, 'src', 'sift.patch'), '# sift patch v1\n+change\n');
+        }
+        stdout.end(`${JSON.stringify(result)}\n`);
+        return (result as {ok?: boolean}).ok === false ? 2 : 0;
+      })();
+      return {stdin, stdout, exited, kill: () => stdout.end()};
+    }
     if (id === 'c-relay') {
       sidecarIo.stdin = stdin;
       sidecarIo.stdout = stdout;
@@ -299,7 +365,7 @@ function world(scenario: Scenario = {}) {
     if (file.endsWith('cgroup.events')) return (scenario.populated ?? (() => 'populated 0\n'))();
     throw Object.assign(new Error('missing'), {code: 'ENOENT'});
   };
-  return {events, posts, fetchImpl, docker, attach, readFile, modelKeys, sidecarIo, agentInput, evidence};
+  return {events, posts, fetchImpl, docker, attach, readFile, modelKeys, sidecarIo, agentInput, evidence, receipts, containers};
 }
 
 describe('superviseOnce', () => {
@@ -1029,6 +1095,137 @@ describe('superviseOnce', () => {
       const order = (event: string) => healthy.events.indexOf(event);
       expect(order('rr-delivery:delivered')).toBeLessThan(order('rr-sync:session_ended'));
       expect(order('rr-sync:session_ended')).toBeLessThan(order('review'));
+    });
+  });
+
+  describe('checkout (U5b-2c)', () => {
+    const CHECKOUT_PLAN = {...PLAN, repositoryUrl: 'https://github.com/acme/widgets', writeScope: ['src']};
+    /** A world with a checkout plan, its attempt filesystem host, and the deps that run it. */
+    async function checkoutWorld(extra: Partial<NonNullable<Scenario['checkout']>> = {}, scenario: Scenario = {}) {
+      const attemptRoot = await fs.mkdtemp(path.join(path.dirname(root), 'attempts-'));
+      const host = attemptFsHost();
+      const w = world({...scenario, checkout: {root: attemptRoot, ...extra}});
+      const run = () => superviseOnce(deps(w, {resolvePlan: async () => CHECKOUT_PLAN, attemptFs: {system: host.system, root: attemptRoot},
+        assets: {sidecar: '/opt/sift/relaySidecar.js', launcher: '/opt/sift/attemptLauncher.js', checkoutHelper: '/opt/sift/checkoutHelper.js'}}));
+      return {w, host, run};
+    }
+    const mounts = (w: ReturnType<typeof world>, id: string) =>
+      (w.containers.get(id) ?? []).flatMap((arg, i, all) => (arg === '--mount' ? [all[i + 1]] : []));
+
+    it('checks out before the writer, gives it the repository read-only except the write scope, and ships the patch with the log', async () => {
+      const {w, host, run} = await checkoutWorld();
+      const outcome = await run();
+      expect(outcome).toMatchObject({kind: 'finished', reason: 'workload_exited', exitCode: 0, settled: true});
+      const order = (event: string) => w.events.indexOf(event);
+      // Checkout on its own bridge, removed before the writer's network exists.
+      expect(order('volume-create:work')).toBeLessThan(order('fetch-network-create'));
+      expect(order('start:c-checkout')).toBeLessThan(order('network-rm'));
+      expect(order('network-rm')).toBeLessThan(order('network-create'));
+      // The writer: the checkout read-only, the write scope writable over it, and no scratch /workspace.
+      const agentMounts = mounts(w, 'c-agent').filter((m) => m.startsWith('type=volume'));
+      expect(agentMounts.map((m) => m.replace(/sift-a-[0-9a-f]+-work/, 'WORK'))).toEqual([
+        'type=volume,source=WORK,target=/workspace,readonly', 'type=volume,source=WORK,target=/workspace/src,volume-subpath=src']);
+      expect(w.containers.get('c-agent')!.filter((arg) => arg.startsWith('/workspace:'))).toEqual([]);
+      expect(w.containers.get('c-agent')).toEqual(expect.arrayContaining(['--workdir', '/workspace']));
+      // The patch: no network, the checkout read-only, after the writer was killed, declared beside the log.
+      expect(w.containers.get('c-patch')).toEqual(expect.arrayContaining(['--network', 'none']));
+      expect(order('kill:c-agent')).toBeLessThan(order('start:c-patch'));
+      expect((w.evidence.declared[0] as Array<{kind: string}>).map((a) => a.kind)).toEqual(['agent_log', 'patch']);
+      expect(w.evidence.puts.map((put) => put.headers['Content-Type']).sort()).toEqual(['text/plain', 'text/x-diff']);
+      // Acknowledged: the volumes and then the filesystem go, and the receipts say nothing was kept.
+      expect(order('evidence-ack')).toBeLessThan(order('volume-rm'));
+      expect(host.calls.some((c) => c.startsWith('umount'))).toBe(true);
+      expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(true);
+      expect(w.receipts.map((r) => r.recoveryVolumeRetained)).toEqual([false, false]);
+    });
+
+    it('keeps the attempt filesystem and says so when the evidence was not acknowledged', async () => {
+      const {w, host, run} = await checkoutWorld({}, {putStatus: 503});
+      const outcome = await run();
+      expect(outcome).toMatchObject({kind: 'finished', reason: 'workload_exited', settled: true});
+      expect(w.events).toContain('fail');
+      expect(w.events).not.toContain('volume-rm');
+      expect(host.calls.some((c) => c.startsWith('umount') || c.startsWith('unlink'))).toBe(false);
+      expect(w.receipts.map((r) => [r.state, r.recoveryVolumeRetained])).toEqual([['execution_stopped', true], ['cleaned', true]]);
+    });
+
+    it('refuses the start when the checkout is refused: no writer exists, and nothing is kept', async () => {
+      const {w, host, run} = await checkoutWorld({result: {ok: false, code: 'scope_invalid', detail: 'src is a symlink'}});
+      const outcome = await run();
+      expect(outcome).toMatchObject({kind: 'finished', reason: 'start_failed'});
+      expect(w.events).not.toContain('create:c-agent');
+      expect(w.events).not.toContain('go');
+      expect(w.events).toContain('ack:failed');
+      expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(true);
+      expect(w.receipts.every((r) => r.recoveryVolumeRetained === false)).toBe(true);
+    });
+
+    it('fails the evidence when the patch cannot be built, and keeps the filesystem for the operator', async () => {
+      const {w, host, run} = await checkoutWorld({patchResult: {ok: false, code: 'patch_too_large', detail: 'over the cap'}});
+      await run();
+      expect(w.events).not.toContain('evidence-declare');
+      expect(w.events).toContain('fail');
+      expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(false);
+      expect(w.receipts.some((r) => r.recoveryVolumeRetained === true)).toBe(true);
+    });
+
+    const sha = (text: string) => createHash('sha256').update(text).digest('hex');
+    /** What the queued receipts say about the attempt filesystem: recovery queues them after the evidence decision, to send next cycle. */
+    const queuedRetention = async () => ((await readJournal<{entries: Array<{facts: {recoveryVolumeRetained: boolean}}>}>({root, owner: null}, OUTBOX))
+      ?.entries ?? []).map((entry) => entry.facts.recoveryVolumeRetained);
+    /** A journal left by a crash after the writer stopped: its log frozen, its patch frozen or not, its filesystem still there. */
+    async function crashedWithCheckout(patchFrozen: boolean) {
+      const attemptRoot = await fs.mkdtemp(path.join(path.dirname(root), 'attempts-'));
+      const host = attemptFsHost();
+      const dir = path.join(inputRoot, ATTEMPT);
+      await fs.mkdir(dir, {recursive: true});
+      const logPath = path.join(dir, 'agent.log');
+      await fs.writeFile(logPath, WORKLOAD_OUTPUT);
+      const patchText = '# sift patch v1\n+change\n';
+      const patchPath = path.join(dir, 'sift.patch');
+      if (patchFrozen) await fs.writeFile(patchPath, patchText);
+      await writeJournal({root, owner: null}, JOURNAL, {version: 1, state: 'stopping', runId: 'abc123abc123', dispatchId: DISPATCH,
+        workItemId: WORK_ITEM, runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`, attemptId: ATTEMPT, networkId: 'net-1',
+        workspace: {repositoryId: PLAN.repositoryId, branch: PLAN.branch, baseSha: PLAN.baseSha},
+        containers: {sidecar: 'c-relay', agent: 'c-agent'}, callSeq: 0, stop: {reason: 'workload_exited', exitCode: 0}, evidenceOwed: true,
+        evidence: {path: logPath, sha256: sha(WORKLOAD_OUTPUT), bytes: WORKLOAD_OUTPUT.length},
+        fs: {image: path.join(attemptRoot, 'abc123abc123.img'), mountPoint: path.join(attemptRoot, 'abc123abc123'), imageDev: 1, imageIno: 2,
+          loop: '/dev/loop0', uuid: 'uuid-1', inodes: 400_000, state: 'mounted'},
+        ...(patchFrozen ? {patch: {kind: 'patch', contentType: 'text/x-diff', path: patchPath, sha256: sha(patchText), bytes: patchText.length}} : {}),
+      } satisfies AttemptJournal);
+      const w = world();
+      const run = () => superviseOnce(deps(w, {attemptFs: {system: host.system, root: attemptRoot}}));
+      return {w, host, run};
+    }
+
+    it('after a crash, uploads the frozen log and patch under the recovered claim, then releases the filesystem', async () => {
+      const {w, host, run} = await crashedWithCheckout(true);
+      expect(await run()).toEqual({kind: 'recovered', settled: true});
+      expect((w.evidence.declared[0] as Array<{kind: string}>).map((a) => a.kind)).toEqual(['agent_log', 'patch']);
+      expect(w.events).toContain('review');
+      expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(true);
+      expect(await queuedRetention()).toEqual([false, false]);
+    });
+
+    it('after a crash before the patch was frozen, fails the evidence and keeps the filesystem', async () => {
+      const {w, host, run} = await crashedWithCheckout(false);
+      expect(await run()).toEqual({kind: 'recovered', settled: true});
+      expect(w.events).not.toContain('evidence-declare');
+      expect(w.events).toContain('fail');
+      expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(false);
+      expect(await queuedRetention()).toEqual([true, true]);
+    });
+
+    it('refuses a checkout plan it cannot run, before anything is attached', async () => {
+      for (const bad of [{writeScope: ['../etc']}, {repositoryUrl: 'http://github.com/acme/widgets'}, {writeScope: ['src', 'src/lib']}]) {
+        const {w, host} = await checkoutWorld();
+        const outcome = await superviseOnce(deps(w, {resolvePlan: async () => ({...CHECKOUT_PLAN, ...bad}),
+          attemptFs: {system: host.system, root: path.dirname(root)},
+          assets: {sidecar: '/opt/sift/relaySidecar.js', launcher: '/opt/sift/attemptLauncher.js', checkoutHelper: '/opt/sift/checkoutHelper.js'}}));
+        expect(outcome).toMatchObject({kind: 'refused', reason: 'plan_invalid'});
+        expect(w.events).not.toContain('attempt:starting');
+        expect(host.calls).toEqual([]);
+      }
     });
   });
 });

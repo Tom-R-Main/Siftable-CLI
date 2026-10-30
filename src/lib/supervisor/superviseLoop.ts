@@ -17,11 +17,15 @@ import {promises as fs} from 'node:fs';
 import {hostname} from 'node:os';
 import path from 'node:path';
 import {attemptSliceName, cgroupSetupProblem, isInsideAttemptSlice, parseCgroupV2, type ReadFile} from './attemptCgroup.js';
-import {captureLog, type EvidenceOutcome, uploadAgentLog} from './attemptEvidence.js';
+import {checkoutPlanProblem} from './attemptCheckout.js';
+import {captureLog, type EvidenceOutcome, type FrozenArtifact, uploadAgentLog} from './attemptEvidence.js';
+import type {AttemptFsRecord, AttemptFsSystem} from './attemptFilesystem.js';
+import {freezePatch, prepareWorkspace, releaseWorkspace, type WorkspaceContext, writerVolumes} from './attemptWorkspace.js';
 import {closeRecoveredQuestions, type JournalQuestion, QuestionDesk} from './attemptQuestions.js';
 import {GO_LINE, READY_LINE} from './attemptLauncher.js';
-import {dockerVersionProblem, evaluateNetworkInspect, evaluateSandboxInspect, networkCreateArgs, sandboxCreateArgs, type SandboxContainerSpec} from './containerSandbox.js';
-import {ensureReceiptsQueued, JOURNAL, sendCleanupReceipts, settle, SuperviseError, unresolvedCreates, writeAttemptJournal} from './attemptSettle.js';
+import {dockerVersionProblem, evaluateNetworkInspect, evaluateSandboxInspect, networkCreateArgs, sandboxCreateArgs, type SandboxContainerSpec,
+  type SandboxVolume} from './containerSandbox.js';
+import {type CreateRole, ensureReceiptsQueued, JOURNAL, sendCleanupReceipts, settle, SuperviseError, unresolvedCreates, writeAttemptJournal} from './attemptSettle.js';
 import {DEADLINE_EXIT, type DeadlineDocker} from './hostDocker.js';
 import {type Attach, type AttachedProcess, ensureImage, readFirstLine} from './machineQualify.js';
 import type {CleanupFacts} from './cleanupReceiptOutbox.js';
@@ -44,6 +48,9 @@ export interface AttemptPlan {
   imageRef: string;
   /** The workload the launcher starts after `go`, exactly as the plan froze it. */
   command: string[];
+  /** The checkout (U5b-2c): a public GitHub repository at baseSha, and the directories the writer may change. */
+  repositoryUrl?: string;
+  writeScope?: string[];
 }
 
 export interface SuperviseDeps {
@@ -56,7 +63,9 @@ export interface SuperviseDeps {
   hostAddresses: () => string[];
   state: MachineStateOptions;
   log: (line: string) => void;
-  assets: {sidecar: string; launcher: string};
+  assets: {sidecar: string; launcher: string; checkoutHelper?: string};
+  /** Where attempt filesystems live and how they are made (U5b-2c); a checkout plan is refused without it. */
+  attemptFs?: {system: AttemptFsSystem; root: string};
   /** Root-owned directory for read-only attempt inputs, outside the supervisor's state and any home. */
   inputRoot: string;
   resolvePlan: (workItem: Record<string, unknown>) => Promise<AttemptPlan | null>;
@@ -102,7 +111,13 @@ export interface AttemptJournal {
   runtimeId: string;
   attemptId?: string;
   networkId?: string;
-  containers: {sidecar?: string; agent?: string};
+  containers: Partial<Record<'sidecar' | 'agent' | 'checkout' | 'patch', string>>;
+  /** The checkout helper's own bridge; the run-label sweep removes it too. */
+  fetchNetworkId?: string;
+  /** The attempt's own filesystem (U5b-2c): kept, with its volumes, when the evidence was not acknowledged. */
+  fs?: AttemptFsRecord;
+  /** The write scope's patch, frozen beside the log for the evidence manifest. */
+  patch?: FrozenArtifact;
   cgroups?: {sidecar?: string; agent?: string};
   /** The workspace the attempt was attached with; terminal reports repeat it. */
   workspace?: {repositoryId: string; branch: string; baseSha: string};
@@ -119,7 +134,7 @@ export interface AttemptJournal {
   stop?: {reason: StopReason; controlId?: string; exitCode?: number; facts?: StopFacts};
   settlement?: Settlement;
   /** Creates sent but not yet answered. Their IDs are recorded whenever they resolve; an unresolved one is held. */
-  pendingCreates?: Array<'network' | 'sidecar' | 'agent'>;
+  pendingCreates?: CreateRole[];
   /** Every cleanup receipt this attempt has owed, frozen here before it is handed to the outbox. */
   receipts?: CleanupFacts[];
   /** True once `receipts` are durably in the outbox; until then the journal is never archived. */
@@ -193,7 +208,8 @@ async function openSession(deps: SuperviseDeps): Promise<Session> {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 
-function attemptSpecs(deps: SuperviseDeps, journal: AttemptJournal, attemptId: string, plan: AttemptPlan, networkId: string, nonce: string, inputFile: string) {
+function attemptSpecs(deps: SuperviseDeps, journal: AttemptJournal, attemptId: string, plan: AttemptPlan, networkId: string, nonce: string, inputFile: string,
+  workspace?: SandboxVolume[]) {
   const slice = attemptSliceName(attemptId);
   const relayName = `sift-a-${journal.runId}-relay`;
   const labels = (role: string) => ({'sift.machine.run': journal.runId, 'sift.machine.role': role, 'sift.machine.attempt': attemptId});
@@ -208,7 +224,8 @@ function attemptSpecs(deps: SuperviseDeps, journal: AttemptJournal, attemptId: s
     name: `sift-a-${journal.runId}-agent`, imageRef: plan.imageRef, networkId, labels: labels('agent'),
     entrypoint: 'node', command: ['/sift/attemptLauncher.js', ...plan.command],
     mounts: [{source: deps.assets.launcher, target: '/sift/attemptLauncher.js'}, {source: inputFile, target: '/sift/input.json'}],
-    tmpfs: ['/tmp', '/workspace'],
+    // With a checkout, /workspace is the repository: read-only except the write scope. Without one, empty scratch.
+    tmpfs: workspace ? ['/tmp'] : ['/tmp', '/workspace'], ...(workspace ? {volumes: workspace, workdir: '/workspace'} : {}),
     env: {
       SIFT_DIAGNOSTIC_URL: `${relayBase}${DIAGNOSTIC_PATH}`, SIFT_DIAGNOSTIC_NONCE: nonce,
       // SDKs append their own paths: Anthropic adds /v1/messages, OpenAI adds /responses to a base ending in /v1.
@@ -319,14 +336,17 @@ async function resumeEvidence(deps: SuperviseDeps, session: Session, journal: At
   deadlineMono: number): Promise<AttemptJournal | 'cancelled'> {
   const frozen = journal.evidence;
   if (!frozen || !journal.settlement || journal.settlement.evidence || !journal.attemptId) return journal;
-  const intact = await fs.readFile(frozen.path)
-    .then((bytes) => bytes.length === frozen.bytes && createHash('sha256').update(bytes).digest('hex') === frozen.sha256)
+  const unchanged = (file: {path: string; bytes: number; sha256: string}) => fs.readFile(file.path)
+    .then((bytes) => bytes.length === file.bytes && createHash('sha256').update(bytes).digest('hex') === file.sha256)
     .catch(() => false);
+  // With a checkout the patch is owed too; one never frozen cannot be rebuilt after a restart.
+  const patch = journal.patch;
+  const intact = await unchanged(frozen) && (!journal.fs || (patch !== undefined && await unchanged(patch)));
   const outcome: EvidenceOutcome = intact ? await uploadAgentLog({
     call: (method, route, body, options) => session.call(method, route, body, options), fetch: deps.fetch,
     monoMs: () => deps.clock.monoMs(), deadlineMono,
     route: `/api/v1/work-items/${journal.workItemId}/execution-attempts/${journal.attemptId}/evidence-manifest`, claimToken,
-    log: {path: frozen.path, sha256: frozen.sha256, bytes: frozen.bytes}, signal: deps.shutdown,
+    log: {path: frozen.path, sha256: frozen.sha256, bytes: frozen.bytes}, also: patch ? [patch] : [], signal: deps.shutdown,
   }) : {acknowledged: false};
   // Shutdown again: still undecided; the journal is left as it was for the next start.
   if (outcome.cancelled) return 'cancelled';
@@ -359,7 +379,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     const reason = earlier.stop?.reason ?? 'recovered';
     // An unanswered create is settled only by finding its resource by name, or by the operator's explicit release.
     const unknown = deps.releaseUnknownCreates ? [] : await unresolvedCreates(deps, earlier);
-    const swept = await settle(deps, {...earlier, pendingCreates: unknown}, reason, earlier.stop?.controlId);
+    const swept = await settle(deps, {...earlier, pendingCreates: unknown}, reason, earlier.stop?.controlId, undefined,
+      Boolean(earlier.fs && earlier.fs.state !== 'released'));
     let {facts, journal} = swept;
     if (unknown.length > 0) {
       facts = {...facts, resourcesRemoved: false, held: [...facts.held, ...unknown.map((role) => `create:${role}`)]};
@@ -368,6 +389,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     }
     if (facts.held.length > 0) {
       // Physical recovery came first; receipts still go out while resources are held.
+      await ensureReceiptsQueued(deps, journal);
       await sendCleanupReceipts(deps);
       return {kind: 'held', held: facts.held};
     }
@@ -428,6 +450,17 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
         Math.min(recoveredCap, deps.clock.monoMs() + EVIDENCE_BUDGET_MS));
       if (resumed === 'cancelled') return {kind: 'recovered', settled: false};
       earlier = resumed;
+      // Its filesystem goes once nothing on it is owed; otherwise it stays for the operator, recorded in the archive.
+      const owed = earlier.evidenceOwed && !earlier.settlement?.evidence?.acknowledged;
+      if (earlier.fs && earlier.fs.state !== 'released' && deps.attemptFs && !owed) {
+        const held = await releaseWorkspace((args) => deps.docker(args), deps.attemptFs.system, earlier.runId, earlier.fs);
+        if (held.length > 0) {
+          await ensureReceiptsQueued(deps, earlier);
+          return {kind: 'held', held};
+        }
+        earlier = {...earlier, fs: {...earlier.fs, state: 'released'}};
+        await writeAttemptJournal(deps, earlier);
+      }
       // The attempt stopped with the restart: its questions are closed and reconciled, never offered again.
       const pending = earlier;
       if (pending.questions?.length && !await closeRecoveredQuestions(pending.questions, (questions) => writeAttemptJournal(deps,
@@ -504,6 +537,9 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   if (dispatch.computeGrantId) return refuseStart('compute_grant_dispatch_unsupported');
   const plan = await deps.resolvePlan(workItem);
   if (!plan) return refuseStart('no_plan');
+  const checkout = plan.repositoryUrl === undefined && plan.writeScope === undefined ? undefined
+    : {repositoryUrl: plan.repositoryUrl as string, baseSha: plan.baseSha, writeScope: plan.writeScope as string[]};
+  if (checkout && (checkoutPlanProblem(checkout) || !deps.attemptFs || !deps.assets.checkoutHelper)) return refuseStart('plan_invalid');
   const workspace = {repositoryId: plan.repositoryId, branch: plan.branch, baseSha: plan.baseSha};
 
   await recordDispatch(deps, dispatch.id);
@@ -549,16 +585,16 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   // so teardown sees it. One cut off by the deadline may still complete in the daemon, so it stays pending.
   const inflight = new Set<Promise<unknown>>();
   let finished = false;
-  const create = async (role: 'network' | 'sidecar' | 'agent', args: string[]) => {
+  const create = async (role: CreateRole, args: string[]) => {
     await save({...journal, pendingCreates: [...(journal.pendingCreates ?? []), role]});
     const recorded = boundedDocker(args).then(async (created) => {
       // After this run has finished its journal belongs to recovery, which looks for the resource by name.
       if (finished) return created;
       const id = created.code === 0 ? created.stdout.trim() : '';
       const pendingCreates = created.code === DEADLINE_EXIT ? journal.pendingCreates : (journal.pendingCreates ?? []).filter((r) => r !== role);
-      journal = role === 'network'
-        ? {...journal, pendingCreates, ...(id ? {networkId: id} : {})}
-        : {...journal, pendingCreates, containers: {...journal.containers, ...(id ? {[role]: id} : {})}};
+      journal = role === 'network' ? {...journal, pendingCreates, ...(id ? {networkId: id} : {})}
+        : role === 'fetch' ? {...journal, pendingCreates, ...(id ? {fetchNetworkId: id} : {})}
+          : {...journal, pendingCreates, containers: {...journal.containers, ...(id ? {[role]: id} : {})}};
       await persist();
       return created;
     });
@@ -583,6 +619,23 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   const desk = new QuestionDesk(journal.questions ?? [], (questions) => save({...journal, questions}), () => deps.clock.monoMs());
   let modelsOpen = false;
   const inputDir = path.join(deps.inputRoot, attemptId);
+  let helperImageId: string | undefined;
+  // Helpers made after the run has finished (the patch) still journal their requests and IDs, so a crash leaves them to the sweep.
+  const helperCreate = async (role: CreateRole, args: string[]) => {
+    await save({...journal, pendingCreates: [...(journal.pendingCreates ?? []), role]});
+    const created = await deps.docker(args, {deadlineMono: deps.clock.monoMs() + STOP_BUDGET_MS});
+    const id = created.code === 0 ? created.stdout.trim() : '';
+    await save({...journal, containers: {...journal.containers, ...(id ? {[role]: id} : {})},
+      pendingCreates: created.code === DEADLINE_EXIT ? journal.pendingCreates : (journal.pendingCreates ?? []).filter((r) => r !== role)});
+    if (!id) throw new SuperviseError(`docker container create failed: ${created.stderr.trim().slice(0, 200) || `exit ${created.code}`}`);
+    return id;
+  };
+  const workspaceContext = (make: WorkspaceContext['create'], deadlineMono: () => number): WorkspaceContext | undefined =>
+    (checkout && deps.attemptFs && deps.assets.checkoutHelper && helperImageId ? {
+      runId: journal.runId, attemptId, imageRef: plan.imageRef, imageId: helperImageId, slice: attemptSliceName(attemptId), checkout,
+      helperAsset: deps.assets.checkoutHelper, docker: (args) => deps.docker(args, {deadlineMono: deadlineMono()}), attach: deps.attach,
+      create: make, fsSystem: deps.attemptFs.system, attemptRoot: deps.attemptFs.root, persistFs: (record) => save({...journal, fs: record}),
+    } : undefined);
   const finish = async (reason: StopReason, exitCode?: number, controlId?: string): Promise<SuperviseOutcome> => {
     modelsOpen = false;
     clearInterval(runnerBeat);
@@ -599,7 +652,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     // Then wait, within the stop budget, for creates still in flight, so their IDs are torn down too.
     await Promise.race([Promise.allSettled([...inflight]), sleep(Math.max(0, killBy - deps.clock.monoMs()))]);
     finished = true;
-    const settled = await settle(deps, journal, reason, controlId, writing);
+    // With an attempt filesystem, this stop's receipts wait until the evidence has decided whether it is kept.
+    const settled = await settle(deps, journal, reason, controlId, writing, Boolean(journal.fs));
     // The killed container closes its attach stream: the log is frozen at that end, before the attach client is killed.
     const frozenLog = agentLog ? await agentLog.close(deps.timing?.logDrainMs).catch((error: unknown) => {
       deps.log(`The attempt's log was not captured whole: ${(error as Error).message}`);
@@ -628,14 +682,30 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       const log = frozenLog;
       if (log) await save({...journal, evidence: log});
       const uploadable = log && settled.facts.cgroupEmpty === 'empty' && reason !== 'shutdown' && reason !== 'lease_lost' && capLeft() > 0;
-      evidence = uploadable ? await uploadAgentLog({call: (method, route, body, options) => session.call(method, route, body, options),
+      // With a checkout the patch is evidence too, built once every writer process has stopped; without it the evidence fails.
+      const helpers = uploadable && journal.fs ? workspaceContext(helperCreate, () => Math.min(cap, deps.clock.monoMs() + STOP_BUDGET_MS)) : undefined;
+      const patch = helpers && journal.fs ? await freezePatch(helpers, journal.fs, inputDir).catch((error: unknown) => {
+        deps.log(`The patch was not built: ${(error as Error).message}`);
+        return undefined;
+      }) : undefined;
+      if (patch) await save({...journal, patch});
+      evidence = uploadable && (!journal.fs || patch) ? await uploadAgentLog({call: (method, route, body, options) => session.call(method, route, body, options),
         fetch: deps.fetch, monoMs: () => deps.clock.monoMs(), deadlineMono: Math.min(cap, deps.clock.monoMs() + EVIDENCE_BUDGET_MS),
         route: `/api/v1/work-items/${workItem.id}/execution-attempts/${attemptId}/evidence-manifest`, claimToken, log,
-        signal: deps.shutdown}) : {acknowledged: false};
+        also: patch ? [patch] : [], signal: deps.shutdown}) : {acknowledged: false};
       // Shutdown arrived mid-upload: nothing is decided or posted; the next start finishes it under the recovered claim.
       if (evidence.cancelled) return keepUnsettled();
       if (journal.evidence) await save({...journal, evidence: {...journal.evidence, ...evidence}});
       if (!evidence.acknowledged) deps.log(`The attempt's evidence was not acknowledged; its log is kept at ${inputDir}.`);
+    }
+    // The attempt filesystem goes once nothing on it is owed: the evidence was acknowledged, or the workload never ran.
+    if (journal.fs && journal.fs.state !== 'released' && deps.attemptFs && (!journal.evidenceOwed || evidence?.acknowledged)) {
+      const held = await releaseWorkspace((args) => deps.docker(args, {deadlineMono: deps.clock.monoMs() + STOP_BUDGET_MS}),
+        deps.attemptFs.system, journal.runId, journal.fs);
+      if (held.length === 0) await save({...journal, fs: {...journal.fs, state: 'released'}});
+      else settled.facts = {...settled.facts, resourcesRemoved: false, held: [...settled.facts.held, ...held]};
+    } else if (journal.fs && journal.fs.state !== 'released') {
+      deps.log(`The attempt's filesystem is kept for recovery at ${journal.fs.image}.`);
     }
     // Questions are closed while the claim holds: received answers recorded delivered, unconfirmed ones failed.
     // 5 s at shutdown (the unit's stop timeout), else 30 s, never past the claim. Anything left unrecorded keeps the
@@ -650,6 +720,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     if (settled.facts.held.length > 0) {
       // Held resources block new work; the server is told once they are gone. Keep what it will be told.
       await save({...journal, settlement});
+      journal = await ensureReceiptsQueued(deps, journal) ?? journal;
       return {kind: 'finished', reason, exitCode, facts: settled.facts, settled: false};
     }
     // During shutdown the unit's stop timeout bounds everything; settlement gets 10 s and the rest waits for the next start.
@@ -680,9 +751,18 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     await fs.writeFile(inputFile, JSON.stringify({version: 1, attemptId, workItemId: workItem.id,
       inputSha256: input.payloadSha256, task: input.task, plan}), {mode: 0o444});
 
+    // The checkout comes first: the writer's mounts name its volumes. A refusal ends the start before any writer exists.
+    let workspace: SandboxVolume[] | undefined;
+    if (checkout) {
+      helperImageId = imageId;
+      const helpers = workspaceContext((role, args) => create(role, args), () => cap);
+      if (!helpers) return await finish('start_failed');
+      await guard(prepareWorkspace(helpers));
+      workspace = writerVolumes(journal.runId, checkout.writeScope);
+    }
     const labelsOnly = attemptSpecs(deps, journal, attemptId, plan, '', nonce, inputFile).networkLabels;
     const networkId = await create('network', networkCreateArgs(`sift-a-${journal.runId}`, labelsOnly));
-    const specs = attemptSpecs(deps, journal, attemptId, plan, networkId, nonce, inputFile);
+    const specs = attemptSpecs(deps, journal, attemptId, plan, networkId, nonce, inputFile, workspace);
     const sidecarId = await create('sidecar', sandboxCreateArgs(specs.sidecar));
     const agentId = await create('agent', sandboxCreateArgs(specs.agent));
     await save({...journal, state: 'created'});
@@ -824,5 +904,6 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
 
 /** The shipped sidecar and launcher programs, beside this module in dist. */
 export function supervisorAssets(): SuperviseDeps['assets'] {
-  return {sidecar: path.join(__dirname, 'relaySidecar.js'), launcher: path.join(__dirname, 'attemptLauncher.js')};
+  return {sidecar: path.join(__dirname, 'relaySidecar.js'), launcher: path.join(__dirname, 'attemptLauncher.js'),
+    checkoutHelper: path.join(__dirname, 'checkoutHelper.js')};
 }

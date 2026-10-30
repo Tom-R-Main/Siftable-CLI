@@ -28,8 +28,11 @@ export async function ownedResources(deps: SuperviseDeps, journal: AttemptJourna
 }
 
 /** The fixed name each create used, so an unanswered create can be looked for later. */
-export function createName(runId: string, role: 'network' | 'sidecar' | 'agent'): string {
-  return role === 'network' ? `sift-a-${runId}` : `sift-a-${runId}-${role === 'sidecar' ? 'relay' : 'agent'}`;
+export type CreateRole = 'network' | 'sidecar' | 'agent' | 'fetch' | 'checkout' | 'patch';
+const NETWORK_ROLES = new Set<CreateRole>(['network', 'fetch']);
+
+export function createName(runId: string, role: CreateRole): string {
+  return role === 'network' ? `sift-a-${runId}` : `sift-a-${runId}-${role === 'sidecar' ? 'relay' : role}`;
 }
 
 /**
@@ -37,11 +40,11 @@ export function createName(runId: string, role: 'network' | 'sidecar' | 'agent')
  * create's exact name settles it (the label sweep then removes it); one not
  * found stays unknown, because an outstanding request may still finish.
  */
-export async function unresolvedCreates(deps: SuperviseDeps, journal: AttemptJournal): Promise<Array<'network' | 'sidecar' | 'agent'>> {
-  const unresolved: Array<'network' | 'sidecar' | 'agent'> = [];
+export async function unresolvedCreates(deps: SuperviseDeps, journal: AttemptJournal): Promise<CreateRole[]> {
+  const unresolved: CreateRole[] = [];
   for (const role of journal.pendingCreates ?? []) {
     const name = createName(journal.runId, role);
-    const found = role === 'network'
+    const found = NETWORK_ROLES.has(role)
       ? await deps.docker(['network', 'ls', '--quiet', '--no-trunc', '--filter', `name=^${name}$`])
       : await deps.docker(['container', 'ls', '--all', '--quiet', '--no-trunc', '--filter', `name=^/${name}$`]);
     if (found.code !== 0 || !found.stdout.trim()) unresolved.push(role);
@@ -103,7 +106,12 @@ export async function ensureReceiptsQueued(deps: SuperviseDeps, journal: Attempt
     }
     const state = await inspectMachineState(deps.state);
     if (state.kind !== 'enrolled') return null;
-    await enqueueReceipts(deps.state, state.machine.enrollmentId, current.receipts);
+    // Whether the attempt's filesystem is kept for recovery is a fact at queue time, which the caller defers
+    // until evidence has decided it (U5b-2c). Receipts already in the outbox keep what they were queued with.
+    const retained = Boolean(current.fs && current.fs.state !== 'released');
+    const receipts = current.receipts.map((receipt) => ({...receipt, recoveryVolumeRetained: retained}));
+    current = {...current, receipts};
+    await enqueueReceipts(deps.state, state.machine.enrollmentId, receipts);
     current = {...current, receiptsQueued: true};
     await writeAttemptJournal(deps, current);
     return current;
@@ -130,6 +138,8 @@ export async function sendCleanupReceipts(deps: SuperviseDeps): Promise<void> {
 /** Tears down a journal's run; returns what is still held. Never relaunches. */
 export async function settle(
   deps: SuperviseDeps, journal: AttemptJournal, reason: StopReason, controlId?: string, pendingWrites: Promise<unknown> = Promise.resolve(),
+  /** Leaves this stop's receipts unqueued: the caller queues them once it knows whether the attempt filesystem is kept. */
+  deferReceipts = false,
 ): Promise<{facts: StopFacts; journal: AttemptJournal}> {
   // The workload's exit code survives a crash and a second sweep: recovery settles with it.
   const exitCode = journal.stop?.exitCode;
@@ -176,7 +186,7 @@ export async function settle(
     receiptsQueued: !derived || added ? false : current.receiptsQueued ?? true};
   await stoppingWritten;
   await writeAttemptJournal(deps, current).catch((error: unknown) => { journalError ??= error; });
-  if (journalError === undefined) current = await ensureReceiptsQueued(deps, current) ?? current;
+  if (journalError === undefined && !deferReceipts) current = await ensureReceiptsQueued(deps, current) ?? current;
   if (journalError !== undefined) {
     throw new SuperviseError(`The attempt was stopped (cgroup ${facts.cgroupEmpty}, resources ${facts.resourcesRemoved ? 'removed' : 'held'}), `
       + `but its journal could not be written: ${(journalError as Error).message}. The earlier journal is kept for the next start.`);

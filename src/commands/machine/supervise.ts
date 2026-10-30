@@ -1,6 +1,7 @@
 import {Flags} from '@oclif/core';
 import {promises as fs} from 'node:fs';
 import {BaseCommand} from '../../lib/base-command.js';
+import {hostAttemptFsSystem} from '../../lib/supervisor/attemptFilesystem.js';
 import {hostIPv4Addresses} from '../../lib/supervisor/containerSandbox.js';
 import {createHostDocker, hostAttach} from '../../lib/supervisor/hostDocker.js';
 import {acquireStateLock, MachineStateError, SUPERVISOR_STATE_DIR} from '../../lib/supervisor/machineState.js';
@@ -10,6 +11,8 @@ import {INPUT_ROOT} from '../../lib/supervisor/supervisorService.js';
 import {ensureSupervisorAccount} from '../../lib/supervisor/systemAccount.js';
 
 const IDLE_MS = 15_000;
+/** Each attempt's preallocated filesystem image and its mount point live here, root-only (U5b-2c). */
+const ATTEMPT_ROOT = '/var/lib/siftable/attempts';
 const BLOCKED_MS = 60_000;
 
 /** A fixture plan file until setup launches record the plan on the work item (U6). */
@@ -85,6 +88,7 @@ export default class MachineSupervise extends BaseCommand {
       state, shutdown: shutdown.signal, releaseUnknownCreates: flags['release-unknown-creates'],
       log: (line: string) => process.stderr.write(`${line}\n`),
       assets: supervisorAssets(),
+      attemptFs: {system: hostAttemptFsSystem, root: ATTEMPT_ROOT},
       inputRoot: INPUT_ROOT,
       resolvePlan: async () => (flags['plan-file'] ? readPlanFile(flags['plan-file']) : null),
     };
