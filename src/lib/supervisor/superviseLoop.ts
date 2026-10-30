@@ -31,7 +31,7 @@ import {closeRecoveredQuestions, type JournalQuestion, QuestionDesk} from './att
 import {GO_LINE, READY_LINE} from './attemptLauncher.js';
 import {dockerVersionProblem, evaluateNetworkInspect, evaluateSandboxInspect, networkCreateArgs, sandboxCreateArgs, type SandboxContainerSpec,
   type SandboxVolume} from './containerSandbox.js';
-import {type CreateRole, ensureReceiptsQueued, JOURNAL, NETWORK_ROLES, rederiveReceipts, sendCleanupReceipts, settle, SuperviseError,
+import {type CreateRole, ensureReceiptsQueued, JOURNAL, NETWORK_ROLES, POST_STOP_ROLES, rederiveReceipts, sendCleanupReceipts, settle, SuperviseError,
   unresolvedCreates, writeAttemptJournal} from './attemptSettle.js';
 import {DEADLINE_EXIT, type DeadlineDocker} from './hostDocker.js';
 import {type Attach, type AttachedProcess, ensureImage, readFirstLine} from './machineQualify.js';
@@ -717,8 +717,9 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     }
     // A helper left behind, a workspace whose preparation never ended, or a release that could not be shown complete is
     // held; this stop's receipts, still unqueued while the filesystem exists, are worked out again from the final facts.
-    // A patch create that never answered may still finish in the daemon: held until the next start finds it by name.
-    const latePending = (journal.pendingCreates ?? []).filter((role) => role === 'patch').map((role) => `create:${role}`);
+    // A post-stop create (the patch, a verification or review helper) that never answered may still finish in the daemon:
+    // held until the next start finds it by name.
+    const latePending = (journal.pendingCreates ?? []).filter((role) => POST_STOP_ROLES.has(role)).map((role) => `create:${role}`);
     const lateHeld = [...helperHeld, ...latePending, ...(prepareUnknown ? ['workspace:preparing'] : []), ...releaseHeld];
     if (lateHeld.length > 0) {
       settled.facts = {...settled.facts, resourcesRemoved: false, held: [...settled.facts.held, ...lateHeld]};

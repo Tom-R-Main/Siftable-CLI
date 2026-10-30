@@ -30,6 +30,11 @@ export async function ownedResources(deps: SuperviseDeps, journal: AttemptJourna
 /** The fixed name each create used, so an unanswered create can be looked for later. */
 export type CreateRole = 'network' | 'sidecar' | 'agent' | 'fetch' | 'checkout' | 'patch' | 'volume' | 'install-net' | 'egress' | 'proxy'
   | 'install' | 'verify-checkout' | 'tree-check' | 'report' | 'verifier';
+/**
+ * Creates that happen after the workload stopped (the patch, verification and review helpers): the stop's own sweep
+ * has already run, so one still unanswered at settlement is held until the next start finds it by name.
+ */
+export const POST_STOP_ROLES = new Set<CreateRole>(['patch', 'verify-checkout', 'verifier', 'report', 'tree-check']);
 export const NETWORK_ROLES = new Set<CreateRole>(['network', 'fetch', 'install-net', 'egress']);
 
 export function createName(runId: string, role: CreateRole): string {

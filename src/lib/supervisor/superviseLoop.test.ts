@@ -99,7 +99,9 @@ interface Scenario {
     /** The supervisor dies right after the base run: every Docker call from then on never answers. */
     crashAfterBase?: boolean;
     /** Docker refuses a call whose deadline has passed, as the host adapter does. */
-    honorDeadlines?: boolean};
+    honorDeadlines?: boolean;
+    /** The nth test-container create never answers (the daemon may still make it). */
+    loseVerifierCreate?: number};
   /** A checkout plan (U5b-2c): the attempt filesystem lives under `root`; the helpers answer with these results. */
   checkout?: {root: string; result?: object; patchResult?: object; patchRmFails?: boolean; patchCreateLost?: boolean;
     /** Removing the attempt's volumes fails, as when one is still in use. */
@@ -278,6 +280,7 @@ function world(scenario: Scenario = {}) {
 
   const containers = new Map<string, string[]>();
   const started = new Set<string>();
+  let verifierCreates = 0;
   const volumes: string[] = [...(scenario.checkout?.seedVolumes ?? [])];
   let volumeInspections = 0;
   /** What each volume was created with; a seeded one is as the earlier run made it. */
@@ -341,6 +344,7 @@ function world(scenario: Scenario = {}) {
         .find((role) => name.endsWith(`-${role}`)) ?? 'agent'}`;
       // The daemon may have made it, but the answer never came back within the deadline.
       if (id === 'c-patch' && scenario.checkout?.patchCreateLost) return {code: 124, stdout: '', stderr: 'deadline passed'};
+      if (id === 'c-verifier' && scenario.verify?.loseVerifierCreate === (verifierCreates += 1)) return {code: 124, stdout: '', stderr: 'deadline passed'};
       containers.set(id, args);
       events.push(`create:${id}`);
       // What the agent is handed, read while it still exists (the supervisor removes it on finish).
@@ -1645,6 +1649,14 @@ describe('superviseOnce', () => {
           expect((await journal())?.verification?.outcome).toBe('verification_interrupted');
           expect(w.events).not.toContain('review');
         }, 15_000);
+
+        // Codex connector P1 on #1386: a verification create that never answered after the stop is held, like the patch's.
+        it('holds a post-stop verification create that never answered, and keeps the journal for the next start', async () => {
+          const {w, run} = await verifyWorld({verify: {base: failing, selected: fixed, regression: fixed, loseVerifierCreate: 2}});
+          expect(await run()).toMatchObject({kind: 'finished', settled: false, facts: {resourcesRemoved: false, held: expect.arrayContaining(['create:verifier'])}});
+          expect(await journal()).toMatchObject({state: 'held', pendingCreates: ['verifier']});
+          expect(w.events).not.toContain('review');
+        });
 
         it('keeps the attempt unsettled while a record is unanswered, and resends it unchanged after a restart', async () => {
           const {w, run} = await verifyWorld({verify: {base: failing, selected: fixed, regression: fixed,
