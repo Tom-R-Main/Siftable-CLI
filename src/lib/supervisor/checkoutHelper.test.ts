@@ -3,7 +3,7 @@ import {mkdtempSync, promises as fs, readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
-import {admitBase, CheckoutRefused, checkGit, fetchBase, type Git, gitEnvironment, hostGit, materialize, pinBase} from './checkoutHelper.js';
+import {admitBase, buildPatch, CheckoutRefused, checkGit, fetchBase, type Git, gitEnvironment, hostGit, materialize, PATCH_FILE, pinBase} from './checkoutHelper.js';
 
 /** Fixture setup uses plain git; the code under test uses only the controlled environment. */
 const plain = (cwd: string, ...args: string[]) => execFileSync('git', args, {cwd, env: {...process.env, GIT_CONFIG_GLOBAL: '/dev/null',
@@ -99,5 +99,69 @@ describe('checkout helper', () => {
     const {git, src, work} = await staged('ondisk');
     // admitBase would refuse this first; the on-disk check is the second line.
     expect(await refusal(materialize(git, src, work, base, ['linked']))).toBe('scope_invalid');
+  });
+
+  describe('patch', () => {
+    /** A checkout the writer has worked in, and an output directory on the attempt filesystem. */
+    async function written(name: string) {
+      const {git, src, work} = await staged(name);
+      await materialize(git, src, work, base, ['src/lib', 'test']);
+      const out = path.join(root, name, 'out');
+      await fs.mkdir(out);
+      return {git, work, out};
+    }
+
+    it('is only its header, but still written, when the writer changed nothing', async () => {
+      const {git, work, out} = await written('p-empty');
+      const header = `# sift patch v1: base ${base}, write scope ["src/lib"]\n`;
+      expect(await buildPatch(git, work, out, base, ['src/lib'])).toEqual({bytes: header.length});
+      // Never empty, so its digest cannot match an empty log's (V502 requires distinct digests).
+      expect(readFileSync(path.join(out, PATCH_FILE), 'utf8')).toBe(header);
+    });
+
+    it('holds exactly the write scope\'s changes, binary included, and applies to the base', async () => {
+      const {git, work, out} = await written('p-scope');
+      await fs.writeFile(path.join(work, 'src', 'lib', 'a.ts'), 'export const a = 3;\n');
+      await fs.writeFile(path.join(work, 'src', 'lib', 'new.ts'), 'export {};\n');
+      await fs.writeFile(path.join(work, 'src', 'lib', 'bin.dat'), Buffer.from([0, 1, 2, 255]));
+      await fs.rm(path.join(work, 'test', 'a.test.ts'));
+      // Outside the scope given to the patch: never in it.
+      await fs.writeFile(path.join(work, 'notes.txt'), 'changed\n');
+      await buildPatch(git, work, out, base, ['src/lib']);
+      const patch = readFileSync(path.join(out, PATCH_FILE), 'utf8');
+      expect(patch).toContain('src/lib/a.ts');
+      expect(patch).toContain('src/lib/new.ts');
+      expect(patch).toContain('GIT binary patch');
+      expect(patch).not.toContain('notes.txt');
+      expect(patch).not.toContain('a.test.ts');
+      const fresh = path.join(root, 'p-scope', 'fresh');
+      plain(root, 'clone', '--quiet', fixture, fresh);
+      // Applied to the index, which holds blob bytes; plain git would rewrite the work tree by the fixture's eol rule.
+      plain(fresh, 'apply', '--cached', '--binary', path.join(out, PATCH_FILE));
+      expect(plain(fresh, 'show', ':src/lib/a.ts')).toBe('export const a = 3;');
+    });
+
+    it('never reads the writer\'s git directory: planted fsmonitor, hooks, filters and textconv do not run', async () => {
+      const {git, work, out} = await written('p-traps');
+      const marker = path.join(root, 'p-traps', 'ran');
+      const touch = `touch ${marker}`;
+      for (const [key, value] of [['core.fsmonitor', touch], ['core.hooksPath', path.join(root, 'p-traps')], ['filter.planted.clean', touch],
+        ['filter.planted.smudge', touch], ['diff.planted.textconv', touch], ['diff.external', touch]]) {
+        plain(work, 'config', key, value);
+      }
+      await fs.writeFile(path.join(root, 'p-traps', 'pre-commit'), `#!/bin/sh\n${touch}\n`, {mode: 0o755});
+      await fs.writeFile(path.join(work, '.git', 'info', 'attributes'), '* filter=planted diff=planted\n');
+      await fs.writeFile(path.join(work, 'src', 'lib', 'a.ts'), 'export const a = 4;\n');
+      await buildPatch(git, work, out, base, ['src/lib']);
+      expect(readFileSync(path.join(out, PATCH_FILE), 'utf8')).toContain('export const a = 4;');
+      await expect(fs.access(marker)).rejects.toThrow();
+    });
+
+    it('refuses a patch over its cap and leaves no partial file', async () => {
+      const {git, work, out} = await written('p-cap');
+      await fs.writeFile(path.join(work, 'src', 'lib', 'big.txt'), 'x'.repeat(10_000));
+      expect(await refusal(buildPatch(git, work, out, base, ['src/lib'], 1_000))).toBe('patch_too_large');
+      await expect(fs.access(path.join(out, PATCH_FILE))).rejects.toThrow();
+    });
   });
 });

@@ -8,10 +8,16 @@
  * and `--attr-source` is the empty tree, so no attribute (eol, encoding,
  * filter, diff) applies. Self-contained: Node built-ins only.
  *
- * Output is one JSON line on stdout. Exit 0 means the checkout is ready.
+ * The same program builds the patch after the writer stops (SIFT_MODE=patch),
+ * in a container with no network that sees the checkout read-only. It never
+ * uses the checkout's own git directory, which the writer controlled: a fresh
+ * GIT_DIR on the attempt filesystem reads the base objects through
+ * alternates, as data only, and diffs the write scope against the base.
+ *
+ * Output is one JSON line on stdout. Exit 0 means the step succeeded.
  */
 import {spawn} from 'node:child_process';
-import {promises as fs} from 'node:fs';
+import {createWriteStream, promises as fs} from 'node:fs';
 import path from 'node:path';
 
 export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
@@ -33,18 +39,49 @@ export function gitEnvironment(home: string): NodeJS.ProcessEnv {
   };
 }
 
-export type Git = (args: string[], options?: {cwd?: string}) => Promise<{code: number; stdout: Buffer; stderr: string}>;
+export interface GitOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  /**
+   * Streams stdout to this file instead of memory, after `prefix`, up to maxBytes in all; past it the process
+   * is killed and `truncated` set.
+   */
+  toFile?: {path: string; maxBytes: number; prefix?: string};
+}
+
+export type Git = (args: string[], options?: GitOptions) => Promise<{code: number; stdout: Buffer; stderr: string; bytes?: number; truncated?: boolean}>;
 
 export function hostGit(home: string): Git {
   return (args, options = {}) => new Promise((resolve) => {
-    const child = spawn('git', ['--attr-source', EMPTY_TREE, ...args], {cwd: options.cwd ?? '/', env: gitEnvironment(home),
+    const child = spawn('git', ['--attr-source', EMPTY_TREE, ...args], {cwd: options.cwd ?? '/', env: {...gitEnvironment(home), ...options.env},
       stdio: ['ignore', 'pipe', 'pipe']});
     const out: Buffer[] = [];
     let err = '';
-    child.stdout.on('data', (chunk: Buffer) => out.push(chunk));
+    let bytes = 0;
+    let truncated = false;
+    const sink = options.toFile ? createWriteStream(options.toFile.path, {mode: 0o644}) : undefined;
+    if (sink && options.toFile?.prefix) {
+      sink.write(options.toFile.prefix);
+      bytes = Buffer.byteLength(options.toFile.prefix);
+    }
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (!sink) { out.push(chunk); return; }
+      if (truncated) return;
+      bytes += chunk.length;
+      if (bytes > (options.toFile as {maxBytes: number}).maxBytes) {
+        truncated = true;
+        child.kill('SIGKILL');
+        return;
+      }
+      sink.write(chunk);
+    });
     child.stderr.on('data', (chunk: Buffer) => { if (err.length < 8192) err += chunk.toString(); });
     child.once('error', (error) => resolve({code: 127, stdout: Buffer.alloc(0), stderr: error.message}));
-    child.once('close', (code) => resolve({code: code ?? 1, stdout: Buffer.concat(out), stderr: err}));
+    child.once('close', (code) => {
+      const done = () => resolve({code: code ?? 1, stdout: Buffer.concat(out), stderr: err, bytes, truncated});
+      if (sink) sink.end(done);
+      else done();
+    });
   });
 }
 
@@ -54,7 +91,7 @@ export class CheckoutRefused extends Error {
   }
 }
 
-async function must(git: Git, code: string, args: string[], options?: {cwd?: string}): Promise<Buffer> {
+async function must(git: Git, code: string, args: string[], options?: {cwd?: string; env?: NodeJS.ProcessEnv}): Promise<Buffer> {
   const result = await git(args, options);
   if (result.code !== 0) throw new CheckoutRefused(code, `git ${args[0]} exited ${result.code}: ${result.stderr.trim().slice(0, 500)}`);
   return result.stdout;
@@ -137,6 +174,43 @@ export async function materialize(git: Git, src: string, work: string, baseSha: 
   }
 }
 
+export const MAX_PATCH_BYTES = 64 * 1024 * 1024;
+export const PATCH_FILE = 'sift.patch';
+
+/** The write scope as literal pathspecs: no glob or magic in a directory name applies. */
+const literal = (scopes: string[]) => scopes.map((scope) => `:(literal)${scope}`);
+
+/**
+ * The write scope's changes against the base, as a binary git diff, written to
+ * `<out>/sift.patch` and capped at 64 MiB. The writer's .git (config, hooks,
+ * attributes, fsmonitor, index) is never read: a fresh git directory in
+ * `<out>/g` takes the base objects through alternates and its own index, and
+ * new blobs land in its own object directory.
+ */
+export async function buildPatch(git: Git, work: string, out: string, baseSha: string, writeScope: string[],
+  maxBytes = MAX_PATCH_BYTES): Promise<{bytes: number}> {
+  const gitDir = path.join(out, 'g');
+  await fs.rm(gitDir, {recursive: true, force: true});
+  await must(git, 'patch_failed', ['init', '--quiet', '--bare', gitDir]);
+  const env = {GIT_DIR: gitDir, GIT_WORK_TREE: work, GIT_OBJECT_DIRECTORY: path.join(gitDir, 'objects'),
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(work, '.git', 'objects'), GIT_INDEX_FILE: path.join(gitDir, 'index')};
+  await must(git, 'patch_failed', ['read-tree', baseSha], {cwd: work, env});
+  await must(git, 'patch_failed', ['add', '--all', '--', ...literal(writeScope)], {cwd: work, env});
+  const file = path.join(out, PATCH_FILE);
+  // A manifest's files must have distinct digests (V502), and an empty patch would match an empty log. The header
+  // names what the patch is against; git apply skips text before the first diff.
+  const prefix = `# sift patch v1: base ${baseSha}, write scope ${JSON.stringify(writeScope)}\n`;
+  const diff = await git(['diff', '--cached', '--binary', '--no-ext-diff', '--no-textconv', '--no-color', baseSha, '--', ...literal(writeScope)],
+    {cwd: work, env, toFile: {path: file, maxBytes, prefix}});
+  if (diff.truncated) {
+    await fs.rm(file, {force: true});
+    throw new CheckoutRefused('patch_too_large', `more than ${maxBytes} bytes`);
+  }
+  if (diff.code !== 0) throw new CheckoutRefused('patch_failed', `git diff exited ${diff.code}: ${diff.stderr.trim().slice(0, 500)}`);
+  await fs.rm(gitDir, {recursive: true, force: true});
+  return {bytes: diff.bytes ?? 0};
+}
+
 export interface CheckoutRequest {repositoryUrl: string; baseSha: string; writeScope: string[]}
 
 export async function runCheckout(request: CheckoutRequest, paths = {src: '/src', work: '/workspace', home: '/tmp/h'},
@@ -156,9 +230,20 @@ export async function runCheckout(request: CheckoutRequest, paths = {src: '/src'
   }
 }
 
+export async function runPatch(request: CheckoutRequest, paths = {work: '/workspace', out: '/out', home: '/tmp/h'},
+  git: Git = hostGit(paths.home)): Promise<Record<string, unknown>> {
+  try {
+    await fs.mkdir(paths.home, {recursive: true});
+    return {ok: true, ...await buildPatch(git, paths.work, paths.out, request.baseSha, request.writeScope)};
+  } catch (error) {
+    if (error instanceof CheckoutRefused) return {ok: false, code: error.code, detail: error.message};
+    return {ok: false, code: 'patch_failed', detail: (error as Error).message.slice(0, 500)};
+  }
+}
+
 if (require.main === module) {
   const request = JSON.parse(process.env.SIFT_CHECKOUT ?? '{}') as CheckoutRequest;
-  runCheckout(request).then((result) => {
+  (process.env.SIFT_MODE === 'patch' ? runPatch(request) : runCheckout(request)).then((result) => {
     process.stdout.write(`${JSON.stringify(result)}\n`);
     process.exit(result.ok ? 0 : 2);
   }, () => process.exit(1));
