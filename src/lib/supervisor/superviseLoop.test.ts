@@ -1437,6 +1437,40 @@ describe('superviseOnce', () => {
         expect(outbox?.entries.every((entry) => entry.facts.recoveryVolumeRetained)).toBe(true);
       });
 
+      /** A journal a crash left between a failed install and the copy of its output: nothing ran, the output is owed. */
+      async function crashedOwingInstallOutput(logOnDisk: boolean) {
+        const attemptRoot = await fs.mkdtemp(path.join(path.dirname(root), 'attempts-'));
+        const mountPoint = path.join(attemptRoot, 'abc123abc123');
+        if (logOnDisk) {
+          await fs.mkdir(path.join(mountPoint, 'deps'), {recursive: true});
+          await fs.writeFile(path.join(mountPoint, 'deps', 'install.log'), 'npm error 404 Not Found\n');
+        }
+        await writeJournal({root, owner: null}, JOURNAL, {version: 1, state: 'stopping', runId: 'abc123abc123', dispatchId: DISPATCH,
+          workItemId: WORK_ITEM, runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`, attemptId: ATTEMPT, networkId: 'net-1',
+          workspace: {repositoryId: PLAN.repositoryId, branch: PLAN.branch, baseSha: PLAN.baseSha},
+          containers: {}, callSeq: 0, stop: {reason: 'start_failed'}, installOutput: 'owed',
+          fs: {image: path.join(attemptRoot, 'abc123abc123.img'), mountPoint, imageDev: 1, imageIno: 2, loop: '/dev/loop0', uuid: 'uuid-1',
+            inodes: 400_000, state: 'mounted'},
+        } as AttemptJournal);
+        const host = attemptFsHost();
+        const w = world({checkout: {root: attemptRoot, seedVolumes: ['sift-a-abc123abc123-fs']}});
+        return {w, host, run: () => superviseOnce(deps(w, {attemptFs: {system: host.system, root: attemptRoot}}))};
+      }
+
+      it('after a crash before a failed install\'s output was copied, copies it from the filesystem before releasing it', async () => {
+        const {host, run} = await crashedOwingInstallOutput(true);
+        expect(await run()).toMatchObject({kind: 'recovered'});
+        expect(await fs.readFile(path.join(inputRoot, ATTEMPT, 'install.log'), 'utf8')).toBe('npm error 404 Not Found\n');
+        expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(true);
+      });
+
+      it('after a crash, keeps the filesystem while a failed install\'s output still cannot be copied', async () => {
+        const {host, run} = await crashedOwingInstallOutput(false);
+        expect(await run()).toMatchObject({kind: 'recovered'});
+        await expect(fs.access(path.join(inputRoot, ATTEMPT, 'install.log'))).rejects.toThrow();
+        expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(false);
+      });
+
       it('refuses an install plan it cannot run, before anything is attached', async () => {
         for (const plan of [{...PLAN, install: {manager: 'npm'}}, {...CHECKOUT_PLAN, install: {manager: 'yarn'}},
           {...CHECKOUT_PLAN, writeScope: ['node_modules/left-pad'], install: {manager: 'npm'}}]) {

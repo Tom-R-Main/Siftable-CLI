@@ -19,7 +19,8 @@ import path from 'node:path';
 import {attemptSliceName, cgroupSetupProblem, isInsideAttemptSlice, parseCgroupV2, type ReadFile} from './attemptCgroup.js';
 import {checkoutPlanProblem} from './attemptCheckout.js';
 import {captureLog, type EvidenceOutcome, type FrozenArtifact, uploadAgentLog} from './attemptEvidence.js';
-import type {AttemptFsRecord, AttemptFsSystem} from './attemptFilesystem.js';
+import {INSTALL_LOG, MAX_INSTALL_LOG_BYTES} from './checkoutHelper.js';
+import {type AttemptFsRecord, type AttemptFsSystem, mountAttemptFs} from './attemptFilesystem.js';
 import {checkAttemptVolume, freezePatch, installDependencies, prepareWorkspace, releaseWorkspace, type WorkspaceContext, WorkspaceRefused,
   writerVolumes} from './attemptWorkspace.js';
 import {closeRecoveredQuestions, type JournalQuestion, QuestionDesk} from './attemptQuestions.js';
@@ -124,6 +125,11 @@ export interface AttemptJournal {
   patch?: FrozenArtifact;
   /** Set while the checkout is being prepared; a stop that could not wait for it to end leaves it set, and the workspace held. */
   preparing?: boolean;
+  /**
+   * A failed dependency install's output: `owed` from the moment the install fails until a copy is saved beside the
+   * attempt's input (`saved`). While owed, neither finish nor recovery releases the filesystem that holds it.
+   */
+  installOutput?: 'owed' | 'saved';
   cgroups?: {sidecar?: string; agent?: string};
   /** The workspace the attempt was attached with; terminal reports repeat it. */
   workspace?: {repositoryId: string; branch: string; baseSha: string};
@@ -371,6 +377,35 @@ async function resumeEvidence(deps: SuperviseDeps, session: Session, journal: At
   return next;
 }
 
+/**
+ * Saves a failed install's output beside the attempt's input: the bytes in hand, or else the install log still in the
+ * attempt filesystem (a regular file, within its cap). Marks it `saved` only once written; otherwise it stays owed and
+ * the filesystem holding it is kept.
+ */
+async function saveInstallOutput(deps: SuperviseDeps, journal: AttemptJournal, inputDir: string, bytes?: Buffer): Promise<AttemptJournal> {
+  const target = path.join(inputDir, 'install.log');
+  const source = journal.fs ? path.join(journal.fs.mountPoint, 'deps', INSTALL_LOG) : undefined;
+  const read = async () => (source ? fs.lstat(source).then(async (stat) => (stat.isFile() && stat.size <= MAX_INSTALL_LOG_BYTES + 4096
+    ? fs.readFile(source) : undefined), () => undefined) : undefined);
+  let output = bytes ?? await read();
+  // After a restart the earlier process's private mount is gone: mount the journaled image again, by its checked identity.
+  if (output === undefined && journal.fs && journal.fs.state !== 'released' && deps.attemptFs) {
+    const remounted = await mountAttemptFs(deps.attemptFs.system, journal.fs, async (record) => {
+      journal = {...journal, fs: record};
+      await writeAttemptJournal(deps, journal);
+    }).then(() => true, (error: unknown) => { deps.log(`The attempt filesystem could not be mounted again: ${(error as Error).message}`); return false; });
+    if (remounted) output = await read();
+  }
+  const saved = output !== undefined && await fs.mkdir(inputDir, {recursive: true, mode: 0o755})
+    .then(() => fs.writeFile(target, output, {mode: 0o600})).then(() => true, () => false);
+  deps.log(saved ? `The dependency install failed; its output is kept at ${target}.`
+    : `The dependency install failed and its output could not be saved; it stays in the attempt filesystem at ${journal.fs?.image}.`);
+  if (!saved) return journal;
+  const next: AttemptJournal = {...journal, installOutput: 'saved'};
+  await writeAttemptJournal(deps, next);
+  return next;
+}
+
 const isSettled = (settlement: Settlement) => settlement.attemptReport !== 'pending' && settlement.work !== 'pending';
 
 async function readLedger(deps: SuperviseDeps): Promise<string[]> {
@@ -468,8 +503,12 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
         Math.min(recoveredCap, deps.clock.monoMs() + EVIDENCE_BUDGET_MS));
       if (resumed === 'cancelled') return {kind: 'recovered', settled: false};
       earlier = resumed;
+      // A failed install's output a crash left unsaved is copied from the filesystem that still holds it, if it can be.
+      if (earlier.installOutput === 'owed' && earlier.attemptId) {
+        earlier = await saveInstallOutput(deps, earlier, path.join(deps.inputRoot, earlier.attemptId));
+      }
       // Its filesystem goes once nothing on it is owed; otherwise it stays for the operator, recorded in the archive.
-      const owed = earlier.evidenceOwed && !earlier.settlement?.evidence?.acknowledged;
+      const owed = (earlier.evidenceOwed && !earlier.settlement?.evidence?.acknowledged) || earlier.installOutput === 'owed';
       if (earlier.fs && earlier.fs.state !== 'released' && deps.attemptFs && !owed) {
         const held = await releaseWorkspace((args) => deps.docker(args), deps.attemptFs.system,
           {runId: earlier.runId, attemptId: earlier.attemptId ?? ''}, earlier.fs);
@@ -740,18 +779,12 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       if (!evidence.acknowledged) deps.log(`The attempt's evidence was not acknowledged; its log is kept at ${inputDir}.`);
     }
     // A failed install's output is the only account of the failure: the filesystem holding it goes only once it is saved.
-    let installOutputSaved = true;
-    if (installFailure) {
-      const saved = path.join(inputDir, 'install.log');
-      installOutputSaved = await fs.writeFile(saved, installFailure, {mode: 0o600}).then(() => true, () => false);
-      deps.log(installOutputSaved ? `The dependency install failed; its output is kept at ${saved}.`
-        : `The dependency install failed and its output could not be saved; it stays in the attempt filesystem at ${journal.fs?.image}.`);
-    }
+    if (journal.installOutput === 'owed') journal = await saveInstallOutput(deps, journal, inputDir, installFailure);
     // The attempt filesystem goes once nothing on it is owed: the evidence was acknowledged, or the workload never ran.
     let releaseHeld: string[] = [];
     // A create that never answered (the volume above all) may still finish in the daemon: nothing is released under it.
     const createsSettled = (journal.pendingCreates ?? []).length === 0;
-    if (journal.fs && journal.fs.state !== 'released' && deps.attemptFs && !prepareUnknown && createsSettled && installOutputSaved
+    if (journal.fs && journal.fs.state !== 'released' && deps.attemptFs && !prepareUnknown && createsSettled && journal.installOutput !== 'owed'
       && (!journal.evidenceOwed || evidence?.acknowledged)) {
       releaseHeld = await releaseWorkspace((args) => deps.docker(args, {deadlineMono: deps.clock.monoMs() + STOP_BUDGET_MS}),
         deps.attemptFs.system, {runId: journal.runId, attemptId}, journal.fs);
@@ -776,7 +809,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     const closeBudget = Math.min(deps.shutdown?.aborted ? 5_000 : 30_000, capLeft());
     if (!await desk.close(closeCall, journal.workItemId, credential, closeBudget)) return keepUnsettled(evidence);
     // An unacknowledged log stays on the machine for the operator; nothing else is kept.
-    if ((!evidence || evidence.acknowledged) && !installFailure) await fs.rm(inputDir, {recursive: true, force: true}).catch(() => undefined);
+    if ((!evidence || evidence.acknowledged) && !journal.installOutput) await fs.rm(inputDir, {recursive: true, force: true}).catch(() => undefined);
     const settlement: Settlement = {reason, ...(exitCode === undefined ? {} : {exitCode}), ...(controlId ? {controlId} : {}),
       started: Boolean(sidecar || agent), cgroupEmpty: settled.facts.cgroupEmpty === 'empty', attemptReport: 'pending', work: 'pending',
       ...(evidence ? {evidence} : {})};
@@ -828,8 +861,12 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       // Preparation is the checkout and, when planned, the dependency install: one lifetime, waited out as one.
       const prepared = prepareWorkspace(lifetime).then(async (record) => {
         if (plan.install) {
-          installLog = await installDependencies(lifetime, record).catch((error: unknown) => {
-            if (error instanceof WorkspaceRefused && error.log) installFailure = error.log;
+          installLog = await installDependencies(lifetime, record).catch(async (error: unknown) => {
+            if (error instanceof WorkspaceRefused && error.code === 'dependency_install_failed') {
+              if (error.log) installFailure = error.log;
+              // Durable before anything else happens: a crash from here on still finds the output owed.
+              await save({...journal, installOutput: 'owed'});
+            }
             throw error;
           });
         }
