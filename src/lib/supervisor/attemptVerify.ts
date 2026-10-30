@@ -17,7 +17,8 @@ import {constants, promises as fs} from 'node:fs';
 import path from 'node:path';
 import {attemptVolumeName, type AttemptFsRecord, SANDBOX_UID} from './attemptFilesystem.js';
 import type {FrozenArtifact} from './attemptEvidence.js';
-import {checkAttemptVolume, gone, helperSpec, labels, runHelper, stopped, type WorkspaceContext, WorkspaceRefused} from './attemptWorkspace.js';
+import {checkAttemptVolume, gone, helperSpec, labels, PATH_LIST_RESULT_LIMIT, runHelper, stopped, type WorkspaceContext, WorkspaceRefused,
+} from './attemptWorkspace.js';
 import {type FrozenPath, type FrozenSource, frozenChanges} from './checkoutHelper.js';
 import {evaluateSandboxInspect, type SandboxContainerSpec, sandboxCreateArgs} from './containerSandbox.js';
 import {MAX_REPORT_BYTES, REPORT_FILE, type ReportSummary, type TestCase, type TestOutcome} from './junitReport.js';
@@ -223,7 +224,7 @@ async function treeCheck(ctx: VerifyContext, run: VerifyRun, treeId: string,
     {volume, target: '/workspace', readonly: true, subpath: 'work'},
     {volume, target: '/verify', readonly: true, subpath: `verify/${run}`},
   ], {HOME: '/tmp/h', SIFT_MODE: 'tree-check', SIFT_VERIFY: JSON.stringify({treeId, baseSha: ctx.checkout.baseSha,
-    ...(frozen ? {frozen} : {})})}), helperMs(ctx)) as {changed?: unknown; frozen?: unknown};
+    ...(frozen ? {frozen} : {})})}), helperMs(ctx), PATH_LIST_RESULT_LIMIT) as {changed?: unknown; frozen?: unknown};
   if (!Array.isArray(result.changed) || !result.changed.every(isString)) throw new WorkspaceRefused('verify_failed', 'no tree check result');
   if (result.changed.length > 0) throw new WorkspaceRefused('tree_mutated', `tracked paths changed during the run: ${result.changed.join(', ')}`);
   if (!frozen) return undefined;

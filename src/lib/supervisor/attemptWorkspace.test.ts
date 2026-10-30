@@ -147,7 +147,10 @@ function context(scenario: Scenario = {}) {
         }
         const result = id === 'c-install' && scenario.installResult ? scenario.installResult
           : scenario.result ?? (id === 'c-patch' ? {ok: true, changed: ['src/a.ts']} : {ok: true});
-        stdout.end(`${JSON.stringify(result)}\n`);
+        // In 16 KiB chunks, as a pipe delivers a long line.
+        const line = `${JSON.stringify(result)}\n`;
+        for (let i = 0; i < line.length; i += 16 * 1024) stdout.write(line.slice(i, i + 16 * 1024));
+        stdout.end();
         resolve((result as {ok?: boolean}).ok === false ? 2 : scenario.exit ?? 0);
       })();
     });
@@ -217,6 +220,19 @@ describe('attempt workspace', () => {
     const pending = refusal(freezePatch(ctx, await prepared(ctx), root));
     expect(await pending).toBe('patch_timeout');
     expect(events).toEqual(expect.arrayContaining(['container kill', 'detach:c-patch', 'container rm']));
+  });
+
+  // Codex connector P2 on #1384: a changed-path list past 64 KiB, arriving in chunks, must come back whole.
+  it('reads a changed-path list far past 64 KiB', async () => {
+    const changed = Array.from({length: 5000}, (_, i) => `src/generated/module-${String(i).padStart(5, '0')}.ts`);
+    const {ctx} = context({result: {ok: true, changed}, patch: async (out) => {
+      await fs.mkdir(out, {recursive: true});
+      await fs.writeFile(path.join(out, PATCH_FILE), '# sift patch v1\n');
+    }});
+    const outDir = path.join(root, 'input');
+    await fs.mkdir(outDir);
+    expect(JSON.stringify(changed).length).toBeGreaterThan(128 * 1024);
+    expect((await freezePatch(ctx, await prepared(ctx), outDir)).changed).toEqual(changed);
   });
 
   it('builds the patch with no network and the checkout read-only, then copies it out as data', async () => {

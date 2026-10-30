@@ -37,6 +37,8 @@ export const CHECKOUT_TIMEOUT_MS = 180_000;
 export const PATCH_TIMEOUT_MS = 10_000;
 export const INSTALL_TIMEOUT_MS = 300_000;
 const RESULT_LIMIT = 64 * 1024;
+/** Results that carry path lists (the patch's changed paths, the frozen set): up to MAX_ENTRIES paths. */
+export const PATH_LIST_RESULT_LIMIT = 16 * 1024 * 1024;
 
 export type HelperRole = 'fetch' | 'checkout' | 'patch' | 'volume' | 'install-net' | 'egress' | 'proxy' | 'install'
   | 'verify-checkout' | 'tree-check' | 'report' | 'verifier';
@@ -219,7 +221,7 @@ export async function freezePatch(ctx: WorkspaceContext, record: AttemptFsRecord
   const built = await runHelper(ctx, 'patch', helperSpec(ctx, 'patch', 'none', [
     {volume: attemptVolumeName(ctx.runId), target: '/workspace', readonly: true, subpath: 'work'},
     {volume: attemptVolumeName(ctx.runId), target: '/out', readonly: false, subpath: 'src'},
-  ], {HOME: '/tmp/h', SIFT_MODE: 'patch'}), ctx.timeouts?.patchMs ?? PATCH_TIMEOUT_MS);
+  ], {HOME: '/tmp/h', SIFT_MODE: 'patch'}), ctx.timeouts?.patchMs ?? PATCH_TIMEOUT_MS, PATH_LIST_RESULT_LIMIT);
   const source = path.join(record.mountPoint, 'src', PATCH_FILE);
   const handle = await fs.open(source, constants.O_RDONLY | constants.O_NOFOLLOW);
   let content: Buffer;
