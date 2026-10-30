@@ -26,6 +26,8 @@ import {MODEL_PATHS, SIDECAR_PORT} from './relaySidecar.js';
 import {serveSidecarFrames} from './sidecarBridge.js';
 
 export const REVIEW_TIMEOUT_MS = 15 * 60_000;
+/** How long the phase waits, once it ends, for relay calls it aborted to finish recording. */
+const RELAY_DRAIN_MS = 10_000;
 
 /** The plan's review (U3-2): the pinned reviewer image and the model the relay bills to the reviewer, or why it is refused. */
 export function reviewPlanProblem(review: unknown): string | undefined {
@@ -53,6 +55,8 @@ export interface ReviewContext extends WorkspaceContext {
   nextCallId: () => Promise<string>;
   hostAddresses: string[];
   timeoutMs?: number;
+  /** Tests shorten this; production waits RELAY_DRAIN_MS. */
+  drainMs?: number;
   /**
    * Durable before anything depends on it (Release R15): the result head once committed, then every relay call. The
    * caller journals it; after a restart the attempt settles as interrupted with this record kept.
@@ -146,6 +150,11 @@ export async function runReview(ctx: ReviewContext, input: {baseSha: string; tre
   }
   const made: Array<{kind: 'container' | 'network'; id: string}> = [];
   let open = false;
+  // Relay calls still running when the phase ends are aborted and waited for (Release R16): nothing they do afterwards
+  // reaches the journal, which by then may belong to settlement or to another attempt.
+  const relayLife = new AbortController();
+  const inFlight = new Set<Promise<unknown>>();
+  let fenced = false;
   let sidecar: ReturnType<WorkspaceContext['attach']> | undefined;
   let reviewer: ReturnType<WorkspaceContext['attach']> | undefined;
   try {
@@ -190,11 +199,17 @@ export async function runReview(ctx: ReviewContext, input: {baseSha: string; tre
     if (networkProblems.length > 0) throw new WorkspaceRefused('review_failed', `the review network is not as specified: ${networkProblems.join(', ')}`);
     stopped(ctx);
     sidecar = ctx.attach(['start', '--attach', '--interactive', sidecarId]);
-    serveSidecarFrames(sidecar.stdout, sidecar.stdin, attemptRelayHandler({fetch: ctx.fetch, diagnosticNonce: ''}, {...ctx.relay, role: 'reviewer'},
-      {open: () => open && !ctx.signal?.aborted, nextCallId: ctx.nextCallId, recorded: async (call) => {
+    const relay = attemptRelayHandler({fetch: ctx.fetch, diagnosticNonce: ''}, {...ctx.relay, role: 'reviewer'},
+      {open: () => open && !fenced && !ctx.signal?.aborted, nextCallId: ctx.nextCallId, recorded: async (call) => {
         calls.push(call);
-        if (head) await ctx.journal?.({head, calls: [...calls]});
-      }}));
+        if (head && !fenced) await ctx.journal?.({head, calls: [...calls]});
+      }});
+    serveSidecarFrames(sidecar.stdout, sidecar.stdin, (frame, signal) => {
+      const running = relay(frame, AbortSignal.any([signal, relayLife.signal]));
+      inFlight.add(running);
+      void running.finally(() => inFlight.delete(running)).catch(() => undefined);
+      return running;
+    });
     open = true;
     reviewer = ctx.attach(['start', '--attach', reviewerId]);
     const attached = reviewer;
@@ -222,6 +237,15 @@ export async function runReview(ctx: ReviewContext, input: {baseSha: string; tre
       detail: (error as Error).message.slice(0, 500)};
   } finally {
     open = false;
+    // Close admission, abort what is still running, and wait (bounded) so every call is recorded before return.
+    relayLife.abort();
+    if (inFlight.size > 0) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([Promise.allSettled([...inFlight]), new Promise((resolve) => { timer = setTimeout(resolve, ctx.drainMs ?? RELAY_DRAIN_MS); })]);
+      clearTimeout(timer);
+    }
+    if (head) await ctx.journal?.({head, calls: [...calls]});
+    fenced = true;
     for (const item of [...made].reverse()) {
       if (item.kind === 'container') await ctx.docker(['container', 'kill', '--signal', 'KILL', item.id]);
       const removed = await ctx.docker(item.kind === 'container' ? ['container', 'rm', '--force', item.id] : ['network', 'rm', item.id]);

@@ -72,7 +72,9 @@ function inspectOf(id: string, made: string[]) {
     NetworkSettings: {Networks: {}}};
 }
 
-interface World {result?: object | 'hang'; questionToo?: boolean}
+interface World {result?: object | 'hang'; questionToo?: boolean;
+  /** The reviewer makes one model call and then never exits; the relay answers as told. */
+  callThenHang?: 'abortable' | 'ignores-abort'}
 
 function reviewWorld(world: World = {}) {
   const events: string[] = [];
@@ -134,6 +136,10 @@ function reviewWorld(world: World = {}) {
       if (id === 'c-result-commit') { stdout.end(`${JSON.stringify({ok: true, head: HEAD})}\n`); return 0; }
       if (id === 'c-reviewer') {
         if (world.result === 'hang') return new Promise<number>(() => {});
+        if (world.callThenHang) {
+          sidecarOut?.write(`${JSON.stringify({id: 1, method: 'POST', path: MODEL_PATHS.openai, body: Buffer.from('{}').toString('base64')})}\n`);
+          return new Promise<number>(() => {});
+        }
         events.push(`model:${await call(1, MODEL_PATHS.openai)}`);
         if (world.questionToo) events.push(`question:${await call(2, QUESTION_PATHS.ask)}`);
         stdout.end(`${typeof world.result === 'object' ? JSON.stringify(world.result) : line(receiptOf('complete'))}\n`);
@@ -144,9 +150,15 @@ function reviewWorld(world: World = {}) {
     })();
     return {stdin, stdout, exited, kill: () => { events.push(`detach:${id}`); }};
   };
+  let release: () => void = () => undefined;
   const fetchImpl = (async (_url: string, init: RequestInit) => {
     const headers = new Headers(init.headers);
     relayed.push({role: headers.get('X-Sift-Model-Role'), key: headers.get('Idempotency-Key')});
+    if (world.callThenHang === 'abortable') {
+      // An aborted request takes a moment to wind down, as a real socket does.
+      await new Promise((_resolve, reject) => init.signal?.addEventListener('abort', () => setTimeout(() => reject(new Error('aborted')), 10), {once: true}));
+    }
+    if (world.callThenHang === 'ignores-abort') await new Promise<void>((resolve) => { release = resolve; });
     return new Response('event: done\n\n', {status: 200, headers: {'x-sift-call-id': `call-${relayed.length}`}});
   }) as unknown as typeof fetch;
   const record: AttemptFsRecord = {image: path.join(root, 'r1.img'), mountPoint: path.join(root, 'm'), imageDev: 2, imageIno: 2,
@@ -163,7 +175,7 @@ function reviewWorld(world: World = {}) {
     nextCallId: async () => `a1:${++seq}`, timeoutMs: 2000,
     journal: async (record) => { journaled.push(structuredClone(record)); events.push(`journal:${record.calls.length}`); },
   };
-  return {ctx, events, created, relayed, journaled, call: (n: number) => call(n, MODEL_PATHS.openai)};
+  return {ctx, events, created, relayed, journaled, call: (n: number) => call(n, MODEL_PATHS.openai), release: () => release()};
 }
 
 describe('review phase', () => {
@@ -173,7 +185,9 @@ describe('review phase', () => {
     expect(outcome).toMatchObject({head: HEAD, outcome: 'passed', receipt: {completion: 'complete', revision: {head: HEAD}},
       calls: [{key: 'a1:1', status: 200, callId: 'call-1'}]});
     // Release R15: the head is durable before the first call, and each call as it is forwarded.
-    expect(journaled).toEqual([{head: HEAD, calls: []}, {head: HEAD, calls: [{key: 'a1:1', status: 200, callId: 'call-1'}]}]);
+    // ...then once more as the phase closes, after every in-flight call has been recorded.
+    const done = {head: HEAD, calls: [{key: 'a1:1', status: 200, callId: 'call-1'}]};
+    expect(journaled).toEqual([{head: HEAD, calls: []}, done, done]);
     expect(events.indexOf('journal:0')).toBeLessThan(events.indexOf('start:c-reviewer'));
     // One model call, billed to the reviewer under a journaled key; the writer's questions are not there.
     expect(relayed).toEqual([{role: 'reviewer', key: 'a1:1'}]);
@@ -192,6 +206,23 @@ describe('review phase', () => {
     // The network is checked empty before anything starts on it.
     expect(events.indexOf('network-inspect')).toBeLessThan(events.indexOf('start:c-review-relay'));
     for (const item of ['container-rm:c-reviewer', 'container-rm:c-review-relay', 'network-rm']) expect(events, item).toContain(item);
+  });
+
+  // Release R16: a relay call still running when the phase ends is aborted and recorded before return; nothing it does
+  // afterwards reaches the journal.
+  it('aborts and records an in-flight relay call when the phase ends, and never journals after returning', async () => {
+    const aborted = reviewWorld({callThenHang: 'abortable'});
+    const outcome = await runReview({...aborted.ctx, timeoutMs: 100}, {baseSha: BASE, treeId: 'f'.repeat(40)});
+    expect(outcome).toMatchObject({outcome: 'review_timeout', calls: [{key: 'a1:1', status: 0}]});
+    expect(aborted.journaled.at(-1)).toEqual({head: HEAD, calls: [{key: 'a1:1', status: 0}]});
+    const late = reviewWorld({callThenHang: 'ignores-abort'});
+    const returned = await runReview({...late.ctx, timeoutMs: 100, drainMs: 20}, {baseSha: BASE, treeId: 'f'.repeat(40)});
+    expect(returned.outcome).toBe('review_timeout');
+    const writes = late.journaled.length;
+    // The relay answers long after the phase returned: the late record is fenced off from the journal.
+    late.release();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(late.journaled).toHaveLength(writes);
   });
 
   it('fails a non-complete verdict but keeps its receipt', async () => {
