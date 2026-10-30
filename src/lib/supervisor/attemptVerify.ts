@@ -55,9 +55,9 @@ export interface VerifyContext extends WorkspaceContext {
   verifyTimeouts?: {testMs?: number; helperMs?: number};
 }
 
-/** A verification failure, with every run that completed before it. */
+/** A verification failure, with every run recorded before it and the step it failed in (none for the frozen check). */
 export class VerifyFailed extends Error {
-  constructor(readonly code: string, detail: string, readonly runs: RunRecord[]) {
+  constructor(readonly code: string, readonly detail: string, readonly runs: RunRecord[], readonly step?: VerifyRun) {
     super(`${code}: ${detail}`);
   }
 }
@@ -259,12 +259,12 @@ async function oneRun(ctx: VerifyContext, run: VerifyRun, selector: string, patc
 }
 
 /** The failure, with the runs recorded before it plus the one that completed before a later refusal, once. */
-const failed = (error: unknown, runs: RunRecord[]): VerifyFailed => {
+const failed = (error: unknown, runs: RunRecord[], step?: VerifyRun): VerifyFailed => {
   if (error instanceof VerifyFailed) return error;
   const completed = (error as {completed?: RunRecord}).completed;
   const all = completed && !runs.includes(completed) ? [...runs, completed] : runs;
-  return error instanceof WorkspaceRefused ? new VerifyFailed(error.code, error.message, all)
-    : new VerifyFailed('verify_failed', (error as Error).message, all);
+  return error instanceof WorkspaceRefused ? new VerifyFailed(error.code, error.message, all, step)
+    : new VerifyFailed('verify_failed', (error as Error).message, all, step);
 };
 
 export interface BaseVerification {run: RunRecord; selected: string[]; failing: string[]; frozen: FrozenPath[]}
@@ -278,10 +278,10 @@ export async function verifyBase(ctx: VerifyContext): Promise<BaseVerification> 
     const base = await oneRun(ctx, 'base', ctx.test.selector ?? '', undefined, candidates);
     record = base.record;
     const judged = judgeBase(base.record.exitCode, base.summary);
-    if (judged.code) throw new VerifyFailed(judged.code, `base: ${JSON.stringify(base.record.counts)}, exit ${base.record.exitCode}`, [base.record]);
+    if (judged.code) throw new VerifyFailed(judged.code, `base: ${JSON.stringify(base.record.counts)}, exit ${base.record.exitCode}`, [base.record], 'base');
     return {run: base.record, selected: judged.selected, failing: judged.failing, frozen: base.frozen ?? []};
   } catch (error) {
-    throw failed(error, record ? [record] : []);
+    throw failed(error, record ? [record] : [], 'base');
   }
 }
 
@@ -291,23 +291,26 @@ export async function verifyBase(ctx: VerifyContext): Promise<BaseVerification> 
  */
 export async function verifyResult(ctx: VerifyContext, base: BaseVerification, patch: {sha256: string; changed: string[]}): Promise<RunRecord[]> {
   const runs: RunRecord[] = [base.run];
+  let step: VerifyRun | undefined;
   try {
     const touched = frozenChanges(patch.changed, base.frozen);
     if (touched.length > 0) throw new VerifyFailed('frozen_test_changed', `the patch changes ${touched.join(', ')}`, runs);
+    step = 'selected';
     const selected = await oneRun(ctx, 'selected', ctx.test.selector ?? '', patch.sha256);
     runs.push(selected.record);
     const selectedCode = judgeSelected(selected.record.exitCode, selected.summary, base.selected, base.failing)
       ?? (ctx.test.selector ? undefined : judgeRegression(selected.record.exitCode, selected.summary));
-    if (selectedCode) throw new VerifyFailed(selectedCode, `selected: ${JSON.stringify(selected.record.counts)}, exit ${selected.record.exitCode}`, runs);
+    if (selectedCode) throw new VerifyFailed(selectedCode, `selected: ${JSON.stringify(selected.record.counts)}, exit ${selected.record.exitCode}`, runs, step);
     if (ctx.test.selector) {
+      step = 'regression';
       const regression = await oneRun(ctx, 'regression', '', patch.sha256);
       runs.push(regression.record);
       const code = judgeRegression(regression.record.exitCode, regression.summary);
-      if (code) throw new VerifyFailed(code, `regression: ${JSON.stringify(regression.record.counts)}, exit ${regression.record.exitCode}`, runs);
+      if (code) throw new VerifyFailed(code, `regression: ${JSON.stringify(regression.record.counts)}, exit ${regression.record.exitCode}`, runs, step);
     }
     return runs;
   } catch (error) {
-    throw failed(error, runs);
+    throw failed(error, runs, step);
   }
 }
 
