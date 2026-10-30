@@ -995,9 +995,10 @@ describe('superviseOnce', () => {
     expect(w.events).toEqual(['kill:c-relay', 'kill:c-agent', 'ls:container', 'ls:network', 'rm:c-relay', 'rm:c-agent', 'network-rm',
       'receipt:execution_stopped', 'receipt:cleaned', 'runner-heartbeat', 'consume']);
     expect(await journal()).toMatchObject({state: 'settling'});
-    // Once the operator requeues, consume hands back nothing for the old dispatch and the journal is archived.
-    const after = world({dispatch: null});
-    expect(await superviseOnce(deps(after))).toEqual({kind: 'recovered', settled: false});
+    // Once the operator requeues, consume hands back nothing for the old dispatch; the cleaned receipt closes the
+    // attempt on the server (V501) and the journal is archived.
+    const after = world({dispatch: null, observed: {workStatus: 'queued', attemptState: 'interrupted'}});
+    expect(await superviseOnce(deps(after))).toEqual({kind: 'recovered', settled: true});
     expect(await journal()).toBeNull();
     expect(await superviseOnce(deps(world({consumeStatus: 502})))).toEqual({kind: 'refused', reason: 'consume_http_502'});
   });
@@ -1018,9 +1019,34 @@ describe('superviseOnce', () => {
     const retired = await fs.readdir(path.join(root, 'retired'));
     const archived = JSON.parse(await fs.readFile(path.join(root, 'retired', retired.find((name) => name.endsWith(JOURNAL))!), 'utf8')) as AttemptJournal;
     expect(archived.settlement).toMatchObject({work: 'done', observedWorkStatus: 'failed', attemptReport: 'done', observedAttemptState: 'ended'});
-    // Still claimed by nobody and still running on the server: nothing is assumed.
-    await earlier();
-    expect(await superviseOnce(deps(world({dispatch: null, observed: {workStatus: 'running'}})))).toEqual({kind: 'recovered', settled: false});
+  });
+
+  it('keeps an unclaimed earlier attempt journaled, and starts no new work, until the server shows it closed', async () => {
+    await writeJournal({root, owner: null}, JOURNAL, {version: 1, state: 'settling', runId: 'abc123abc123', dispatchId: DISPATCH,
+      workItemId: WORK_ITEM, runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`, attemptId: ATTEMPT,
+      workspace: {repositoryId: PLAN.repositoryId, branch: PLAN.branch, baseSha: PLAN.baseSha}, containers: {}, callSeq: 3,
+      settlement: {reason: 'workload_exited', exitCode: 1, started: true, cgroupEmpty: true, attemptReport: 'pending', work: 'pending'},
+    } satisfies AttemptJournal);
+    const started = (events: string[]) => events.some((event) => event.startsWith('create:') || event.startsWith('attempt:') || event === 'fail');
+    // Nothing readable: the journal stays as it was.
+    const unread = world({dispatch: null});
+    expect(await superviseOnce(deps(unread))).toEqual({kind: 'recovered', settled: false});
+    expect(await journal()).toMatchObject({settlement: {work: 'pending', attemptReport: 'pending'}});
+    // Another dispatch is offered while the attempt still runs on the server under a live item: it is not started.
+    const running = world({dispatch: {id: '00000000-0000-4000-8000-00000000d1d2'}, observed: {workStatus: 'running', attemptState: 'running'}});
+    expect(await superviseOnce(deps(running))).toEqual({kind: 'recovered', settled: false});
+    expect(started(running.events)).toBe(false);
+    expect(await journal()).toMatchObject({settlement: {work: 'pending', attemptReport: 'pending'}});
+    // Requeued but the attempt is not yet closed: the work report is no longer owed, the attempt report still is.
+    const requeued = world({dispatch: null, observed: {workStatus: 'queued', attemptState: 'running'}});
+    expect(await superviseOnce(deps(requeued))).toEqual({kind: 'recovered', settled: false});
+    expect(await journal()).toMatchObject({settlement: {work: 'done', observedWorkStatus: 'queued', attemptReport: 'pending'}});
+    // Closed: the attempt report settles without the work being read again, and the journal is archived.
+    const closed = world({dispatch: null, observed: {workStatus: 'claimed', attemptState: 'interrupted'}});
+    expect(await superviseOnce(deps(closed))).toEqual({kind: 'recovered', settled: true});
+    expect(closed.events).not.toContain('observe-work:claimed');
+    expect(started(closed.events)).toBe(false);
+    expect(await journal()).toBeNull();
   });
 
   it('reads the work status after a 409 on its report and records it done when the result already landed', async () => {

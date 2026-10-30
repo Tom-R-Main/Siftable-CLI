@@ -409,10 +409,10 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       await writeAttemptJournal(deps, earlier);
       if (!settled) return {kind: 'recovered', settled: false};
     }
-    if (!settled) ({journal: earlier, settled} = await reconcileUnclaimed(deps, session, earlier));
     const ready = await ensureReceiptsQueued(deps, earlier);
     if (!ready) return {kind: 'recovered', settled: false};
-    earlier = ready;
+    ({journal: earlier, settled} = settled ? {journal: ready, settled} : await reconcileUnclaimed(deps, session, ready));
+    if (!settled) return {kind: 'recovered', settled: false}; // kept, and no new work, until the server shows it closed
     await archiveJournal(deps.state, JOURNAL, new Date(deps.clock.wallMs()));
     await removeJournal(deps.state, JOURNAL);
     const conflicts = conflictsOf(earlier.settlement);
