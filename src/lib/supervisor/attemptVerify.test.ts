@@ -233,6 +233,20 @@ describe('verification runs', () => {
     expect(await run({selected: fixed, regression: {cases: [['x', 'failed']], exit: 1}})).toBe('regression_failed');
   });
 
+  // Release U3-R5: a refusal after the tests reported keeps that run's record, with the refusal's own code.
+  it('keeps a completed run when its tree check refuses, for base, selected and regression', async () => {
+    const baseRefused = await verifyBase(verifyContext({base: {...failing, changed: ['lib/add.js']}}).ctx).catch((e: unknown) => e as VerifyFailed);
+    expect(baseRefused).toMatchObject({code: 'tree_mutated', runs: [{role: 'base', exitCode: 1, counts: {failed: 1}}]});
+    expect((baseRefused as VerifyFailed).runs[0].report).toContain('<testcase name="adds"');
+    for (const [scenario, roles] of [[{selected: {...fixed, changed: ['lib/add.js']}}, ['base', 'selected']],
+      [{selected: fixed, regression: {cases: [['x', 'passed']], changed: ['lib/x.js']}}, ['base', 'selected', 'regression']]] as const) {
+      const {ctx} = verifyContext({base: failing, ...scenario});
+      const refused = await verifyResult(ctx, await verifyBase(ctx), {sha256: '9'.repeat(64), changed: ['lib/add.js']}).catch((e: unknown) => e as VerifyFailed);
+      expect(refused).toMatchObject({code: 'tree_mutated'});
+      expect((refused as VerifyFailed).runs.map((r) => r.role)).toEqual(roles);
+    }
+  });
+
   it('without a selector, one run is held to both rules', async () => {
     const {ctx, events} = verifyContext({base: failing, selected: {cases: [['adds', 'passed'], ['subtracts', 'skipped']]}},
       {command: 'npm test', files: ['test']});

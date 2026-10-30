@@ -245,14 +245,26 @@ async function oneRun(ctx: VerifyContext, run: VerifyRun, selector: string, patc
   // Report file attributes join the frozen set only now that the base report exists.
   const frozenFromReport = frozen ? [...frozen, ...report.summary.testcases.flatMap((testcase) =>
     (testcase.file === undefined ? [] : [{path: testcase.file, source: 'report' as const}]))] : undefined;
-  const resolved = await treeCheck(ctx, run, treeId, frozenFromReport);
-  return {record: {role: run, exitCode: tested.exitCode, treeId, counts: report.summary.counts, reportSha256: report.sha256,
-    report: report.text, output: tested.output}, summary: report.summary, ...(resolved ? {frozen: resolved} : {})};
+  const record: RunRecord = {role: run, exitCode: tested.exitCode, treeId, counts: report.summary.counts, reportSha256: report.sha256,
+    report: report.text, output: tested.output};
+  let resolved: FrozenPath[] | undefined;
+  try {
+    resolved = await treeCheck(ctx, run, treeId, frozenFromReport);
+  } catch (error) {
+    // The tests ran and reported: a refusal from here on (a mutated tree, an unknown frozen path) keeps their record.
+    throw Object.assign(error instanceof Error ? error : new Error(String(error)), {completed: record});
+  }
+  return {record, summary: report.summary, ...(resolved ? {frozen: resolved} : {})};
 }
 
-const failed = (error: unknown, runs: RunRecord[]): VerifyFailed => (error instanceof VerifyFailed ? error
-  : error instanceof WorkspaceRefused ? new VerifyFailed(error.code, error.message, runs)
-    : new VerifyFailed('verify_failed', (error as Error).message, runs));
+/** The failure, with the runs recorded before it plus the one that completed before a later refusal, once. */
+const failed = (error: unknown, runs: RunRecord[]): VerifyFailed => {
+  if (error instanceof VerifyFailed) return error;
+  const completed = (error as {completed?: RunRecord}).completed;
+  const all = completed && !runs.includes(completed) ? [...runs, completed] : runs;
+  return error instanceof WorkspaceRefused ? new VerifyFailed(error.code, error.message, all)
+    : new VerifyFailed('verify_failed', (error as Error).message, all);
+};
 
 export interface BaseVerification {run: RunRecord; selected: string[]; failing: string[]; frozen: FrozenPath[]}
 
