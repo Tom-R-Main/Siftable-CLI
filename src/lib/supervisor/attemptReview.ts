@@ -15,7 +15,10 @@
  * The outcome passes only for a `complete` verdict whose reviewed SHA is the
  * result head.
  */
+import {createHash} from 'node:crypto';
+import {RECEIPT_FORMAT, type Receipt, verifyReceipt} from '../review/receipt.js';
 import {attemptVolumeName, type AttemptFsRecord} from './attemptFilesystem.js';
+import {canonicalJson, type RunRecord} from './attemptVerify.js';
 import {checkAttemptVolume, gone, helperSpec, labels, runHelper, stopped, type WorkspaceContext, WorkspaceRefused} from './attemptWorkspace.js';
 import {evaluateNetworkInspect, evaluateSandboxInspect, networkCreateArgs, type SandboxContainerSpec, sandboxCreateArgs} from './containerSandbox.js';
 import {attemptRelayHandler, type ModelRelayTarget} from './modelRelayHandler.js';
@@ -50,20 +53,38 @@ export interface ReviewContext extends WorkspaceContext {
   nextCallId: () => Promise<string>;
   hostAddresses: string[];
   timeoutMs?: number;
+  /**
+   * Durable before anything depends on it (Release R15): the result head once committed, then every relay call. The
+   * caller journals it; after a restart the attempt settles as interrupted with this record kept.
+   */
+  journal?: (record: ReviewRecord) => Promise<void>;
 }
+
+/** What the review has done so far: its result head and each relay call, with the API's call ID. */
+export interface ReviewRecord {head: string; calls: Array<{key: string; status: number; callId?: string}>}
+
+export const REVIEW_RECEIPT_VERSION = 'sift.review-receipt/v1';
 
 export interface ReviewOutcome {
   /** The result head the review was asked for. */
   head?: string;
+  /** Every relay call the reviewer made, as forwarded. */
+  calls?: ReviewRecord['calls'];
   /** `passed`, or the reason it did not. */
   outcome: 'passed' | 'review_failed' | 'review_head_mismatch' | 'review_timeout' | 'review_interrupted';
   detail?: string;
   /** The reviewer's receipt as it printed it, kept whatever the verdict. */
   receipt?: Record<string, unknown>;
+  /** The provenance envelope the verifier log carries (set by the caller, which holds the patch and runs). */
+  envelope?: Record<string, unknown>;
 }
 
-/** The result line, checked: a receipt with a verdict, or a refusal; anything else is a failed review. */
-export function judgeReview(head: string, line: string): ReviewOutcome {
+/**
+ * The result line, checked against the receipt `sift review` actually writes (`taster.local-receipt/v1`, Release
+ * R14): its digest must verify, `revision.head` must be the result head and `revision.base` the base, and both
+ * `completion` and `verdict.kind` must be complete. Anything else fails, keeping the receipt.
+ */
+export function judgeReview(head: string, line: string, baseSha?: string): ReviewOutcome {
   let result: {version?: unknown; ok?: unknown; code?: unknown; detail?: unknown; receipt?: unknown};
   try {
     result = JSON.parse(line) as typeof result;
@@ -74,22 +95,41 @@ export function judgeReview(head: string, line: string): ReviewOutcome {
   if (result.ok !== true) {
     return {head, outcome: 'review_failed', detail: typeof result.detail === 'string' ? result.detail.slice(0, 500) : String(result.code ?? 'failed')};
   }
-  const receipt = result.receipt as {verdict?: {kind?: unknown; reviewedSha?: unknown}} | undefined;
-  const verdict = receipt?.verdict;
-  if (!receipt || typeof receipt !== 'object' || !verdict || typeof verdict.kind !== 'string') {
-    return {head, outcome: 'review_failed', detail: 'the reviewer result has no verdict'};
+  const receipt = result.receipt as Partial<Receipt> | undefined;
+  if (!receipt || typeof receipt !== 'object' || receipt.format !== RECEIPT_FORMAT || !receipt.revision || !receipt.verdict) {
+    return {head, outcome: 'review_failed', detail: 'the reviewer result has no receipt'};
   }
-  const kept = receipt as Record<string, unknown>;
-  if (verdict.reviewedSha !== head) return {head, outcome: 'review_head_mismatch', detail: `reviewed ${String(verdict.reviewedSha)}`, receipt: kept};
+  const kept = receipt as unknown as Record<string, unknown>;
+  let verified: boolean;
+  try { verified = verifyReceipt(receipt as Receipt); } catch { verified = false; }
+  if (!verified) return {head, outcome: 'review_failed', detail: 'the receipt digest does not match its content', receipt: kept};
+  if (receipt.revision.head !== head || (baseSha !== undefined && receipt.revision.base !== baseSha)) {
+    return {head, outcome: 'review_head_mismatch', detail: `reviewed ${String(receipt.revision.head)} on ${String(receipt.revision.base)}`, receipt: kept};
+  }
   // skipped, incomplete and failed name the head without a review having happened (contract rev 2, R8).
-  if (verdict.kind !== 'complete') return {head, outcome: 'review_failed', detail: `verdict ${verdict.kind}`, receipt: kept};
+  if (receipt.completion !== 'complete' || receipt.verdict.kind !== 'complete') {
+    return {head, outcome: 'review_failed', detail: `verdict ${String(receipt.verdict.kind)}`, receipt: kept};
+  }
   return {head, outcome: 'passed', receipt: kept};
+}
+
+/**
+ * The review's record in the verifier log (contract rev 2, R-D4; Release R15): the raw receipt bound to the attempt,
+ * base, result head and tree, the patch, the verification runs, the pinned model and every relay call.
+ */
+export function reviewEnvelope(input: {attemptId: string; baseSha: string; treeId: string; patchSha256: string; runs: RunRecord[]; model: string},
+  review: ReviewOutcome): Record<string, unknown> {
+  return {version: REVIEW_RECEIPT_VERSION, attemptId: input.attemptId, baseSha: input.baseSha, ...(review.head ? {head: review.head} : {}),
+    treeId: input.treeId, patchSha256: input.patchSha256,
+    runsSha256: createHash('sha256').update(canonicalJson(input.runs)).digest('hex'), model: input.model, calls: review.calls ?? [],
+    outcome: review.outcome, ...(review.detail ? {detail: review.detail} : {}), ...(review.receipt ? {receipt: review.receipt} : {})};
 }
 
 /** Runs the review phase; never throws for a review that could not run, and always removes what it made. */
 export async function runReview(ctx: ReviewContext, input: {baseSha: string; treeId: string}): Promise<ReviewOutcome> {
   const volume = attemptVolumeName(ctx.runId);
   let head: string | undefined;
+  const calls: ReviewRecord['calls'] = [];
   try {
     stopped(ctx);
     await checkAttemptVolume(ctx, ctx.record);
@@ -99,6 +139,7 @@ export async function runReview(ctx: ReviewContext, input: {baseSha: string; tre
     ], {HOME: '/tmp/h', SIFT_MODE: 'result-commit', SIFT_VERIFY: JSON.stringify(input)}), ctx.timeouts?.patchMs ?? 60_000) as {head?: unknown};
     if (typeof committed.head !== 'string' || !SHA.test(committed.head)) throw new WorkspaceRefused('review_failed', 'no result head');
     head = committed.head;
+    await ctx.journal?.({head, calls});
   } catch (error) {
     return {...(head ? {head} : {}), outcome: error instanceof WorkspaceRefused && error.code === 'interrupted' ? 'review_interrupted' : 'review_failed',
       detail: (error as Error).message.slice(0, 500)};
@@ -150,7 +191,10 @@ export async function runReview(ctx: ReviewContext, input: {baseSha: string; tre
     stopped(ctx);
     sidecar = ctx.attach(['start', '--attach', '--interactive', sidecarId]);
     serveSidecarFrames(sidecar.stdout, sidecar.stdin, attemptRelayHandler({fetch: ctx.fetch, diagnosticNonce: ''}, {...ctx.relay, role: 'reviewer'},
-      {open: () => open && !ctx.signal?.aborted, nextCallId: ctx.nextCallId}));
+      {open: () => open && !ctx.signal?.aborted, nextCallId: ctx.nextCallId, recorded: async (call) => {
+        calls.push(call);
+        if (head) await ctx.journal?.({head, calls: [...calls]});
+      }}));
     open = true;
     reviewer = ctx.attach(['start', '--attach', reviewerId]);
     const attached = reviewer;
@@ -170,11 +214,11 @@ export async function runReview(ctx: ReviewContext, input: {baseSha: string; tre
     clearTimeout(timer);
     if (onAbort) ctx.signal?.removeEventListener('abort', onAbort);
     open = false;
-    if (exit === null) return {head, outcome: 'review_timeout', detail: `the review ran past ${limit} ms`};
-    if (exit === 'stopped') return {head, outcome: 'review_interrupted', detail: 'the attempt stopped during the review'};
-    return judgeReview(head, out.trim().split('\n').at(-1) ?? '');
+    if (exit === null) return {head, calls, outcome: 'review_timeout', detail: `the review ran past ${limit} ms`};
+    if (exit === 'stopped') return {head, calls, outcome: 'review_interrupted', detail: 'the attempt stopped during the review'};
+    return {...judgeReview(head, out.trim().split('\n').at(-1) ?? '', input.baseSha), calls};
   } catch (error) {
-    return {head, outcome: error instanceof WorkspaceRefused && error.code === 'interrupted' ? 'review_interrupted' : 'review_failed',
+    return {head, calls, outcome: error instanceof WorkspaceRefused && error.code === 'interrupted' ? 'review_interrupted' : 'review_failed',
       detail: (error as Error).message.slice(0, 500)};
   } finally {
     open = false;

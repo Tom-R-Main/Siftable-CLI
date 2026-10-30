@@ -4,7 +4,8 @@ import path from 'node:path';
 import {PassThrough} from 'node:stream';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import type {AttemptFsRecord, AttemptFsSystem} from './attemptFilesystem.js';
-import {judgeReview, type ReviewContext, runReview} from './attemptReview.js';
+import {buildReceipt} from '../review/receipt.js';
+import {judgeReview, type ReviewContext, reviewEnvelope, type ReviewRecord, runReview} from './attemptReview.js';
 import type {HelperRole} from './attemptWorkspace.js';
 import type {Attach} from './machineQualify.js';
 import {MODEL_PATHS, QUESTION_PATHS} from './relaySidecar.js';
@@ -14,20 +15,34 @@ const IMAGE_ID = `sha256:${'b'.repeat(64)}`;
 const HEAD = 'e'.repeat(40);
 const BASE = 'c'.repeat(40);
 const line = (receipt: object) => JSON.stringify({version: 'sift.review-result/v1', ok: true, receipt});
+const COVERAGE = {filesInScope: 1, filesReviewed: 1, filesSkipped: [], stages: {}, candidates: {}};
+const VERDICTS = {
+  complete: (sha: string) => ({kind: 'complete', reviewedSha: sha, blocking: 0, advisory: 1, coverage: COVERAGE}),
+  incomplete: (sha: string) => ({kind: 'incomplete', reviewedSha: sha, coverage: COVERAGE, reason: 'budget'}),
+  skipped: (sha: string) => ({kind: 'skipped', reviewedSha: sha, reason: 'no_changes'}),
+  failed: (sha: string) => ({kind: 'failed', reviewedSha: sha, reason: 'pre-pass failed'}),
+};
+/** A receipt as `sift review` actually writes it (Release R14): built by the real producer, digest and all. */
+const receiptOf = (kind: keyof typeof VERDICTS, head = HEAD, base = BASE) => buildReceipt({head, base, mergeBase: base, baseRef: base,
+  worktreeDirty: false, policy: {name: 'default', revision: 'p1'}, model: 'gpt-6.1-sol', provider: 'codex-proxy', finderPasses: 2, problems: [],
+  startedAt: new Date(0), finishedAt: new Date(0)}, VERDICTS[kind](head) as never, []);
 
-describe('review verdicts (R-D5, R8)', () => {
+describe('review verdicts (R-D5, R8, R14)', () => {
   it('passes only a complete verdict for exactly the result head, keeping every receipt', () => {
-    expect(judgeReview(HEAD, line({verdict: {kind: 'complete', reviewedSha: HEAD}}))).toMatchObject({outcome: 'passed', receipt: {verdict: {kind: 'complete'}}});
-    for (const kind of ['skipped', 'incomplete', 'failed']) {
-      expect(judgeReview(HEAD, line({verdict: {kind, reviewedSha: HEAD}})), kind).toMatchObject({outcome: 'review_failed', detail: `verdict ${kind}`,
-        receipt: {verdict: {kind}}});
+    expect(judgeReview(HEAD, line(receiptOf('complete')), BASE)).toMatchObject({outcome: 'passed', receipt: {completion: 'complete', revision: {head: HEAD}}});
+    for (const kind of ['skipped', 'incomplete', 'failed'] as const) {
+      expect(judgeReview(HEAD, line(receiptOf(kind)), BASE), kind).toMatchObject({outcome: 'review_failed', detail: `verdict ${kind}`,
+        receipt: {completion: kind}});
     }
-    expect(judgeReview(HEAD, line({verdict: {kind: 'complete', reviewedSha: BASE}}))).toMatchObject({outcome: 'review_head_mismatch'});
+    expect(judgeReview(HEAD, line(receiptOf('complete', BASE)), BASE)).toMatchObject({outcome: 'review_head_mismatch'});
+    expect(judgeReview(HEAD, line(receiptOf('complete', HEAD, 'a'.repeat(40))), BASE)).toMatchObject({outcome: 'review_head_mismatch'});
+    // An edited receipt no longer matches its digest.
+    expect(judgeReview(HEAD, line({...receiptOf('incomplete'), completion: 'complete', verdict: {...receiptOf('incomplete').verdict, kind: 'complete'}}), BASE))
+      .toMatchObject({outcome: 'review_failed', detail: 'the receipt digest does not match its content'});
     expect(judgeReview(HEAD, 'not json').outcome).toBe('review_failed');
     expect(judgeReview(HEAD, JSON.stringify({version: 'sift.review-result/v1', ok: false, code: 'review_failed', detail: 'no codex'})))
       .toMatchObject({outcome: 'review_failed', detail: 'no codex'});
-    expect(judgeReview(HEAD, JSON.stringify({version: 'other/v1', ok: true, receipt: {verdict: {kind: 'complete', reviewedSha: HEAD}}})).outcome)
-      .toBe('review_failed');
+    expect(judgeReview(HEAD, JSON.stringify({version: 'other/v1', ok: true, receipt: receiptOf('complete')})).outcome).toBe('review_failed');
     expect(judgeReview(HEAD, line({})).outcome).toBe('review_failed');
   });
 });
@@ -121,7 +136,7 @@ function reviewWorld(world: World = {}) {
         if (world.result === 'hang') return new Promise<number>(() => {});
         events.push(`model:${await call(1, MODEL_PATHS.openai)}`);
         if (world.questionToo) events.push(`question:${await call(2, QUESTION_PATHS.ask)}`);
-        stdout.end(`${typeof world.result === 'object' ? JSON.stringify(world.result) : line({verdict: {kind: 'complete', reviewedSha: HEAD}})}\n`);
+        stdout.end(`${typeof world.result === 'object' ? JSON.stringify(world.result) : line(receiptOf('complete'))}\n`);
         return 0;
       }
       stdout.end('{"ok":true}\n');
@@ -132,11 +147,12 @@ function reviewWorld(world: World = {}) {
   const fetchImpl = (async (_url: string, init: RequestInit) => {
     const headers = new Headers(init.headers);
     relayed.push({role: headers.get('X-Sift-Model-Role'), key: headers.get('Idempotency-Key')});
-    return new Response('event: done\n\n', {status: 200});
+    return new Response('event: done\n\n', {status: 200, headers: {'x-sift-call-id': `call-${relayed.length}`}});
   }) as unknown as typeof fetch;
   const record: AttemptFsRecord = {image: path.join(root, 'r1.img'), mountPoint: path.join(root, 'm'), imageDev: 2, imageIno: 2,
     loop: '/dev/loop0', uuid: 'uuid-1', state: 'mounted'};
   let seq = 0;
+  const journaled: ReviewRecord[] = [];
   const ctx: ReviewContext = {
     runId: 'r1', attemptId: 'a1', imageRef: IMAGE, imageId: IMAGE_ID, slice: 'siftable-a1.slice',
     checkout: {repositoryUrl: 'https://github.com/acme/widgets', baseSha: BASE, writeScope: ['lib']},
@@ -145,15 +161,20 @@ function reviewWorld(world: World = {}) {
     sidecarAsset: '/usr/lib/sift/relaySidecar.js', fetch: fetchImpl, hostAddresses: ['10.0.0.4'],
     relay: {apiUrl: 'https://api.example', token: 'pat', workspaceId: null, workItemId: 'w1', attemptId: 'a1', claimToken: 'claim'},
     nextCallId: async () => `a1:${++seq}`, timeoutMs: 2000,
+    journal: async (record) => { journaled.push(structuredClone(record)); events.push(`journal:${record.calls.length}`); },
   };
-  return {ctx, events, created, relayed, call: (n: number) => call(n, MODEL_PATHS.openai)};
+  return {ctx, events, created, relayed, journaled, call: (n: number) => call(n, MODEL_PATHS.openai)};
 }
 
 describe('review phase', () => {
   it('commits the result, reviews it as the reviewer through its own sidecar, and removes everything it made', async () => {
-    const {ctx, events, created, relayed, call} = reviewWorld({questionToo: true});
+    const {ctx, events, created, relayed, journaled, call} = reviewWorld({questionToo: true});
     const outcome = await runReview(ctx, {baseSha: BASE, treeId: 'f'.repeat(40)});
-    expect(outcome).toMatchObject({head: HEAD, outcome: 'passed', receipt: {verdict: {kind: 'complete', reviewedSha: HEAD}}});
+    expect(outcome).toMatchObject({head: HEAD, outcome: 'passed', receipt: {completion: 'complete', revision: {head: HEAD}},
+      calls: [{key: 'a1:1', status: 200, callId: 'call-1'}]});
+    // Release R15: the head is durable before the first call, and each call as it is forwarded.
+    expect(journaled).toEqual([{head: HEAD, calls: []}, {head: HEAD, calls: [{key: 'a1:1', status: 200, callId: 'call-1'}]}]);
+    expect(events.indexOf('journal:0')).toBeLessThan(events.indexOf('start:c-reviewer'));
     // One model call, billed to the reviewer under a journaled key; the writer's questions are not there.
     expect(relayed).toEqual([{role: 'reviewer', key: 'a1:1'}]);
     expect(events).toContain('model:200');
@@ -174,8 +195,20 @@ describe('review phase', () => {
   });
 
   it('fails a non-complete verdict but keeps its receipt', async () => {
-    const {ctx} = reviewWorld({result: {version: 'sift.review-result/v1', ok: true, receipt: {verdict: {kind: 'incomplete', reviewedSha: HEAD}}}});
-    expect(await runReview(ctx, {baseSha: BASE, treeId: 'f'.repeat(40)})).toMatchObject({outcome: 'review_failed', receipt: {verdict: {kind: 'incomplete'}}});
+    const {ctx} = reviewWorld({result: {version: 'sift.review-result/v1', ok: true, receipt: receiptOf('incomplete')}});
+    expect(await runReview(ctx, {baseSha: BASE, treeId: 'f'.repeat(40)})).toMatchObject({outcome: 'review_failed', receipt: {completion: 'incomplete'}});
+  });
+
+  it('binds the raw receipt to the attempt, head, tree, patch, runs, model and relay calls (R-D4, R15)', () => {
+    const runs = [{role: 'base' as const, exitCode: 1, treeId: 'd'.repeat(40), counts: {collected: 1, passed: 0, failed: 1, skipped: 0},
+      reportSha256: '1'.repeat(64), report: '<testsuites/>', output: ''}];
+    const envelope = reviewEnvelope({attemptId: 'a1', baseSha: BASE, treeId: 'f'.repeat(40), patchSha256: '9'.repeat(64), runs, model: 'gpt-6.1-sol'},
+      {head: HEAD, outcome: 'passed', calls: [{key: 'a1:7', status: 200, callId: 'call-7'}], receipt: receiptOf('complete') as never});
+    expect(envelope).toMatchObject({version: 'sift.review-receipt/v1', attemptId: 'a1', baseSha: BASE, head: HEAD, treeId: 'f'.repeat(40),
+      patchSha256: '9'.repeat(64), model: 'gpt-6.1-sol', calls: [{key: 'a1:7', callId: 'call-7'}], outcome: 'passed', receipt: {format: 'taster.local-receipt/v1'}});
+    expect(envelope.runsSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(reviewEnvelope({attemptId: 'a1', baseSha: BASE, treeId: 'f'.repeat(40), patchSha256: '9'.repeat(64), runs: [], model: 'm'}, {outcome: 'passed'}).runsSha256)
+      .not.toBe(envelope.runsSha256);
   });
 
   it('times out a review that never ends, and one stopped mid-way is interrupted; both remove what they made', async () => {

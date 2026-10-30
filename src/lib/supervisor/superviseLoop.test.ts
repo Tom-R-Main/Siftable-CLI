@@ -15,6 +15,7 @@ import {ATTEMPT_FS_BYTES, type AttemptFsSystem} from './attemptFilesystem.js';
 import {type AttemptJournal, JOURNAL, superviseOnce, type SuperviseDeps} from './superviseLoop.js';
 import {systemClock} from './superviseAuthority.js';
 import {parseJUnit} from './junitReport.js';
+import {buildReceipt} from '../review/receipt.js';
 
 const API = 'https://api.example';
 const IMAGE = `registry.example/sift-agent@sha256:${'a'.repeat(64)}`;
@@ -43,6 +44,13 @@ async function until(condition: () => boolean, timeoutMs = 10_000): Promise<void
 
 interface VerifyScenarioRun {cases?: Array<[string, 'passed' | 'failed' | 'skipped']>; exit?: number; changed?: string[]}
 const REVIEW_HEAD = 'e'.repeat(40);
+/** The receipt the reviewer program prints, from the real producer. */
+const reviewReceipt = (kind: 'complete' | 'incomplete') => buildReceipt({head: REVIEW_HEAD, base: 'c'.repeat(40), mergeBase: 'c'.repeat(40),
+  baseRef: 'c'.repeat(40), worktreeDirty: false, policy: {name: 'default', revision: 'p1'}, model: 'gpt-6.1-sol', provider: 'codex-proxy',
+  finderPasses: 2, problems: [], startedAt: new Date(0), finishedAt: new Date(0)},
+  (kind === 'complete' ? {kind, reviewedSha: REVIEW_HEAD, blocking: 0, advisory: 0, coverage: {filesInScope: 1, filesReviewed: 1, filesSkipped: [],
+    stages: {}, candidates: {}}} : {kind, reviewedSha: REVIEW_HEAD, reason: 'budget', coverage: {filesInScope: 1, filesReviewed: 0, filesSkipped: [],
+    stages: {}, candidates: {}}}) as never, []);
 const STEP_ID = (n: number) => `5e000000-0000-4000-8000-00000000000${n}`;
 
 interface Scenario {
@@ -474,8 +482,7 @@ function world(scenario: Scenario = {}) {
           body: Buffer.from('{"model":"gpt-6.1-sol"}').toString('base64')})}\n`);
         for (let i = 0; i < 200 && !reviewSidecar?.answered.has(1); i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
         events.push(`review-call:${reviewSidecar?.answered.get(1)}`);
-        stdout.end(`${JSON.stringify(scenario.verify?.review ?? {version: 'sift.review-result/v1', ok: true,
-          receipt: {schema: 'taster.local-receipt/v1', verdict: {kind: 'complete', reviewedSha: REVIEW_HEAD}}})}\n`);
+        stdout.end(`${JSON.stringify(scenario.verify?.review ?? {version: 'sift.review-result/v1', ok: true, receipt: reviewReceipt('complete')})}\n`);
         return 0;
       })();
       return {stdin, stdout, exited, kill: () => stdout.end()};
@@ -1698,7 +1705,7 @@ describe('superviseOnce', () => {
           const reviewWorld = (scenario: Scenario) => checkoutWorld({files}, scenario, {}, {resolvePlan: async () => ({...CHECKOUT_PLAN,
             install: {manager: 'npm'}, test: TEST, review: REVIEW}), assets: VERIFY_ASSETS});
           const verifierJson = (w: ReturnType<typeof world>) => JSON.parse(w.evidence.puts.find((put) => put.headers['Content-Type'] === 'application/json')!.body) as
-            {outcome: string; review?: {outcome: string; head: string; receipt?: {verdict: {kind: string}}}};
+            {outcome: string; review?: {outcome: string; head: string; receipt?: {completion: string}}};
 
           it('reviews the verified result as the reviewer after verification, and carries the receipt in the verifier log', async () => {
             const {w, run} = await reviewWorld({verify: {base: failing, selected: fixed, regression: fixed}});
@@ -1711,15 +1718,16 @@ describe('superviseOnce', () => {
             // The writer's calls bill the writer; the review's bills the reviewer.
             expect(w.modelRoles.at(-1)).toBe('reviewer');
             expect(order('rm:c-reviewer')).toBeLessThan(order('evidence-declare'));
-            expect(verifierJson(w)).toMatchObject({outcome: 'passed', review: {outcome: 'passed', head: REVIEW_HEAD, receipt: {verdict: {kind: 'complete'}}}});
+            expect(verifierJson(w)).toMatchObject({outcome: 'passed', review: {version: 'sift.review-receipt/v1', attemptId: ATTEMPT, outcome: 'passed',
+              head: REVIEW_HEAD, model: 'gpt-6.1-sol', calls: [{status: 200}], receipt: {completion: 'complete'}}});
             expect(w.events).toContain('review');
           });
 
           it('fails the work when the review does not complete, keeping its receipt', async () => {
             const {w, run} = await reviewWorld({verify: {base: failing, selected: fixed, regression: fixed,
-              review: {version: 'sift.review-result/v1', ok: true, receipt: {verdict: {kind: 'incomplete', reviewedSha: REVIEW_HEAD}}}}});
+              review: {version: 'sift.review-result/v1', ok: true, receipt: reviewReceipt('incomplete')}}});
             expect(await run()).toMatchObject({kind: 'finished', settled: true});
-            expect(verifierJson(w)).toMatchObject({outcome: 'review_failed', review: {outcome: 'review_failed', receipt: {verdict: {kind: 'incomplete'}}}});
+            expect(verifierJson(w)).toMatchObject({outcome: 'review_failed', review: {outcome: 'review_failed', receipt: {completion: 'incomplete'}}});
             // The verification steps passed and are recorded as passed; the work fails on the review.
             expect(w.events.filter((e) => e.startsWith('verify-record:'))).toEqual(
               ['verify-record:base:passed', 'verify-record:selected:passed', 'verify-record:regression:passed']);

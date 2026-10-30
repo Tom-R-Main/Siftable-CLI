@@ -32,6 +32,11 @@ export interface ModelRelayControl {
   nextCallId(): Promise<string>;
   /** Needs you: the writer's questions, open with the model routes. */
   questions?: QuestionDesk;
+  /**
+   * Told of every forwarded call (U3-2 review provenance): its key, the relay's status (0 when delivery is unknown) and
+   * the API's call ID from `x-sift-call-id`, so the record can be joined to the budget ledger.
+   */
+  recorded?: (call: {key: string; status: number; callId?: string}) => Promise<void> | void;
 }
 
 const UPSTREAM: Record<string, string> = {
@@ -77,8 +82,11 @@ export function attemptRelayHandler(
         });
     } catch {
       // Delivery is unknown; retrying could charge twice.
+      await control.recorded?.({key: callId, status: 0});
       return json(502, 'The model call could not be confirmed and was not retried.');
     }
+    const apiCallId = response.headers.get('x-sift-call-id') ?? undefined;
+    await control.recorded?.({key: callId, status: response.status, ...(apiCallId ? {callId: apiCallId} : {})});
     if (!response.ok || !response.body) {
       // Relay refusals (stopped attempt, allowance, duplicate key) carry no key material; pass their status on.
       return {status: response.status, body: Buffer.from(await response.arrayBuffer().catch(() => new ArrayBuffer(0)))};

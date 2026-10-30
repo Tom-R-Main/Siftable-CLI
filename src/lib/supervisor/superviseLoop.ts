@@ -24,7 +24,7 @@ import {resumeEvidence, resumeVerification, saveInstallOutput} from './attemptRe
 import {type BaseVerification, freezeVerifierLog, type RunRecord, type TestPlan, VERIFIER_LOG_CONTENT_TYPE, verifyBase, VerifyFailed,
   verifyResult} from './attemptVerify.js';
 import {buildSubmissions, pinOf, sendSubmissions, stepResults, testPlanProblem, type VerificationJournal} from './attemptVerifyRecords.js';
-import {reviewPlanProblem, type ReviewOutcome, runReview} from './attemptReview.js';
+import {reviewEnvelope, type ReviewOutcome, type ReviewRecord, reviewPlanProblem, runReview} from './attemptReview.js';
 import type {AttemptFsRecord, AttemptFsSystem} from './attemptFilesystem.js';
 import {checkAttemptVolume, freezePatch, installDependencies, prepareWorkspace, releaseWorkspace, type WorkspaceContext, WorkspaceRefused,
   writerVolumes} from './attemptWorkspace.js';
@@ -158,6 +158,8 @@ export interface AttemptJournal {
   verification?: VerificationJournal;
   /** The verifier log, frozen beside the log and patch for the evidence manifest. */
   verifierLog?: FrozenArtifact;
+  /** The review (U3-2): its result head and relay calls, durable before any call is made. */
+  review?: ReviewRecord;
   /** The last model call ID handed out; journaled before the call is sent. */
   callSeq: number;
   stop?: {reason: StopReason; controlId?: string; exitCode?: number; facts?: StopFacts};
@@ -686,7 +688,9 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
                   journal = {...journal, callSeq: seq};
                   await persist();
                   return `${attemptId}:${seq}`;
-                }}, {baseSha: plan.baseSha, treeId: selectedTree});
+                }, journal: (record) => save({...journal, review: record})}, {baseSha: plan.baseSha, treeId: selectedTree});
+              review = {...review, envelope: reviewEnvelope({attemptId, baseSha: plan.baseSha, treeId: selectedTree, patchSha256: patch.sha256, runs,
+                model: plan.review.model}, review)};
               if (review.outcome !== 'passed') outcome = review.outcome;
             }
           } finally {
@@ -698,7 +702,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
           runs = failure.runs;
           outcome = failure.code === 'interrupted' ? 'verification_interrupted' : failure.code;
         }
-        verifierLog = await freezeVerifierLog(inputDir, {runs, frozen: baseVerified?.frozen ?? [], outcome, ...(review ? {review: {...review}} : {})});
+        verifierLog = await freezeVerifierLog(inputDir, {runs, frozen: baseVerified?.frozen ?? [], outcome, ...(review?.envelope ? {review: review.envelope} : {})});
         const submissions = buildSubmissions({pin: journal.verification.pin, executionAttemptId: attemptId, environmentLabel: `sift-machine:${machine.runnerId}`,
           claimOwner, ranAt: new Date(deps.clock.wallMs()).toISOString(), results: stepResults(runs, failure?.step, !plan.test?.selector)});
         const detail = failure?.detail ?? (review && review.outcome !== 'passed' ? review.detail : undefined);
