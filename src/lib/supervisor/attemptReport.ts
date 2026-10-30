@@ -41,6 +41,12 @@ export const settledStatus = (status: number | undefined): 'done' | 'conflict' |
   return 'pending';
 };
 
+/** The failed-start ack: a start verification blocked (the base test already passes, say) tells the user why. */
+export function failedStartAck(workspaceId: string | null, claimToken: string, journal: Pick<AttemptJournal, 'verification'>) {
+  const blocked = verificationFailure(journal.verification);
+  return {workspaceId, claimToken, state: 'failed' as const, ...(blocked ? {reason: blocked.reason, detail: blocked.detail} : {})};
+}
+
 export const conflictsOf = (settlement: Settlement | undefined): string[] => (settlement
   ? [...(settlement.attemptReport === 'conflict' ? ['attempt_report'] : []), ...(settlement.work === 'conflict' ? ['work_result'] : [])]
   : []);
@@ -70,11 +76,8 @@ export async function postSettlement(
     let reply: ApiResult | null;
     if (!settlement.started) {
       // Nothing ran: a failed start is the truth.
-      // A start verification blocked (the base test already passes, say) tells the user why.
-      const blocked = verificationFailure(journal.verification);
       reply = await session.call('POST', `/api/v1/work-items/dispatches/${journal.dispatchId}/ack`,
-        {workspaceId, claimToken, state: 'failed', ...(blocked ? {reason: blocked.reason, detail: blocked.detail} : {})},
-        options(`${journal.dispatchId}:start-failed`)).catch(() => null);
+        failedStartAck(workspaceId, claimToken, journal), options(`${journal.dispatchId}:start-failed`)).catch(() => null);
     } else if (settlement.reason === 'stop_control' && settlement.controlId) {
       if (!settlement.cgroupEmpty) return settlement;
       // Acknowledged only on an observed empty cgroup; the server then cancels the work item.

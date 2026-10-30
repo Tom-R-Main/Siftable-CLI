@@ -1,4 +1,7 @@
+import {promises as fs} from 'node:fs';
+import path from 'node:path';
 import {describe, expect, it} from 'vitest';
+import {failedStartAck} from './attemptReport.js';
 import type {RunRecord} from './attemptVerify.js';
 import {buildSubmissions, failureText, pinOf, reasonCode, sendSubmissions, stepResults, type Submission, testPlanProblem,
   verificationFailure, verificationPassed} from './attemptVerifyRecords.js';
@@ -94,6 +97,18 @@ describe('verification records', () => {
     }
     expect(reasonCode('verify-checkout_timeout')).toBe('verify_checkout_timeout');
     expect(verificationFailure({pin, outcome: 'verify-checkout_timeout', detail: 'ran past 180000 ms'})?.detail).toContain('ran past 180000 ms');
+  });
+
+  // Release U3-R10: the failed-start acks the supervisor sends, checked by exf-app against the route's own schema
+  // (dispatchAckContract.vitest.ts). Regenerate with UPDATE_FAILED_START_ACK_FIXTURE=1 only for an intended change.
+  it('sends failed-start acks exactly as the contract fixture the server checks', async () => {
+    const pin = {planVersion: 1, steps: {base: ID(1), selected: ID(2), regression: ID(3)}};
+    const acks = [undefined, 'base_test_passes', 'verify-checkout_timeout', 'tree-check_sandbox', 'report_missing', 'verifier_sandbox',
+      'frozen_tests_unknown', 'interrupted'].map((outcome) => failedStartAck(null, 'claim-token',
+      {verification: outcome === undefined ? undefined : {pin, outcome, detail: 'detail from the helper'}}));
+    const fixture = path.resolve(__dirname, '../../../test/fixtures/failed-start-acks.json');
+    if (process.env.UPDATE_FAILED_START_ACK_FIXTURE === '1') await fs.writeFile(fixture, `${JSON.stringify(acks, null, 2)}\n`);
+    expect(JSON.parse(await fs.readFile(fixture, 'utf8'))).toEqual(acks);
   });
 
   it('checks the plan test field', () => {
