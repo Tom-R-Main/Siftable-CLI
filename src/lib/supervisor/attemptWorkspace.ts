@@ -33,7 +33,7 @@ export const CHECKOUT_TIMEOUT_MS = 180_000;
 export const PATCH_TIMEOUT_MS = 10_000;
 const RESULT_LIMIT = 64 * 1024;
 
-export type HelperRole = 'fetch' | 'checkout' | 'patch';
+export type HelperRole = 'fetch' | 'checkout' | 'patch' | 'volume';
 
 export interface WorkspaceContext {
   runId: string;
@@ -174,8 +174,8 @@ export async function prepareWorkspace(ctx: WorkspaceContext): Promise<AttemptFs
     throw error;
   }
   stopped(ctx);
-  const made = await ctx.docker(attemptVolumeCreateArgs(record, ctx.runId, volumeLabels(ctx)));
-  if (made.code !== 0) throw new WorkspaceRefused('checkout_failed', `volume: ${made.stderr.trim().slice(0, 200)}`);
+  // Journaled like any create: a reply that never comes holds the backing storage until the volume is found or ruled out.
+  await ctx.create('volume', attemptVolumeCreateArgs(record, ctx.runId, volumeLabels(ctx)));
   await checkAttemptVolume(ctx, record);
   stopped(ctx);
   const fetchNetwork = await ctx.create('fetch', ['network', 'create', '--driver', 'bridge',

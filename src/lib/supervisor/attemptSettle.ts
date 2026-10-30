@@ -28,10 +28,11 @@ export async function ownedResources(deps: SuperviseDeps, journal: AttemptJourna
 }
 
 /** The fixed name each create used, so an unanswered create can be looked for later. */
-export type CreateRole = 'network' | 'sidecar' | 'agent' | 'fetch' | 'checkout' | 'patch';
+export type CreateRole = 'network' | 'sidecar' | 'agent' | 'fetch' | 'checkout' | 'patch' | 'volume';
 const NETWORK_ROLES = new Set<CreateRole>(['network', 'fetch']);
 
 export function createName(runId: string, role: CreateRole): string {
+  if (role === 'volume') return `sift-a-${runId}-fs`;
   return role === 'network' ? `sift-a-${runId}` : `sift-a-${runId}-${role === 'sidecar' ? 'relay' : role}`;
 }
 
@@ -44,6 +45,12 @@ export async function unresolvedCreates(deps: SuperviseDeps, journal: AttemptJou
   const unresolved: CreateRole[] = [];
   for (const role of journal.pendingCreates ?? []) {
     const name = createName(journal.runId, role);
+    // A volume is found by its exact name; the release that follows verifies it is ours before removing it.
+    if (role === 'volume') {
+      const shown = await deps.docker(['volume', 'inspect', name]);
+      if (shown.code !== 0) unresolved.push(role);
+      continue;
+    }
     const found = NETWORK_ROLES.has(role)
       ? await deps.docker(['network', 'ls', '--quiet', '--no-trunc', '--filter', `name=^${name}$`])
       : await deps.docker(['container', 'ls', '--all', '--quiet', '--no-trunc', '--filter', `name=^/${name}$`]);
@@ -176,13 +183,15 @@ export async function settle(
   // A failure to work out the receipts is an obligation, never an empty list: the frozen ones are kept, and
   // this stop's are worked out again from stop.facts before the journal may be archived.
   let derived = true;
+  // How many receipts earlier stops already owed: a later re-derivation of this stop's keeps exactly these.
+  const receiptsCarried = current.receipts?.length ?? 0;
   const receipts = await receiptsOwed(deps, current, facts).catch((error: unknown) => {
     deps.log(`Could not work out the cleanup receipts: ${(error as Error).message}`);
     derived = false;
     return current.receipts ?? [];
   });
   const added = receipts.length > (current.receipts?.length ?? 0);
-  current = {...current, receipts, receiptsDerived: derived,
+  current = {...current, receipts, receiptsDerived: derived, receiptsCarried,
     receiptsQueued: !derived || added ? false : current.receiptsQueued ?? true};
   await stoppingWritten;
   await writeAttemptJournal(deps, current).catch((error: unknown) => { journalError ??= error; });
@@ -192,4 +201,14 @@ export async function settle(
       + `but its journal could not be written: ${(journalError as Error).message}. The earlier journal is kept for the next start.`);
   }
   return {facts, journal: current};
+}
+
+/**
+ * This stop's receipts worked out again from its final facts (a helper or release held after settle), keeping every
+ * receipt an earlier stop already owed. Only for receipts not yet queued; queued ones keep what they were sent with.
+ */
+export async function rederiveReceipts(deps: SuperviseDeps, journal: AttemptJournal, facts: StopFacts): Promise<AttemptJournal> {
+  if (journal.receiptsQueued !== false) return journal;
+  const carried = (journal.receipts ?? []).slice(0, journal.receiptsCarried ?? journal.receipts?.length ?? 0);
+  return {...journal, receipts: await receiptsOwed(deps, {...journal, receipts: carried}, facts), receiptsDerived: true};
 }

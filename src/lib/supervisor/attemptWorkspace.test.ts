@@ -114,6 +114,7 @@ function context(scenario: Scenario = {}) {
   };
   const create = async (role: HelperRole, args: string[]) => {
     events.push(`create:${role}`);
+    if (role === 'volume') { volumeArgs = args; return args.at(-1)!; }
     const id = role === 'fetch' ? 'net-fetch' : `c-${role}`;
     created.set(id, args);
     return id;
@@ -164,7 +165,7 @@ describe('attempt workspace', () => {
     const {ctx, events, created} = context();
     const record = await prepareWorkspace(ctx);
     expect(record).toMatchObject({state: 'mounted', mountPoint: path.join(root, 'r1')});
-    expect(events).toEqual(['volume create sift-a-r1-fs', 'volume inspect', 'create:fetch', 'create:checkout',
+    expect(events).toEqual(['create:volume', 'volume inspect', 'create:fetch', 'create:checkout',
       'container inspect', 'start:c-checkout', 'container rm', 'network rm']);
     // dockerd mounts the journaled loop device itself; the supervisor's own mount is private to its unit.
     expect(created.size).toBeGreaterThan(0);
@@ -240,7 +241,7 @@ describe('attempt workspace', () => {
     // Docker shows another device for the volume (a loop number that changed with a reboot): no helper starts.
     const moved = context({volumeDevice: '/dev/loop7'});
     expect(await refusal(prepareWorkspace(moved.ctx))).toBe('attempt_volume');
-    expect(moved.events.some((e) => e.startsWith('create:'))).toBe(false);
+    expect(moved.events.filter((e) => e.startsWith('create:'))).toEqual(['create:volume']);
     // And release holds it, with the backing storage, instead of removing it.
     const fsCalls = moved.ctx.fsSystem as AttemptFsSystem & {calls: string[]};
     const record = {image: path.join(root, 'r1.img'), mountPoint: path.join(root, 'r1'), imageDev: 1, imageIno: 2, loop: '/dev/loop0',

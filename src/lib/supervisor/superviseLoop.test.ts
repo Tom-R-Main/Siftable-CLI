@@ -88,6 +88,8 @@ interface Scenario {
   checkout?: {root: string; result?: object; patchResult?: object; patchRmFails?: boolean; patchCreateLost?: boolean;
     /** Removing the attempt's volumes fails, as when one is still in use. */
     volumeRmFails?: boolean;
+    /** The volume create's answer never comes (the daemon may still make it). */
+    volumeCreateLost?: boolean;
     /** After this many inspections, Docker shows the volume on another device (it was replaced under us). */
     volumeMovesAfter?: number;
     /** Volumes that already exist, left by an earlier run. */
@@ -260,6 +262,7 @@ function world(scenario: Scenario = {}) {
       events.push('network-create');
       return ok('net-1\n');
     }
+    if (a === 'volume' && b === 'create' && scenario.checkout?.volumeCreateLost) return {code: 124, stdout: '', stderr: 'deadline passed'};
     if (a === 'volume') {
       events.push(`volume-${b}${b === 'create' ? `:${args.at(-1)!.split('-').at(-1)}` : ''}`);
       if (b === 'create') { volumes.push(args.at(-1)!); volumeArgs.set(args.at(-1)!, args); }
@@ -1175,6 +1178,14 @@ describe('superviseOnce', () => {
       expect(w.events).not.toContain('create:c-agent');
     });
 
+    it('holds the filesystem while the volume create never answered, so nothing is released under a late volume', async () => {
+      const {host, run} = await checkoutWorld({volumeCreateLost: true});
+      expect(await run()).toMatchObject({kind: 'finished', reason: 'start_failed', settled: false,
+        facts: {resourcesRemoved: false, held: expect.arrayContaining(['create:volume'])}});
+      expect(host.calls.some((c) => c.startsWith('unlink') || c.startsWith('umount') || c.startsWith('losetup --detach'))).toBe(false);
+      expect(await journal()).toMatchObject({state: 'held', pendingCreates: ['volume']});
+    });
+
     it('keeps the attempt filesystem and says so when the evidence was not acknowledged', async () => {
       const {w, host, run} = await checkoutWorld({}, {putStatus: 503});
       const outcome = await run();
@@ -1251,6 +1262,31 @@ describe('superviseOnce', () => {
       expect(await journal()).toMatchObject({state: 'held'});
       const outbox = await readJournal<{entries: Array<{facts: {state: string}}>}>({root, owner: null}, OUTBOX);
       expect(outbox?.entries.map((entry) => entry.facts.state)).toEqual(['execution_stopped', 'cleanup_failed']);
+    });
+
+    it('re-derives a failed release after a restart without dropping or reusing receipts an earlier stop owed', async () => {
+      const attemptRoot = await fs.mkdtemp(path.join(path.dirname(root), 'attempts-'));
+      const host = attemptFsHost();
+      const receipt = (state: string, n: number) => ({attemptId: ATTEMPT, workItemId: WORK_ITEM, dispatchId: DISPATCH, orgId: null, state,
+        reason: state === 'cleanup_failed' ? 'volume:older' : null, containersRemoved: 0, recoveryVolumeRetained: true, operationKey: `${ATTEMPT}:${state}:${n}`});
+      // Settling after an acknowledged upload, owing two receipts from earlier stops, one of them an older cleanup failure.
+      await writeJournal({root, owner: null}, JOURNAL, {version: 1, state: 'settling', runId: 'abc123abc123', dispatchId: DISPATCH,
+        workItemId: WORK_ITEM, runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`, attemptId: ATTEMPT, networkId: 'net-1',
+        workspace: {repositoryId: PLAN.repositoryId, branch: PLAN.branch, baseSha: PLAN.baseSha},
+        containers: {}, callSeq: 0, stop: {reason: 'workload_exited', exitCode: 0, facts: {processesStopped: true, cgroupEmpty: 'empty',
+          resourcesRemoved: true, held: []}}, evidenceOwed: true,
+        fs: {image: path.join(attemptRoot, 'abc123abc123.img'), mountPoint: path.join(attemptRoot, 'abc123abc123'), imageDev: 1, imageIno: 2,
+          loop: '/dev/loop0', uuid: 'uuid-1', inodes: 400_000, state: 'mounted'},
+        settlement: {reason: 'workload_exited', exitCode: 0, started: true, cgroupEmpty: true, attemptReport: 'pending', work: 'pending',
+          evidence: {acknowledged: true, manifestDigest: MANIFEST}},
+        receipts: [receipt('execution_stopped', 1), receipt('cleanup_failed', 1)], receiptsCarried: 2, receiptsQueued: false,
+      } as AttemptJournal);
+      const w = world({checkout: {root: attemptRoot, volumeRmFails: true, seedVolumes: ['sift-a-abc123abc123-fs']}});
+      expect(await superviseOnce(deps(w, {attemptFs: {system: host.system, root: attemptRoot}}))).toEqual({kind: 'held', held: ['volume:sift-a-abc123abc123-fs']});
+      const outbox = await readJournal<{entries: Array<{facts: {operationKey: string; reason: string | null}}>}>({root, owner: null}, OUTBOX);
+      expect(outbox?.entries.map((entry) => entry.facts.operationKey.split(':').slice(1).join(':'))).toEqual(
+        ['execution_stopped:1', 'cleanup_failed:1', 'cleanup_failed:2']);
+      expect(outbox?.entries[2].facts.reason).toContain('volume:sift-a-abc123abc123-fs');
     });
 
     it('after a crash before the patch was frozen, fails the evidence and keeps the filesystem', async () => {

@@ -25,7 +25,7 @@ import {closeRecoveredQuestions, type JournalQuestion, QuestionDesk} from './att
 import {GO_LINE, READY_LINE} from './attemptLauncher.js';
 import {dockerVersionProblem, evaluateNetworkInspect, evaluateSandboxInspect, networkCreateArgs, sandboxCreateArgs, type SandboxContainerSpec,
   type SandboxVolume} from './containerSandbox.js';
-import {type CreateRole, ensureReceiptsQueued, JOURNAL, receiptsOwed, sendCleanupReceipts, settle, SuperviseError, unresolvedCreates,
+import {type CreateRole, ensureReceiptsQueued, JOURNAL, rederiveReceipts, sendCleanupReceipts, settle, SuperviseError, unresolvedCreates,
   writeAttemptJournal} from './attemptSettle.js';
 import {DEADLINE_EXIT, type DeadlineDocker} from './hostDocker.js';
 import {type Attach, type AttachedProcess, ensureImage, readFirstLine} from './machineQualify.js';
@@ -142,6 +142,8 @@ export interface AttemptJournal {
   receipts?: CleanupFacts[];
   /** True once `receipts` are durably in the outbox; until then the journal is never archived. */
   receiptsQueued?: boolean;
+  /** How many of `receipts` earlier stops owed; re-deriving this stop's receipts keeps exactly those. */
+  receiptsCarried?: number;
   /** False when working out this stop's receipts failed; they are worked out again from `stop.facts` before archiving. */
   receiptsDerived?: boolean;
 }
@@ -388,13 +390,10 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   // A checkout preparation an earlier stop could not wait out may still be allocating or creating: nothing is torn down under it.
   if (earlier?.preparing && preparations.has(earlier.runId)) return {kind: 'held', held: ['workspace:preparing']};
   if (earlier?.preparing) earlier = {...earlier, preparing: false};
-  // The receipts the recovered journal already owed before this cycle's stop added its own.
-  let recoveryReceiptsBefore: CleanupFacts[] = [];
   if (earlier && earlier.state !== 'settling') {
     const reason = earlier.stop?.reason ?? 'recovered';
     // An unanswered create is settled only by finding its resource by name, or by the operator's explicit release.
     const unknown = deps.releaseUnknownCreates ? [] : await unresolvedCreates(deps, earlier);
-    recoveryReceiptsBefore = earlier.receipts ?? [];
     const swept = await settle(deps, {...earlier, pendingCreates: unknown}, reason, earlier.stop?.controlId, undefined,
       Boolean(earlier.fs && earlier.fs.state !== 'released'));
     let {facts, journal} = swept;
@@ -476,9 +475,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
           const prior = earlier.stop?.facts ?? {processesStopped: true, cgroupEmpty: 'empty' as const, resourcesRemoved: true, held: []};
           const facts = {...prior, resourcesRemoved: false, held: [...prior.held, ...held]};
           earlier = {...earlier, state: 'held', stop: {...(earlier.stop ?? {reason: 'recovered' as const}), facts}};
-          if (earlier.receiptsQueued === false) {
-            earlier = {...earlier, receipts: await receiptsOwed(deps, {...earlier, receipts: recoveryReceiptsBefore}, facts), receiptsDerived: true};
-          }
+          earlier = await rederiveReceipts(deps, earlier, facts);
           await writeAttemptJournal(deps, earlier);
           await ensureReceiptsQueued(deps, earlier);
           return {kind: 'held', held};
@@ -617,7 +614,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       if (finished) return created;
       const id = created.code === 0 ? created.stdout.trim() : '';
       const pendingCreates = created.code === DEADLINE_EXIT ? journal.pendingCreates : (journal.pendingCreates ?? []).filter((r) => r !== role);
-      journal = role === 'network' ? {...journal, pendingCreates, ...(id ? {networkId: id} : {})}
+      journal = role === 'volume' ? {...journal, pendingCreates}
+        : role === 'network' ? {...journal, pendingCreates, ...(id ? {networkId: id} : {})}
         : role === 'fetch' ? {...journal, pendingCreates, ...(id ? {fetchNetworkId: id} : {})}
           : {...journal, pendingCreates, containers: {...journal.containers, ...(id ? {[role]: id} : {})}};
       await persist();
@@ -685,7 +683,6 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     const prepareUnknown = preparing ? !await Promise.race([preparing.then(() => true), sleep(deps.timing?.prepareDrainMs ?? PREPARE_DRAIN_MS).then(() => false)]) : false;
     if (preparing && !prepareUnknown) journal = {...journal, preparing: false};
     finished = true;
-    const receiptsBefore = journal.receipts ?? [];
     // With an attempt filesystem, this stop's receipts wait until the evidence has decided whether it is kept.
     const settled = await settle(deps, journal, reason, controlId, writing, Boolean(journal.fs));
     // The killed container closes its attach stream: the log is frozen at that end, before the attach client is killed.
@@ -735,7 +732,10 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     }
     // The attempt filesystem goes once nothing on it is owed: the evidence was acknowledged, or the workload never ran.
     let releaseHeld: string[] = [];
-    if (journal.fs && journal.fs.state !== 'released' && deps.attemptFs && !prepareUnknown && (!journal.evidenceOwed || evidence?.acknowledged)) {
+    // A create that never answered (the volume above all) may still finish in the daemon: nothing is released under it.
+    const createsSettled = (journal.pendingCreates ?? []).length === 0;
+    if (journal.fs && journal.fs.state !== 'released' && deps.attemptFs && !prepareUnknown && createsSettled
+      && (!journal.evidenceOwed || evidence?.acknowledged)) {
       releaseHeld = await releaseWorkspace((args) => deps.docker(args, {deadlineMono: deps.clock.monoMs() + STOP_BUDGET_MS}),
         deps.attemptFs.system, {runId: journal.runId, attemptId}, journal.fs);
       if (releaseHeld.length === 0) await save({...journal, fs: {...journal.fs, state: 'released'}});
@@ -749,9 +749,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     const lateHeld = [...helperHeld, ...latePending, ...(prepareUnknown ? ['workspace:preparing'] : []), ...releaseHeld];
     if (lateHeld.length > 0) {
       settled.facts = {...settled.facts, resourcesRemoved: false, held: [...settled.facts.held, ...lateHeld]};
-      if (journal.receiptsQueued === false) {
-        await save({...journal, receipts: await receiptsOwed(deps, {...journal, receipts: receiptsBefore}, settled.facts), receiptsDerived: true});
-      }
+      await save(await rederiveReceipts(deps, journal, settled.facts));
       // Durable: the next start sees the hold in the journal, not only in this return value.
       await save({...journal, state: 'held', stop: {...(journal.stop ?? {reason}), facts: settled.facts}});
     }
