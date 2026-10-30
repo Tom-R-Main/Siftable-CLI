@@ -4,6 +4,7 @@
  */
 import type {AttemptJournal, Settlement} from './superviseLoop.js';
 import type {MachineRecord} from './machineState.js';
+import {failureText, verificationFailure, verificationPassed} from './attemptVerifyRecords.js';
 
 export interface ApiResult {status: number; body: Record<string, unknown>}
 
@@ -69,27 +70,35 @@ export async function postSettlement(
     let reply: ApiResult | null;
     if (!settlement.started) {
       // Nothing ran: a failed start is the truth.
+      // A start verification blocked (the base test already passes, say) tells the user why.
+      const blocked = verificationFailure(journal.verification);
       reply = await session.call('POST', `/api/v1/work-items/dispatches/${journal.dispatchId}/ack`,
-        {workspaceId, claimToken, state: 'failed'}, options(`${journal.dispatchId}:start-failed`)).catch(() => null);
+        {workspaceId, claimToken, state: 'failed', ...(blocked ? {reason: blocked.reason, detail: blocked.detail} : {})},
+        options(`${journal.dispatchId}:start-failed`)).catch(() => null);
     } else if (settlement.reason === 'stop_control' && settlement.controlId) {
       if (!settlement.cgroupEmpty) return settlement;
       // Acknowledged only on an observed empty cgroup; the server then cancels the work item.
       reply = await session.call('POST', `/api/v1/work-items/dispatches/${journal.dispatchId}/controls/ack`,
         {workspaceId, controlId: settlement.controlId, claimToken, state: 'acknowledged'}, options(`${settlement.controlId}:ack`)).catch(() => null);
-    } else if (settlement.reason === 'workload_exited' && settlement.exitCode === 0 && settlement.evidence?.acknowledged !== false) {
+    } else if (settlement.reason === 'workload_exited' && settlement.exitCode === 0 && settlement.evidence?.acknowledged !== false
+      && verificationPassed(journal.verification)) {
       const manifestDigest = settlement.evidence?.manifestDigest;
       reply = await session.call('POST', `/api/v1/work-items/${journal.workItemId}/review`, {
         workspaceId, claimOwner, claimToken,
-        resultSummary: manifestDigest
-          ? 'The workload exited 0. Its log is the acknowledged evidence; there is no checkout, patch or verifier result yet.'
-          : 'The workload exited 0. The supervisor collected no deliverable; verification and evidence are later units.',
+        resultSummary: journal.verification
+          ? 'Verified: the selected test failed on the base commit and passes with the patch, and the test suite passes. The log, patch and verifier log are the acknowledged evidence.'
+          : manifestDigest
+            ? 'The workload exited 0. Its log is the acknowledged evidence; there is no checkout, patch or verifier result yet.'
+            : 'The workload exited 0. The supervisor collected no deliverable; verification and evidence are later units.',
         artifactRefs: [{type: 'worker_run', dispatchId: journal.dispatchId, attemptId: journal.attemptId, exitCode: 0},
           ...(manifestDigest ? [{type: 'evidence_manifest', attemptId: journal.attemptId, manifestDigest}] : [])],
         durableMemory: {decision: 'skip', rationale: 'A supervised run does not infer durable knowledge from process completion'},
       }, options(`${journal.dispatchId}:review`)).catch(() => null);
     } else {
-      const failureReason = settlement.reason === 'workload_exited' && settlement.exitCode === 0
+      const failed = verificationFailure(journal.verification);
+      const failureReason = settlement.reason === 'workload_exited' && settlement.exitCode === 0 && settlement.evidence?.acknowledged === false
         ? 'The workload exited 0, but its evidence upload failed (evidence_upload_failed); the log is kept on the machine.'
+        : failed ? `Verification failed: ${failureText(failed.reason, journal.verification?.detail)}`
         : settlement.reason === 'workload_exited'
           ? `The workload exited with code ${settlement.exitCode ?? 'unknown'}.`
           : `The supervisor stopped this attempt (${settlement.reason}); it was not re-executed.`;

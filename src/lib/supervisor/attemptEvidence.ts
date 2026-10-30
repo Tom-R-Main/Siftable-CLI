@@ -105,6 +105,9 @@ export async function uploadAgentLog(input: {
   route: string;
   claimToken: string;
   log: FrozenLog;
+  /** The main file's kind: the agent's log, or the verifier log when verification stopped the start (U3-1b). */
+  logKind?: 'agent_log' | 'verifier_log';
+  logContentType?: string;
   /** Files declared beside the log, such as the patch; each digest must differ from every other (V502). */
   also?: FrozenArtifact[];
   /** Reads a frozen file's bytes; the file system by default. */
@@ -114,7 +117,7 @@ export async function uploadAgentLog(input: {
 }): Promise<EvidenceOutcome> {
   const {call, log, route, claimToken} = input;
   const left = () => input.deadlineMono - input.monoMs();
-  const files = [{...log, kind: 'agent_log', contentType: EVIDENCE_CONTENT_TYPE}, ...(input.also ?? [])];
+  const files = [{...log, kind: input.logKind ?? 'agent_log', contentType: input.logContentType ?? EVIDENCE_CONTENT_TYPE}, ...(input.also ?? [])];
   // Read once, before anything is admitted: a slow read is counted against the deadline, never after it.
   const read = input.read ?? ((file: string) => fs.readFile(file));
   const bodies = new Map<string, {body: Buffer; file: typeof files[number]}>();

@@ -11,6 +11,8 @@ import type {Session} from './attemptReport.js';
 import {type EvidenceOutcome, uploadAgentLog} from './attemptEvidence.js';
 import {mountAttemptFs} from './attemptFilesystem.js';
 import {writeAttemptJournal} from './attemptSettle.js';
+import {VERIFIER_LOG_CONTENT_TYPE} from './attemptVerify.js';
+import {sendSubmissions} from './attemptVerifyRecords.js';
 import {INSTALL_LOG, MAX_INSTALL_LOG_BYTES} from './checkoutHelper.js';
 import type {AttemptJournal, SuperviseDeps} from './superviseLoop.js';
 
@@ -25,14 +27,20 @@ export async function resumeEvidence(deps: SuperviseDeps, session: Session, jour
   const unchanged = (file: {path: string; bytes: number; sha256: string}) => fs.readFile(file.path)
     .then((bytes) => bytes.length === file.bytes && createHash('sha256').update(bytes).digest('hex') === file.sha256)
     .catch(() => false);
-  // With a checkout the patch is owed too; one never frozen cannot be rebuilt after a restart.
-  const patch = journal.patch;
-  const intact = await unchanged(frozen) && (!journal.fs || (patch !== undefined && await unchanged(patch)));
+  // With a checkout the patch is owed too; one never frozen cannot be rebuilt after a restart. When verification
+  // stopped the start, the verifier log is the whole evidence (U3-1b); otherwise it rides beside the log and patch.
+  const verifierOnly = frozen.kind === 'verifier_log';
+  const patch = verifierOnly ? undefined : journal.patch;
+  const verifierLog = verifierOnly ? undefined : journal.verifierLog;
+  const intact = await unchanged(frozen) && (verifierOnly || !journal.fs || (patch !== undefined && await unchanged(patch)))
+    && (!verifierLog || await unchanged(verifierLog));
   const outcome: EvidenceOutcome = intact ? await uploadAgentLog({
     call: (method, route, body, options) => session.call(method, route, body, options), fetch: deps.fetch,
     monoMs: () => deps.clock.monoMs(), deadlineMono,
     route: `/api/v1/work-items/${journal.workItemId}/execution-attempts/${journal.attemptId}/evidence-manifest`, claimToken,
-    log: {path: frozen.path, sha256: frozen.sha256, bytes: frozen.bytes}, also: patch ? [patch] : [], signal: deps.shutdown,
+    log: {path: frozen.path, sha256: frozen.sha256, bytes: frozen.bytes},
+    ...(verifierOnly ? {logKind: 'verifier_log' as const, logContentType: VERIFIER_LOG_CONTENT_TYPE} : {}),
+    also: [...(patch ? [patch] : []), ...(verifierLog ? [verifierLog] : [])], signal: deps.shutdown,
   }) : {acknowledged: false};
   // Shutdown again: still undecided; the journal is left as it was for the next start.
   if (outcome.cancelled) return 'cancelled';
@@ -69,4 +77,26 @@ export async function saveInstallOutput(deps: SuperviseDeps, journal: AttemptJou
   const next: AttemptJournal = {...journal, installOutput: 'saved'};
   await writeAttemptJournal(deps, next);
   return next;
+}
+
+/**
+ * Verification after a restart (U3-1 contract rev 3, 7): a verification with no outcome was interrupted and is never
+ * run again; step records still pending are resent unchanged under the recovered claim, once the evidence they name
+ * is acknowledged. Returns `pending` while any record could not be confirmed or refused.
+ */
+export async function resumeVerification(deps: SuperviseDeps, session: Session, journal: AttemptJournal,
+  claimToken: string): Promise<AttemptJournal | 'pending'> {
+  const verification = journal.verification;
+  if (!verification) return journal;
+  let next: AttemptJournal = verification.outcome ? journal : {...journal, verification: {...verification, outcome: 'verification_interrupted'}};
+  if (next !== journal) await writeAttemptJournal(deps, next);
+  const records = next.verification?.submissions ?? [];
+  const digest = next.evidence?.acknowledged ? next.evidence.manifestDigest : undefined;
+  if (!digest || !records.some((entry) => entry.state === 'pending')) return next;
+  const sent = await sendSubmissions((route, body, key) => session.call('POST', route, body, {key, timeoutMs: 30_000, signal: deps.shutdown}),
+    next.workItemId, records, claimToken, digest, async (submissions) => {
+      next = {...next, verification: {...verification, ...next.verification, submissions}};
+      await writeAttemptJournal(deps, next);
+    });
+  return sent.some((entry) => entry.state === 'pending') ? 'pending' : next;
 }

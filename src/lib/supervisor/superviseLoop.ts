@@ -20,7 +20,10 @@ import {attemptSliceName, cgroupSetupProblem, isInsideAttemptSlice, parseCgroupV
 import {checkoutPlanProblem} from './attemptCheckout.js';
 import {conflictsOf, postSettlement, type Session} from './attemptReport.js';
 import {captureLog, type EvidenceOutcome, type FrozenArtifact, uploadAgentLog} from './attemptEvidence.js';
-import {resumeEvidence, saveInstallOutput} from './attemptRecovery.js';
+import {resumeEvidence, resumeVerification, saveInstallOutput} from './attemptRecovery.js';
+import {type BaseVerification, freezeVerifierLog, type RunRecord, type TestPlan, VERIFIER_LOG_CONTENT_TYPE, verifyBase, VerifyFailed,
+  verifyResult} from './attemptVerify.js';
+import {buildSubmissions, pinOf, sendSubmissions, stepResults, testPlanProblem, type VerificationJournal} from './attemptVerifyRecords.js';
 import type {AttemptFsRecord, AttemptFsSystem} from './attemptFilesystem.js';
 import {checkAttemptVolume, freezePatch, installDependencies, prepareWorkspace, releaseWorkspace, type WorkspaceContext, WorkspaceRefused,
   writerVolumes} from './attemptWorkspace.js';
@@ -57,6 +60,8 @@ export interface AttemptPlan {
   writeScope?: string[];
   /** Install the checkout's npm dependencies behind the registry-only proxy before the writer starts. */
   install?: {manager: 'npm'};
+  /** Verification (U3-1): the test command, the selector for the failing test, and the test files to freeze. */
+  test?: TestPlan;
 }
 
 export interface SuperviseDeps {
@@ -117,7 +122,8 @@ export interface AttemptJournal {
   runtimeId: string;
   attemptId?: string;
   networkId?: string;
-  containers: Partial<Record<'sidecar' | 'agent' | 'checkout' | 'patch' | 'proxy' | 'install', string>>;
+  containers: Partial<Record<'sidecar' | 'agent' | 'checkout' | 'patch' | 'proxy' | 'install' | 'verify-checkout' | 'tree-check' | 'report'
+    | 'verifier', string>>;
   /** The helpers' own networks (checkout bridge, install network, proxy egress); the run-label sweep removes them too. */
   helperNetworks?: Partial<Record<'fetch' | 'install-net' | 'egress', string>>;
   /** The attempt's own filesystem (U5b-2c): kept, with its volumes, when the evidence was not acknowledged. */
@@ -140,8 +146,15 @@ export interface AttemptJournal {
   questions?: JournalQuestion[];
   /** Set once the workload ran: its evidence is owed, so a crash before the log is frozen still fails the work. */
   evidenceOwed?: boolean;
-  /** The frozen workload log and how its upload ended; the file is kept on the machine unless acknowledged. */
-  evidence?: {path: string; sha256: string; bytes: number} & Partial<EvidenceOutcome>;
+  /**
+   * The frozen workload log and how its upload ended; the file is kept on the machine unless acknowledged. When
+   * verification stopped the start, no workload ran and the verifier log is the evidence (`kind`).
+   */
+  evidence?: {path: string; sha256: string; bytes: number; kind?: 'verifier_log'} & Partial<EvidenceOutcome>;
+  /** Verification (U3-1): the pinned plan, the outcome once known, and each step's record without the claim token. */
+  verification?: VerificationJournal;
+  /** The verifier log, frozen beside the log and patch for the evidence manifest. */
+  verifierLog?: FrozenArtifact;
   /** The last model call ID handed out; journaled before the call is sent. */
   callSeq: number;
   stop?: {reason: StopReason; controlId?: string; exitCode?: number; facts?: StopFacts};
@@ -163,7 +176,7 @@ const LEDGER = 'dispatches-journal.json';
 const LEDGER_LIMIT = 500;
 
 export type StopReason = 'stop_control' | 'workload_exited' | 'lease_lost' | 'ack_unknown' | 'start_failed' | 'shutdown' | 'recovered'
-  | 'question_timeout';
+  | 'question_timeout' | 'verification_failed';
 export type SuperviseOutcome =
   | {kind: 'idle'}
   | {kind: 'held'; held: string[]}
@@ -350,7 +363,10 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       const resumed = await resumeEvidence(deps, session, earlier, workItem?.claimToken as string,
         Math.min(recoveredCap, deps.clock.monoMs() + EVIDENCE_BUDGET_MS));
       if (resumed === 'cancelled') return {kind: 'recovered', settled: false};
-      earlier = resumed;
+      // Verification records are sent before the work is reported; one still pending leaves the attempt for the next start.
+      const verified = await resumeVerification(deps, session, resumed, workItem?.claimToken as string);
+      if (verified === 'pending') return {kind: 'recovered', settled: false};
+      earlier = verified;
       // A failed install's output a crash left unsaved is copied from the filesystem that still holds it, if it can be.
       if (earlier.installOutput === 'owed' && earlier.attemptId) {
         earlier = await saveInstallOutput(deps, earlier, path.join(deps.inputRoot, earlier.attemptId));
@@ -455,10 +471,16 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   // Dependencies need a checkout, npm, the proxy program, and no write scope over the installed node_modules.
   if (plan.install !== undefined && (!checkout || plan.install?.manager !== 'npm' || !deps.assets.registryProxy
     || checkout.writeScope.some((scope) => scope.split('/')[0] === 'node_modules'))) return refuseStart('plan_invalid');
+  // Verification needs the checkout, its installed dependencies and the report reader; the work item's verification
+  // plan is pinned now, before the attach, so a plan without its three steps refuses with nothing run.
+  if (plan.test !== undefined && (testPlanProblem(plan.test) || !checkout || !plan.install || !deps.assets.junitReport)) return refuseStart('plan_invalid');
+  const pin = plan.test ? pinOf(await session.call('GET', `/api/v1/work-items/${workItem.id}/verification-plan`, undefined,
+    {timeoutMs: within(15_000)}).then((reply) => (reply.status === 200 ? reply.body : undefined), () => undefined)) : undefined;
+  if (plan.test && !pin) return refuseStart('plan_invalid');
   const workspace = {repositoryId: plan.repositoryId, branch: plan.branch, baseSha: plan.baseSha};
 
   await recordDispatch(deps, dispatch.id);
-  await save({...journal, workspace});
+  await save({...journal, workspace, ...(pin ? {verification: {pin}} : {})});
   const attached = await session.call('POST', `/api/v1/work-items/${workItem.id}/execution-attempts`, {
     runtimeId: journal.runtimeId, leaseGeneration: 1, state: 'starting', claimOwner, claimToken, dispatchId: dispatch.id, workspace,
   }, {key: `${journal.runtimeId}:1:starting`, timeoutMs: within(30_000)}).catch(() => null);
@@ -551,6 +573,9 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   const helperHeld: string[] = [];
   // A failed dependency install's output: kept beside the attempt's input before its filesystem is released.
   let installFailure: Buffer | undefined;
+  // Verification (U3-1): the base run's result, or the failure that stopped the start before any writer existed.
+  let baseVerified: BaseVerification | undefined;
+  let verifyFailure: VerifyFailed | undefined;
   const workspaceContext = (make: WorkspaceContext['create'], deadlineMono: () => number, signal?: AbortSignal): WorkspaceContext | undefined =>
     (checkout && deps.attemptFs && deps.assets.checkoutHelper && helperImageId ? {
       runId: journal.runId, attemptId, imageRef: plan.imageRef, imageId: helperImageId, slice: attemptSliceName(attemptId), checkout,
@@ -599,32 +624,71 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     // Leaves the attempt unsettled, its state as the stop wrote it so the next start sweeps again, then settles it there.
     const keepUnsettled = async (outcome?: EvidenceOutcome): Promise<SuperviseOutcome> => {
       await save({...journal, settlement: {reason, ...(exitCode === undefined ? {} : {exitCode}), ...(controlId ? {controlId} : {}),
-        started: true, cgroupEmpty: settled.facts.cgroupEmpty === 'empty', attemptReport: 'pending', work: 'pending',
+        started: Boolean(sidecar || agent), cgroupEmpty: settled.facts.cgroupEmpty === 'empty', attemptReport: 'pending', work: 'pending',
         ...(outcome && !outcome.cancelled ? {evidence: outcome} : {})}});
       return {kind: 'finished', reason, exitCode, facts: settled.facts, settled: false};
     };
     // Evidence, once every process has stopped and while the attempt's own claim still holds: settlement comes after.
     let evidence: EvidenceOutcome | undefined;
-    if (agentLog) {
-      const log = frozenLog;
+    // Verification stopped the start: no workload ran, and the verifier log with the base run is the evidence.
+    if (agentLog || verifyFailure) {
+      const log = agentLog ? frozenLog : undefined;
       if (log) await save({...journal, evidence: log});
-      const uploadable = log && settled.facts.cgroupEmpty === 'empty' && reason !== 'shutdown' && reason !== 'lease_lost' && capLeft() > 0;
+      const clean = settled.facts.cgroupEmpty === 'empty' && reason !== 'shutdown' && reason !== 'lease_lost' && capLeft() > 0;
+      const uploadable = (log || verifyFailure) && clean;
       // With a checkout the patch is evidence too, built once every writer process has stopped; without it the evidence fails.
       const helpers = uploadable && journal.fs && !prepareUnknown
         ? workspaceContext(helperCreate, () => Math.min(cap, deps.clock.monoMs() + STOP_BUDGET_MS)) : undefined;
-      const patch = helpers && journal.fs ? await freezePatch(helpers, journal.fs, inputDir).catch((error: unknown) => {
+      const patch = log && helpers && journal.fs ? await freezePatch(helpers, journal.fs, inputDir).catch((error: unknown) => {
         deps.log(`The patch was not built: ${(error as Error).message}`);
         return undefined;
       }) : undefined;
       if (patch) await save({...journal, patch});
-      evidence = uploadable && (!journal.fs || patch) ? await uploadAgentLog({call: (method, route, body, options) => session.call(method, route, body, options),
+      // The result is verified only after a clean exit 0 with its patch; the verifier log is evidence either way.
+      let verifierLog: FrozenArtifact | undefined;
+      if (journal.verification && (baseVerified || verifyFailure)) {
+        let runs: RunRecord[] = baseVerified ? [baseVerified.run] : [];
+        let outcome = 'not_run';
+        let failure: VerifyFailed | undefined = verifyFailure;
+        const base = baseVerified;
+        if (!failure && base && patch && helpers && journal.fs && plan.test && deps.assets.junitReport && reason === 'workload_exited'
+          && exitCode === 0) {
+          runs = await verifyResult({...helpers, signal: deps.shutdown, record: journal.fs, test: plan.test, reportAsset: deps.assets.junitReport,
+            dependencies: Boolean(plan.install)}, base, patch).catch((error: unknown) => {
+            failure = error instanceof VerifyFailed ? error : new VerifyFailed('verify_failed', (error as Error).message, [base.run]);
+            return failure.runs;
+          });
+          outcome = 'passed';
+        }
+        if (failure) {
+          runs = failure.runs;
+          outcome = failure.code === 'interrupted' ? 'verification_interrupted' : failure.code;
+        }
+        verifierLog = await freezeVerifierLog(inputDir, {runs, frozen: baseVerified?.frozen ?? [], outcome});
+        const submissions = buildSubmissions({pin: journal.verification.pin, executionAttemptId: attemptId, environmentLabel: `sift-machine:${machine.runnerId}`,
+          claimOwner, ranAt: new Date(deps.clock.wallMs()).toISOString(), results: stepResults(runs, failure?.step, !plan.test?.selector)});
+        await save({...journal, verifierLog, verification: {...journal.verification, outcome, ...(failure ? {detail: failure.detail} : {}), submissions},
+          // With no workload log, the verifier log is what is owed and resumed after a restart.
+          ...(log ? {} : {evidence: {path: verifierLog.path, sha256: verifierLog.sha256, bytes: verifierLog.bytes, kind: 'verifier_log' as const},
+            evidenceOwed: true})});
+      }
+      const primary = log ?? (verifierLog && !agentLog ? verifierLog : undefined);
+      evidence = uploadable && primary && (!log || !journal.fs || patch) ? await uploadAgentLog({call: (method, route, body, options) => session.call(method, route, body, options),
         fetch: deps.fetch, monoMs: () => deps.clock.monoMs(), deadlineMono: Math.min(cap, deps.clock.monoMs() + EVIDENCE_BUDGET_MS),
-        route: `/api/v1/work-items/${workItem.id}/execution-attempts/${attemptId}/evidence-manifest`, claimToken, log,
-        also: patch ? [patch] : [], signal: deps.shutdown}) : {acknowledged: false};
+        route: `/api/v1/work-items/${workItem.id}/execution-attempts/${attemptId}/evidence-manifest`, claimToken, log: primary,
+        ...(log ? {} : {logKind: 'verifier_log' as const, logContentType: VERIFIER_LOG_CONTENT_TYPE}),
+        also: [...(patch ? [patch] : []), ...(log && verifierLog ? [verifierLog] : [])], signal: deps.shutdown}) : {acknowledged: false};
       // Shutdown arrived mid-upload: nothing is decided or posted; the next start finishes it under the recovered claim.
       if (evidence.cancelled) return keepUnsettled();
       if (journal.evidence) await save({...journal, evidence: {...journal.evidence, ...evidence}});
       if (!evidence.acknowledged) deps.log(`The attempt's evidence was not acknowledged; its log is kept at ${inputDir}.`);
+      // Each verification step is recorded once its evidence is acknowledged, before the work is reported.
+      const records = journal.verification?.submissions;
+      if (evidence.acknowledged && evidence.manifestDigest && records?.length) {
+        const sent = await sendSubmissions((route, body, key) => session.call('POST', route, body, {key, timeoutMs: 30_000}), journal.workItemId, records,
+          claimToken, evidence.manifestDigest, (next) => save({...journal, verification: {...journal.verification as VerificationJournal, submissions: next}}));
+        if (sent.some((entry) => entry.state === 'pending')) return keepUnsettled(evidence);
+      }
     }
     // A failed install's output is the only account of the failure: the filesystem holding it goes only once it is saved.
     if (journal.installOutput === 'owed') journal = await saveInstallOutput(deps, journal, inputDir, installFailure);
@@ -716,6 +780,17 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
               installFailure = error.log;
               // Durable before anything else happens: a crash from here on still finds the output owed.
               await save({...journal, installOutput: 'owed'});
+            }
+            throw error;
+          });
+        }
+        if (plan.test && deps.assets.junitReport) {
+          baseVerified = await verifyBase({...lifetime, record, test: plan.test, reportAsset: deps.assets.junitReport,
+            dependencies: Boolean(plan.install)}).catch(async (error: unknown) => {
+            // A stop mid-run is an interruption, not a verification result.
+            if (error instanceof VerifyFailed && error.code !== 'interrupted') {
+              verifyFailure = error;
+              await save({...journal, verification: {...journal.verification as VerificationJournal, outcome: error.code, detail: error.detail}});
             }
             throw error;
           });
@@ -866,6 +941,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     }
   } catch (error) {
     if (error instanceof Interrupted) return finish(error.reason);
+    if (verifyFailure) return finish('verification_failed');
     deps.log(`The attempt failed: ${(error as Error).message}`);
     return finish(expired() ? 'lease_lost' : 'start_failed');
   }

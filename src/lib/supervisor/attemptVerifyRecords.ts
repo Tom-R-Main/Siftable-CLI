@@ -85,17 +85,20 @@ export function stepResults(runs: RunRecord[], failedAt: VerifyRun | undefined, 
   return results;
 }
 
-/** One submission per step, built once; the body never holds the claim token. */
+/**
+ * One submission per step, built once when the verifier log is frozen, before the upload; the body never holds the
+ * claim token or the manifest digest, which are attached at send time from the live claim and the journaled digest.
+ */
 export function buildSubmissions(input: {pin: VerificationPin; executionAttemptId: string; environmentLabel: string; claimOwner: string;
-  manifestDigest: string; ranAt: string; results: StepResult[]}): Submission[] {
+  ranAt: string; results: StepResult[]}): Submission[] {
   return input.results.map(({step, run, passed}) => ({
     step, key: `${input.executionAttemptId}:verify:${step}`, state: 'pending' as const,
     body: {
       planVersion: input.pin.planVersion, stepId: input.pin.steps[step], attemptId: `${input.executionAttemptId}:${step}`,
       outcome: passed ? 'passed' : 'failed', exitCode: run.exitCode,
       output: `${step}: ${run.counts.collected} collected, ${run.counts.passed} passed, ${run.counts.failed} failed, ${run.counts.skipped} skipped; exit ${run.exitCode}`,
-      artifactRefs: [{type: 'evidence_manifest', attemptId: input.executionAttemptId, manifestDigest: input.manifestDigest, kind: 'verifier_log',
-        role: run.role, reportSha256: run.reportSha256}],
+      artifactRefs: [{type: 'evidence_manifest', attemptId: input.executionAttemptId, kind: 'verifier_log', role: run.role,
+        reportSha256: run.reportSha256}],
       environmentLabel: input.environmentLabel, provenance: {source: 'sift-machine-supervisor', treeId: run.treeId},
       ranAt: input.ranAt, executionAttemptId: input.executionAttemptId, claimOwner: input.claimOwner,
     },
@@ -109,13 +112,14 @@ export type PostCall = (route: string, body: unknown, key: string) => Promise<{s
  * stored record); 400, 409 and 422 are the server refusing it (a stale plan or a changed replay); anything else
  * leaves it pending, to resend unchanged.
  */
-export async function sendSubmissions(post: PostCall, workItemId: string, submissions: Submission[], claimToken: string,
+export async function sendSubmissions(post: PostCall, workItemId: string, submissions: Submission[], claimToken: string, manifestDigest: string,
   saved: (next: Submission[]) => Promise<void>): Promise<Submission[]> {
   let current = submissions;
   for (const submission of submissions) {
     if (submission.state !== 'pending') continue;
-    const reply = await post(`/api/v1/work-items/${workItemId}/verification-evidence`, {...submission.body, claimToken}, submission.key)
-      .catch(() => null);
+    const artifactRefs = (submission.body.artifactRefs as Array<Record<string, unknown>>).map((ref) => ({...ref, manifestDigest}));
+    const reply = await post(`/api/v1/work-items/${workItemId}/verification-evidence`, {...submission.body, artifactRefs, claimToken},
+      submission.key).catch(() => null);
     const state = reply && (reply.status === 200 || reply.status === 201) ? 'confirmed'
       : reply && [400, 409, 422].includes(reply.status) ? 'conflict' : 'pending';
     if (state === 'pending') continue;
@@ -123,4 +127,42 @@ export async function sendSubmissions(post: PostCall, workItemId: string, submis
     await saved(current);
   }
   return current;
+}
+
+/** Codes that are not a verification failure: it passed, or the writer failed before there was anything to verify. */
+const NOT_FAILED = new Set(['passed', 'not_run']);
+
+/**
+ * The verification failure the work reports, if any: a failed step's code, an interrupted verification, or a
+ * record the server refused. Undefined when there is no verification or it passed with every step confirmed.
+ */
+export function verificationFailure(verification: VerificationJournal | undefined): {reason: string; detail: string} | undefined {
+  if (!verification) return undefined;
+  const outcome = verification.outcome ?? 'verification_interrupted';
+  if (!NOT_FAILED.has(outcome)) return {reason: outcome, detail: failureText(outcome, verification.detail).slice(outcome.length + 2, 500)};
+  if ((verification.submissions ?? []).some((entry) => entry.state === 'conflict')) {
+    return {reason: 'verification_record_conflict', detail: failureText('verification_record_conflict').slice('verification_record_conflict: '.length)};
+  }
+  return undefined;
+}
+
+/** True when the work may go to review: no verification planned, or it passed with every step confirmed. */
+export function verificationPassed(verification: VerificationJournal | undefined): boolean {
+  if (!verification) return true;
+  const submissions = verification.submissions ?? [];
+  return verification.outcome === 'passed' && submissions.length > 0 && submissions.every((entry) => entry.state === 'confirmed');
+}
+
+/** The plan's test, as the attempt plan carries it (contract rev 3, 1), or the reason it is refused. */
+export function testPlanProblem(test: unknown): string | undefined {
+  const value = test as {command?: unknown; selector?: unknown; files?: unknown};
+  const text = (entry: unknown) => typeof entry === 'string' && entry.trim().length > 0 && entry.length <= 500;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return 'test is not an object';
+  if (Object.keys(value).some((key) => !['command', 'selector', 'files'].includes(key))) return 'test has an unknown field';
+  if (!text(value.command)) return 'test.command must be 1-500 characters';
+  if (value.selector !== undefined && !text(value.selector)) return 'test.selector must be 1-500 characters';
+  if (value.files !== undefined && (!Array.isArray(value.files) || value.files.length > 50 || !value.files.every(text))) {
+    return 'test.files must be at most 50 paths of 1-500 characters';
+  }
+  return undefined;
 }

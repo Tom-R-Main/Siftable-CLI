@@ -14,6 +14,7 @@ import {OUTBOX} from './cleanupReceiptOutbox.js';
 import {ATTEMPT_FS_BYTES, type AttemptFsSystem} from './attemptFilesystem.js';
 import {type AttemptJournal, JOURNAL, superviseOnce, type SuperviseDeps} from './superviseLoop.js';
 import {systemClock} from './superviseAuthority.js';
+import {parseJUnit} from './junitReport.js';
 
 const API = 'https://api.example';
 const IMAGE = `registry.example/sift-agent@sha256:${'a'.repeat(64)}`;
@@ -39,6 +40,9 @@ async function until(condition: () => boolean, timeoutMs = 10_000): Promise<void
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
+
+interface VerifyScenarioRun {cases?: Array<[string, 'passed' | 'failed' | 'skipped']>; exit?: number; changed?: string[]}
+const STEP_ID = (n: number) => `5e000000-0000-4000-8000-00000000000${n}`;
 
 interface Scenario {
   dispatch?: object | null;
@@ -84,6 +88,14 @@ interface Scenario {
   openHangs?: boolean;
   /** Delivery receipts are answered with this status. */
   deliveryStatus?: number;
+  /**
+   * Verification (U3-1b): each run's report cases, exit code and tracked changes; the verification plan the server
+   * returns; and how each step record is answered.
+   */
+  verify?: {base?: VerifyScenarioRun; selected?: VerifyScenarioRun; regression?: VerifyScenarioRun; plan?: 'missing';
+    record?: (step: string, n: number) => number | 'lost';
+    /** Called as each run's test container starts, before it reports. */
+    onStart?: (run: string) => void};
   /** A checkout plan (U5b-2c): the attempt filesystem lives under `root`; the helpers answer with these results. */
   checkout?: {root: string; result?: object; patchResult?: object; patchRmFails?: boolean; patchCreateLost?: boolean;
     /** Removing the attempt's volumes fails, as when one is still in use. */
@@ -230,8 +242,22 @@ function world(scenario: Scenario = {}) {
       return reply(200, {attempt: {id: ATTEMPT, state: scenario.attachReplay ? 'ended' : body.state}, replayed: scenario.attachReplay === true});
     }
     if (route.endsWith('/controls/ack')) { events.push(`control-ack:${String(body.state)}`); return reply(200, {}); }
+    if (route.endsWith('/verification-plan')) {
+      events.push('verification-plan');
+      if (scenario.verify?.plan === 'missing') return reply(404, {});
+      return reply(200, {activePlanVersion: 2, plan: {version: 2, state: 'active',
+        steps: ['base', 'selected', 'regression'].map((key, i) => ({key, id: STEP_ID(i + 1)}))}});
+    }
+    if (route.endsWith('/verification-evidence')) {
+      const step = String(body.attemptId).split(':').at(-1) as string;
+      const n = events.filter((e) => e.startsWith(`verify-record:${step}`)).length + 1;
+      events.push(`verify-record:${step}:${String(body.outcome)}`);
+      const outcome = scenario.verify?.record?.(step, n) ?? 201;
+      if (outcome === 'lost') throw new TypeError('fetch failed');
+      return reply(outcome, {});
+    }
     if (route.endsWith('/ack')) {
-      events.push(`ack:${String(body.state)}`);
+      events.push(`ack:${String(body.state)}${body.reason ? `:${String(body.reason)}` : ''}`);
       const outcome = body.state === 'acknowledged' ? scenario.ack?.() : undefined;
       if (outcome === 'throw') throw new TypeError('fetch failed');
       return reply(outcome?.status ?? 200, {});
@@ -300,7 +326,8 @@ function world(scenario: Scenario = {}) {
     }
     if (a === 'container' && b === 'create') {
       const name = flag(args, '--name')[0];
-      const id = `c-${['relay', 'checkout', 'patch', 'proxy', 'install'].find((role) => name.endsWith(`-${role}`)) ?? 'agent'}`;
+      const id = `c-${['verify-checkout', 'tree-check', 'report', 'verifier', 'relay', 'checkout', 'patch', 'proxy', 'install']
+        .find((role) => name.endsWith(`-${role}`)) ?? 'agent'}`;
       // The daemon may have made it, but the answer never came back within the deadline.
       if (id === 'c-patch' && scenario.checkout?.patchCreateLost) return {code: 124, stdout: '', stderr: 'deadline passed'};
       containers.set(id, args);
@@ -392,6 +419,33 @@ function world(scenario: Scenario = {}) {
         if (id === 'c-patch' && (result as {ok?: boolean}).ok !== false) await fs.writeFile(path.join(mount, 'src', 'sift.patch'), '# sift patch v1\n+change\n');
         stdout.end(`${JSON.stringify(result)}\n`);
         return (result as {ok?: boolean}).ok === false ? 2 : 0;
+      })();
+      return {stdin, stdout, exited, kill: () => stdout.end()};
+    }
+    if (['c-verify-checkout', 'c-verifier', 'c-report', 'c-tree-check'].includes(id)) {
+      const exited = (async () => {
+        const made = containers.get(id) ?? [];
+        const verifyRun = flag(made, '--mount').map((m) => /volume-subpath=verify\/(\w+)/.exec(m)?.[1]).find(Boolean) as 'base' | 'selected' | 'regression';
+        const runScenario = scenario.verify?.[verifyRun] ?? {};
+        const [dir] = (await fs.readdir(scenario.checkout!.root, {withFileTypes: true})).filter((entry) => entry.isDirectory());
+        const reportFile = path.join(scenario.checkout!.root, dir.name, 'verify', verifyRun, 'report', 'junit.xml');
+        let line: object = {ok: true};
+        if (id === 'c-verify-checkout') line = {ok: true, treeId: verifyRun === 'base' ? 'd'.repeat(40) : 'f'.repeat(40)};
+        if (id === 'c-verifier') {
+          scenario.verify?.onStart?.(verifyRun);
+          if (scenario.verify?.onStart) await new Promise((resolve) => setTimeout(resolve, 20));
+          await fs.writeFile(reportFile, `<testsuites>${(runScenario.cases ?? []).map(([name, outcome]) => `<testcase name="${name}" classname="test">${
+            outcome === 'failed' ? '<failure/>' : outcome === 'skipped' ? '<skipped/>' : ''}</testcase>`).join('')}</testsuites>`);
+          stdout.end('test output\n');
+          return runScenario.exit ?? 0;
+        }
+        if (id === 'c-report') line = {ok: true, summary: parseJUnit(await fs.readFile(reportFile))};
+        if (id === 'c-tree-check') {
+          const asked = JSON.parse(flag(made, '--env').find((e) => e.startsWith('SIFT_VERIFY='))!.slice('SIFT_VERIFY='.length)) as {frozen?: unknown};
+          line = {ok: true, changed: runScenario.changed ?? [], ...(asked.frozen ? {frozen: [{path: 'test/a.test.js', kind: 'file'}]} : {})};
+        }
+        stdout.end(`${JSON.stringify(line)}\n`);
+        return 0;
       })();
       return {stdin, stdout, exited, kill: () => stdout.end()};
     }
@@ -1415,6 +1469,146 @@ describe('superviseOnce', () => {
           'type=volume,source=fs,target=/workspace/node_modules,volume-subpath=deps/node_modules,readonly');
         const log = w.evidence.puts.find((put) => put.headers['Content-Type'] === 'text/plain')!.body;
         expect(log.startsWith('[sift: dependency install]\nadded 1 package in 1s\n\n[sift: workload]\n')).toBe(true);
+      });
+
+      describe('verification (U3-1b)', () => {
+        const VERIFY_ASSETS = {...ASSETS, junitReport: '/opt/sift/junitReport.js'};
+        const TEST = {command: 'node --test --test-reporter=junit --test-reporter-destination=$SIFT_TEST_REPORT $SIFT_TEST_SELECTOR',
+          selector: 'test/a.test.js'};
+        const failing: VerifyScenarioRun = {cases: [['adds', 'failed'], ['subtracts', 'passed']], exit: 1};
+        const fixed: VerifyScenarioRun = {cases: [['adds', 'passed'], ['subtracts', 'passed']], exit: 0};
+        const verifyWorld = (scenario: Scenario, plan: object = {}) => checkoutWorld({files}, scenario, {},
+          {resolvePlan: async () => ({...CHECKOUT_PLAN, install: {manager: 'npm'}, test: TEST, ...plan}), assets: VERIFY_ASSETS});
+        const declaredKinds = (w: ReturnType<typeof world>) => (w.evidence.declared.at(-1) as Array<{kind: string}>).map((a) => a.kind);
+
+        it('verifies a fix: base fails before the writer, selected and regression pass after, every step recorded before review', async () => {
+          const {w, run} = await verifyWorld({verify: {base: failing, selected: fixed, regression: {cases: [['adds', 'passed'], ['x', 'passed']]}}});
+          expect(await run()).toMatchObject({kind: 'finished', reason: 'workload_exited', exitCode: 0, settled: true});
+          const order = (event: string) => w.events.indexOf(event);
+          // Pinned before the attach; the base runs after the install and before the writer exists.
+          expect(order('verification-plan')).toBeLessThan(order('attempt:starting'));
+          expect(order('start:c-install')).toBeLessThan(w.events.indexOf('start:c-verifier'));
+          expect(w.events.indexOf('start:c-verifier')).toBeLessThan(order('create:c-agent'));
+          // After the writer: the patch, then two more runs, then the evidence with the verifier log, then the records, then review.
+          expect(w.events.filter((e) => e === 'start:c-verifier')).toHaveLength(3);
+          expect(order('start:c-patch')).toBeLessThan(w.events.lastIndexOf('start:c-verifier'));
+          expect(declaredKinds(w)).toEqual(['agent_log', 'patch', 'verifier_log']);
+          expect(w.events.filter((e) => e.startsWith('verify-record:'))).toEqual(
+            ['verify-record:base:passed', 'verify-record:selected:passed', 'verify-record:regression:passed']);
+          expect(order('evidence-ack')).toBeLessThan(order('verify-record:base:passed'));
+          expect(order('verify-record:regression:passed')).toBeLessThan(order('review'));
+          const records = w.posts.filter((p) => p.path.endsWith('/verification-evidence'));
+          expect(records.map((p) => p.key)).toEqual(['base', 'selected', 'regression'].map((step) => `${ATTEMPT}:verify:${step}`));
+          expect(records[0].body).toMatchObject({planVersion: 2, stepId: STEP_ID(1), attemptId: `${ATTEMPT}:base`, claimToken: 'claim-secret',
+            artifactRefs: [{type: 'evidence_manifest', manifestDigest: MANIFEST, kind: 'verifier_log', role: 'base'}]});
+          const log = JSON.parse(w.evidence.puts.find((put) => put.headers['Content-Type'] === 'application/json')!.body) as {outcome: string; runs: unknown[]};
+          expect(log).toMatchObject({version: 1, outcome: 'passed'});
+          expect(log.runs).toHaveLength(3);
+        });
+
+        it('blocks a base whose test already passes: no writer, the verifier log is the evidence, then a failed start with its reason', async () => {
+          const {w, run} = await verifyWorld({verify: {base: fixed}});
+          expect(await run()).toMatchObject({kind: 'finished', reason: 'verification_failed', settled: true});
+          expect(w.events).not.toContain('create:c-agent');
+          expect(w.events).not.toContain('go');
+          expect(declaredKinds(w)).toEqual(['verifier_log']);
+          // Published and recorded before the terminal ack releases the claim.
+          const order = (event: string) => w.events.indexOf(event);
+          expect(order('evidence-ack')).toBeLessThan(order('verify-record:base:failed'));
+          expect(order('verify-record:base:failed')).toBeLessThan(order('ack:failed:base_test_passes'));
+          const ack = w.posts.find((p) => p.path.endsWith(`/dispatches/${DISPATCH}/ack`))!;
+          expect(ack.body).toMatchObject({state: 'failed', reason: 'base_test_passes',
+            detail: expect.stringMatching(/^the selected test passes on the base commit, so there is nothing to fix \(base: .*exit 0\)$/)});
+          expect(w.events).not.toContain('review');
+        });
+
+        it('fails the work with the verification code when the selected test still fails', async () => {
+          const {w, run} = await verifyWorld({verify: {base: failing, selected: {cases: [['adds', 'failed'], ['subtracts', 'passed']], exit: 1}}});
+          expect(await run()).toMatchObject({kind: 'finished', reason: 'workload_exited', exitCode: 0, settled: true});
+          expect(w.events.filter((e) => e.startsWith('verify-record:'))).toEqual(['verify-record:base:passed', 'verify-record:selected:failed']);
+          const fail = w.posts.find((p) => p.path.endsWith('/fail'))!;
+          expect(String(fail.body.failureReason)).toMatch(/^Verification failed: selected_test_failed: the selected test does not pass with the patch/);
+          expect(w.events).not.toContain('review');
+        });
+
+        it('refuses a plan whose verification plan lacks its steps, before anything is attached', async () => {
+          const {w, run} = await verifyWorld({verify: {plan: 'missing'}});
+          expect(await run()).toMatchObject({kind: 'refused', reason: 'plan_invalid'});
+          expect(w.events).not.toContain('attempt:starting');
+          expect(w.events).not.toContain('start:c-checkout');
+        });
+
+        it('refuses a test plan without a dependency install or the report reader', async () => {
+          const {run} = await checkoutWorld({files}, {}, {}, {resolvePlan: async () => ({...CHECKOUT_PLAN, test: TEST}), assets: VERIFY_ASSETS});
+          expect(await run()).toMatchObject({kind: 'refused', reason: 'plan_invalid'});
+          const {run: noReader} = await checkoutWorld({files}, {}, {}, {resolvePlan: async () => ({...CHECKOUT_PLAN, install: {manager: 'npm'}, test: TEST}),
+            assets: ASSETS});
+          expect(await noReader()).toMatchObject({kind: 'refused', reason: 'plan_invalid'});
+        });
+
+        // Release #17369: a pre-writer refusal publishes and records the base evidence before the failed ack, across a restart.
+        it('finishes a refused base after a restart: verifier log uploaded, base recorded, then the failed start, nothing rerun', async () => {
+          const attemptRoot = await fs.mkdtemp(path.join(path.dirname(root), 'attempts-'));
+          const host = attemptFsHost({});
+          const shared = (w: ReturnType<typeof world>, shutdown?: AbortSignal) => superviseOnce(deps(w, {
+            resolvePlan: async () => ({...CHECKOUT_PLAN, install: {manager: 'npm'}, test: TEST}), attemptFs: {system: host.system, root: attemptRoot},
+            assets: VERIFY_ASSETS, ...(shutdown ? {shutdown} : {})}));
+          const shutdown = new AbortController();
+          const first = world({verify: {base: fixed}, onDeclare: () => shutdown.abort(), checkout: {root: attemptRoot, files}});
+          expect(await shared(first, shutdown.signal)).toMatchObject({kind: 'finished', reason: 'verification_failed', settled: false});
+          expect(first.events).not.toContain('evidence-ack');
+          expect(first.events.some((e) => e.startsWith('ack:'))).toBe(false);
+          expect(first.events.some((e) => e.startsWith('verify-record:'))).toBe(false);
+          const second = world({checkout: {root: attemptRoot}});
+          expect(await shared(second)).toEqual({kind: 'recovered', settled: true});
+          expect((second.evidence.declared[0] as Array<{kind: string}>).map((a) => a.kind)).toEqual(['verifier_log']);
+          const order = (event: string) => second.events.indexOf(event);
+          expect(order('evidence-ack')).toBeLessThan(order('verify-record:base:failed'));
+          expect(order('verify-record:base:failed')).toBeLessThan(order('ack:failed:base_test_passes'));
+          expect(second.events).not.toContain('start:c-verifier');
+          expect(second.events).not.toContain('create:c-agent');
+        });
+
+        it('settles a verification a shutdown cut off as interrupted, records what ran, and never runs it again', async () => {
+          const attemptRoot = await fs.mkdtemp(path.join(path.dirname(root), 'attempts-'));
+          const host = attemptFsHost({});
+          const shared = (w: ReturnType<typeof world>, shutdown?: AbortSignal) => superviseOnce(deps(w, {
+            resolvePlan: async () => ({...CHECKOUT_PLAN, install: {manager: 'npm'}, test: TEST}), attemptFs: {system: host.system, root: attemptRoot},
+            assets: VERIFY_ASSETS, ...(shutdown ? {shutdown} : {})}));
+          const shutdown = new AbortController();
+          const first = world({verify: {base: failing, selected: fixed, regression: fixed, onStart: (run) => { if (run === 'selected') shutdown.abort(); }},
+            checkout: {root: attemptRoot, files}});
+          expect(await shared(first, shutdown.signal)).toMatchObject({kind: 'finished', settled: false});
+          expect(first.events.filter((e) => e === 'start:c-verifier')).toHaveLength(2);
+          expect((await journal())?.verification?.outcome).toBe('verification_interrupted');
+          const second = world({checkout: {root: attemptRoot}});
+          expect(await shared(second)).toEqual({kind: 'recovered', settled: true});
+          expect(second.events).not.toContain('start:c-verifier');
+          // The base step ran and is recorded; the selected step never finished and is not.
+          expect(second.events.filter((e) => e.startsWith('verify-record:'))).toEqual(['verify-record:base:passed']);
+          const fail = second.posts.find((p) => p.path.endsWith('/fail'))!;
+          expect(String(fail.body.failureReason)).toMatch(/^Verification failed: verification_interrupted/);
+          expect(second.events).not.toContain('review');
+        });
+
+        it('keeps the attempt unsettled while a record is unanswered, and resends it unchanged after a restart', async () => {
+          const {w, run} = await verifyWorld({verify: {base: failing, selected: fixed, regression: fixed,
+            record: (step, n) => (step === 'selected' && n === 1 ? 'lost' : 201)}});
+          expect(await run()).toMatchObject({kind: 'finished', settled: false});
+          expect(w.events).not.toContain('review');
+          const saved = await journal();
+          expect(saved?.verification?.submissions?.map((entry) => entry.state)).toEqual(['confirmed', 'pending', 'confirmed']);
+          expect(JSON.stringify(saved)).not.toContain('claim-secret');
+          const first = w.posts.filter((p) => p.path.endsWith('/verification-evidence') && p.key?.endsWith(':selected'));
+          expect(await run()).toMatchObject({kind: 'recovered', settled: true});
+          const resent = w.posts.filter((p) => p.path.endsWith('/verification-evidence') && p.key?.endsWith(':selected'));
+          expect(resent).toHaveLength(2);
+          expect(resent[1].body).toEqual(first[0].body);
+          expect(w.events).toContain('review');
+          // No test was run again.
+          expect(w.events.filter((e) => e === 'start:c-verifier')).toHaveLength(3);
+        });
+
       });
 
       it('keeps a failed install\'s output beside the attempt before its filesystem is released', async () => {

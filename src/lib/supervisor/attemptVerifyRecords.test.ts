@@ -1,6 +1,7 @@
 import {describe, expect, it} from 'vitest';
 import type {RunRecord} from './attemptVerify.js';
-import {buildSubmissions, failureText, pinOf, sendSubmissions, stepResults, type Submission} from './attemptVerifyRecords.js';
+import {buildSubmissions, failureText, pinOf, sendSubmissions, stepResults, type Submission, testPlanProblem, verificationFailure,
+  verificationPassed} from './attemptVerifyRecords.js';
 
 const ID = (n: number) => `0000000${n}-0000-4000-8000-000000000000`;
 const plan = (steps: Array<{key: string; id: string}>, version = 3, state = 'active') => ({activePlanVersion: version, plan: {version, state, steps}});
@@ -33,16 +34,16 @@ describe('verification records', () => {
   it('builds each submission once, with stable keys and no claim token', () => {
     const pin = {planVersion: 3, steps: {base: ID(1), selected: ID(2), regression: ID(3)}};
     const [base] = buildSubmissions({pin, executionAttemptId: EXECUTION, environmentLabel: 'sift-machine:r1', claimOwner: 'mobile-runner:r1',
-      manifestDigest: 'd'.repeat(64), ranAt: '2026-10-30T08:00:00.000Z', results: [{step: 'base', run: run('base', 1), passed: true}]});
+      ranAt: '2026-10-30T08:00:00.000Z', results: [{step: 'base', run: run('base', 1), passed: true}]});
     expect(base).toMatchObject({step: 'base', key: `${EXECUTION}:verify:base`, state: 'pending',
       body: {planVersion: 3, stepId: ID(1), attemptId: `${EXECUTION}:base`, outcome: 'passed', exitCode: 1, executionAttemptId: EXECUTION}});
-    expect(JSON.stringify(base)).not.toMatch(/claimToken/);
+    expect(JSON.stringify(base)).not.toMatch(/claimToken|manifestDigest/);
     expect((base.body.attemptId as string)).toMatch(/^[a-z0-9][a-z0-9._:-]{0,127}$/i);
   });
 
   it('confirms on 200 or 201, records a refusal, and leaves anything else pending to resend unchanged', async () => {
     const subs: Submission[] = ['base', 'selected', 'regression'].map((step) =>
-      ({step: step as Submission['step'], key: `k-${step}`, state: 'pending', body: {step}}));
+      ({step: step as Submission['step'], key: `k-${step}`, state: 'pending', body: {step, artifactRefs: [{role: step}]}}));
     const sent: Array<{body: unknown; key: string}> = [];
     const statuses: Record<string, number | null> = {'k-base': 201, 'k-selected': 409, 'k-regression': null};
     const saves: Submission[][] = [];
@@ -51,18 +52,44 @@ describe('verification records', () => {
       const status = statuses[key];
       return status === null ? null : {status};
     };
-    const after = await sendSubmissions(post, 'w1', subs, 'tok', async (next) => { saves.push(next); });
+    const after = await sendSubmissions(post, 'w1', subs, 'tok', 'd'.repeat(64), async (next) => { saves.push(next); });
     expect(after.map((s) => s.state)).toEqual(['confirmed', 'conflict', 'pending']);
-    expect(sent.map((s) => s.body)).toEqual([{step: 'base', claimToken: 'tok'}, {step: 'selected', claimToken: 'tok'}, {step: 'regression', claimToken: 'tok'}]);
+    const D = 'd'.repeat(64);
+    expect(sent.map((s) => s.body)).toEqual(['base', 'selected', 'regression'].map((step) =>
+      ({step, artifactRefs: [{role: step, manifestDigest: D}], claimToken: 'tok'})));
     // Each state change is saved before the next send; the saved copies never hold the token.
     expect(saves).toHaveLength(2);
     expect(JSON.stringify(saves)).not.toMatch(/tok/);
     // A resend sends only what is still pending, with the same body and key.
     sent.length = 0;
     statuses['k-regression'] = 200;
-    const again = await sendSubmissions(post, 'w1', after, 'tok2', async () => undefined);
-    expect(sent).toEqual([{body: {step: 'regression', claimToken: 'tok2'}, key: 'k-regression'}]);
+    const again = await sendSubmissions(post, 'w1', after, 'tok2', D, async () => undefined);
+    expect(sent).toEqual([{body: {step: 'regression', artifactRefs: [{role: 'regression', manifestDigest: D}], claimToken: 'tok2'}, key: 'k-regression'}]);
     expect(again.map((s) => s.state)).toEqual(['confirmed', 'conflict', 'confirmed']);
+  });
+
+  it('names the work outcome: review only when verification passed with every step confirmed', () => {
+    const pin = {planVersion: 1, steps: {base: ID(1), selected: ID(2), regression: ID(3)}};
+    const confirmed = (state: Submission['state']) => [{step: 'base' as const, key: 'k', state, body: {}}];
+    expect(verificationPassed(undefined)).toBe(true);
+    expect(verificationPassed({pin, outcome: 'passed', submissions: confirmed('confirmed')})).toBe(true);
+    expect(verificationPassed({pin, outcome: 'passed', submissions: confirmed('pending')})).toBe(false);
+    expect(verificationPassed({pin, outcome: 'passed'})).toBe(false);
+    expect(verificationPassed({pin})).toBe(false);
+    expect(verificationFailure({pin, outcome: 'base_test_passes'})).toEqual({reason: 'base_test_passes',
+      detail: 'the selected test passes on the base commit, so there is nothing to fix'});
+    expect(verificationFailure({pin})?.reason).toBe('verification_interrupted');
+    expect(verificationFailure({pin, outcome: 'passed', submissions: confirmed('conflict')})?.reason).toBe('verification_record_conflict');
+    expect(verificationFailure({pin, outcome: 'not_run'})).toBeUndefined();
+    expect(verificationFailure(undefined)).toBeUndefined();
+  });
+
+  it('checks the plan test field', () => {
+    expect(testPlanProblem({command: 'npm test', selector: 'test/a.test.js', files: ['test/a.test.js']})).toBeUndefined();
+    for (const bad of [undefined, 'npm test', [], {command: ''}, {command: 'x'.repeat(501)}, {command: 'npm test', selector: ''},
+      {command: 'npm test', files: 'test'}, {command: 'npm test', files: Array.from({length: 51}, () => 'a')}, {command: 'npm test', extra: 1}]) {
+      expect(testPlanProblem(bad), JSON.stringify(bad)).toBeDefined();
+    }
   });
 
   it('explains each failure code to the user', () => {
