@@ -5,7 +5,8 @@
  * --ignore-scripts` behind the registry-only proxy can install them. v1
  * admits npm lockfiles (version 2 or 3) whose every package comes from the
  * public npm registry with a sha512 integrity. Git, URL, file and link
- * sources, workspaces and linked entries are refused; npm is never run here.
+ * sources, workspaces, linked entries and bundled dependencies are refused;
+ * npm is never run here.
  */
 
 export const MAX_MANIFEST_BYTES = 32 * 1024 * 1024;
@@ -74,14 +75,6 @@ function sourceProblem(location: string, entry: Json): string | undefined {
   return undefined;
 }
 
-/**
- * The location of the package a nested entry sits inside (`node_modules/a/node_modules/b` is inside
- * `node_modules/a`), or undefined for a top-level entry, which npm fetches on its own.
- */
-function parentLocation(location: string): string | undefined {
-  const parts = location.split('/node_modules/');
-  return parts.length < 2 ? undefined : parts.slice(0, -1).join('/node_modules/');
-}
 
 /**
  * Admits the checkout's manifests, or throws DependencyRefused naming the
@@ -106,20 +99,10 @@ export function admitDependencies(packageJsonText: string, lockText: string): {p
     if (!location.startsWith('node_modules/') || location.split('/').some((part) => part === '..' || part === '.')) {
       throw new DependencyRefused(`package-lock.json entry ${location} is outside node_modules`);
     }
-    // A bundled dependency arrives inside its parent's tarball. The flag alone proves nothing (npm fetches a
-    // top-level entry on its own), so it is exempt only when its nearest unbundled ancestor is a checked
-    // registry tarball, whose integrity then covers it.
-    if (entry.inBundle === true) {
-      let ancestor = parentLocation(location);
-      while (ancestor !== undefined && isObject(lock.packages[ancestor]) && (lock.packages[ancestor] as Json).inBundle === true) {
-        ancestor = parentLocation(ancestor);
-      }
-      const owner = ancestor === undefined ? undefined : (lock.packages as Json)[ancestor];
-      if (ancestor === undefined || !isObject(owner) || owner.link === true || sourceProblem(ancestor, owner)) {
-        throw new DependencyRefused(`package-lock.json entry ${location} is marked bundled but no checked package bundles it`);
-      }
-      continue;
-    }
+    // A bundled entry has no tarball or integrity of its own. Whether a checked package really bundles it is npm's
+    // own graph logic, which v1 does not reproduce: the flag alone proves nothing (npm fetches an unbundled entry on
+    // its own), so bundled dependencies are refused rather than exempted on an unproven claim.
+    if (entry.inBundle === true) throw new DependencyRefused(`package-lock.json entry ${location} is a bundled dependency, which v1 does not install`);
     fail(sourceProblem(location, entry));
     packages += 1;
   }
