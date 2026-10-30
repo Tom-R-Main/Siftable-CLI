@@ -85,7 +85,7 @@ interface Scenario {
   /** Delivery receipts are answered with this status. */
   deliveryStatus?: number;
   /** A checkout plan (U5b-2c): the attempt filesystem lives under `root`; the helpers answer with these results. */
-  checkout?: {root: string; result?: object; patchResult?: object; patchRmFails?: boolean};
+  checkout?: {root: string; result?: object; patchResult?: object; patchRmFails?: boolean; patchCreateLost?: boolean};
 }
 
 /** An attempt filesystem host where every step succeeds; mount points and directories are real, under the test's root. */
@@ -265,6 +265,8 @@ function world(scenario: Scenario = {}) {
     if (a === 'container' && b === 'create') {
       const name = flag(args, '--name')[0];
       const id = `c-${['relay', 'checkout', 'patch'].find((role) => name.endsWith(`-${role}`)) ?? 'agent'}`;
+      // The daemon may have made it, but the answer never came back within the deadline.
+      if (id === 'c-patch' && scenario.checkout?.patchCreateLost) return {code: 124, stdout: '', stderr: 'deadline passed'};
       containers.set(id, args);
       events.push(`create:${id}`);
       // What the agent is handed, read while it still exists (the supervisor removes it on finish).
@@ -1241,17 +1243,41 @@ describe('superviseOnce', () => {
       expect(await journal()).toBeNull();
     });
 
-    it('holds the workspace when its preparation does not stop in time, and never archives the journal', async () => {
+    it('holds the workspace while its preparation has not stopped, across cycles, then releases it once it has', async () => {
+      let resume: () => void = () => {};
+      const stall = new Promise<void>((resolve) => { resume = resolve; });
       const shutdown = new AbortController();
-      const {host, run} = await checkoutWorld({}, {}, {stallFallocate: new Promise<void>(() => {})},
-        {shutdown: shutdown.signal, timing: {controlPollMs: 20, readyTimeoutMs: 1_000, logDrainMs: 200, prepareDrainMs: 100}});
+      const timing = {controlPollMs: 20, readyTimeoutMs: 1_000, logDrainMs: 200, prepareDrainMs: 100};
+      const {host, run} = await checkoutWorld({}, {}, {stallFallocate: stall}, {shutdown: shutdown.signal, timing});
       const outcome = run();
       await until(() => host.calls.some((c) => c.startsWith('fallocate')));
       shutdown.abort();
       expect(await outcome).toMatchObject({kind: 'finished', reason: 'shutdown', settled: false,
         facts: {resourcesRemoved: false, held: expect.arrayContaining(['workspace:preparing'])}});
+      expect(await journal()).toMatchObject({state: 'held', preparing: true});
+      // The next cycle, with the allocation still running here: nothing is torn down under it.
+      const next = world();
+      expect(await superviseOnce(deps(next, {attemptFs: {system: host.system, root: path.dirname(root)}, timing})))
+        .toEqual({kind: 'held', held: ['workspace:preparing']});
+      expect(next.events).toEqual([]);
       expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(false);
-      expect(await journal()).not.toBeNull();
+      // Once the allocation answers, preparation stops at its next step; the following cycle releases the partial filesystem.
+      resume();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const last = world();
+      const recovered = await superviseOnce(deps(last, {attemptFs: {system: host.system, root: path.dirname(root)}, timing}));
+      expect(recovered).toMatchObject({kind: 'recovered'});
+      expect(host.calls.some((c) => c.startsWith('mkfs'))).toBe(false);
+      expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(true);
+    });
+
+    it('holds a patch create whose answer was lost, so the next start looks for it by name', async () => {
+      const {run} = await checkoutWorld({patchCreateLost: true});
+      const outcome = await run();
+      expect(outcome).toMatchObject({kind: 'finished', settled: false, facts: {resourcesRemoved: false, held: expect.arrayContaining(['create:patch'])}});
+      expect(await journal()).toMatchObject({state: 'held', pendingCreates: ['patch']});
+      const outbox = await readJournal<{entries: Array<{facts: {state: string}}>}>({root, owner: null}, OUTBOX);
+      expect(outbox?.entries.map((entry) => entry.facts.state)).toEqual(['execution_stopped', 'cleanup_failed']);
     });
 
     it('holds a patch helper whose removal cannot be shown, and reports the cleanup failed', async () => {

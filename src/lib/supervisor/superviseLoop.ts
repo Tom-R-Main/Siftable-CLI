@@ -119,6 +119,8 @@ export interface AttemptJournal {
   fs?: AttemptFsRecord;
   /** The write scope's patch, frozen beside the log for the evidence manifest. */
   patch?: FrozenArtifact;
+  /** Set while the checkout is being prepared; a stop that could not wait for it to end leaves it set, and the workspace held. */
+  preparing?: boolean;
   cgroups?: {sidecar?: string; agent?: string};
   /** The workspace the attempt was attached with; terminal reports repeat it. */
   workspace?: {repositoryId: string; branch: string; baseSha: string};
@@ -241,6 +243,11 @@ function attemptSpecs(deps: SuperviseDeps, journal: AttemptJournal, attemptId: s
 const RUNNER_HEARTBEAT_MS = 45_000;
 /** Teardown waits this long for a checkout being prepared to stop at its next step; past it the workspace is held. */
 const PREPARE_DRAIN_MS = 45_000;
+/**
+ * Checkout preparations still running in this process, by run. A journal left `preparing` stays held while its run is
+ * here. After a restart nothing is: the unit's KillMode=mixed kills the whole cgroup, children included, on any stop.
+ */
+const preparations = new Set<string>();
 /** Evidence upload before settlement: three rounds at most, within this and the confirmed lease. */
 const EVIDENCE_BUDGET_MS = 120_000;
 
@@ -378,6 +385,9 @@ async function recordDispatch(deps: SuperviseDeps, dispatchId: string): Promise<
  */
 export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutcome> {
   let earlier = await readJournal<AttemptJournal>(deps.state, JOURNAL);
+  // A checkout preparation an earlier stop could not wait out may still be allocating or creating: nothing is torn down under it.
+  if (earlier?.preparing && preparations.has(earlier.runId)) return {kind: 'held', held: ['workspace:preparing']};
+  if (earlier?.preparing) earlier = {...earlier, preparing: false};
   if (earlier && earlier.state !== 'settling') {
     const reason = earlier.stop?.reason ?? 'recovered';
     // An unanswered create is settled only by finding its resource by name, or by the operator's explicit release.
@@ -661,6 +671,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     // A checkout still being prepared stops at its next step; teardown waits for it, so nothing is made or journaled after.
     // One that does not stop in time leaves the workspace unknown: held, never released or archived.
     const prepareUnknown = preparing ? !await Promise.race([preparing.then(() => true), sleep(deps.timing?.prepareDrainMs ?? PREPARE_DRAIN_MS).then(() => false)]) : false;
+    if (preparing && !prepareUnknown) journal = {...journal, preparing: false};
     finished = true;
     const receiptsBefore = journal.receipts ?? [];
     // With an attempt filesystem, this stop's receipts wait until the evidence has decided whether it is kept.
@@ -712,12 +723,16 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     }
     // A helper left behind, or a workspace whose preparation never ended, is held; this stop's receipts, still unqueued
     // while the filesystem exists, are worked out again from the final facts.
-    const lateHeld = [...helperHeld, ...(prepareUnknown ? ['workspace:preparing'] : [])];
+    // A patch create that never answered may still finish in the daemon: held until the next start finds it by name.
+    const latePending = (journal.pendingCreates ?? []).filter((role) => role === 'patch').map((role) => `create:${role}`);
+    const lateHeld = [...helperHeld, ...latePending, ...(prepareUnknown ? ['workspace:preparing'] : [])];
     if (lateHeld.length > 0) {
       settled.facts = {...settled.facts, resourcesRemoved: false, held: [...settled.facts.held, ...lateHeld]};
       if (journal.receiptsQueued === false) {
         await save({...journal, receipts: await receiptsOwed(deps, {...journal, receipts: receiptsBefore}, settled.facts), receiptsDerived: true});
       }
+      // Durable: the next start sees the hold in the journal, not only in this return value.
+      await save({...journal, state: 'held', stop: {...(journal.stop ?? {reason}), facts: settled.facts}});
     }
     // The attempt filesystem goes once nothing on it is owed: the evidence was acknowledged, or the workload never ran.
     if (journal.fs && journal.fs.state !== 'released' && deps.attemptFs && !prepareUnknown && (!journal.evidenceOwed || evidence?.acknowledged)) {
@@ -778,9 +793,13 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       helperImageId = imageId;
       const helpers = workspaceContext((role, args) => create(role, args), () => cap);
       if (!helpers) return await finish('start_failed');
+      await save({...journal, preparing: true});
+      const runId = journal.runId;
+      preparations.add(runId);
       const prepared = prepareWorkspace({...helpers, signal: life.signal});
-      preparing = prepared.then(() => undefined, () => undefined);
+      preparing = prepared.then(() => undefined, () => undefined).finally(() => preparations.delete(runId));
       await guard(prepared);
+      await save({...journal, preparing: false});
       workspace = writerVolumes(journal.runId, checkout.writeScope);
     }
     const labelsOnly = attemptSpecs(deps, journal, attemptId, plan, '', nonce, inputFile).networkLabels;
