@@ -129,6 +129,15 @@ export async function sendSubmissions(post: PostCall, workItemId: string, submis
   return current;
 }
 
+/**
+ * The code as the failed-start ack accepts it (`^[a-z_]{3,64}$`): helper codes such as `verify-checkout_timeout`
+ * carry a hyphen, which would be refused and leave the ack pending forever.
+ */
+export function reasonCode(code: string): string {
+  const normalized = code.toLowerCase().replace(/[^a-z_]/g, '_').slice(0, 64);
+  return normalized.length >= 3 ? normalized : 'verify_failed';
+}
+
 /** Codes that are not a verification failure: it passed, or the writer failed before there was anything to verify. */
 const NOT_FAILED = new Set(['passed', 'not_run']);
 
@@ -139,7 +148,9 @@ const NOT_FAILED = new Set(['passed', 'not_run']);
 export function verificationFailure(verification: VerificationJournal | undefined): {reason: string; detail: string} | undefined {
   if (!verification) return undefined;
   const outcome = verification.outcome ?? 'verification_interrupted';
-  if (!NOT_FAILED.has(outcome)) return {reason: outcome, detail: failureText(outcome, verification.detail).slice(outcome.length + 2, 500)};
+  if (!NOT_FAILED.has(outcome)) {
+    return {reason: reasonCode(outcome), detail: failureText(outcome, verification.detail).slice(outcome.length + 2, 2 + outcome.length + 500)};
+  }
   if ((verification.submissions ?? []).some((entry) => entry.state === 'conflict')) {
     return {reason: 'verification_record_conflict', detail: failureText('verification_record_conflict').slice('verification_record_conflict: '.length)};
   }

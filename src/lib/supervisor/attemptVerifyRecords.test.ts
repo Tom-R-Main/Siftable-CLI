@@ -1,7 +1,7 @@
 import {describe, expect, it} from 'vitest';
 import type {RunRecord} from './attemptVerify.js';
-import {buildSubmissions, failureText, pinOf, sendSubmissions, stepResults, type Submission, testPlanProblem, verificationFailure,
-  verificationPassed} from './attemptVerifyRecords.js';
+import {buildSubmissions, failureText, pinOf, reasonCode, sendSubmissions, stepResults, type Submission, testPlanProblem,
+  verificationFailure, verificationPassed} from './attemptVerifyRecords.js';
 
 const ID = (n: number) => `0000000${n}-0000-4000-8000-000000000000`;
 const plan = (steps: Array<{key: string; id: string}>, version = 3, state = 'active') => ({activePlanVersion: version, plan: {version, state, steps}});
@@ -82,6 +82,18 @@ describe('verification records', () => {
     expect(verificationFailure({pin, outcome: 'passed', submissions: confirmed('conflict')})?.reason).toBe('verification_record_conflict');
     expect(verificationFailure({pin, outcome: 'not_run'})).toBeUndefined();
     expect(verificationFailure(undefined)).toBeUndefined();
+  });
+
+  // Codex connector P2 on #1385: helper codes carry hyphens the ack route refuses.
+  it('sends every failure code in the form the failed-start ack accepts', () => {
+    const pin = {planVersion: 1, steps: {base: ID(1), selected: ID(2), regression: ID(3)}};
+    const route = /^[a-z_]{3,64}$/;
+    for (const code of ['verify-checkout_timeout', 'tree-check_sandbox', 'report_missing', 'verifier_sandbox', 'base_test_passes', 'x',
+      `a-${'b'.repeat(80)}`, 'Verify_Failed']) {
+      expect(verificationFailure({pin, outcome: code})?.reason, code).toMatch(route);
+    }
+    expect(reasonCode('verify-checkout_timeout')).toBe('verify_checkout_timeout');
+    expect(verificationFailure({pin, outcome: 'verify-checkout_timeout', detail: 'ran past 180000 ms'})?.detail).toContain('ran past 180000 ms');
   });
 
   it('checks the plan test field', () => {
