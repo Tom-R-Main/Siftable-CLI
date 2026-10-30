@@ -7,7 +7,7 @@ import {ATTEMPT_FS_BYTES, type AttemptFsRecord, type AttemptFsSystem, attemptVol
 import {
   freezePatch, type HelperRole, installDependencies, prepareWorkspace, releaseWorkspace, type WorkspaceContext, WorkspaceRefused, writerVolumes,
 } from './attemptWorkspace.js';
-import {PATCH_FILE} from './checkoutHelper.js';
+import {MAX_PATH_LIST_BYTES, PATCH_FILE} from './checkoutHelper.js';
 import type {Attach} from './machineQualify.js';
 
 const IMAGE = `registry.example/sift-agent@sha256:${'a'.repeat(64)}`;
@@ -233,6 +233,20 @@ describe('attempt workspace', () => {
     await fs.mkdir(outDir);
     expect(JSON.stringify(changed).length).toBeGreaterThan(128 * 1024);
     expect((await freezePatch(ctx, await prepared(ctx), outDir)).changed).toEqual(changed);
+  });
+
+  it('reads a changed-path list right at the helper\'s bound whole', async () => {
+    const path100 = (i: number) => `src/${String(i).padStart(96, '0')}`;
+    const changed = Array.from({length: Math.floor(MAX_PATH_LIST_BYTES / 103)}, (_, i) => path100(i));
+    expect(Buffer.byteLength(JSON.stringify(changed))).toBeLessThanOrEqual(MAX_PATH_LIST_BYTES);
+    expect(Buffer.byteLength(JSON.stringify(changed))).toBeGreaterThan(MAX_PATH_LIST_BYTES - 1024);
+    const {ctx} = context({result: {ok: true, changed}, patch: async (out) => {
+      await fs.mkdir(out, {recursive: true});
+      await fs.writeFile(path.join(out, PATCH_FILE), '# sift patch v1\n');
+    }});
+    const outDir = path.join(root, 'input');
+    await fs.mkdir(outDir);
+    expect((await freezePatch(ctx, await prepared(ctx), outDir)).changed).toHaveLength(changed.length);
   });
 
   it('builds the patch with no network and the checkout read-only, then copies it out as data', async () => {

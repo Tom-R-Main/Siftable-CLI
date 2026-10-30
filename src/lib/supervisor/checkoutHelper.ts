@@ -183,6 +183,17 @@ export async function materialize(git: Git, src: string, work: string, baseSha: 
 
 export const MAX_PATCH_BYTES = 64 * 1024 * 1024;
 export const PATCH_FILE = 'sift.patch';
+/**
+ * The most a path list in a helper's result may take serialized (the patch's changed paths, the frozen set). Past it
+ * the step is refused with its own code; a list is never truncated. The supervisor reads results a little above this.
+ */
+export const MAX_PATH_LIST_BYTES = 15 * 1024 * 1024;
+
+function boundedPathList<T>(list: T[], code: string, what: string, max: number): T[] {
+  const bytes = Buffer.byteLength(JSON.stringify(list));
+  if (bytes > max) throw new CheckoutRefused(code, `${what} takes ${bytes} bytes serialized; at most ${max}`);
+  return list;
+}
 
 /** The write scope as literal pathspecs: no glob or magic in a directory name applies. */
 const literal = (scopes: string[]) => scopes.map((scope) => `:(literal)${scope}`);
@@ -195,7 +206,7 @@ const literal = (scopes: string[]) => scopes.map((scope) => `:(literal)${scope}`
  * new blobs land in its own object directory.
  */
 export async function buildPatch(git: Git, work: string, out: string, baseSha: string, writeScope: string[],
-  maxBytes = MAX_PATCH_BYTES): Promise<{bytes: number; changed: string[]}> {
+  maxBytes = MAX_PATCH_BYTES, maxListBytes = MAX_PATH_LIST_BYTES): Promise<{bytes: number; changed: string[]}> {
   const gitDir = path.join(out, 'g');
   await fs.rm(gitDir, {recursive: true, force: true});
   await must(git, 'patch_failed', ['init', '--quiet', '--bare', gitDir]);
@@ -218,7 +229,8 @@ export async function buildPatch(git: Git, work: string, out: string, baseSha: s
   const names = await must(git, 'patch_failed', ['diff', '--cached', '--name-only', '-z', '--no-renames', baseSha, '--', ...literal(writeScope)],
     {cwd: work, env});
   await fs.rm(gitDir, {recursive: true, force: true});
-  return {bytes: diff.bytes ?? 0, changed: names.toString('utf8').split('\0').filter(Boolean)};
+  const changed = boundedPathList(names.toString('utf8').split('\0').filter(Boolean), 'patch_too_many_paths', 'the changed-path list', maxListBytes);
+  return {bytes: diff.bytes ?? 0, changed};
 }
 
 export const INSTALL_LOG = 'install.log';
@@ -311,7 +323,7 @@ export type FrozenSource = 'files' | 'selector' | 'report';
  * an entry from `test.files` or a report `file` attribute that is not one fails closed.
  */
 export async function resolveFrozen(git: Git, env: NodeJS.ProcessEnv, baseSha: string,
-  candidates: Array<{path: string; source: FrozenSource}>): Promise<FrozenPath[]> {
+  candidates: Array<{path: string; source: FrozenSource}>, maxListBytes = MAX_PATH_LIST_BYTES): Promise<FrozenPath[]> {
   const listing = await must(git, 'verify_failed', ['ls-tree', '-r', '-t', '-z', '--full-tree', baseSha], {env});
   const modes = new Map<string, string>();
   for (const record of listing.toString('utf8').split('\0')) {
@@ -333,7 +345,7 @@ export async function resolveFrozen(git: Git, env: NodeJS.ProcessEnv, baseSha: s
     frozen.set(normalized, {path: normalized, kind});
   }
   if (frozen.size === 0) throw new CheckoutRefused('frozen_tests_unknown', 'no test file or directory could be identified to freeze');
-  return [...frozen.values()].sort((a, b) => (a.path < b.path ? -1 : 1));
+  return boundedPathList([...frozen.values()].sort((a, b) => (a.path < b.path ? -1 : 1)), 'frozen_path_invalid', 'the frozen set', maxListBytes);
 }
 
 /** The changed paths that are frozen: equal to a frozen file, or under a frozen directory. */

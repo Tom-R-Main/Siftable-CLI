@@ -320,6 +320,23 @@ describe('checkout helper', () => {
       expect(await refusal(resolveFrozen(git, env, base, [{path: 'adds', source: 'selector'}]))).toBe('frozen_tests_unknown');
     });
 
+    // Release on #1384: a path list past the bound is refused with its own code, never truncated.
+    it('refuses a changed-path list or frozen set past its serialized bound', async () => {
+      const {git, src, work} = await staged('v-bound');
+      await materialize(git, src, work, base, ['src/lib', 'test']);
+      await fs.writeFile(path.join(work, 'src', 'lib', 'a.ts'), 'export const a = 3;\n');
+      const out = path.join(root, 'v-bound', 'out');
+      await fs.mkdir(out);
+      // ["src/lib/a.ts"] is 16 bytes.
+      expect((await buildPatch(git, work, out, base, ['src/lib'], undefined, 16)).changed).toEqual(['src/lib/a.ts']);
+      expect(await refusal(buildPatch(git, work, out, base, ['src/lib'], undefined, 15))).toBe('patch_too_many_paths');
+      const {objects, runs} = {objects: path.join(work, '.git', 'objects'), runs: path.join(root, 'v-bound', 'verify')};
+      const {env} = await materializeVerify(git, objects, path.join(runs, 'base'), base);
+      const candidates = [{path: 'test', source: 'files' as const}];
+      expect(await resolveFrozen(git, env, base, candidates, 100)).toEqual([{path: 'test', kind: 'dir'}]);
+      expect(await refusal(resolveFrozen(git, env, base, candidates, 10))).toBe('frozen_path_invalid');
+    });
+
     it('names the changed paths that are frozen', async () => {
       const {changed} = await patched('v-changes');
       expect(changed).toEqual(['src/lib/a.ts', 'test/a.test.ts']);

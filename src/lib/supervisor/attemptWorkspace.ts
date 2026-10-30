@@ -26,7 +26,7 @@ import {
   releaseAttemptFs,
 } from './attemptFilesystem.js';
 import {admitDependencies, DependencyRefused, MAX_MANIFEST_BYTES} from './attemptDependencies.js';
-import {INSTALL_LOG, MAX_INSTALL_LOG_BYTES, MAX_PATCH_BYTES, PATCH_FILE} from './checkoutHelper.js';
+import {INSTALL_LOG, MAX_INSTALL_LOG_BYTES, MAX_PATCH_BYTES, MAX_PATH_LIST_BYTES, PATCH_FILE} from './checkoutHelper.js';
 import {evaluateNetworkInspect, evaluateSandboxInspect, networkCreateArgs, sandboxCreateArgs, type SandboxContainerSpec,
   type SandboxVolume} from './containerSandbox.js';
 import {PROXY_PORT} from './registryProxy.js';
@@ -37,8 +37,8 @@ export const CHECKOUT_TIMEOUT_MS = 180_000;
 export const PATCH_TIMEOUT_MS = 10_000;
 export const INSTALL_TIMEOUT_MS = 300_000;
 const RESULT_LIMIT = 64 * 1024;
-/** Results that carry path lists (the patch's changed paths, the frozen set): up to MAX_ENTRIES paths. */
-export const PATH_LIST_RESULT_LIMIT = 16 * 1024 * 1024;
+/** Results that carry a path list (the patch's changed paths, the frozen set): the helper's bound on it, plus room. */
+export const PATH_LIST_RESULT_LIMIT = MAX_PATH_LIST_BYTES + 1024 * 1024;
 
 export type HelperRole = 'fetch' | 'checkout' | 'patch' | 'volume' | 'install-net' | 'egress' | 'proxy' | 'install'
   | 'verify-checkout' | 'tree-check' | 'report' | 'verifier';
