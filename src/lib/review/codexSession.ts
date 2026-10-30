@@ -22,6 +22,11 @@ export interface CodexSessionOptions {
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
   /** Path of the user's Codex login file; default $CODEX_HOME/auth.json. Only the path is used. */
   authFile?: string;
+  /**
+   * Proxy mode (first-run U3-2): codex talks only to this loopback Responses base, which forwards to the attempt's
+   * reviewer relay; no login file is linked. The container is the sandbox, so codex's own is off.
+   */
+  proxyBaseUrl?: string;
 }
 
 /** Where codex keeps the user's login. Computes a path; never touches the file. */
@@ -101,11 +106,11 @@ export function codexSessionFactory(options: CodexSessionOptions): ModelSessionF
       exec: processRunner,
       toolHostEndpoint: loopbackMcpEndpoint,
       model: options.model,
-      provider: 'native',
-      nativeAuthFile: options.authFile ?? codexAuthPath(),
-      // codex's own sandbox works on a developer machine (Seatbelt on macOS,
-      // Landlock or bubblewrap on Linux); with the shell disabled it is defence in depth.
-      sandbox: 'read-only',
+      ...(options.proxyBaseUrl
+        ? {provider: 'proxy' as const, proxyBaseUrl: options.proxyBaseUrl, sandbox: 'danger-full-access' as const}
+        // codex's own sandbox works on a developer machine (Seatbelt on macOS,
+        // Landlock or bubblewrap on Linux); with the shell disabled it is defence in depth.
+        : {provider: 'native' as const, nativeAuthFile: options.authFile ?? codexAuthPath(), sandbox: 'read-only' as const}),
       checkoutRoot,
       workDir,
       maxConcurrent: options.concurrency,

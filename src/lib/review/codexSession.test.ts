@@ -39,7 +39,9 @@ const fs = require('fs');
 const home = process.env.CODEX_HOME;
 fs.writeFileSync(${JSON.stringify(report)}, JSON.stringify({
   entries: fs.readdirSync(home).sort(),
-  link: fs.lstatSync(home + '/auth.json').isSymbolicLink() ? fs.readlinkSync(home + '/auth.json') : null,
+  // Proxy mode links no login file at all.
+  link: fs.readdirSync(home).includes('auth.json') && fs.lstatSync(home + '/auth.json').isSymbolicLink()
+    ? fs.readlinkSync(home + '/auth.json') : null,
   config: fs.readFileSync(home + '/config.toml', 'utf8'),
   env: Object.keys(process.env).filter(k => k !== '__CF_USER_TEXT_ENCODING').sort(),
 }));
@@ -131,6 +133,35 @@ describe('sift review codex session', () => {
     // The user's file is untouched and still unreadable; the per-call home is gone.
     const after = statSync(authFile);
     expect([after.mode & 0o777, after.size, after.mtimeMs]).toEqual([0, before.size, before.mtimeMs]);
+  });
+
+  it('runs codex in proxy mode (U3-2): only the loopback relay, no login linked, the container as the sandbox', async () => {
+    const session = await codexSessionFactory({
+      runtime,
+      codexBin: fakeCodex(),
+      model: 'gpt-6.1-sol',
+      path: `/usr/bin:/bin`,
+      concurrency: 1,
+      callTimeoutMs: 20_000,
+      proxyBaseUrl: 'http://127.0.0.1:41234/v1',
+    })({checkoutRoot: mkdtempSync(join(dir, 'checkout-')), workDir: mkdtempSync(join(dir, 'work-'))});
+    const response = await session.models.run({
+      role: 'finder',
+      callId: 'c1',
+      instructions: 'Find defects.',
+      data: [],
+      outputSchema: '{}',
+      toolHost: {tools: ['read_file'], call: async () => ({ok: false, error: 'unused'})},
+      signal: AbortSignal.timeout(20_000),
+    });
+    await session.close();
+    expect(response.output).toEqual({ok: true});
+    const report = JSON.parse(readFileSync(join(dir, 'report.json'), 'utf8')) as {entries: string[]; link: string | null; config: string};
+    expect(report.entries).toEqual(['config.toml']);
+    expect(report.link).toBeNull();
+    expect(report.config).toContain('[model_providers.taster_proxy]');
+    expect(report.config).toContain('base_url = "http://127.0.0.1:41234/v1"');
+    expect(report.config).toContain('sandbox_mode = "danger-full-access"');
   });
 
   it('reports a failed turn by class and never echoes codex\'s message', async () => {
