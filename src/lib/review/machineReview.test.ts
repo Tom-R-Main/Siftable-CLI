@@ -67,6 +67,33 @@ describe('machine review (U3-2)', () => {
     }
   });
 
+  // Codex connector P2 on #1388: a reviewer that disconnects mid-stream ends the relay call.
+  it('aborts the relay call when the reviewer disconnects while the reply is still streaming', async () => {
+    let upstreamSignal: AbortSignal | undefined;
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      upstreamSignal = init.signal ?? undefined;
+      let sent = false;
+      return new Response(new ReadableStream({pull(controller) {
+        if (!sent) { sent = true; controller.enqueue(new TextEncoder().encode('event: a\n\n')); }
+        // Then nothing more: the relay is still answering.
+        return new Promise(() => {});
+      }}), {status: 200, headers: {'content-type': 'text/event-stream'}});
+    }) as unknown as typeof fetch;
+    const {baseUrl, server} = await startForwarder(RELAY, fetchImpl);
+    try {
+      const client = new AbortController();
+      const reply = await fetch(`${baseUrl}/responses`, {method: 'POST', body: '{}', signal: client.signal});
+      const reader = reply.body!.getReader();
+      await reader.read();
+      expect(upstreamSignal?.aborted).toBe(false);
+      client.abort();
+      for (let i = 0; i < 100 && !upstreamSignal?.aborted; i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(upstreamSignal?.aborted).toBe(true);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
   it('reviews exactly the result head against the base, in proxy mode, and reports the receipt in one result', async () => {
     let options: LocalReviewOptions | undefined;
     let used: LocalReviewDeps | undefined;

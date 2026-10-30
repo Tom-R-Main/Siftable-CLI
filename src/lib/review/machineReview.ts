@@ -65,9 +65,12 @@ export async function startForwarder(responsesUrl: string, fetchImpl: typeof fet
       }
       const body = await readBody(request);
       if (!body) { response.writeHead(413).end(); return; }
+      // codex going away (exit, cancel) ends the relay call too, so it stops consuming the reviewer budget.
+      const upstreamLife = new AbortController();
+      response.on('close', () => { if (!response.writableFinished) upstreamLife.abort(); });
       let upstream: Response;
       try {
-        upstream = await fetchImpl(responsesUrl, {method: 'POST', redirect: 'error', body,
+        upstream = await fetchImpl(responsesUrl, {method: 'POST', redirect: 'error', body, signal: upstreamLife.signal,
           headers: {'Content-Type': request.headers['content-type'] ?? 'application/json',
             ...(request.headers.accept ? {Accept: request.headers.accept} : {})}});
       } catch {
