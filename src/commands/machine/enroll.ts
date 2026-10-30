@@ -1,6 +1,7 @@
 import {Flags} from '@oclif/core';
 import {arch, hostname, platform} from 'node:os';
 import {BaseCommand, DEFAULT_API_URL} from '../../lib/base-command.js';
+import {linkMachineCommand} from '../../lib/setupSession.js';
 import {enrollMachine, MachineEnrollError} from '../../lib/supervisor/machineEnroll.js';
 import {machineHostLabels, parseMachineScope} from '../../lib/supervisor/machineProtocol.js';
 import {MachineStateError, SUPERVISOR_STATE_DIR} from '../../lib/supervisor/machineState.js';
@@ -17,7 +18,7 @@ export default class MachineEnroll extends BaseCommand {
   static flags = {
     ...BaseCommand.baseFlags,
     workspace: Flags.string({default: 'personal', description: 'personal, or the workspace UUID to run work for'}),
-    setup: Flags.string({description: 'Setup session this machine is enrolled for (recorded locally)'}),
+    setup: Flags.string({description: 'Setup session this machine is enrolled for (recorded locally; prints the command that links it)'}),
     replace: Flags.boolean({default: false, description: 'Revoke and retire this machine\'s current enrollment, then enroll again'}),
     'abandon-runner': Flags.string({
       dependsOn: ['replace'],
@@ -54,12 +55,16 @@ export default class MachineEnroll extends BaseCommand {
         ...(flags['abandon-runner'] ? {abandonRunner: flags['abandon-runner']} : {}),
         host: machineHostLabels({hostname: hostname(), os: platform(), arch: arch(), agentVersion: this.config.version}),
       });
+      const workspaceId = scope.type === 'workspace' ? scope.id : null;
+      const next = flags.setup ? linkMachineCommand(flags.setup, result.runnerId, workspaceId, apiUrl) : undefined;
       if (!this.jsonEnabled()) {
         this.log(`Enrolled. Enrollment ${result.enrollmentId}, runner ${result.runnerId}.`);
         this.log('The machine is not qualified yet, so it cannot run work or call models until it qualifies.');
         if (!account.dockerGroup) this.log('Docker is not installed (no docker group); install it before qualifying.');
+        // The plan is changed with the person's own credential, never the machine's, so this runs without sudo.
+        if (next) this.log(`Link it to your setup as yourself, without sudo: ${next}`);
       }
-      return {...result, dockerGroup: account.dockerGroup};
+      return {...result, dockerGroup: account.dockerGroup, ...(next ? {next} : {})};
     } catch (error) {
       if (error instanceof MachineEnrollError || error instanceof MachineStateError) this.error(error.message);
       throw error;

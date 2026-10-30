@@ -107,6 +107,9 @@
       "machine": {
         "description": "Enroll this Linux machine as a contained supervisor"
       },
+      "setup": {
+        "description": "First-run setup plans: prepare, check and change them; run them on the plan page"
+      },
       "tasks": {
         "description": "Human planning tasks"
       },
