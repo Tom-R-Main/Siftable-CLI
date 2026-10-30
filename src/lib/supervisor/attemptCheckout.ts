@@ -33,8 +33,9 @@ export function writeScopeProblem(scope: unknown): string | undefined {
   if (typeof scope !== 'string' || scope.length === 0) return 'A write scope must be a nonempty path';
   if (Buffer.byteLength(scope) > MAX_SCOPE_BYTES) return `A write scope is at most ${MAX_SCOPE_BYTES} bytes`;
   // Control characters, backslash and NUL could mean different paths to Docker, git and the kernel.
-  if ([...scope].some((char) => char.charCodeAt(0) < 0x20 || char === '\u007f' || char === '\\')) {
-    return 'A write scope cannot contain control characters or a backslash';
+  // Docker parses --mount as CSV, so a comma or quote would change the mount.
+  if ([...scope].some((char) => char.charCodeAt(0) < 0x20 || char === '\u007f' || char === '\\' || char === ',' || char === '"')) {
+    return 'A write scope cannot contain control characters, a backslash, a comma or a quote';
   }
   if (scope.startsWith('/') || scope.endsWith('/')) return 'A write scope is relative, with no leading or trailing slash';
   for (const segment of scope.split('/')) {

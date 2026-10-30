@@ -20,6 +20,18 @@ export interface SandboxMount {
   target: string;
 }
 
+/**
+ * A named volume (the attempt filesystem's work, deps or src directory). A
+ * subpath mounts one directory inside the volume, resolved by Docker within
+ * the volume, never through a host path.
+ */
+export interface SandboxVolume {
+  volume: string;
+  target: string;
+  readonly: boolean;
+  subpath?: string;
+}
+
 export interface SandboxContainerSpec {
   name: string;
   imageRef: string;
@@ -29,6 +41,8 @@ export interface SandboxContainerSpec {
   command: string[];
   /** Read-only binds; the only host paths the container sees. */
   mounts: SandboxMount[];
+  /** Named volumes, in mount order: a read-only whole volume before the writable subpaths over it. */
+  volumes?: SandboxVolume[];
   /** Writable scratch, as `target` paths; mounted noexec, nosuid. */
   tmpfs: string[];
   env: Record<string, string>;
@@ -36,6 +50,19 @@ export interface SandboxContainerSpec {
   cgroupParent: string;
   /** The relay sidecar keeps stdin open for its frames. */
   interactive?: boolean;
+  /** Working directory; /tmp unless the container works in its checkout. */
+  workdir?: string;
+}
+
+/** Docker parses --mount as CSV, so a value with a comma, quote or newline would change the mount. */
+const MOUNT_VALUE = /^[^,"\n\r]+$/;
+
+function volumeMountArg(volume: SandboxVolume): string {
+  for (const value of [volume.volume, volume.target, volume.subpath ?? 'x']) {
+    if (!MOUNT_VALUE.test(value)) throw new Error(`A volume mount value cannot contain a comma, quote or newline: ${JSON.stringify(value)}`);
+  }
+  return [`type=volume`, `source=${volume.volume}`, `target=${volume.target}`,
+    ...(volume.subpath ? [`volume-subpath=${volume.subpath}`] : []), ...(volume.readonly ? ['readonly'] : [])].join(',');
 }
 
 /** Scratch is bounded and cannot hold executables, setuid binaries or devices. */
@@ -52,9 +79,10 @@ export function sandboxCreateArgs(spec: SandboxContainerSpec): string[] {
     '--network', spec.networkId, '--ipc', 'private', '--cgroupns', 'private', '--cgroup-parent', spec.cgroupParent,
     '--restart', 'no', '--pids-limit', String(spec.limits.pidsLimit),
     '--memory', `${spec.limits.memoryMb}m`, '--memory-swap', `${spec.limits.memoryMb}m`, '--cpus', String(spec.limits.cpus),
-    '--entrypoint', spec.entrypoint, '--workdir', '/tmp',
+    '--entrypoint', spec.entrypoint, '--workdir', spec.workdir ?? '/tmp',
     ...spec.tmpfs.flatMap((target) => ['--tmpfs', `${target}:${TMPFS_OPTIONS}`]),
     ...spec.mounts.flatMap((mount) => ['--mount', `type=bind,source=${mount.source},target=${mount.target},readonly`]),
+    ...(spec.volumes ?? []).flatMap((volume) => ['--mount', volumeMountArg(volume)]),
     ...Object.entries(spec.labels).flatMap(([key, value]) => ['--label', `${key}=${value}`]),
     ...Object.entries(spec.env).flatMap(([key, value]) => ['--env', `${key}=${value}`]),
     ...(spec.interactive ? ['--interactive'] : []),
@@ -114,15 +142,30 @@ export function evaluateSandboxInspect(inspect: unknown, expected: SandboxExpect
     && (['', undefined, null].includes(host.UsernsMode as never) || fail('userns_mode'))
     && (host.CgroupnsMode === 'private' || fail('cgroupns_mode'));
 
-  // Mounts: exactly the declared read-only binds plus the declared tmpfs targets; nothing from image defaults.
+  // Mounts: exactly the declared read-only binds, the declared volumes with their exact subpath and mode, and
+  // the declared tmpfs targets; nothing from image defaults.
   const allowed = new Map(spec.mounts.map((mount) => [mount.target, mount.source]));
+  const volumes = new Map((spec.volumes ?? []).map((volume) => [volume.target, volume]));
+  const requested = new Map(list(host.Mounts).map(obj).map((mount) => [String(mount.Target), mount]));
   const mounts = list(container.Mounts).map(obj);
   const mountsOk = mounts.every((mount) => {
-    if (mount.Type !== 'bind') return fail(`mount_type:${String(mount.Destination)}`);
-    if (allowed.get(String(mount.Destination)) !== mount.Source) return fail(`mount_unexpected:${String(mount.Destination)}`);
-    if (mount.RW !== false) return fail(`mount_writable:${String(mount.Destination)}`);
+    const target = String(mount.Destination);
+    if (mount.Type === 'volume') {
+      const declared = volumes.get(target);
+      if (!declared) return fail(`mount_type:${target}`);
+      if (mount.Name !== declared.volume) return fail(`mount_unexpected:${target}`);
+      if (mount.RW !== !declared.readonly) return fail(declared.readonly ? `mount_writable:${target}` : `mount_read_only:${target}`);
+      const asked = requested.get(target);
+      const subpath = obj(asked?.VolumeOptions).Subpath;
+      if (!asked || asked.Source !== declared.volume || (subpath ?? undefined) !== declared.subpath
+        || Boolean(asked.ReadOnly) !== declared.readonly) return fail(`mount_subpath:${target}`);
+      return true;
+    }
+    if (mount.Type !== 'bind') return fail(`mount_type:${target}`);
+    if (allowed.get(target) !== mount.Source) return fail(`mount_unexpected:${target}`);
+    if (mount.RW !== false) return fail(`mount_writable:${target}`);
     return true;
-  }) && (mounts.length === spec.mounts.length || fail('mount_count'));
+  }) && (mounts.length === spec.mounts.length + volumes.size || fail('mount_count'));
   // Targets and their options: an exec-enabled or unbounded scratch is a different sandbox.
   const tmpfs = obj(host.Tmpfs);
   const tmpfsOk = (JSON.stringify(Object.keys(tmpfs).sort()) === JSON.stringify([...spec.tmpfs].sort()) || fail('tmpfs'))

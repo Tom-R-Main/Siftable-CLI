@@ -108,6 +108,41 @@ describe('evaluateSandboxInspect', () => {
     expect(evaluateSandboxInspect(inspectOf({host: {NetworkMode: 'bridge'}}), {...expected, phase: 'created'}).problems).toContain('network_mode');
   });
 
+  it('mounts the checkout read-only and only the write scope writable, and checks both exactly', () => {
+    const scoped: SandboxContainerSpec = {...spec, workdir: '/workspace', volumes: [
+      {volume: 'sift-a-r1-work', target: '/workspace', readonly: true},
+      {volume: 'sift-a-r1-work', target: '/workspace/src', readonly: false, subpath: 'src'},
+    ]};
+    const args = sandboxCreateArgs(scoped);
+    expect(args).toEqual(expect.arrayContaining(['--workdir', '/workspace',
+      '--mount', 'type=volume,source=sift-a-r1-work,target=/workspace,readonly',
+      '--mount', 'type=volume,source=sift-a-r1-work,target=/workspace/src,volume-subpath=src']));
+    // What Docker 29 reports for exactly those two mounts.
+    const bind = {Type: 'bind', Source: '/usr/lib/sift/probe.mjs', Destination: '/sift/probe.mjs', RW: false};
+    const whole = {Type: 'volume', Name: 'sift-a-r1-work', Destination: '/workspace', RW: false};
+    const src = {Type: 'volume', Name: 'sift-a-r1-work', Destination: '/workspace/src', RW: true};
+    const asked = [{Type: 'volume', Source: 'sift-a-r1-work', Target: '/workspace', ReadOnly: true},
+      {Type: 'volume', Source: 'sift-a-r1-work', Target: '/workspace/src', VolumeOptions: {Subpath: 'src'}}];
+    const check = (mounts: object[], hostMounts: object[] = asked) =>
+      evaluateSandboxInspect(inspectOf({mounts, host: {Mounts: hostMounts}}), {...expected, spec: scoped});
+    const ok = check([bind, whole, src]);
+    expect(ok.problems).toEqual([]);
+    expect(ok.observedIsolation.repository).toBe('read_only_except_write_scope');
+    expect(check([bind, {...whole, RW: true}, src]).problems).toContain('mount_writable:/workspace');
+    expect(check([bind, whole, {...src, RW: false}]).problems).toContain('mount_read_only:/workspace/src');
+    expect(check([bind, whole, src], [asked[0], {...asked[1], VolumeOptions: {Subpath: 'src/..'}}]).problems).toContain('mount_subpath:/workspace/src');
+    expect(check([bind, whole, src], [asked[0], {...asked[1], VolumeOptions: undefined}]).problems).toContain('mount_subpath:/workspace/src');
+    expect(check([bind, whole, {...src, Name: 'other'}]).problems).toContain('mount_unexpected:/workspace/src');
+    expect(check([bind, whole]).problems).toContain('mount_count');
+    expect(check([bind, whole, src, {Type: 'volume', Name: 'sift-a-r1-work', Destination: '/workspace/test', RW: true}]).problems)
+      .toContain('mount_type:/workspace/test');
+  });
+
+  it('refuses a volume mount value Docker would parse as more than one option', () => {
+    expect(() => sandboxCreateArgs({...spec, volumes: [{volume: 'v', target: '/workspace/a,readonly=false', readonly: false}]})).toThrow(/comma/);
+    expect(() => sandboxCreateArgs({...spec, volumes: [{volume: 'v', target: '/w', readonly: false, subpath: 'a"b'}]})).toThrow(/quote/);
+  });
+
   it('rejects another image behind the same reference', () => {
     const result = evaluateSandboxInspect({...inspectOf(), Image: `sha256:${'c'.repeat(64)}`}, expected);
     expect(result.problems).toContain('image_id');

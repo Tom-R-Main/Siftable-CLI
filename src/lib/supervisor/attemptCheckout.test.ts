@@ -33,7 +33,7 @@ describe('checkout plan', () => {
 
   it('refuses scopes that could name the root, the git directory, a parent or an ambiguous path', () => {
     for (const scope of ['', '/', '/src', 'src/', '.', '..', 'src/../etc', 'a//b', './src', '.git', 'src/.GIT/hooks',
-      'src\\lib', 'src\nlib', 'src\u0000', 'x'.repeat(513), 7]) {
+      'src\\lib', 'src\nlib', 'src,readonly', 'a"b', 'src\u0000', 'x'.repeat(513), 7]) {
       expect(writeScopeProblem(scope), JSON.stringify(scope)).toBeDefined();
     }
     expect(writeScopeProblem('.github/workflows')).toBeUndefined();
