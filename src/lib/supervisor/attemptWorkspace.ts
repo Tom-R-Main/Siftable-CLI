@@ -8,7 +8,12 @@
  * attempt filesystem, and the root supervisor copies it out as data. Every
  * helper is created through the caller's journaled create, carries the
  * attempt's labels and cgroup slice, is checked before it starts, and is
- * killed and removed when its time is up.
+ * killed and removed when its time is up or the attempt stops.
+ *
+ * Preparation follows the attempt's lifetime: once its signal aborts, no new
+ * step starts (a system tool already running finishes within its own bound),
+ * so the caller can wait for it to end before tearing down. A helper whose
+ * removal cannot be shown is reported held, never assumed gone.
  */
 import {createHash} from 'node:crypto';
 import {constants, promises as fs} from 'node:fs';
@@ -48,6 +53,10 @@ export interface WorkspaceContext {
   persistFs: (record: AttemptFsRecord) => Promise<void>;
   /** Tests shorten these; production uses the contract's bounds. */
   timeouts?: {checkoutMs?: number; patchMs?: number};
+  /** The attempt's lifetime: once aborted, no new step starts and a running helper is killed. */
+  signal?: AbortSignal;
+  /** Told of anything a step made that could not be shown removed (a helper container, the fetch bridge). */
+  held?: (item: string) => void;
 }
 
 export class WorkspaceRefused extends Error {
@@ -55,6 +64,20 @@ export class WorkspaceRefused extends Error {
     super(`${code}: ${detail}`);
   }
 }
+
+const stopped = (ctx: WorkspaceContext) => {
+  if (ctx.signal?.aborted) throw new WorkspaceRefused('interrupted', 'the attempt stopped before this step');
+};
+
+/** The attempt filesystem host, refusing to start any further step once the attempt has stopped. */
+function guardedSystem(ctx: WorkspaceContext): AttemptFsSystem {
+  const sys = ctx.fsSystem;
+  return {...sys,
+    run: async (file, args) => { stopped(ctx); return sys.run(file, args); },
+    createExclusive: async (file, mode) => { stopped(ctx); return sys.createExclusive(file, mode); }};
+}
+
+const gone = (result: {code: number; stderr: string}) => result.code === 0 || /no such (container|network)|not found/i.test(result.stderr);
 
 const labels = (ctx: Pick<WorkspaceContext, 'runId' | 'attemptId'>, role: string) =>
   ({'sift.machine.run': ctx.runId, 'sift.machine.role': role, 'sift.machine.attempt': ctx.attemptId});
@@ -79,6 +102,7 @@ function helperSpec(ctx: WorkspaceContext, role: 'checkout' | 'patch', networkId
 
 /** Creates, checks, runs and removes one helper; returns its JSON result line. Never leaves it running. */
 async function runHelper(ctx: WorkspaceContext, role: 'checkout' | 'patch', spec: SandboxContainerSpec, timeoutMs: number) {
+  stopped(ctx);
   const id = await ctx.create(role, sandboxCreateArgs(spec));
   try {
     const inspected = await ctx.docker(['container', 'inspect', id]);
@@ -92,13 +116,21 @@ async function runHelper(ctx: WorkspaceContext, role: 'checkout' | 'patch', spec
     // The result line is read only once the output has ended: a process can exit before its output is drained.
     const ended = new Promise<void>((resolve) => { run.stdout.once('end', resolve); run.stdout.once('close', resolve); });
     let timer: NodeJS.Timeout | undefined;
+    let onAbort: (() => void) | undefined;
     const exit = await Promise.race([Promise.all([run.exited, ended]).then(([code]) => code),
-      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs); })]);
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs); }),
+      new Promise<'stopped'>((resolve) => {
+        onAbort = () => resolve('stopped');
+        if (ctx.signal?.aborted) onAbort();
+        else ctx.signal?.addEventListener('abort', onAbort, {once: true});
+      })]);
     clearTimeout(timer);
-    if (exit === null) {
+    if (onAbort) ctx.signal?.removeEventListener('abort', onAbort);
+    if (exit === null || exit === 'stopped') {
       await ctx.docker(['container', 'kill', '--signal', 'KILL', id]);
       run.kill();
-      throw new WorkspaceRefused(`${role}_timeout`, `the ${role} helper ran past ${timeoutMs} ms`);
+      throw exit === null ? new WorkspaceRefused(`${role}_timeout`, `the ${role} helper ran past ${timeoutMs} ms`)
+        : new WorkspaceRefused('interrupted', `the attempt stopped while the ${role} helper ran`);
     }
     const line = out.trim().split('\n').at(-1) ?? '';
     let result: {ok?: unknown; code?: unknown; detail?: unknown} = {};
@@ -109,7 +141,8 @@ async function runHelper(ctx: WorkspaceContext, role: 'checkout' | 'patch', spec
     }
     return result;
   } finally {
-    await ctx.docker(['container', 'rm', '--force', id]);
+    const removed = await ctx.docker(['container', 'rm', '--force', id]);
+    if (!gone(removed)) ctx.held?.(`container:${id}`);
   }
 }
 
@@ -121,15 +154,17 @@ async function runHelper(ctx: WorkspaceContext, role: 'checkout' | 'patch', spec
 export async function prepareWorkspace(ctx: WorkspaceContext): Promise<AttemptFsRecord> {
   let record: AttemptFsRecord;
   try {
-    record = await createAttemptFs(ctx.fsSystem, ctx.attemptRoot, ctx.runId, ctx.persistFs);
+    record = await createAttemptFs(guardedSystem(ctx), ctx.attemptRoot, ctx.runId, ctx.persistFs);
   } catch (error) {
     if (error instanceof AttemptFsError) throw new WorkspaceRefused(error.code, error.message);
     throw error;
   }
   for (const dir of ['src', 'work'] as const) {
+    stopped(ctx);
     const made = await ctx.docker(attemptVolumeCreateArgs(record, ctx.runId, dir, labels(ctx, `volume-${dir}`)));
     if (made.code !== 0) throw new WorkspaceRefused('checkout_failed', `volume ${dir}: ${made.stderr.trim().slice(0, 200)}`);
   }
+  stopped(ctx);
   const fetchNetwork = await ctx.create('fetch', ['network', 'create', '--driver', 'bridge',
     ...Object.entries(labels(ctx, 'fetch')).flatMap(([key, value]) => ['--label', `${key}=${value}`]), `sift-a-${ctx.runId}-fetch`]);
   try {
@@ -138,7 +173,8 @@ export async function prepareWorkspace(ctx: WorkspaceContext): Promise<AttemptFs
       {volume: attemptVolumeName(ctx.runId, 'work'), target: '/workspace', readonly: false},
     ], {HOME: '/tmp/h'}), ctx.timeouts?.checkoutMs ?? CHECKOUT_TIMEOUT_MS);
   } finally {
-    await ctx.docker(['network', 'rm', fetchNetwork]);
+    const removed = await ctx.docker(['network', 'rm', fetchNetwork]);
+    if (!gone(removed)) ctx.held?.(`network:${fetchNetwork}`);
   }
   return record;
 }

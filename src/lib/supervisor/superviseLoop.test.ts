@@ -85,11 +85,11 @@ interface Scenario {
   /** Delivery receipts are answered with this status. */
   deliveryStatus?: number;
   /** A checkout plan (U5b-2c): the attempt filesystem lives under `root`; the helpers answer with these results. */
-  checkout?: {root: string; result?: object; patchResult?: object};
+  checkout?: {root: string; result?: object; patchResult?: object; patchRmFails?: boolean};
 }
 
 /** An attempt filesystem host where every step succeeds; mount points and directories are real, under the test's root. */
-function attemptFsHost() {
+function attemptFsHost(options: {stallFallocate?: Promise<void>} = {}) {
   let attached = false;
   let mounted = false;
   const calls: string[] = [];
@@ -99,6 +99,7 @@ function attemptFsHost() {
     async run(file, args) {
       const tool = file.split('/').at(-1)!;
       calls.push(`${tool} ${args[0]}`);
+      if (tool === 'fallocate' && options.stallFallocate) await options.stallFallocate;
       if (tool === 'losetup' && args[0] === '--find') { attached = true; return ok('/dev/loop0\n'); }
       if (tool === 'losetup' && args[0] === '--list') return ok(attached ? '/dev/loop0 2\n' : '');
       if (tool === 'losetup' && args[0] === '--detach') { attached = false; return ok(); }
@@ -317,7 +318,11 @@ function world(scenario: Scenario = {}) {
       if (args.at(-1) === 'c-agent' && !scenario.stdoutNeverEnds) agentStdout?.end();
       return ok();
     }
-    if (a === 'container' && b === 'rm') { events.push(`rm:${args.at(-1)}`); return ok(); }
+    if (a === 'container' && b === 'rm') {
+      events.push(`rm:${args.at(-1)}`);
+      if (args.at(-1) === 'c-patch' && scenario.checkout?.patchRmFails) return {code: 124, stdout: '', stderr: 'deadline passed'};
+      return ok();
+    }
     if (a === 'network' && b === 'rm') { events.push('network-rm'); return ok(); }
     throw new Error(`unexpected docker ${args.join(' ')}`);
   };
@@ -1101,12 +1106,14 @@ describe('superviseOnce', () => {
   describe('checkout (U5b-2c)', () => {
     const CHECKOUT_PLAN = {...PLAN, repositoryUrl: 'https://github.com/acme/widgets', writeScope: ['src']};
     /** A world with a checkout plan, its attempt filesystem host, and the deps that run it. */
-    async function checkoutWorld(extra: Partial<NonNullable<Scenario['checkout']>> = {}, scenario: Scenario = {}) {
+    async function checkoutWorld(extra: Partial<NonNullable<Scenario['checkout']>> = {}, scenario: Scenario = {},
+      hostOptions: Parameters<typeof attemptFsHost>[0] = {}, overrides: Partial<SuperviseDeps> = {}) {
       const attemptRoot = await fs.mkdtemp(path.join(path.dirname(root), 'attempts-'));
-      const host = attemptFsHost();
+      const host = attemptFsHost(hostOptions);
       const w = world({...scenario, checkout: {root: attemptRoot, ...extra}});
       const run = () => superviseOnce(deps(w, {resolvePlan: async () => CHECKOUT_PLAN, attemptFs: {system: host.system, root: attemptRoot},
-        assets: {sidecar: '/opt/sift/relaySidecar.js', launcher: '/opt/sift/attemptLauncher.js', checkoutHelper: '/opt/sift/checkoutHelper.js'}}));
+        assets: {sidecar: '/opt/sift/relaySidecar.js', launcher: '/opt/sift/attemptLauncher.js', checkoutHelper: '/opt/sift/checkoutHelper.js'},
+        ...overrides}));
       return {w, host, run};
     }
     const mounts = (w: ReturnType<typeof world>, id: string) =>
@@ -1214,6 +1221,47 @@ describe('superviseOnce', () => {
       expect(w.events).toContain('fail');
       expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(false);
       expect(await queuedRetention()).toEqual([true, true]);
+    });
+
+    it('stops preparing at shutdown: nothing is made or journaled after teardown, and the partial filesystem is released', async () => {
+      let resume: () => void = () => {};
+      const stall = new Promise<void>((resolve) => { resume = resolve; });
+      const shutdown = new AbortController();
+      const {w, host, run} = await checkoutWorld({}, {}, {stallFallocate: stall}, {shutdown: shutdown.signal});
+      const outcome = run();
+      await until(() => host.calls.some((c) => c.startsWith('fallocate')));
+      shutdown.abort();
+      // The allocation answers only after the shutdown was seen; the next step must not start.
+      setTimeout(resume, 50);
+      expect(await outcome).toMatchObject({kind: 'finished', reason: 'shutdown'});
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(host.calls.some((c) => c.startsWith('mkfs'))).toBe(false);
+      expect(w.events.some((e) => e.startsWith('volume-create') || e === 'fetch-network-create')).toBe(false);
+      expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(true);
+      expect(await journal()).toBeNull();
+    });
+
+    it('holds the workspace when its preparation does not stop in time, and never archives the journal', async () => {
+      const shutdown = new AbortController();
+      const {host, run} = await checkoutWorld({}, {}, {stallFallocate: new Promise<void>(() => {})},
+        {shutdown: shutdown.signal, timing: {controlPollMs: 20, readyTimeoutMs: 1_000, logDrainMs: 200, prepareDrainMs: 100}});
+      const outcome = run();
+      await until(() => host.calls.some((c) => c.startsWith('fallocate')));
+      shutdown.abort();
+      expect(await outcome).toMatchObject({kind: 'finished', reason: 'shutdown', settled: false,
+        facts: {resourcesRemoved: false, held: expect.arrayContaining(['workspace:preparing'])}});
+      expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(false);
+      expect(await journal()).not.toBeNull();
+    });
+
+    it('holds a patch helper whose removal cannot be shown, and reports the cleanup failed', async () => {
+      const {w, run} = await checkoutWorld({patchRmFails: true});
+      const outcome = await run();
+      expect(outcome).toMatchObject({kind: 'finished', settled: false, facts: {resourcesRemoved: false, held: expect.arrayContaining(['container:c-patch'])}});
+      expect(await journal()).not.toBeNull();
+      const outbox = await readJournal<{entries: Array<{facts: {state: string}}>}>({root, owner: null}, OUTBOX);
+      expect(outbox?.entries.map((entry) => entry.facts.state)).toEqual(['execution_stopped', 'cleanup_failed']);
+      expect(w.events).not.toContain('review');
     });
 
     it('refuses a checkout plan it cannot run, before anything is attached', async () => {
