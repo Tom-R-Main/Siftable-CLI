@@ -274,9 +274,10 @@ export function attemptVolumeProblem(inspect: unknown, record: AttemptFsRecord, 
 }
 
 /**
- * Makes the attempt root and its parent (`/var/lib/siftable/attempts`), each a real directory owned by the
- * expected user (root) and writable by no one else, creating what is missing with mode 0700. Anything else at
- * either path (a symlink, a file, another owner, group or world write) stops the supervisor before any attempt.
+ * Makes a supervisor root and its parent (`/var/lib/siftable/attempts`, `/var/lib/siftable/inputs`), each a real
+ * directory owned by the expected user (root) and writable by no one else, creating what is missing with mode 0700.
+ * Anything else at either path (a symlink, a file, another owner, group or world write) stops the supervisor before
+ * any attempt.
  */
 export async function ensureAttemptRoot(root: string, ownerUid = 0): Promise<void> {
   for (const dir of [path.dirname(root), root]) {
