@@ -35,8 +35,8 @@ export const scopeFlags = <T extends object>(flags: T, scope: string | null): T 
 
 
 /** The plan page, where the owner reviews the values and presses Run. */
-export const planPageUrl = (apiUrl: string, sessionId: string): string =>
-  `${apiUrl.replace(/\/+$/, '')}/app/setup/${encodeURIComponent(sessionId)}`;
+export const planPageUrl = (apiUrl: string, sessionId: string, workspaceId: string | null): string =>
+  `${apiUrl.replace(/\/+$/, '')}/app/setup/${encodeURIComponent(sessionId)}?workspace=${encodeURIComponent(workspaceId ?? 'personal')}`;
 
 /**
  * The context a printed command must carry to act on this setup: its scope
@@ -71,7 +71,7 @@ export function describeSession(session: SetupSession, apiUrl: string): string[]
   } else if (session.status === 'ready') {
     lines.push('Nothing is missing. Review the plan and press Run on the plan page.');
   }
-  lines.push(`Plan page: ${planPageUrl(apiUrl, session.id)}`);
+  lines.push(`Plan page: ${planPageUrl(apiUrl, session.id, session.workspaceId)}`);
   return lines;
 }
 

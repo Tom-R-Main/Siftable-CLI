@@ -59,8 +59,9 @@ describe('setup session helpers', () => {
     const lines = describeSession(session({}, {}), API);
     expect(lines[0]).toBe(`Setup ${ID}: draft, version 2`);
     expect(lines).toContain(`  machine.runnerId: enroll a Linux machine with \`sudo sift machine enroll --workspace personal --api-url ${API} --setup ${ID}\``);
-    expect(lines.at(-1)).toBe(`Plan page: ${planPageUrl(API, ID)}`);
-    expect(planPageUrl(`${API}/`, ID)).toBe(`${API}/app/setup/${ID}`);
+    expect(lines.at(-1)).toBe(`Plan page: ${API}/app/setup/${ID}?workspace=personal`);
+    expect(planPageUrl(`${API}/`, ID, null)).toBe(`${API}/app/setup/${ID}?workspace=personal`);
+    expect(planPageUrl(API, ID, '90000000-0000-4000-8000-0000000000c3')).toBe(`${API}/app/setup/${ID}?workspace=90000000-0000-4000-8000-0000000000c3`);
     const ready = describeSession(session({status: 'ready', plan: {...session().plan, unmet: []}}), API);
     expect(ready).toContain('Nothing is missing. Review the plan and press Run on the plan page.');
     expect(describeSession(session({plan: {...session().plan, unmet: [{code: 'missing_configuration', field: 'review.image'}]}}), API))
@@ -83,9 +84,9 @@ describe('sift setup', () => {
 
   it('reuses a given key to retry a lost prepare, and names the workspace', async () => {
     const ws = '90000000-0000-4000-8000-0000000000c3';
-    const {apiRequest, lines} = await run(SetupPrepare, {flags: {input: '{}', workspace: ws, 'idempotency-key': 'k-1'}}, [{session: session()}]);
+    const {apiRequest, lines} = await run(SetupPrepare, {flags: {input: '{}', workspace: ws, 'idempotency-key': 'k-1'}}, [{session: session({workspaceId: ws})}]);
     expect(apiRequest.mock.calls[0][2]).toMatchObject({idempotencyKey: 'k-1', body: {workspaceId: ws}});
-    expect(lines.at(-1)).toBe(`Plan page: ${API}/app/setup/${ID}`);
+    expect(lines.at(-1)).toBe(`Plan page: ${API}/app/setup/${ID}?workspace=${ws}`);
   });
 
   // Release U6-R8: --workspace personal sends no workspace header and names personal in the body; no flag follows the saved selection.
