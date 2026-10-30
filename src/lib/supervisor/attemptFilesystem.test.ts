@@ -111,7 +111,7 @@ describe('attempt filesystem', () => {
     expect(j.written[3].loop).toBe('/dev/loop0');
     expect(h.calls.find((c) => c.startsWith('mkfs.ext4'))).toContain('-E nodiscard');
     expect(h.calls.find((c) => c.startsWith('mount'))).toContain('-o nodev,nosuid,nodiscard /dev/loop0');
-    expect([...h.owners.values()]).toEqual([SANDBOX_UID, SANDBOX_UID, SANDBOX_UID]);
+    expect([...h.owners.values()]).toEqual([SANDBOX_UID, SANDBOX_UID, SANDBOX_UID, SANDBOX_UID]);
     // The reservation outlives a trim once the device refuses discard.
     h.trim(record.image);
     expect(h.files.get(record.image)!.blocks).toBe(FULL);

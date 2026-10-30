@@ -69,7 +69,7 @@ export interface SuperviseDeps {
   hostAddresses: () => string[];
   state: MachineStateOptions;
   log: (line: string) => void;
-  assets: {sidecar: string; launcher: string; checkoutHelper?: string; registryProxy?: string};
+  assets: {sidecar: string; launcher: string; checkoutHelper?: string; registryProxy?: string; junitReport?: string};
   /** Where attempt filesystems live and how they are made (U5b-2c); a checkout plan is refused without it. */
   attemptFs?: {system: AttemptFsSystem; root: string};
   /** Root-owned directory for read-only attempt inputs, outside the supervisor's state and any home. */
@@ -931,5 +931,6 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
 /** The shipped sidecar and launcher programs, beside this module in dist. */
 export function supervisorAssets(): SuperviseDeps['assets'] {
   return {sidecar: path.join(__dirname, 'relaySidecar.js'), launcher: path.join(__dirname, 'attemptLauncher.js'),
-    checkoutHelper: path.join(__dirname, 'checkoutHelper.js'), registryProxy: path.join(__dirname, 'registryProxy.js')};
+    checkoutHelper: path.join(__dirname, 'checkoutHelper.js'), registryProxy: path.join(__dirname, 'registryProxy.js'),
+    junitReport: path.join(__dirname, 'junitReport.js')};
 }

@@ -377,7 +377,7 @@ function world(scenario: Scenario = {}) {
     if (id === 'c-checkout' || id === 'c-patch' || id === 'c-install') {
       const exited = (async () => {
         const result = (id === 'c-checkout' ? scenario.checkout?.result : id === 'c-patch' ? scenario.checkout?.patchResult
-          : scenario.checkout?.installResult) ?? {ok: true};
+          : scenario.checkout?.installResult) ?? (id === 'c-patch' ? {ok: true, changed: ['src/a.ts']} : {ok: true});
         const [run] = (await fs.readdir(scenario.checkout!.root, {withFileTypes: true})).filter((entry) => entry.isDirectory());
         const mount = path.join(scenario.checkout!.root, run.name);
         if (id === 'c-checkout') {

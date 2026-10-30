@@ -356,7 +356,7 @@ export function verifyEnv(dir: string, objects: string): NodeJS.ProcessEnv {
  * patch applied by its digest. Returns the index tree id the run is checked against afterwards.
  */
 export async function materializeVerify(git: Git, objects: string, dir: string, baseSha: string,
-  patch?: {file: string; sha256: string}): Promise<{treeId: string; env: NodeJS.ProcessEnv}> {
+  patch?: {file: string; sha256: string}, dependencies = false): Promise<{treeId: string; env: NodeJS.ProcessEnv}> {
   const env = verifyEnv(dir, objects);
   const gitDir = env.GIT_DIR as string;
   const tree = env.GIT_WORK_TREE as string;
@@ -380,6 +380,12 @@ export async function materializeVerify(git: Git, objects: string, dir: string, 
   if (!patch) {
     const baseTree = (await must(git, 'verify_failed', ['rev-parse', `${baseSha}^{tree}`], {cwd: tree, env})).toString().trim();
     if (treeId !== baseTree) throw new CheckoutRefused('verify_failed', `the base checkout is tree ${treeId}, not ${baseTree}`);
+  }
+  // The installed dependencies are mounted read-only over an empty, untracked directory; a tracked one is refused.
+  if (dependencies) {
+    await fs.mkdir(path.join(tree, 'node_modules'), {mode: 0o755}).catch((error: NodeJS.ErrnoException) => {
+      throw new CheckoutRefused('unsupported_dependency_source', error.code === 'EEXIST' ? 'the tree tracks a top-level node_modules' : error.message);
+    });
   }
   return {treeId, env};
 }
@@ -467,8 +473,10 @@ export interface VerifyRequest {
   baseSha: string;
   /** The frozen patch's digest; absent for the base run. */
   patchSha256?: string;
-  /** Base run only: the frozen-set candidates to resolve against the base tree. */
+  /** Base run's tree check only: the frozen-set candidates to resolve against the base tree. */
   frozen?: Array<{path: string; source: FrozenSource}>;
+  /** Make the empty node_modules the installed dependencies are mounted over. */
+  dependencies?: boolean;
 }
 
 const VERIFY_PATHS = {objects: '/workspace/.git/objects', dir: '/verify', patch: '/out/sift.patch', home: '/tmp/h'};
@@ -482,23 +490,28 @@ async function refusalOf(work: () => Promise<Record<string, unknown>>, fallback:
   }
 }
 
-/** SIFT_MODE=verify-checkout: a fresh tree for one run, with the patch for selected and regression, and the frozen set for base. */
+/** SIFT_MODE=verify-checkout: a fresh tree for one run, with the patch for the selected and regression runs. */
 export function runVerifyCheckout(request: VerifyRequest, paths = VERIFY_PATHS, git: Git = hostGit(paths.home)): Promise<Record<string, unknown>> {
   return refusalOf(async () => {
     await fs.mkdir(paths.home, {recursive: true});
-    const {treeId, env} = await materializeVerify(git, paths.objects, paths.dir, request.baseSha,
-      request.patchSha256 ? {file: paths.patch, sha256: request.patchSha256} : undefined);
-    const frozen = request.frozen ? await resolveFrozen(git, env, request.baseSha, request.frozen) : undefined;
-    return {ok: true, treeId, ...(frozen ? {frozen} : {})};
+    const {treeId} = await materializeVerify(git, paths.objects, paths.dir, request.baseSha,
+      request.patchSha256 ? {file: paths.patch, sha256: request.patchSha256} : undefined, request.dependencies === true);
+    return {ok: true, treeId};
   }, 'verify_failed');
 }
 
-/** SIFT_MODE=tree-check: after the run, the tracked paths that no longer match the recorded tree. */
-export function runTreeCheck(request: {treeId: string}, paths = VERIFY_PATHS, git: Git = hostGit(paths.home)): Promise<Record<string, unknown>> {
+/**
+ * SIFT_MODE=tree-check: after the run, the tracked paths that no longer match the recorded tree; for the base run,
+ * also the frozen set, now that the base report's file attributes are known.
+ */
+export function runTreeCheck(request: {treeId: string; baseSha?: string; frozen?: VerifyRequest['frozen']}, paths = VERIFY_PATHS,
+  git: Git = hostGit(paths.home)): Promise<Record<string, unknown>> {
   return refusalOf(async () => {
     await fs.mkdir(paths.home, {recursive: true});
     const env = verifyEnv(paths.dir, paths.objects);
-    return {ok: true, changed: await checkTree(git, env, env.GIT_WORK_TREE as string, request.treeId)};
+    const changed = await checkTree(git, env, env.GIT_WORK_TREE as string, request.treeId);
+    const frozen = request.frozen && request.baseSha ? await resolveFrozen(git, env, request.baseSha, request.frozen) : undefined;
+    return {ok: true, changed, ...(frozen ? {frozen} : {})};
   }, 'verify_failed');
 }
 

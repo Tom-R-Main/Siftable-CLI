@@ -29,7 +29,7 @@ export async function ownedResources(deps: SuperviseDeps, journal: AttemptJourna
 
 /** The fixed name each create used, so an unanswered create can be looked for later. */
 export type CreateRole = 'network' | 'sidecar' | 'agent' | 'fetch' | 'checkout' | 'patch' | 'volume' | 'install-net' | 'egress' | 'proxy'
-  | 'install';
+  | 'install' | 'verify-checkout' | 'tree-check' | 'report' | 'verifier';
 export const NETWORK_ROLES = new Set<CreateRole>(['network', 'fetch', 'install-net', 'egress']);
 
 export function createName(runId: string, role: CreateRole): string {

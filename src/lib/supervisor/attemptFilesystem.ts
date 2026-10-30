@@ -29,7 +29,7 @@ export const ATTEMPT_FS_BYTES = 10 * 1024 ** 3;
 /** The host keeps at least this much free after the image is reserved. */
 export const HOST_FREE_FLOOR_BYTES = 2 * 1024 ** 3;
 export const ATTEMPT_FS_INODES = 400_000;
-export const ATTEMPT_FS_DIRS = ['src', 'work', 'deps'] as const;
+export const ATTEMPT_FS_DIRS = ['src', 'work', 'deps', 'verify'] as const;
 export const SANDBOX_UID = 10_001;
 
 export interface AttemptFsRecord {

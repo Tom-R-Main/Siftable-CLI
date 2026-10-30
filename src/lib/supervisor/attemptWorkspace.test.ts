@@ -145,7 +145,8 @@ function context(scenario: Scenario = {}) {
           await fs.mkdir(path.join(root, 'r1', 'deps', 'node_modules', 'left-pad'), {recursive: true});
           await fs.writeFile(path.join(root, 'r1', 'deps', 'install.log'), 'added 1 package in 1s\n');
         }
-        const result = id === 'c-install' && scenario.installResult ? scenario.installResult : scenario.result ?? {ok: true};
+        const result = id === 'c-install' && scenario.installResult ? scenario.installResult
+          : scenario.result ?? (id === 'c-patch' ? {ok: true, changed: ['src/a.ts']} : {ok: true});
         stdout.end(`${JSON.stringify(result)}\n`);
         resolve((result as {ok?: boolean}).ok === false ? 2 : scenario.exit ?? 0);
       })();
@@ -226,7 +227,7 @@ describe('attempt workspace', () => {
     const outDir = path.join(root, 'input');
     await fs.mkdir(outDir);
     const frozen = await freezePatch(ctx, await prepared(ctx), outDir);
-    expect(frozen).toMatchObject({kind: 'patch', contentType: 'text/x-diff', bytes: 16, path: path.join(outDir, PATCH_FILE)});
+    expect(frozen).toMatchObject({kind: 'patch', contentType: 'text/x-diff', bytes: 16, path: path.join(outDir, PATCH_FILE), changed: ['src/a.ts']});
     expect(frozen.sha256).toMatch(/^[0-9a-f]{64}$/);
     const args = created.get('c-patch')!;
     expect(flag(args, '--network')).toEqual(['none']);

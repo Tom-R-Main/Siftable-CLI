@@ -38,7 +38,10 @@ export const PATCH_TIMEOUT_MS = 10_000;
 export const INSTALL_TIMEOUT_MS = 300_000;
 const RESULT_LIMIT = 64 * 1024;
 
-export type HelperRole = 'fetch' | 'checkout' | 'patch' | 'volume' | 'install-net' | 'egress' | 'proxy' | 'install';
+export type HelperRole = 'fetch' | 'checkout' | 'patch' | 'volume' | 'install-net' | 'egress' | 'proxy' | 'install'
+  | 'verify-checkout' | 'tree-check' | 'report' | 'verifier';
+/** The helpers that run a shipped program and answer with one JSON line. */
+export type ProgramRole = 'checkout' | 'patch' | 'install' | 'verify-checkout' | 'tree-check' | 'report';
 
 export interface WorkspaceContext {
   runId: string;
@@ -77,7 +80,7 @@ export class WorkspaceRefused extends Error {
   }
 }
 
-const stopped = (ctx: WorkspaceContext) => {
+export const stopped = (ctx: Pick<WorkspaceContext, 'signal'>) => {
   if (ctx.signal?.aborted) throw new WorkspaceRefused('interrupted', 'the attempt stopped before this step');
 };
 
@@ -89,9 +92,9 @@ function guardedSystem(ctx: WorkspaceContext): AttemptFsSystem {
     createExclusive: async (file, mode) => { stopped(ctx); return sys.createExclusive(file, mode); }};
 }
 
-const gone = (result: {code: number; stderr: string}) => result.code === 0 || /no such (container|network)|not found/i.test(result.stderr);
+export const gone = (result: {code: number; stderr: string}) => result.code === 0 || /no such (container|network)|not found/i.test(result.stderr);
 
-const labels = (ctx: Pick<WorkspaceContext, 'runId' | 'attemptId'>, role: string) =>
+export const labels = (ctx: Pick<WorkspaceContext, 'runId' | 'attemptId'>, role: string) =>
   ({'sift.machine.run': ctx.runId, 'sift.machine.role': role, 'sift.machine.attempt': ctx.attemptId});
 
 /**
@@ -116,19 +119,20 @@ export async function checkAttemptVolume(ctx: WorkspaceContext, record: AttemptF
   if (problem) throw new WorkspaceRefused('attempt_volume', problem);
 }
 
-function helperSpec(ctx: WorkspaceContext, role: 'checkout' | 'patch' | 'install', networkId: string, volumes: SandboxVolume[],
-  env: Record<string, string>): SandboxContainerSpec {
+export function helperSpec(ctx: WorkspaceContext, role: ProgramRole, networkId: string, volumes: SandboxVolume[],
+  env: Record<string, string>, program = {source: ctx.helperAsset, target: '/sift/checkoutHelper.js'}): SandboxContainerSpec {
   return {
     name: `sift-a-${ctx.runId}-${role}`, imageRef: ctx.imageRef, networkId, labels: labels(ctx, role),
-    entrypoint: 'node', command: ['/sift/checkoutHelper.js'],
-    mounts: [{source: ctx.helperAsset, target: '/sift/checkoutHelper.js'}], volumes, tmpfs: ['/tmp'],
+    entrypoint: 'node', command: [program.target],
+    mounts: [program], volumes, tmpfs: ['/tmp'],
     env: {...env, SIFT_CHECKOUT: JSON.stringify(ctx.checkout)},
     limits: {cpus: 2, memoryMb: 2048, pidsLimit: 256}, cgroupParent: ctx.slice,
   };
 }
 
 /** Creates, checks, runs and removes one helper; returns its JSON result line. Never leaves it running. */
-async function runHelper(ctx: WorkspaceContext, role: 'checkout' | 'patch' | 'install', spec: SandboxContainerSpec, timeoutMs: number) {
+export async function runHelper(ctx: WorkspaceContext, role: ProgramRole, spec: SandboxContainerSpec, timeoutMs: number,
+  resultLimit = RESULT_LIMIT) {
   stopped(ctx);
   const id = await ctx.create(role, sandboxCreateArgs(spec));
   try {
@@ -139,7 +143,7 @@ async function runHelper(ctx: WorkspaceContext, role: 'checkout' | 'patch' | 'in
     if (problems.length > 0) throw new WorkspaceRefused(`${role}_sandbox`, problems.join(', '));
     const run = ctx.attach(['start', '--attach', id]);
     let out = '';
-    run.stdout.on('data', (chunk: Buffer | string) => { if (out.length < RESULT_LIMIT) out += chunk.toString(); });
+    run.stdout.on('data', (chunk: Buffer | string) => { if (out.length < resultLimit) out += chunk.toString(); });
     // The result line is read only once the output has ended: a process can exit before its output is drained.
     const ended = new Promise<void>((resolve) => { run.stdout.once('end', resolve); run.stdout.once('close', resolve); });
     let timer: NodeJS.Timeout | undefined;
@@ -210,9 +214,9 @@ export async function prepareWorkspace(ctx: WorkspaceContext): Promise<AttemptFs
  * of the attempt filesystem as data: a regular file, opened without following
  * links, at most the cap. Returns it frozen for the evidence manifest.
  */
-export async function freezePatch(ctx: WorkspaceContext, record: AttemptFsRecord, outDir: string): Promise<FrozenArtifact> {
+export async function freezePatch(ctx: WorkspaceContext, record: AttemptFsRecord, outDir: string): Promise<FrozenArtifact & {changed: string[]}> {
   await checkAttemptVolume(ctx, record);
-  await runHelper(ctx, 'patch', helperSpec(ctx, 'patch', 'none', [
+  const built = await runHelper(ctx, 'patch', helperSpec(ctx, 'patch', 'none', [
     {volume: attemptVolumeName(ctx.runId), target: '/workspace', readonly: true, subpath: 'work'},
     {volume: attemptVolumeName(ctx.runId), target: '/out', readonly: false, subpath: 'src'},
   ], {HOME: '/tmp/h', SIFT_MODE: 'patch'}), ctx.timeouts?.patchMs ?? PATCH_TIMEOUT_MS);
@@ -229,8 +233,11 @@ export async function freezePatch(ctx: WorkspaceContext, record: AttemptFsRecord
   }
   const target = path.join(outDir, PATCH_FILE);
   await fs.writeFile(target, content, {mode: 0o600});
+  // The changed paths, for the frozen-test check (U3); a list the helper did not return is refused.
+  const changed = (built as {changed?: unknown}).changed;
+  if (!Array.isArray(changed) || changed.some((file) => typeof file !== 'string')) throw new WorkspaceRefused('patch_failed', 'no changed-path list');
   return {kind: 'patch', contentType: PATCH_CONTENT_TYPE, path: target, bytes: content.length,
-    sha256: createHash('sha256').update(content).digest('hex')};
+    sha256: createHash('sha256').update(content).digest('hex'), changed: changed as string[]};
 }
 
 /**
