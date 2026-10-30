@@ -34227,7 +34227,7 @@
           "type": "option"
         },
         "setup": {
-          "description": "Setup session this machine is enrolled for (recorded locally)",
+          "description": "Setup session this machine is enrolled for (recorded locally; prints the command that links it)",
           "name": "setup",
           "hasDynamicHelp": false,
           "multiple": false,
@@ -34543,6 +34543,362 @@
         "commands",
         "machine",
         "service.js"
+      ]
+    },
+    "setup:continue": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Setup session ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Change values in a setup plan; each change makes a new version and clears any approval",
+      "examples": [
+        "<%= config.bin %> setup continue <setup-id> --version 2 --set test.command=\"npm test -- dates.test.ts\"",
+        "<%= config.bin %> setup continue <setup-id> --version 2 --set scope.write='[\"src\"]' --set environment.install=npm",
+        "<%= config.bin %> setup continue <setup-id> --version 3 --changes '{\"baseSha\": null}'"
+      ],
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "version": {
+          "description": "The version you are changing; a newer one is refused",
+          "name": "version",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "set": {
+          "description": "field=value (JSON values are parsed; null clears); repeatable",
+          "name": "set",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "changes": {
+          "description": "JSON map of plan field to value (null clears)",
+          "name": "changes",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "provenance": {
+          "description": "JSON map of plan field to {source, detail}, for values you did not choose yourself",
+          "name": "provenance",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "idempotency-key": {
+          "description": "Repeat a lost request with the key it was sent with",
+          "name": "idempotency-key",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "setup:continue",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "setup",
+        "continue.js"
+      ]
+    },
+    "setup:link-machine": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Setup session ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Name an enrolled machine as the setup plan's runner, with your own credential (not the machine's)",
+      "examples": [
+        "<%= config.bin %> setup link-machine <setup-id> --runner <runner-id>"
+      ],
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "runner": {
+          "description": "Runner ID that `sift machine enroll` printed",
+          "name": "runner",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "yes": {
+          "description": "Replace a different runner the plan already names without asking",
+          "name": "yes",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "setup:link-machine",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "setup",
+        "link-machine.js"
+      ]
+    },
+    "setup:prepare": {
+      "aliases": [],
+      "args": {},
+      "description": "Prepare a first-run setup plan to fix a failing test; review and run it on the plan page",
+      "examples": [
+        "<%= config.bin %> setup prepare --input-file plan.json",
+        "<%= config.bin %> setup prepare --input '{\"repository\":{\"url\":\"https://github.com/acme/parser\"},\"test\":{\"command\":\"npm test\"}}' --json"
+      ],
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "input": {
+          "description": "The plan as JSON (recipe defaults to fix_failing_test)",
+          "name": "input",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "input-file": {
+          "description": "Path to the plan as a JSON file",
+          "name": "input-file",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "provenance": {
+          "description": "JSON map of plan field to {source, detail}, for values you did not choose yourself",
+          "name": "provenance",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "idempotency-key": {
+          "description": "Repeat a lost request with the key it was sent with",
+          "name": "idempotency-key",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "setup:prepare",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "setup",
+        "prepare.js"
+      ]
+    },
+    "setup:status": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "Setup session ID",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Show a setup plan: its status, what is still needed, and the plan page",
+      "examples": [
+        "<%= config.bin %> setup status <setup-id>",
+        "<%= config.bin %> setup status <setup-id> --json"
+      ],
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "setup:status",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "setup",
+        "status.js"
       ]
     }
   },

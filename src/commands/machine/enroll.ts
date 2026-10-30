@@ -17,7 +17,7 @@ export default class MachineEnroll extends BaseCommand {
   static flags = {
     ...BaseCommand.baseFlags,
     workspace: Flags.string({default: 'personal', description: 'personal, or the workspace UUID to run work for'}),
-    setup: Flags.string({description: 'Setup session this machine is enrolled for (recorded locally)'}),
+    setup: Flags.string({description: 'Setup session this machine is enrolled for (recorded locally; prints the command that links it)'}),
     replace: Flags.boolean({default: false, description: 'Revoke and retire this machine\'s current enrollment, then enroll again'}),
     'abandon-runner': Flags.string({
       dependsOn: ['replace'],
@@ -58,8 +58,11 @@ export default class MachineEnroll extends BaseCommand {
         this.log(`Enrolled. Enrollment ${result.enrollmentId}, runner ${result.runnerId}.`);
         this.log('The machine is not qualified yet, so it cannot run work or call models until it qualifies.');
         if (!account.dockerGroup) this.log('Docker is not installed (no docker group); install it before qualifying.');
+        // The plan is changed with the person's own credential, never the machine's, so this runs without sudo.
+        if (flags.setup) this.log(`Link it to your setup as yourself, without sudo: sift setup link-machine ${flags.setup} --runner ${result.runnerId}`);
       }
-      return {...result, dockerGroup: account.dockerGroup};
+      return {...result, dockerGroup: account.dockerGroup,
+        ...(flags.setup ? {next: `sift setup link-machine ${flags.setup} --runner ${result.runnerId}`} : {})};
     } catch (error) {
       if (error instanceof MachineEnrollError || error instanceof MachineStateError) this.error(error.message);
       throw error;
