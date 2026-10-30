@@ -486,7 +486,7 @@ function world(scenario: Scenario = {}) {
     if (file.endsWith('cgroup.events')) return (scenario.populated ?? (() => 'populated 0\n'))();
     throw Object.assign(new Error('missing'), {code: 'ENOENT'});
   };
-  return {events, posts, fetchImpl, docker, attach, readFile, modelKeys, sidecarIo, agentInput, evidence, receipts, containers};
+  return {events, posts, fetchImpl, docker, attach, readFile, modelKeys, sidecarIo, agentInput, evidence, receipts, containers, scenario};
 }
 
 describe('superviseOnce', () => {
@@ -1656,6 +1656,13 @@ describe('superviseOnce', () => {
           expect(await run()).toMatchObject({kind: 'finished', settled: false, facts: {resourcesRemoved: false, held: expect.arrayContaining(['create:verifier'])}});
           expect(await journal()).toMatchObject({state: 'held', pendingCreates: ['verifier']});
           expect(w.events).not.toContain('review');
+          // Release U3-R13: the next start finds the create by its exact name, sweeps it, and settles without running a test again.
+          const startsBefore = w.events.filter((e) => e === 'start:c-verifier').length;
+          w.scenario.nameFound = true;
+          const recovered = await run();
+          expect(recovered.kind).toBe('recovered');
+          expect(w.events).toContain('ls-name:container');
+          expect(w.events.filter((e) => e === 'start:c-verifier')).toHaveLength(startsBefore);
         });
 
         it('keeps the attempt unsettled while a record is unanswered, and resends it unchanged after a restart', async () => {
