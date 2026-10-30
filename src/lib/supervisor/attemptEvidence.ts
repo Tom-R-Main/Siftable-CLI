@@ -1,9 +1,9 @@
 /**
- * An attempt's evidence, supervisor side (first-run U5b-2b). This cut is
- * log-only: the workload's output (stdout and stderr, merged by the launcher)
- * is written to a host file, frozen when the attempt stops, then declared,
- * uploaded and acknowledged with the attempt's own claim before settlement.
- * There is no repository checkout yet, so there is no patch (U5b-2c).
+ * An attempt's evidence, supervisor side (first-run U5b-2b, U5b-2c). The
+ * workload's output (stdout and stderr, merged by the launcher) is written to
+ * a host file and frozen when the attempt stops; with a checkout, the write
+ * scope's patch is frozen beside it. Both are declared, uploaded and
+ * acknowledged with the attempt's own claim before settlement.
  *
  * The log's sha256 and size are fixed once and reused on every retry, so the
  * declaration, its digest and the object key never change. A lost reply is
@@ -25,6 +25,14 @@ export interface FrozenLog {
   path: string;
   sha256: string;
   bytes: number;
+}
+
+export const PATCH_CONTENT_TYPE = 'text/x-diff';
+
+/** A frozen file beside the log, declared in the same manifest. */
+export interface FrozenArtifact extends FrozenLog {
+  kind: 'patch' | 'verifier_log';
+  contentType: string;
 }
 
 /**
@@ -95,17 +103,27 @@ export async function uploadAgentLog(input: {
   route: string;
   claimToken: string;
   log: FrozenLog;
-  /** Reads the frozen log's bytes; the file system by default. */
+  /** Files declared beside the log, such as the patch; each digest must differ from every other (V502). */
+  also?: FrozenArtifact[];
+  /** Reads a frozen file's bytes; the file system by default. */
   read?: (file: string) => Promise<Buffer>;
   /** Shutdown: aborts the request in flight and starts no other. */
   signal?: AbortSignal;
 }): Promise<EvidenceOutcome> {
   const {call, log, route, claimToken} = input;
   const left = () => input.deadlineMono - input.monoMs();
+  const files = [{...log, kind: 'agent_log', contentType: EVIDENCE_CONTENT_TYPE}, ...(input.also ?? [])];
   // Read once, before anything is admitted: a slow read is counted against the deadline, never after it.
-  const body = await (input.read ?? ((file: string) => fs.readFile(file)))(log.path).catch(() => null);
-  if (!body) return {acknowledged: false};
-  const artifacts = [{kind: 'agent_log', sha256: log.sha256, bytes: log.bytes, contentType: EVIDENCE_CONTENT_TYPE}];
+  const read = input.read ?? ((file: string) => fs.readFile(file));
+  const bodies = new Map<string, {body: Buffer; file: typeof files[number]}>();
+  for (const file of files) {
+    const body = await read(file.path).catch(() => null);
+    if (!body) return {acknowledged: false};
+    bodies.set(file.sha256, {body, file});
+  }
+  // Two files with one digest cannot be declared together; the manifest would be refused every round.
+  if (bodies.size !== files.length) return {acknowledged: false};
+  const artifacts = files.map((file) => ({kind: file.kind, sha256: file.sha256, bytes: file.bytes, contentType: file.contentType}));
   let manifestDigest: string | undefined;
   const signal = input.signal;
   const cancelled = (): EvidenceOutcome => ({acknowledged: false, cancelled: true, ...(manifestDigest ? {manifestDigest} : {})});
@@ -123,12 +141,13 @@ export async function uploadAgentLog(input: {
     let uploaded = true;
     for (const upload of uploads) {
       // Every request is admitted only while the deadline holds, checked immediately before it starts.
-      if (upload.sha256 !== log.sha256 || typeof upload.url !== 'string' || left() <= 0) { uploaded = false; break; }
+      const match = typeof upload.sha256 === 'string' ? bodies.get(upload.sha256) : undefined;
+      if (!match || typeof upload.url !== 'string' || left() <= 0) { uploaded = false; break; }
       const put = await input.fetch(upload.url, {
         method: 'PUT',
-        headers: {'Content-Type': EVIDENCE_CONTENT_TYPE, 'x-goog-if-generation-match': '0',
-          'x-goog-content-length-range': `${log.bytes},${log.bytes}`},
-        body,
+        headers: {'Content-Type': match.file.contentType, 'x-goog-if-generation-match': '0',
+          'x-goog-content-length-range': `${match.file.bytes},${match.file.bytes}`},
+        body: match.body,
         signal: AbortSignal.any([AbortSignal.timeout(Math.max(1, Math.floor(Math.min(60_000, left())))), ...(signal ? [signal] : [])]),
       }).catch(() => null);
       if (signal?.aborted) return cancelled();
