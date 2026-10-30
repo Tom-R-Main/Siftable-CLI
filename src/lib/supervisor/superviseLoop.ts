@@ -123,9 +123,9 @@ export interface AttemptJournal {
   attemptId?: string;
   networkId?: string;
   containers: Partial<Record<'sidecar' | 'agent' | 'checkout' | 'patch' | 'proxy' | 'install' | 'verify-checkout' | 'tree-check' | 'report'
-    | 'verifier', string>>;
-  /** The helpers' own networks (checkout bridge, install network, proxy egress); the run-label sweep removes them too. */
-  helperNetworks?: Partial<Record<'fetch' | 'install-net' | 'egress', string>>;
+    | 'verifier' | 'result-commit' | 'review-relay' | 'reviewer', string>>;
+  /** The helpers' own networks (checkout bridge, install network, proxy egress, review); the run-label sweep removes them too. */
+  helperNetworks?: Partial<Record<'fetch' | 'install-net' | 'egress' | 'review-net', string>>;
   /** The attempt's own filesystem (U5b-2c): kept, with its volumes, when the evidence was not acknowledged. */
   fs?: AttemptFsRecord;
   /** The write scope's patch, frozen beside the log for the evidence manifest. */

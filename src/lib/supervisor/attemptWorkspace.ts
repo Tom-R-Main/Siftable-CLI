@@ -41,9 +41,9 @@ const RESULT_LIMIT = 64 * 1024;
 export const PATH_LIST_RESULT_LIMIT = MAX_PATH_LIST_BYTES + 1024 * 1024;
 
 export type HelperRole = 'fetch' | 'checkout' | 'patch' | 'volume' | 'install-net' | 'egress' | 'proxy' | 'install'
-  | 'verify-checkout' | 'tree-check' | 'report' | 'verifier';
+  | 'verify-checkout' | 'tree-check' | 'report' | 'verifier' | 'result-commit' | 'review-net' | 'review-relay' | 'reviewer';
 /** The helpers that run a shipped program and answer with one JSON line. */
-export type ProgramRole = 'checkout' | 'patch' | 'install' | 'verify-checkout' | 'tree-check' | 'report';
+export type ProgramRole = 'checkout' | 'patch' | 'install' | 'verify-checkout' | 'tree-check' | 'report' | 'result-commit';
 
 export interface WorkspaceContext {
   runId: string;
