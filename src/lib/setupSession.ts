@@ -4,7 +4,6 @@
  * plan, and never approve or run it: Run is the owner's decision on the plan
  * page.
  */
-import {DEFAULT_API_URL} from './base-command.js';
 
 export interface SetupUnmet {code: string; field: string; detail?: string}
 
@@ -40,14 +39,12 @@ export const planPageUrl = (apiUrl: string, sessionId: string): string =>
   `${apiUrl.replace(/\/+$/, '')}/app/setup/${encodeURIComponent(sessionId)}`;
 
 /**
- * The context a printed command must carry to act on this setup: its scope,
- * stated even for Personal (a saved selection or SIFT_WORKSPACE_ID would win
- * otherwise), and the API when it is not the default.
+ * The context a printed command must carry to act on this setup: its scope
+ * and its API, both stated even at their defaults, because the next process's
+ * saved selection, SIFT_WORKSPACE_ID or SIFT_API_URL would win otherwise.
  */
-const contextFlags = (workspaceId: string | null, apiUrl: string): string => {
-  const api = apiUrl.replace(/\/+$/, '');
-  return ` --workspace ${workspaceId ?? 'personal'}${api === DEFAULT_API_URL ? '' : ` --api-url ${api}`}`;
-};
+const contextFlags = (workspaceId: string | null, apiUrl: string): string =>
+  ` --workspace ${workspaceId ?? 'personal'} --api-url ${apiUrl.replace(/\/+$/, '')}`;
 
 /** The command that enrolls a machine for this setup, in the setup's scope and API. */
 export const enrollCommand = (sessionId: string, workspaceId: string | null, apiUrl: string): string =>

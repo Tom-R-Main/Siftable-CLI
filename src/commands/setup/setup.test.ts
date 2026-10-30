@@ -43,22 +43,22 @@ describe('setup session helpers', () => {
   it('names the setup\'s workspace in the enroll and link commands', () => {
     const ws = '90000000-0000-4000-8000-0000000000c3';
     // Personal is stated, so a saved selection or SIFT_WORKSPACE_ID cannot redirect the command.
-    expect(enrollCommand(ID, null, API)).toBe(`sudo sift machine enroll --workspace personal --setup ${ID}`);
-    expect(enrollCommand(ID, ws, API)).toBe(`sudo sift machine enroll --workspace ${ws} --setup ${ID}`);
-    expect(linkMachineCommand(ID, RUNNER, null, API)).toBe(`sift setup link-machine ${ID} --runner ${RUNNER} --workspace personal`);
-    expect(linkMachineCommand(ID, RUNNER, ws, API)).toBe(`sift setup link-machine ${ID} --runner ${RUNNER} --workspace ${ws}`);
-    // A non-default API travels with the command; the default is left out.
+    // The default API is stated too: the next process's SIFT_API_URL must not redirect the command.
+    expect(enrollCommand(ID, null, API)).toBe(`sudo sift machine enroll --workspace personal --api-url ${API} --setup ${ID}`);
+    expect(enrollCommand(ID, ws, API)).toBe(`sudo sift machine enroll --workspace ${ws} --api-url ${API} --setup ${ID}`);
+    expect(linkMachineCommand(ID, RUNNER, null, API)).toBe(`sift setup link-machine ${ID} --runner ${RUNNER} --workspace personal --api-url ${API}`);
+    expect(linkMachineCommand(ID, RUNNER, ws, API)).toBe(`sift setup link-machine ${ID} --runner ${RUNNER} --workspace ${ws} --api-url ${API}`);
     expect(enrollCommand(ID, ws, 'https://staging.siftable.io/')).toBe(`sudo sift machine enroll --workspace ${ws} --api-url https://staging.siftable.io --setup ${ID}`);
     expect(linkMachineCommand(ID, RUNNER, null, 'http://127.0.0.1:8080'))
       .toBe(`sift setup link-machine ${ID} --runner ${RUNNER} --workspace personal --api-url http://127.0.0.1:8080`);
     expect(describeSession(session({workspaceId: ws}), API))
-      .toContain(`  machine.runnerId: enroll a Linux machine with \`sudo sift machine enroll --workspace ${ws} --setup ${ID}\``);
+      .toContain(`  machine.runnerId: enroll a Linux machine with \`sudo sift machine enroll --workspace ${ws} --api-url ${API} --setup ${ID}\``);
   });
 
   it('says what each unmet value needs and where to review the plan', () => {
     const lines = describeSession(session({}, {}), API);
     expect(lines[0]).toBe(`Setup ${ID}: draft, version 2`);
-    expect(lines).toContain(`  machine.runnerId: enroll a Linux machine with \`sudo sift machine enroll --workspace personal --setup ${ID}\``);
+    expect(lines).toContain(`  machine.runnerId: enroll a Linux machine with \`sudo sift machine enroll --workspace personal --api-url ${API} --setup ${ID}\``);
     expect(lines.at(-1)).toBe(`Plan page: ${planPageUrl(API, ID)}`);
     expect(planPageUrl(`${API}/`, ID)).toBe(`${API}/app/setup/${ID}`);
     const ready = describeSession(session({status: 'ready', plan: {...session().plan, unmet: []}}), API);
