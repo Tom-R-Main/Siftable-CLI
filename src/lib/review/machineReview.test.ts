@@ -17,8 +17,10 @@ describe('machine review (U3-2)', () => {
 
   it('forwards only POST /v1/responses to the relay, body and type intact, and streams the reply back', async () => {
     const calls: Array<{url: string; body: string; type: string | null}> = [];
+    const signals: AbortSignal[] = [];
     const fetchImpl = (async (url: string, init: RequestInit) => {
       calls.push({url, body: Buffer.from(init.body as Uint8Array).toString(), type: new Headers(init.headers).get('content-type')});
+      if (init.signal) signals.push(init.signal);
       return new Response(new ReadableStream({start(controller) {
         controller.enqueue(new TextEncoder().encode('event: a\n\n'));
         controller.enqueue(new TextEncoder().encode('event: done\n\n'));
@@ -33,6 +35,9 @@ describe('machine review (U3-2)', () => {
       expect(reply.headers.get('content-type')).toBe('text/event-stream');
       expect(await reply.text()).toBe('event: a\n\nevent: done\n\n');
       expect(calls).toEqual([{url: RELAY, body: '{"model":"m"}', type: 'application/json'}]);
+      // A completed reply never aborts its relay call.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(signals.map((signal) => signal.aborted)).toEqual([false]);
       expect((await fetch(`${baseUrl}/models`)).status).toBe(404);
       expect((await fetch(`${baseUrl}/responses`)).status).toBe(404);
       expect((await fetch(`${baseUrl.replace('/v1', '')}/sift/v1/questions`, {method: 'POST', body: '{}'})).status).toBe(404);
@@ -62,6 +67,30 @@ describe('machine review (U3-2)', () => {
       // The forwarder is still up for the next call.
       await fetch(`${baseUrl}/responses`, {method: 'POST', body: '{}'}).then((reply) => reply.text()).catch(() => undefined);
       expect(calls).toBe(2);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  // Release #17439: a reviewer that disconnects before the relay has answered at all ends the call too.
+  it('aborts the relay call when the reviewer disconnects before any reply headers', async () => {
+    let upstreamSignal: AbortSignal | undefined;
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      upstreamSignal = init.signal ?? undefined;
+      // The relay has not answered yet.
+      await new Promise((_resolve, reject) => init.signal?.addEventListener('abort', () => reject(new Error('aborted')), {once: true}));
+      return new Response('never');
+    }) as unknown as typeof fetch;
+    const {baseUrl, server} = await startForwarder(RELAY, fetchImpl);
+    try {
+      const client = new AbortController();
+      const pending = fetch(`${baseUrl}/responses`, {method: 'POST', body: '{}', signal: client.signal}).catch(() => 'disconnected');
+      for (let i = 0; i < 100 && !upstreamSignal; i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(upstreamSignal?.aborted).toBe(false);
+      client.abort();
+      expect(await pending).toBe('disconnected');
+      for (let i = 0; i < 100 && !upstreamSignal?.aborted; i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(upstreamSignal?.aborted).toBe(true);
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }
