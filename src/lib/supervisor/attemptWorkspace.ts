@@ -70,6 +70,8 @@ export interface WorkspaceContext {
 }
 
 export class WorkspaceRefused extends Error {
+  /** A failed dependency install's own output, so the caller can keep it before the filesystem goes. */
+  log?: Buffer;
   constructor(readonly code: string, detail: string) {
     super(`${code}: ${detail}`);
   }
@@ -299,9 +301,9 @@ export async function installDependencies(ctx: WorkspaceContext, record: Attempt
   }
   await fs.mkdir(path.join(work, 'node_modules'), {mode: 0o755});
   await ctx.fsSystem.chown(path.join(work, 'node_modules'), SANDBOX_UID, SANDBOX_UID);
+  // The admitted bytes stay root-owned and read-only: the install helper (uid 10001) reads them and cannot change them.
   for (const [name, bytes] of [['package.json', manifest], ['package-lock.json', lock]] as const) {
-    await fs.writeFile(path.join(deps, name), bytes, {mode: 0o644, flag: 'wx'});
-    await ctx.fsSystem.chown(path.join(deps, name), SANDBOX_UID, SANDBOX_UID);
+    await fs.writeFile(path.join(deps, name), bytes, {mode: 0o444, flag: 'wx'});
   }
   stopped(ctx);
   await checkAttemptVolume(ctx, record);
@@ -340,9 +342,15 @@ export async function installDependencies(ctx: WorkspaceContext, record: Attempt
       const networkProblems = evaluateNetworkInspect(networkEntry, {networkId: installNet, labels: labels(ctx, 'install-net'),
         containerIds: [proxy], hostAddresses: ctx.hostAddresses ?? []});
       if (networkProblems.length > 0) throw new WorkspaceRefused('install_network', networkProblems.join(', '));
-      await runHelper(ctx, 'install', helperSpec(ctx, 'install', installNet, [
-        {volume: attemptVolumeName(ctx.runId), target: '/build', readonly: false, subpath: 'deps'},
-      ], {HOME: '/tmp/h', SIFT_MODE: 'install', SIFT_PROXY: `http://${proxyName}:${PROXY_PORT}`}), ctx.timeouts?.installMs ?? INSTALL_TIMEOUT_MS);
+      try {
+        await runHelper(ctx, 'install', helperSpec(ctx, 'install', installNet, [
+          {volume: attemptVolumeName(ctx.runId), target: '/build', readonly: false, subpath: 'deps'},
+        ], {HOME: '/tmp/h', SIFT_MODE: 'install', SIFT_PROXY: `http://${proxyName}:${PROXY_PORT}`}), ctx.timeouts?.installMs ?? INSTALL_TIMEOUT_MS);
+      } catch (error) {
+        // npm's output is the only account of why the install failed: it travels with the refusal.
+        if (error instanceof WorkspaceRefused) error.log = await readBounded(path.join(deps, INSTALL_LOG), MAX_INSTALL_LOG_BYTES + 4096).catch(() => null) ?? undefined;
+        throw error;
+      }
     } finally {
       const removed = await ctx.docker(['container', 'rm', '--force', proxy]);
       if (!gone(removed)) ctx.held?.(`container:${proxy}`);

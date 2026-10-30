@@ -20,7 +20,7 @@ import {attemptSliceName, cgroupSetupProblem, isInsideAttemptSlice, parseCgroupV
 import {checkoutPlanProblem} from './attemptCheckout.js';
 import {captureLog, type EvidenceOutcome, type FrozenArtifact, uploadAgentLog} from './attemptEvidence.js';
 import type {AttemptFsRecord, AttemptFsSystem} from './attemptFilesystem.js';
-import {checkAttemptVolume, freezePatch, installDependencies, prepareWorkspace, releaseWorkspace, type WorkspaceContext,
+import {checkAttemptVolume, freezePatch, installDependencies, prepareWorkspace, releaseWorkspace, type WorkspaceContext, WorkspaceRefused,
   writerVolumes} from './attemptWorkspace.js';
 import {closeRecoveredQuestions, type JournalQuestion, QuestionDesk} from './attemptQuestions.js';
 import {GO_LINE, READY_LINE} from './attemptLauncher.js';
@@ -662,6 +662,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   // A checkout being prepared, and anything a helper left that could not be shown removed.
   let preparing: Promise<void> | undefined;
   const helperHeld: string[] = [];
+  // A failed dependency install's output: kept beside the attempt's input before its filesystem is released.
+  let installFailure: Buffer | undefined;
   const workspaceContext = (make: WorkspaceContext['create'], deadlineMono: () => number, signal?: AbortSignal): WorkspaceContext | undefined =>
     (checkout && deps.attemptFs && deps.assets.checkoutHelper && helperImageId ? {
       runId: journal.runId, attemptId, imageRef: plan.imageRef, imageId: helperImageId, slice: attemptSliceName(attemptId), checkout,
@@ -737,6 +739,10 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       if (journal.evidence) await save({...journal, evidence: {...journal.evidence, ...evidence}});
       if (!evidence.acknowledged) deps.log(`The attempt's evidence was not acknowledged; its log is kept at ${inputDir}.`);
     }
+    if (installFailure) {
+      await fs.writeFile(path.join(inputDir, 'install.log'), installFailure, {mode: 0o600}).catch(() => undefined);
+      deps.log(`The dependency install failed; its output is kept at ${path.join(inputDir, 'install.log')}.`);
+    }
     // The attempt filesystem goes once nothing on it is owed: the evidence was acknowledged, or the workload never ran.
     let releaseHeld: string[] = [];
     // A create that never answered (the volume above all) may still finish in the daemon: nothing is released under it.
@@ -766,7 +772,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     const closeBudget = Math.min(deps.shutdown?.aborted ? 5_000 : 30_000, capLeft());
     if (!await desk.close(closeCall, journal.workItemId, credential, closeBudget)) return keepUnsettled(evidence);
     // An unacknowledged log stays on the machine for the operator; nothing else is kept.
-    if (!evidence || evidence.acknowledged) await fs.rm(inputDir, {recursive: true, force: true}).catch(() => undefined);
+    if ((!evidence || evidence.acknowledged) && !installFailure) await fs.rm(inputDir, {recursive: true, force: true}).catch(() => undefined);
     const settlement: Settlement = {reason, ...(exitCode === undefined ? {} : {exitCode}), ...(controlId ? {controlId} : {}),
       started: Boolean(sidecar || agent), cgroupEmpty: settled.facts.cgroupEmpty === 'empty', attemptReport: 'pending', work: 'pending',
       ...(evidence ? {evidence} : {})};
@@ -817,7 +823,12 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       const lifetime = {...helpers, signal: life.signal};
       // Preparation is the checkout and, when planned, the dependency install: one lifetime, waited out as one.
       const prepared = prepareWorkspace(lifetime).then(async (record) => {
-        if (plan.install) installLog = await installDependencies(lifetime, record);
+        if (plan.install) {
+          installLog = await installDependencies(lifetime, record).catch((error: unknown) => {
+            if (error instanceof WorkspaceRefused && error.log) installFailure = error.log;
+            throw error;
+          });
+        }
       });
       preparing = prepared.then(() => undefined, () => undefined).finally(() => preparations.delete(runId));
       await guard(prepared);

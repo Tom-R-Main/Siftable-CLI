@@ -103,6 +103,26 @@ describe('registry proxy', () => {
     second.socket.destroy();
   });
 
+  it('reserves a slot before resolving, so concurrent requests cannot pass the cap together', async () => {
+    let answer: () => void = () => undefined;
+    const slow = new Promise<void>((resolve) => { answer = resolve; });
+    const {port, opened} = await proxy([PUBLIC], {maxTunnels: 2, resolve: async () => { await slow; return [PUBLIC]; }});
+    const pending = [1, 2, 3].map(() => request(port, `${REGISTRY_HOST}:443`));
+    const third = await Promise.race(pending.map((p) => p.then((r) => r)));
+    expect(third.status).toBe('HTTP/1.1 429 Too Many Tunnels');
+    answer();
+    const all = await Promise.all(pending);
+    expect(all.map((r) => r.status).sort()).toEqual(['HTTP/1.1 200 Connection Established', 'HTTP/1.1 200 Connection Established',
+      'HTTP/1.1 429 Too Many Tunnels']);
+    expect(opened).toHaveLength(2);
+    for (const r of all) r.socket.destroy();
+    // A closed tunnel gives its slot back.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const again = await request(port, `${REGISTRY_HOST}:443`);
+    expect(again.status).toBe('HTTP/1.1 200 Connection Established');
+    again.socket.destroy();
+  });
+
   it('classifies addresses by range, mapped forms included', () => {
     expect(isForbiddenAddress('8.8.8.8')).toBe(false);
     expect(isForbiddenAddress('2606:4700::6810:84e5')).toBe(false);

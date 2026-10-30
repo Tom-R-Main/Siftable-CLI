@@ -95,7 +95,9 @@ interface Scenario {
     /** Volumes that already exist, left by an earlier run. */
     seedVolumes?: string[];
     /** Files the checkout leaves at the repository root (package.json, package-lock.json). */
-    files?: Record<string, string>};
+    files?: Record<string, string>;
+    /** The install helper's result. */
+    installResult?: object};
 }
 
 /** An attempt filesystem host where every step succeeds; mount points and directories are real, under the test's root. */
@@ -374,7 +376,8 @@ function world(scenario: Scenario = {}) {
     const stdout = new PassThrough();
     if (id === 'c-checkout' || id === 'c-patch' || id === 'c-install') {
       const exited = (async () => {
-        const result = (id === 'c-checkout' ? scenario.checkout?.result : id === 'c-patch' ? scenario.checkout?.patchResult : undefined) ?? {ok: true};
+        const result = (id === 'c-checkout' ? scenario.checkout?.result : id === 'c-patch' ? scenario.checkout?.patchResult
+          : scenario.checkout?.installResult) ?? {ok: true};
         const [run] = (await fs.readdir(scenario.checkout!.root, {withFileTypes: true})).filter((entry) => entry.isDirectory());
         const mount = path.join(scenario.checkout!.root, run.name);
         if (id === 'c-checkout') {
@@ -382,7 +385,8 @@ function world(scenario: Scenario = {}) {
         }
         if (id === 'c-install') {
           await fs.mkdir(path.join(mount, 'deps', 'node_modules', 'left-pad'), {recursive: true});
-          await fs.writeFile(path.join(mount, 'deps', 'install.log'), 'added 1 package in 1s\n');
+          await fs.writeFile(path.join(mount, 'deps', 'install.log'),
+            (result as {ok?: boolean}).ok === false ? 'npm error 404 Not Found - GET https://registry.npmjs.org/left-pad\n' : 'added 1 package in 1s\n');
         }
         // The patch helper writes the patch into the attempt filesystem's src directory.
         if (id === 'c-patch' && (result as {ok?: boolean}).ok !== false) await fs.writeFile(path.join(mount, 'src', 'sift.patch'), '# sift patch v1\n+change\n');
@@ -1411,6 +1415,15 @@ describe('superviseOnce', () => {
           'type=volume,source=fs,target=/workspace/node_modules,volume-subpath=deps/node_modules,readonly');
         const log = w.evidence.puts.find((put) => put.headers['Content-Type'] === 'text/plain')!.body;
         expect(log.startsWith('[sift: dependency install]\nadded 1 package in 1s\n\n[sift: workload]\n')).toBe(true);
+      });
+
+      it('keeps a failed install\'s output beside the attempt before its filesystem is released', async () => {
+        const {w, host, run} = await checkoutWorld({files, installResult: {ok: false, code: 'dependency_install_failed', detail: 'npm ci exited 1'}},
+          {}, {}, {resolvePlan: async () => ({...CHECKOUT_PLAN, install: {manager: 'npm'}}), assets: ASSETS});
+        expect(await run()).toMatchObject({kind: 'finished', reason: 'start_failed'});
+        expect(w.events).not.toContain('create:c-agent');
+        expect(await fs.readFile(path.join(inputRoot, ATTEMPT, 'install.log'), 'utf8')).toContain('npm error 404');
+        expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(true);
       });
 
       it('refuses an install plan it cannot run, before anything is attached', async () => {

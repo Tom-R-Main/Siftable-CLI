@@ -138,6 +138,9 @@ function context(scenario: Scenario = {}) {
       if (scenario.result === 'hang') return;
       void (async () => {
         if (id === 'c-patch') await scenario.patch?.(path.join(root, 'r1', 'src'));
+        if (id === 'c-install' && scenario.installResult?.ok === false) {
+          await fs.writeFile(path.join(root, 'r1', 'deps', 'install.log'), 'npm error 404\n');
+        }
         if (id === 'c-install' && scenario.installResult?.ok !== false) {
           await fs.mkdir(path.join(root, 'r1', 'deps', 'node_modules', 'left-pad'), {recursive: true});
           await fs.writeFile(path.join(root, 'r1', 'deps', 'install.log'), 'added 1 package in 1s\n');
@@ -301,6 +304,7 @@ describe('attempt workspace', () => {
       expect(flag(created.get('c-proxy')!, '--env')).toContain('SIFT_DENY_ADDRESSES=10.0.0.4');
       // The exact admitted bytes went to the deps volume; the writer's mount target exists and is empty.
       expect(await fs.readFile(path.join(record.mountPoint, 'deps', 'package-lock.json'), 'utf8')).toBe(LOCK);
+      expect((await fs.stat(path.join(record.mountPoint, 'deps', 'package-lock.json'))).mode & 0o777).toBe(0o444);
       expect(await fs.readdir(path.join(record.mountPoint, 'work', 'node_modules'))).toEqual([]);
       expect(writerVolumes('r1', ['src'], true)).toContainEqual(
         {volume: 'sift-a-r1-fs', target: '/workspace/node_modules', readonly: true, subpath: 'deps/node_modules'});
@@ -333,7 +337,9 @@ describe('attempt workspace', () => {
     it('fails the start when npm ci fails, and still removes the proxy and both networks', async () => {
       const {ctx, events, record} = await checkedOut({'package.json': '{}', 'package-lock.json': LOCK},
         {installResult: {ok: false, code: 'dependency_install_failed', detail: 'npm ci exited 1'}});
-      expect(await refusal(installDependencies(ctx, record))).toBe('dependency_install_failed');
+      const error = await installDependencies(ctx, record).catch((caught: unknown) => caught as WorkspaceRefused);
+      expect(error.code).toBe('dependency_install_failed');
+      expect(error.log?.toString()).toBe('npm error 404\n');
       expect(events.slice(-4)).toEqual(['container rm', 'container rm', 'network rm', 'network rm']);
     });
   });

@@ -63,6 +63,8 @@ export function startRegistryProxy(options: ProxyOptions = {}): Promise<Server> 
   const maxTunnels = options.maxTunnels ?? 64;
   const log = options.log ?? (() => undefined);
   const tunnels = new Set<Socket>();
+  // Slots are reserved before any await and released exactly once, so concurrent CONNECTs cannot pass the cap together.
+  let slots = 0;
   let transferred = 0;
   const server = createServer((_request, response) => {
     response.writeHead(405, {'Connection': 'close'}).end();
@@ -72,14 +74,19 @@ export function startRegistryProxy(options: ProxyOptions = {}): Promise<Server> 
     void (async () => {
       const target = request.url ?? '';
       if (target !== `${REGISTRY_HOST}:443`) { log(`refused ${target}`); reject(client, 403, 'Forbidden'); return; }
-      if (tunnels.size >= maxTunnels) { reject(client, 429, 'Too Many Tunnels'); return; }
+      if (slots >= maxTunnels) { reject(client, 429, 'Too Many Tunnels'); return; }
+      slots += 1;
+      let released = false;
+      const release = () => { if (!released) { released = true; slots -= 1; } };
       const addresses = await resolve(REGISTRY_HOST).catch(() => [] as string[]);
       // Any non-public answer refuses the tunnel: a mixed answer is a rebinding attempt, not a choice to make.
       if (addresses.length === 0 || addresses.some((address) => isForbiddenAddress(address, options.hostAddresses))) {
         log(`refused ${REGISTRY_HOST} -> ${addresses.join(',') || 'nothing'}`);
+        release();
         reject(client, 403, 'Forbidden');
         return;
       }
+      if (client.destroyed) { release(); return; }
       const upstream = open(addresses[0], 443);
       tunnels.add(client);
       tunnels.add(upstream);
@@ -87,7 +94,7 @@ export function startRegistryProxy(options: ProxyOptions = {}): Promise<Server> 
         transferred += chunk.length;
         if (transferred > maxBytes) { log('byte cap reached'); closeAll(); }
       };
-      const drop = () => { client.destroy(); upstream.destroy(); tunnels.delete(client); tunnels.delete(upstream); };
+      const drop = () => { client.destroy(); upstream.destroy(); tunnels.delete(client); tunnels.delete(upstream); release(); };
       upstream.once('connect', () => {
         client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
         if (head.length > 0) { count(head); upstream.write(head); }
