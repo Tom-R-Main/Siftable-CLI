@@ -1,7 +1,10 @@
-import {describe, expect, it} from 'vitest';
+import {promises as fs} from 'node:fs';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
   ATTEMPT_FS_BYTES, type AttemptFsRecord, type AttemptFsSystem, attemptVolumeCreateArgs, attemptVolumeProblem, createAttemptFs, mountAttemptFs,
-  releaseAttemptFs, SANDBOX_UID,
+  releaseAttemptFs, SANDBOX_UID, ensureAttemptRoot,
 } from './attemptFilesystem.js';
 
 const ROOT = '/var/lib/siftable/attempts';
@@ -241,5 +244,36 @@ describe('attempt filesystem', () => {
     unverified.files.set(`${ROOT}/r9.img`, {dev: 7, ino: 3, blocks: 8});
     expect(await releaseAttemptFs(unverified.sys, {image: `${ROOT}/r9.img`, mountPoint: `${ROOT}/r9`, state: 'reserving'}))
       .toEqual([`image_unverified:${ROOT}/r9.img`]);
+  });
+
+  describe('attempt root', () => {
+    const me = process.getuid?.() ?? 0;
+    let base: string;
+    beforeEach(async () => { base = await fs.mkdtemp(path.join(tmpdir(), 'sift-root-')); });
+    afterEach(async () => { await fs.rm(base, {recursive: true, force: true}); });
+
+    it('creates the parent and the root on a fresh machine, private to their owner', async () => {
+      const root = path.join(base, 'siftable', 'attempts');
+      await ensureAttemptRoot(root, me);
+      for (const dir of [path.dirname(root), root]) {
+        const stat = await fs.lstat(dir);
+        expect(stat.isDirectory()).toBe(true);
+        expect(stat.mode & 0o777).toBe(0o700);
+      }
+      // A second start accepts what the first made.
+      await expect(ensureAttemptRoot(root, me)).resolves.toBeUndefined();
+    });
+
+    it('refuses a symlinked, shared or foreign attempt root before any attempt', async () => {
+      const elsewhere = path.join(base, 'elsewhere');
+      await fs.mkdir(elsewhere);
+      await fs.symlink(elsewhere, path.join(base, 'linked'));
+      await expect(ensureAttemptRoot(path.join(base, 'linked', 'attempts'), me)).rejects.toThrow(/not a real directory/);
+      const shared = path.join(base, 'shared');
+      await fs.mkdir(shared, {mode: 0o777});
+      await fs.chmod(shared, 0o777);
+      await expect(ensureAttemptRoot(path.join(shared, 'attempts'), me)).rejects.toThrow(/writable by group or others/);
+      await expect(ensureAttemptRoot(path.join(base, 'owned', 'attempts'), me + 1)).rejects.toThrow(/owned by uid/);
+    });
   });
 });

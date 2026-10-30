@@ -1,7 +1,7 @@
 import {Flags} from '@oclif/core';
 import {promises as fs} from 'node:fs';
 import {BaseCommand} from '../../lib/base-command.js';
-import {hostAttemptFsSystem} from '../../lib/supervisor/attemptFilesystem.js';
+import {AttemptFsError, ensureAttemptRoot, hostAttemptFsSystem} from '../../lib/supervisor/attemptFilesystem.js';
 import {hostIPv4Addresses} from '../../lib/supervisor/containerSandbox.js';
 import {createHostDocker, hostAttach} from '../../lib/supervisor/hostDocker.js';
 import {acquireStateLock, MachineStateError, SUPERVISOR_STATE_DIR} from '../../lib/supervisor/machineState.js';
@@ -64,6 +64,11 @@ export default class MachineSupervise extends BaseCommand {
     if (typeof process.getuid !== 'function' || process.getuid() !== 0) this.error('Run this as root; it reads the supervisor\'s credential and starts containers.');
     const account = await ensureSupervisorAccount();
     await fs.mkdir(INPUT_ROOT, {recursive: true, mode: 0o755});
+    // A fresh machine has no /var/lib/siftable: made here, root-only, and checked, before any attempt needs it.
+    await ensureAttemptRoot(ATTEMPT_ROOT).catch((error: unknown) => {
+      if (error instanceof AttemptFsError) this.error(`The attempt root is not usable: ${error.message}`);
+      throw error;
+    });
     const state = {root: SUPERVISOR_STATE_DIR, owner: {uid: account.uid, gid: account.gid}};
     // One machine command at a time, for the life of this process: no second supervisor, no qualify alongside.
     let release: () => Promise<void>;

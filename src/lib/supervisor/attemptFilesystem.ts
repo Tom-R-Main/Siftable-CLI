@@ -273,6 +273,21 @@ export function attemptVolumeProblem(inspect: unknown, record: AttemptFsRecord, 
   return undefined;
 }
 
+/**
+ * Makes the attempt root and its parent (`/var/lib/siftable/attempts`), each a real directory owned by the
+ * expected user (root) and writable by no one else, creating what is missing with mode 0700. Anything else at
+ * either path (a symlink, a file, another owner, group or world write) stops the supervisor before any attempt.
+ */
+export async function ensureAttemptRoot(root: string, ownerUid = 0): Promise<void> {
+  for (const dir of [path.dirname(root), root]) {
+    await fs.mkdir(dir, {mode: 0o700}).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'EEXIST') throw error; });
+    const stat = await fs.lstat(dir);
+    if (!stat.isDirectory()) throw new AttemptFsError('attempt_root', `${dir} is not a real directory`);
+    if (stat.uid !== ownerUid) throw new AttemptFsError('attempt_root', `${dir} is owned by uid ${stat.uid}, not ${ownerUid}`);
+    if ((stat.mode & 0o022) !== 0) throw new AttemptFsError('attempt_root', `${dir} is writable by group or others`);
+  }
+}
+
 /** The real host: system tools by absolute path, and the file system as root. */
 export const hostAttemptFsSystem: AttemptFsSystem = {
   async createExclusive(file, mode) {
