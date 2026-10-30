@@ -88,6 +88,8 @@ interface Scenario {
   checkout?: {root: string; result?: object; patchResult?: object; patchRmFails?: boolean; patchCreateLost?: boolean;
     /** Removing the attempt's volumes fails, as when one is still in use. */
     volumeRmFails?: boolean;
+    /** After this many inspections, Docker shows the volume on another device (it was replaced under us). */
+    volumeMovesAfter?: number;
     /** Volumes that already exist, left by an earlier run. */
     seedVolumes?: string[]};
 }
@@ -241,6 +243,11 @@ function world(scenario: Scenario = {}) {
   const containers = new Map<string, string[]>();
   const started = new Set<string>();
   const volumes: string[] = [...(scenario.checkout?.seedVolumes ?? [])];
+  let volumeInspections = 0;
+  /** What each volume was created with; a seeded one is as the earlier run made it. */
+  const volumeArgs = new Map<string, string[]>((scenario.checkout?.seedVolumes ?? []).map((name) => [name, ['volume', 'create', '--driver', 'local',
+    '--opt', 'type=ext4', '--opt', 'device=/dev/loop0', '--opt', 'o=nodev,nosuid,nodiscard', '--label', `sift.machine.run=${name.split('-')[2]}`,
+    '--label', 'sift.machine.role=volume', '--label', `sift.machine.attempt=${ATTEMPT}`, name]]));
   const mountParts = (m: string) => Object.fromEntries(m.split(',').map((p) => (p.includes('=') ? p.split('=') : [p, 'true']) as [string, string]));
   const flag = (args: string[], name: string) => args.flatMap((arg, i) => (arg === name ? [args[i + 1]] : []));
   const docker: DeadlineDocker = async (args) => {
@@ -255,7 +262,15 @@ function world(scenario: Scenario = {}) {
     }
     if (a === 'volume') {
       events.push(`volume-${b}${b === 'create' ? `:${args.at(-1)!.split('-').at(-1)}` : ''}`);
-      if (b === 'create') volumes.push(args.at(-1)!);
+      if (b === 'create') { volumes.push(args.at(-1)!); volumeArgs.set(args.at(-1)!, args); }
+      if (b === 'inspect') {
+        volumeInspections += 1;
+        const moved = scenario.checkout?.volumeMovesAfter !== undefined && volumeInspections > scenario.checkout.volumeMovesAfter;
+        const made = (volumeArgs.get(args[2]) ?? []).map((arg) => (moved && arg.startsWith('device=') ? 'device=/dev/loop7' : arg));
+        const opts = Object.fromEntries(flag(made, '--opt').map((o) => [o.slice(0, o.indexOf('=')), o.slice(o.indexOf('=') + 1)]));
+        return made.length ? ok(JSON.stringify([{Name: made.at(-1), Driver: flag(made, '--driver')[0], Options: opts,
+          Labels: Object.fromEntries(flag(made, '--label').map((l) => l.split('=') as [string, string]))}])) : {code: 1, stdout: '[]', stderr: 'no such volume'};
+      }
       if (b === 'rm' && scenario.checkout?.volumeRmFails) return {code: 1, stdout: '', stderr: 'volume is in use'};
       if (b === 'rm') volumes.splice(volumes.indexOf(args.at(-1)!), 1);
       return ok(b === 'ls' ? volumes.join('\n') : '');
@@ -1132,13 +1147,13 @@ describe('superviseOnce', () => {
       expect(outcome).toMatchObject({kind: 'finished', reason: 'workload_exited', exitCode: 0, settled: true});
       const order = (event: string) => w.events.indexOf(event);
       // Checkout on its own bridge, removed before the writer's network exists.
-      expect(order('volume-create:work')).toBeLessThan(order('fetch-network-create'));
+      expect(order('volume-create:fs')).toBeLessThan(order('fetch-network-create'));
       expect(order('start:c-checkout')).toBeLessThan(order('network-rm'));
       expect(order('network-rm')).toBeLessThan(order('network-create'));
       // The writer: the checkout read-only, the write scope writable over it, and no scratch /workspace.
       const agentMounts = mounts(w, 'c-agent').filter((m) => m.startsWith('type=volume'));
-      expect(agentMounts.map((m) => m.replace(/sift-a-[0-9a-f]+-work/, 'WORK'))).toEqual([
-        'type=volume,source=WORK,target=/workspace,readonly', 'type=volume,source=WORK,target=/workspace/src,volume-subpath=src']);
+      expect(agentMounts.map((m) => m.replace(/sift-a-[0-9a-f]+-fs/, 'FS'))).toEqual([
+        'type=volume,source=FS,target=/workspace,volume-subpath=work,readonly', 'type=volume,source=FS,target=/workspace/src,volume-subpath=work/src']);
       expect(w.containers.get('c-agent')!.filter((arg) => arg.startsWith('/workspace:'))).toEqual([]);
       expect(w.containers.get('c-agent')).toEqual(expect.arrayContaining(['--workdir', '/workspace']));
       // The patch: no network, the checkout read-only, after the writer was killed, declared beside the log.
@@ -1151,6 +1166,13 @@ describe('superviseOnce', () => {
       expect(host.calls.some((c) => c.startsWith('umount'))).toBe(true);
       expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(true);
       expect(w.receipts.map((r) => r.recoveryVolumeRetained)).toEqual([false, false]);
+    });
+
+    it('never hands the writer a volume that changed after the checkout', async () => {
+      const {w, run} = await checkoutWorld({volumeMovesAfter: 1});
+      expect(await run()).toMatchObject({kind: 'finished', reason: 'start_failed'});
+      expect(w.events).toContain('start:c-checkout');
+      expect(w.events).not.toContain('create:c-agent');
     });
 
     it('keeps the attempt filesystem and says so when the evidence was not acknowledged', async () => {
@@ -1207,7 +1229,7 @@ describe('superviseOnce', () => {
           loop: '/dev/loop0', uuid: 'uuid-1', inodes: 400_000, state: 'mounted'},
         ...(patchFrozen ? {patch: {kind: 'patch', contentType: 'text/x-diff', path: patchPath, sha256: sha(patchText), bytes: patchText.length}} : {}),
       } satisfies AttemptJournal);
-      const w = world({checkout: {root: attemptRoot, volumeRmFails, seedVolumes: ['sift-a-abc123abc123-work']}});
+      const w = world({checkout: {root: attemptRoot, volumeRmFails, seedVolumes: ['sift-a-abc123abc123-fs']}});
       const run = () => superviseOnce(deps(w, {attemptFs: {system: host.system, root: attemptRoot}}));
       return {w, host, run};
     }
@@ -1223,7 +1245,7 @@ describe('superviseOnce', () => {
 
     it('after a crash, holds a workspace whose release fails, with cleanup_failed receipts', async () => {
       const {w, host, run} = await crashedWithCheckout(true, true);
-      expect(await run()).toEqual({kind: 'held', held: ['volume:sift-a-abc123abc123-work']});
+      expect(await run()).toEqual({kind: 'held', held: ['volume:sift-a-abc123abc123-fs']});
       expect(w.events).toContain('evidence-ack');
       expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(false);
       expect(await journal()).toMatchObject({state: 'held'});
@@ -1291,7 +1313,7 @@ describe('superviseOnce', () => {
       const outcome = await run();
       expect(w.events).toContain('evidence-ack');
       expect(outcome).toMatchObject({kind: 'finished', settled: false, facts: {resourcesRemoved: false,
-        held: expect.arrayContaining([expect.stringMatching(/^volume:sift-a-[0-9a-f]+-work$/)])}});
+        held: expect.arrayContaining([expect.stringMatching(/^volume:sift-a-[0-9a-f]+-fs$/)])}});
       expect(await journal()).toMatchObject({state: 'held'});
       const outbox = await readJournal<{entries: Array<{facts: {state: string}}>}>({root, owner: null}, OUTBOX);
       expect(outbox?.entries.map((entry) => entry.facts.state)).toEqual(['execution_stopped', 'cleanup_failed']);

@@ -20,7 +20,7 @@ import {attemptSliceName, cgroupSetupProblem, isInsideAttemptSlice, parseCgroupV
 import {checkoutPlanProblem} from './attemptCheckout.js';
 import {captureLog, type EvidenceOutcome, type FrozenArtifact, uploadAgentLog} from './attemptEvidence.js';
 import type {AttemptFsRecord, AttemptFsSystem} from './attemptFilesystem.js';
-import {freezePatch, prepareWorkspace, releaseWorkspace, type WorkspaceContext, writerVolumes} from './attemptWorkspace.js';
+import {checkAttemptVolume, freezePatch, prepareWorkspace, releaseWorkspace, type WorkspaceContext, writerVolumes} from './attemptWorkspace.js';
 import {closeRecoveredQuestions, type JournalQuestion, QuestionDesk} from './attemptQuestions.js';
 import {GO_LINE, READY_LINE} from './attemptLauncher.js';
 import {dockerVersionProblem, evaluateNetworkInspect, evaluateSandboxInspect, networkCreateArgs, sandboxCreateArgs, type SandboxContainerSpec,
@@ -469,7 +469,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       // Its filesystem goes once nothing on it is owed; otherwise it stays for the operator, recorded in the archive.
       const owed = earlier.evidenceOwed && !earlier.settlement?.evidence?.acknowledged;
       if (earlier.fs && earlier.fs.state !== 'released' && deps.attemptFs && !owed) {
-        const held = await releaseWorkspace((args) => deps.docker(args), deps.attemptFs.system, earlier.runId, earlier.fs);
+        const held = await releaseWorkspace((args) => deps.docker(args), deps.attemptFs.system,
+          {runId: earlier.runId, attemptId: earlier.attemptId ?? ''}, earlier.fs);
         if (held.length > 0) {
           // The deferred receipts still say cleaned; a release that could not be shown complete makes them cleanup_failed.
           const prior = earlier.stop?.facts ?? {processesStopped: true, cgroupEmpty: 'empty' as const, resourcesRemoved: true, held: []};
@@ -736,7 +737,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     let releaseHeld: string[] = [];
     if (journal.fs && journal.fs.state !== 'released' && deps.attemptFs && !prepareUnknown && (!journal.evidenceOwed || evidence?.acknowledged)) {
       releaseHeld = await releaseWorkspace((args) => deps.docker(args, {deadlineMono: deps.clock.monoMs() + STOP_BUDGET_MS}),
-        deps.attemptFs.system, journal.runId, journal.fs);
+        deps.attemptFs.system, {runId: journal.runId, attemptId}, journal.fs);
       if (releaseHeld.length === 0) await save({...journal, fs: {...journal.fs, state: 'released'}});
     } else if (journal.fs && journal.fs.state !== 'released') {
       deps.log(`The attempt's filesystem is kept for recovery at ${journal.fs.image}.`);
@@ -811,6 +812,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       preparing = prepared.then(() => undefined, () => undefined).finally(() => preparations.delete(runId));
       await guard(prepared);
       await save({...journal, preparing: false});
+      // The writer's handoff, like every helper's: the volume is still exactly ours before its container is made.
+      if (journal.fs) await guard(checkAttemptVolume(helpers, journal.fs));
       workspace = writerVolumes(journal.runId, checkout.writeScope);
     }
     const labelsOnly = attemptSpecs(deps, journal, attemptId, plan, '', nonce, inputFile).networkLabels;

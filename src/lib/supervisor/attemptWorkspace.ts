@@ -22,7 +22,8 @@ import type {FrozenArtifact} from './attemptEvidence.js';
 import {PATCH_CONTENT_TYPE} from './attemptEvidence.js';
 import type {CheckoutPlan} from './attemptCheckout.js';
 import {
-  AttemptFsError, type AttemptFsRecord, type AttemptFsSystem, attemptVolumeCreateArgs, attemptVolumeName, createAttemptFs, releaseAttemptFs,
+  AttemptFsError, type AttemptFsRecord, type AttemptFsSystem, attemptVolumeCreateArgs, attemptVolumeName, attemptVolumeProblem, createAttemptFs,
+  releaseAttemptFs,
 } from './attemptFilesystem.js';
 import {MAX_PATCH_BYTES, PATCH_FILE} from './checkoutHelper.js';
 import {evaluateSandboxInspect, sandboxCreateArgs, type SandboxContainerSpec, type SandboxVolume} from './containerSandbox.js';
@@ -82,11 +83,24 @@ const gone = (result: {code: number; stderr: string}) => result.code === 0 || /n
 const labels = (ctx: Pick<WorkspaceContext, 'runId' | 'attemptId'>, role: string) =>
   ({'sift.machine.run': ctx.runId, 'sift.machine.role': role, 'sift.machine.attempt': ctx.attemptId});
 
-/** The writer's view: the checkout read-only, each write scope writable over it, by literal subpath. */
+/**
+ * The writer's view of the attempt volume: the checkout (subpath `work`) read-only, and each write scope writable
+ * over it by its literal `work/<scope>` subpath. The volume's root is never mounted.
+ */
 export function writerVolumes(runId: string, writeScope: string[]): SandboxVolume[] {
-  const work = attemptVolumeName(runId, 'work');
-  return [{volume: work, target: '/workspace', readonly: true},
-    ...writeScope.map((scope) => ({volume: work, target: `/workspace/${scope}`, readonly: false, subpath: scope}))];
+  const volume = attemptVolumeName(runId);
+  return [{volume, target: '/workspace', readonly: true, subpath: 'work'},
+    ...writeScope.map((scope) => ({volume, target: `/workspace/${scope}`, readonly: false, subpath: `work/${scope}`}))];
+}
+
+const volumeLabels = (ctx: Pick<WorkspaceContext, 'runId' | 'attemptId'>) => labels(ctx, 'volume');
+
+/** Checked before every handoff: the attempt volume is still exactly ours, on the journaled loop device. */
+export async function checkAttemptVolume(ctx: WorkspaceContext, record: AttemptFsRecord): Promise<void> {
+  const shown = await ctx.docker(['volume', 'inspect', attemptVolumeName(ctx.runId)]);
+  const [entry] = shown.code === 0 ? JSON.parse(shown.stdout) as unknown[] : [];
+  const problem = attemptVolumeProblem(entry, record, ctx.runId, volumeLabels(ctx));
+  if (problem) throw new WorkspaceRefused('attempt_volume', problem);
 }
 
 function helperSpec(ctx: WorkspaceContext, role: 'checkout' | 'patch', networkId: string, volumes: SandboxVolume[],
@@ -159,18 +173,17 @@ export async function prepareWorkspace(ctx: WorkspaceContext): Promise<AttemptFs
     if (error instanceof AttemptFsError) throw new WorkspaceRefused(error.code, error.message);
     throw error;
   }
-  for (const dir of ['src', 'work'] as const) {
-    stopped(ctx);
-    const made = await ctx.docker(attemptVolumeCreateArgs(record, ctx.runId, dir, labels(ctx, `volume-${dir}`)));
-    if (made.code !== 0) throw new WorkspaceRefused('checkout_failed', `volume ${dir}: ${made.stderr.trim().slice(0, 200)}`);
-  }
+  stopped(ctx);
+  const made = await ctx.docker(attemptVolumeCreateArgs(record, ctx.runId, volumeLabels(ctx)));
+  if (made.code !== 0) throw new WorkspaceRefused('checkout_failed', `volume: ${made.stderr.trim().slice(0, 200)}`);
+  await checkAttemptVolume(ctx, record);
   stopped(ctx);
   const fetchNetwork = await ctx.create('fetch', ['network', 'create', '--driver', 'bridge',
     ...Object.entries(labels(ctx, 'fetch')).flatMap(([key, value]) => ['--label', `${key}=${value}`]), `sift-a-${ctx.runId}-fetch`]);
   try {
     await runHelper(ctx, 'checkout', helperSpec(ctx, 'checkout', fetchNetwork, [
-      {volume: attemptVolumeName(ctx.runId, 'src'), target: '/src', readonly: false},
-      {volume: attemptVolumeName(ctx.runId, 'work'), target: '/workspace', readonly: false},
+      {volume: attemptVolumeName(ctx.runId), target: '/src', readonly: false, subpath: 'src'},
+      {volume: attemptVolumeName(ctx.runId), target: '/workspace', readonly: false, subpath: 'work'},
     ], {HOME: '/tmp/h'}), ctx.timeouts?.checkoutMs ?? CHECKOUT_TIMEOUT_MS);
   } finally {
     const removed = await ctx.docker(['network', 'rm', fetchNetwork]);
@@ -185,9 +198,10 @@ export async function prepareWorkspace(ctx: WorkspaceContext): Promise<AttemptFs
  * links, at most the cap. Returns it frozen for the evidence manifest.
  */
 export async function freezePatch(ctx: WorkspaceContext, record: AttemptFsRecord, outDir: string): Promise<FrozenArtifact> {
+  await checkAttemptVolume(ctx, record);
   await runHelper(ctx, 'patch', helperSpec(ctx, 'patch', 'none', [
-    {volume: attemptVolumeName(ctx.runId, 'work'), target: '/workspace', readonly: true},
-    {volume: attemptVolumeName(ctx.runId, 'src'), target: '/out', readonly: false},
+    {volume: attemptVolumeName(ctx.runId), target: '/workspace', readonly: true, subpath: 'work'},
+    {volume: attemptVolumeName(ctx.runId), target: '/out', readonly: false, subpath: 'src'},
   ], {HOME: '/tmp/h', SIFT_MODE: 'patch'}), ctx.timeouts?.patchMs ?? PATCH_TIMEOUT_MS);
   const source = path.join(record.mountPoint, 'src', PATCH_FILE);
   const handle = await fs.open(source, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -207,15 +221,19 @@ export async function freezePatch(ctx: WorkspaceContext, record: AttemptFsRecord
 }
 
 /**
- * Removes the attempt's volumes, then its filesystem. Returns what is still
- * held; the image is never deleted while a volume or mount may use it.
+ * Removes the attempt's volume, verified as its own, then its filesystem. Returns what is still held: a volume
+ * that is not exactly ours, cannot be inspected or cannot be removed holds the backing storage, and the image is
+ * never deleted while a volume or mount may use it.
  */
-export async function releaseWorkspace(docker: WorkspaceContext['docker'], fsSystem: AttemptFsSystem, runId: string,
+export async function releaseWorkspace(docker: WorkspaceContext['docker'], fsSystem: AttemptFsSystem, ctx: Pick<WorkspaceContext, 'runId' | 'attemptId'>,
   record: AttemptFsRecord): Promise<string[]> {
-  const listed = await docker(['volume', 'ls', '--quiet', '--filter', `label=sift.machine.run=${runId}`]);
-  if (listed.code !== 0) return [`volumes:${runId}`];
+  const listed = await docker(['volume', 'ls', '--quiet', '--filter', `label=sift.machine.run=${ctx.runId}`]);
+  if (listed.code !== 0) return [`volumes:${ctx.runId}`];
   const held: string[] = [];
   for (const name of listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean)) {
+    const shown = await docker(['volume', 'inspect', name]);
+    const [entry] = shown.code === 0 ? JSON.parse(shown.stdout) as unknown[] : [];
+    if (attemptVolumeProblem(entry, record, ctx.runId, volumeLabels(ctx))) { held.push(`volume_unverified:${name}`); continue; }
     const removed = await docker(['volume', 'rm', name]);
     if (removed.code !== 0 && !/no such volume/i.test(removed.stderr)) held.push(`volume:${name}`);
   }

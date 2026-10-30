@@ -238,16 +238,40 @@ export async function releaseAttemptFs(sys: AttemptFsSystem, record: AttemptFsRe
   return held;
 }
 
-/** A bind-backed named volume inside the attempt filesystem; created only after the mount is verified. */
-export function attemptVolumeCreateArgs(record: AttemptFsRecord, runId: string, dir: typeof ATTEMPT_FS_DIRS[number],
-  labels: Record<string, string>): string[] {
-  if (record.state !== 'mounted') throw new AttemptFsError('attempt_fs_mount', 'volumes are created only on a verified mount');
-  return ['volume', 'create', '--driver', 'local', '--opt', 'type=none', '--opt', 'o=bind',
-    '--opt', `device=${path.join(record.mountPoint, dir)}`,
-    ...Object.entries(labels).flatMap(([key, value]) => ['--label', `${key}=${value}`]), attemptVolumeName(runId, dir)];
+/**
+ * The attempt's one Docker volume (checkout contract rev 6): the local driver mounts the journaled loop device in
+ * dockerd's own mount namespace, which the supervisor's (PrivateTmp, ProtectHome) cannot reach. Containers only ever
+ * get prefixed subpaths of it (src, work, work/<scope>, deps, deps/node_modules), never its root.
+ */
+export const ATTEMPT_VOLUME_OPTIONS = 'nodev,nosuid,nodiscard';
+
+export const attemptVolumeName = (runId: string) => `sift-a-${runId}-fs`;
+
+/** Created only once the attempt filesystem is verified mounted, on its journaled loop device. */
+export function attemptVolumeCreateArgs(record: AttemptFsRecord, runId: string, labels: Record<string, string>): string[] {
+  if (record.state !== 'mounted' || !record.loop) throw new AttemptFsError('attempt_fs_mount', 'the volume is created only on a verified mount');
+  return ['volume', 'create', '--driver', 'local', '--opt', 'type=ext4', '--opt', `device=${record.loop}`,
+    '--opt', `o=${ATTEMPT_VOLUME_OPTIONS}`, ...Object.entries(labels).flatMap(([key, value]) => ['--label', `${key}=${value}`]),
+    attemptVolumeName(runId)];
 }
 
-export const attemptVolumeName = (runId: string, dir: typeof ATTEMPT_FS_DIRS[number]) => `sift-a-${runId}-${dir}`;
+/**
+ * Why `docker volume inspect` does not show the attempt's own volume, or undefined when it does: the exact name,
+ * the local driver, the labels, and the full type, device and options. Saved options naming another device (a loop
+ * number that changed with a reboot) are never accepted.
+ */
+export function attemptVolumeProblem(inspect: unknown, record: AttemptFsRecord, runId: string, labels: Record<string, string>): string | undefined {
+  const volume = (inspect && typeof inspect === 'object' ? inspect : {}) as {Name?: unknown; Driver?: unknown; Labels?: unknown; Options?: unknown};
+  if (volume.Name !== attemptVolumeName(runId)) return 'volume_name';
+  if (volume.Driver !== 'local') return 'volume_driver';
+  const shown = (volume.Labels && typeof volume.Labels === 'object' ? volume.Labels : {}) as Record<string, unknown>;
+  if (!Object.entries(labels).every(([key, value]) => shown[key] === value)) return 'volume_labels';
+  const options = (volume.Options && typeof volume.Options === 'object' ? volume.Options : {}) as Record<string, unknown>;
+  const expected = {device: record.loop, o: ATTEMPT_VOLUME_OPTIONS, type: 'ext4'};
+  if (!record.loop || JSON.stringify(Object.keys(options).sort()) !== JSON.stringify(Object.keys(expected).sort())
+    || Object.entries(expected).some(([key, value]) => options[key] !== value)) return 'volume_options';
+  return undefined;
+}
 
 /** The real host: system tools by absolute path, and the file system as root. */
 export const hostAttemptFsSystem: AttemptFsSystem = {

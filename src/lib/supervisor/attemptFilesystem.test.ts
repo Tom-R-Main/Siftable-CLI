@@ -1,6 +1,6 @@
 import {describe, expect, it} from 'vitest';
 import {
-  ATTEMPT_FS_BYTES, type AttemptFsRecord, type AttemptFsSystem, attemptVolumeCreateArgs, createAttemptFs, mountAttemptFs,
+  ATTEMPT_FS_BYTES, type AttemptFsRecord, type AttemptFsSystem, attemptVolumeCreateArgs, attemptVolumeProblem, createAttemptFs, mountAttemptFs,
   releaseAttemptFs, SANDBOX_UID,
 } from './attemptFilesystem.js';
 
@@ -176,12 +176,24 @@ describe('attempt filesystem', () => {
     }
   });
 
-  it('creates bind-backed volumes only on a verified mount', async () => {
+  it('makes one device-backed volume, only on a verified mount, and recognizes nothing else as it', async () => {
     const h = host();
     const record = await createAttemptFs(h.sys, ROOT, 'r1', journal().persist);
-    expect(attemptVolumeCreateArgs(record, 'r1', 'work', {'sift.machine.run': 'r1'})).toEqual(['volume', 'create', '--driver', 'local',
-      '--opt', 'type=none', '--opt', 'o=bind', '--opt', `device=${ROOT}/r1/work`, '--label', 'sift.machine.run=r1', 'sift-a-r1-work']);
-    expect(() => attemptVolumeCreateArgs({...record, state: 'formatted'}, 'r1', 'work', {})).toThrow(/verified mount/);
+    const labels = {'sift.machine.run': 'r1'};
+    expect(attemptVolumeCreateArgs(record, 'r1', labels)).toEqual(['volume', 'create', '--driver', 'local', '--opt', 'type=ext4',
+      '--opt', 'device=/dev/loop0', '--opt', 'o=nodev,nosuid,nodiscard', '--label', 'sift.machine.run=r1', 'sift-a-r1-fs']);
+    expect(() => attemptVolumeCreateArgs({...record, state: 'formatted'}, 'r1', labels)).toThrow(/verified mount/);
+    const shown = {Name: 'sift-a-r1-fs', Driver: 'local', Labels: {'sift.machine.run': 'r1'},
+      Options: {type: 'ext4', device: '/dev/loop0', o: 'nodev,nosuid,nodiscard'}};
+    expect(attemptVolumeProblem(shown, record, 'r1', labels)).toBeUndefined();
+    expect(attemptVolumeProblem({...shown, Name: 'sift-a-r2-fs'}, record, 'r1', labels)).toBe('volume_name');
+    expect(attemptVolumeProblem({...shown, Driver: 'nfs'}, record, 'r1', labels)).toBe('volume_driver');
+    expect(attemptVolumeProblem({...shown, Labels: {}}, record, 'r1', labels)).toBe('volume_labels');
+    // A loop number that changed with a reboot, a bind of some host path, extra or missing options: never this volume.
+    for (const Options of [{...shown.Options, device: '/dev/loop7'}, {type: 'none', o: 'bind', device: '/var/lib/x'},
+      {...shown.Options, o: 'nodev,nosuid'}, {...shown.Options, size: '1g'}, {type: 'ext4', device: '/dev/loop0'}]) {
+      expect(attemptVolumeProblem({...shown, Options}, record, 'r1', labels), JSON.stringify(Options)).toBe('volume_options');
+    }
   });
 
   it('never adopts an existing path at the image, so nothing is allocated or formatted over it', async () => {

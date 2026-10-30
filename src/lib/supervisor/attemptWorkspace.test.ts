@@ -3,7 +3,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {PassThrough} from 'node:stream';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
-import {ATTEMPT_FS_BYTES, type AttemptFsRecord, type AttemptFsSystem} from './attemptFilesystem.js';
+import {ATTEMPT_FS_BYTES, type AttemptFsRecord, type AttemptFsSystem, attemptVolumeCreateArgs} from './attemptFilesystem.js';
 import {
   freezePatch, type HelperRole, prepareWorkspace, releaseWorkspace, type WorkspaceContext, WorkspaceRefused, writerVolumes,
 } from './attemptWorkspace.js';
@@ -87,17 +87,28 @@ interface Scenario {
   /** Writes the patch helper's output into the attempt filesystem, as the helper would. */
   patch?: (outDir: string) => Promise<void>;
   volumeRm?: number;
+  /** The volume Docker shows is not the one created: its saved device differs, as after a reboot. */
+  volumeDevice?: string;
 }
 
 function context(scenario: Scenario = {}) {
   const events: string[] = [];
   const created = new Map<string, string[]>();
+  let volumeArgs: string[] = [];
   const docker: WorkspaceContext['docker'] = async (args) => {
     const ok = (stdout = '') => ({code: 0, stdout, stderr: ''});
     const [a, b] = args;
     events.push(`${a} ${b}${a === 'volume' && b === 'create' ? ` ${args.at(-1)}` : ''}`);
     if (a === 'container' && b === 'inspect') return ok(JSON.stringify([inspectFrom(args[2], created.get(args[2])!, scenario.tamper)]));
-    if (a === 'volume' && b === 'ls') return ok('sift-a-r1-src\nsift-a-r1-work\n');
+    if (a === 'volume' && b === 'create') volumeArgs = args;
+    if (a === 'volume' && b === 'inspect') {
+      // What Docker shows for the volume created from volumeArgs.
+      const opts = Object.fromEntries(flag(volumeArgs, '--opt').map((o) => [o.slice(0, o.indexOf('=')), o.slice(o.indexOf('=') + 1)]));
+      return ok(JSON.stringify([{Name: volumeArgs.at(-1), Driver: flag(volumeArgs, '--driver')[0],
+        Labels: Object.fromEntries(flag(volumeArgs, '--label').map((l) => l.split('=') as [string, string])),
+        Options: {...opts, ...(scenario.volumeDevice ? {device: scenario.volumeDevice} : {})}}]));
+    }
+    if (a === 'volume' && b === 'ls') return ok('sift-a-r1-fs\n');
     if (a === 'volume' && b === 'rm' && scenario.volumeRm) return {code: scenario.volumeRm, stdout: '', stderr: 'volume is in use'};
     return ok();
   };
@@ -129,27 +140,38 @@ function context(scenario: Scenario = {}) {
   return {ctx, events, created};
 }
 
+/** The record and volume a prepared workspace leaves, for steps that run after the writer (the patch). */
+async function prepared(ctx: WorkspaceContext): Promise<AttemptFsRecord> {
+  const record: AttemptFsRecord = {image: path.join(root, 'r1.img'), mountPoint: path.join(root, 'r1'), imageDev: 2, imageIno: 2,
+    loop: '/dev/loop0', uuid: 'uuid-1', state: 'mounted'};
+  await ctx.docker(attemptVolumeCreateArgs(record, ctx.runId, {'sift.machine.run': ctx.runId, 'sift.machine.role': 'volume',
+    'sift.machine.attempt': ctx.attemptId}));
+  return record;
+}
+
 const refusal = (promise: Promise<unknown>) => promise.then(() => undefined, (error: unknown) => (error as WorkspaceRefused).code);
 
 describe('attempt workspace', () => {
   it('mounts the checkout read-only for the writer, each write scope writable over it by literal subpath', () => {
     expect(writerVolumes('r1', ['src', 'test/unit'])).toEqual([
-      {volume: 'sift-a-r1-work', target: '/workspace', readonly: true},
-      {volume: 'sift-a-r1-work', target: '/workspace/src', readonly: false, subpath: 'src'},
-      {volume: 'sift-a-r1-work', target: '/workspace/test/unit', readonly: false, subpath: 'test/unit'},
+      {volume: 'sift-a-r1-fs', target: '/workspace', readonly: true, subpath: 'work'},
+      {volume: 'sift-a-r1-fs', target: '/workspace/src', readonly: false, subpath: 'work/src'},
+      {volume: 'sift-a-r1-fs', target: '/workspace/test/unit', readonly: false, subpath: 'work/test/unit'},
     ]);
   });
 
-  it('reserves the filesystem, makes its volumes, checks out on a bridge of its own, then removes the helper and the bridge', async () => {
+  it('reserves the filesystem, makes its one verified volume, checks out on a bridge of its own, then removes the helper and the bridge', async () => {
     const {ctx, events, created} = context();
     const record = await prepareWorkspace(ctx);
     expect(record).toMatchObject({state: 'mounted', mountPoint: path.join(root, 'r1')});
-    expect(events).toEqual(['volume create sift-a-r1-src', 'volume create sift-a-r1-work', 'create:fetch', 'create:checkout',
+    expect(events).toEqual(['volume create sift-a-r1-fs', 'volume inspect', 'create:fetch', 'create:checkout',
       'container inspect', 'start:c-checkout', 'container rm', 'network rm']);
+    // dockerd mounts the journaled loop device itself; the supervisor's own mount is private to its unit.
+    expect(created.size).toBeGreaterThan(0);
     const args = created.get('c-checkout')!;
     expect(flag(args, '--network')).toEqual(['net-fetch']);
     expect(flag(args, '--mount')).toEqual(['type=bind,source=/usr/lib/sift/checkoutHelper.js,target=/sift/checkoutHelper.js,readonly',
-      'type=volume,source=sift-a-r1-src,target=/src', 'type=volume,source=sift-a-r1-work,target=/workspace']);
+      'type=volume,source=sift-a-r1-fs,target=/src,volume-subpath=src', 'type=volume,source=sift-a-r1-fs,target=/workspace,volume-subpath=work']);
     expect(flag(args, '--cgroup-parent')).toEqual(['siftable-a1.slice']);
     expect(JSON.parse(flag(args, '--env').find((e) => e.startsWith('SIFT_CHECKOUT='))!.slice('SIFT_CHECKOUT='.length))).toEqual(checkout);
     expect(flag(created.get('net-fetch')!, '--label')).toContain('sift.machine.run=r1');
@@ -170,7 +192,7 @@ describe('attempt workspace', () => {
 
   it('kills and removes a helper that runs past its time', async () => {
     const {ctx, events} = context({result: 'hang'});
-    const pending = refusal(freezePatch(ctx, {image: '', mountPoint: path.join(root, 'r1'), state: 'mounted'} as AttemptFsRecord, root));
+    const pending = refusal(freezePatch(ctx, await prepared(ctx), root));
     expect(await pending).toBe('patch_timeout');
     expect(events).toEqual(expect.arrayContaining(['container kill', 'detach:c-patch', 'container rm']));
   });
@@ -182,12 +204,12 @@ describe('attempt workspace', () => {
     }});
     const outDir = path.join(root, 'input');
     await fs.mkdir(outDir);
-    const frozen = await freezePatch(ctx, {image: '', mountPoint: path.join(root, 'r1'), state: 'mounted'} as AttemptFsRecord, outDir);
+    const frozen = await freezePatch(ctx, await prepared(ctx), outDir);
     expect(frozen).toMatchObject({kind: 'patch', contentType: 'text/x-diff', bytes: 16, path: path.join(outDir, PATCH_FILE)});
     expect(frozen.sha256).toMatch(/^[0-9a-f]{64}$/);
     const args = created.get('c-patch')!;
     expect(flag(args, '--network')).toEqual(['none']);
-    expect(flag(args, '--mount')).toContain('type=volume,source=sift-a-r1-work,target=/workspace,readonly');
+    expect(flag(args, '--mount')).toContain('type=volume,source=sift-a-r1-fs,target=/workspace,volume-subpath=work,readonly');
     expect(flag(args, '--env')).toContain('SIFT_MODE=patch');
   });
 
@@ -196,21 +218,35 @@ describe('attempt workspace', () => {
       await fs.mkdir(out, {recursive: true});
       await fs.symlink('/etc/hosts', path.join(out, PATCH_FILE));
     }});
-    await expect(freezePatch(ctx, {image: '', mountPoint: path.join(root, 'r1'), state: 'mounted'} as AttemptFsRecord, root))
+    await expect(freezePatch(ctx, await prepared(ctx), root))
       .rejects.toThrow(/ELOOP|symbolic/);
   });
 
-  it('removes the volumes before the filesystem, and keeps the filesystem while a volume is held', async () => {
+  it('removes the verified volume before the filesystem, and keeps the filesystem while the volume is held', async () => {
     const {ctx, events} = context();
     const record = await prepareWorkspace(ctx);
     const fsCalls = ctx.fsSystem as AttemptFsSystem & {calls: string[]};
-    expect(await releaseWorkspace(ctx.docker, ctx.fsSystem, 'r1', record)).toEqual([]);
-    expect(events.filter((e) => e.startsWith('volume rm'))).toHaveLength(2);
+    expect(await releaseWorkspace(ctx.docker, ctx.fsSystem, ctx, record)).toEqual([]);
+    expect(events.filter((e) => e.startsWith('volume rm'))).toHaveLength(1);
     expect(fsCalls.calls).toContain('unlink r1.img');
 
     const held = context({volumeRm: 1});
     const kept = await prepareWorkspace(held.ctx);
-    expect(await releaseWorkspace(held.ctx.docker, held.ctx.fsSystem, 'r1', kept)).toEqual(['volume:sift-a-r1-src', 'volume:sift-a-r1-work']);
+    expect(await releaseWorkspace(held.ctx.docker, held.ctx.fsSystem, held.ctx, kept)).toEqual(['volume:sift-a-r1-fs']);
     expect((held.ctx.fsSystem as AttemptFsSystem & {calls: string[]}).calls.some((c) => c.startsWith('unlink'))).toBe(false);
+  });
+
+  it('never hands over or removes a volume that is not exactly its own', async () => {
+    // Docker shows another device for the volume (a loop number that changed with a reboot): no helper starts.
+    const moved = context({volumeDevice: '/dev/loop7'});
+    expect(await refusal(prepareWorkspace(moved.ctx))).toBe('attempt_volume');
+    expect(moved.events.some((e) => e.startsWith('create:'))).toBe(false);
+    // And release holds it, with the backing storage, instead of removing it.
+    const fsCalls = moved.ctx.fsSystem as AttemptFsSystem & {calls: string[]};
+    const record = {image: path.join(root, 'r1.img'), mountPoint: path.join(root, 'r1'), imageDev: 1, imageIno: 2, loop: '/dev/loop0',
+      uuid: 'uuid-1', state: 'mounted' as const};
+    expect(await releaseWorkspace(moved.ctx.docker, moved.ctx.fsSystem, moved.ctx, record)).toEqual(['volume_unverified:sift-a-r1-fs']);
+    expect(moved.events).not.toContain('volume rm');
+    expect(fsCalls.calls.some((c) => c.startsWith('unlink') || c.startsWith('umount'))).toBe(false);
   });
 });
