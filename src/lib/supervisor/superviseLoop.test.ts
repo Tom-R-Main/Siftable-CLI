@@ -1426,6 +1426,24 @@ describe('superviseOnce', () => {
         expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(true);
       });
 
+      it('keeps the output of an install that timed out, like any other failed install', async () => {
+        const {host, run} = await checkoutWorld({files, installResult: {ok: false, code: 'install_timeout', detail: 'ran past 300000 ms'}},
+          {}, {}, {resolvePlan: async () => ({...CHECKOUT_PLAN, install: {manager: 'npm'}}), assets: ASSETS});
+        expect(await run()).toMatchObject({kind: 'finished', reason: 'start_failed'});
+        expect(await fs.readFile(path.join(inputRoot, ATTEMPT, 'install.log'), 'utf8')).toContain('npm error');
+        expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(true);
+      });
+
+      it('owes nothing when admission refuses the lockfile before any install ran', async () => {
+        const git = JSON.stringify({lockfileVersion: 3, packages: {'': {}, 'node_modules/x': {version: '1.0.0', resolved: 'git+ssh://git@github.com/a/x.git'}}});
+        const {w, host, run} = await checkoutWorld({files: {'package.json': '{}', 'package-lock.json': git}}, {}, {},
+          {resolvePlan: async () => ({...CHECKOUT_PLAN, install: {manager: 'npm'}}), assets: ASSETS});
+        expect(await run()).toMatchObject({kind: 'finished', reason: 'start_failed'});
+        expect(w.events).not.toContain('start:c-install');
+        expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(true);
+        await expect(fs.access(path.join(inputRoot, ATTEMPT))).rejects.toThrow();
+      });
+
       it('keeps the filesystem holding a failed install\'s output when that output cannot be saved', async () => {
         // The output's destination is taken by a directory, so saving it fails.
         await fs.mkdir(path.join(inputRoot, ATTEMPT, 'install.log'), {recursive: true});

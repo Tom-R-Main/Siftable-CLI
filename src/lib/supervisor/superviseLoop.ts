@@ -767,8 +767,9 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       const prepared = prepareWorkspace(lifetime).then(async (record) => {
         if (plan.install) {
           installLog = await installDependencies(lifetime, record).catch(async (error: unknown) => {
-            if (error instanceof WorkspaceRefused && error.code === 'dependency_install_failed') {
-              if (error.log) installFailure = error.log;
+            // Any refusal that carries npm's output (a failure, a timeout) owes it; one from admission, without output, does not.
+            if (error instanceof WorkspaceRefused && error.log !== undefined) {
+              installFailure = error.log;
               // Durable before anything else happens: a crash from here on still finds the output owed.
               await save({...journal, installOutput: 'owed'});
             }
