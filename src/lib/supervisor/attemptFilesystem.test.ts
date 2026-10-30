@@ -14,42 +14,53 @@ const FULL = ATTEMPT_FS_BYTES / 512;
  */
 function host(options: {freeBytes?: number; stuckDiscard?: boolean; umountFails?: boolean; detachFails?: boolean} = {}) {
   const files = new Map<string, {dev: number; ino: number; blocks: number}>();
-  const loops = new Map<string, string>();
+  /** Each loop device backs the inode the path named when it was attached. */
+  const loops = new Map<string, {image: string; ino: number}>();
   const discard = new Map<string, string>();
   const mounts = new Map<string, string>();
   const calls: string[] = [];
   const owners = new Map<string, number>();
   let nextIno = 100;
   let nextLoop = 0;
-  const uuidOf = new Map<string, string>();
+  const uuidOf = new Map<number, string>();
   const sys: AttemptFsSystem = {
+    async createExclusive(file) {
+      if (files.has(file)) throw Object.assign(new Error('file exists'), {code: 'EEXIST'});
+      const entry = {dev: 7, ino: nextIno++, blocks: 0};
+      files.set(file, entry);
+      return {dev: entry.dev, ino: entry.ino};
+    },
     async run(file, args) {
       const tool = file.split('/').at(-1)!;
       calls.push(`${tool} ${args.join(' ')}`);
       const ok = (stdout = '') => ({code: 0, stdout, stderr: ''});
       switch (tool) {
-        case 'fallocate': files.set(args.at(-1)!, {dev: 7, ino: nextIno++, blocks: FULL}); return ok();
+        case 'fallocate': files.get(args.at(-1)!)!.blocks = FULL; return ok();
         case 'mkfs.ext4': {
           const image = args.at(-1)!;
-          uuidOf.set(image, `uuid-${image.length}`);
+          uuidOf.set(files.get(image)!.ino, `uuid-${files.get(image)!.ino}`);
           if (!args.join(' ').includes('nodiscard')) files.get(image)!.blocks = 65 * 2048;
           return ok();
         }
         case 'losetup': {
           if (args[0] === '--find') {
             const loop = `/dev/loop${nextLoop++}`;
-            loops.set(loop, args.at(-1)!);
+            loops.set(loop, {image: args.at(-1)!, ino: files.get(args.at(-1)!)!.ino});
             discard.set(loop, '4294966784');
             return ok(`${loop}\n`);
           }
           if (args[0] === '--detach') { if (!options.detachFails) loops.delete(args[1]); return ok(); }
           const image = args.at(-1)!;
-          return ok([...loops].filter(([, target]) => target === image).map(([loop]) => loop).join('\n'));
+          return ok([...loops].filter(([, target]) => target.image === image).map(([loop, target]) => `${loop} ${target.ino}`).join('\n'));
         }
         case 'mount': mounts.set(args.at(-1)!, args.at(-2)!); return ok();
         case 'umount': if (options.umountFails) return {code: 32, stdout: '', stderr: 'target is busy'}; mounts.delete(args[0]); return ok();
         case 'findmnt': { const source = mounts.get(args.at(-1)!); return source ? ok(`${source}\n`) : {code: 1, stdout: '', stderr: ''}; }
-        case 'blkid': return ok(uuidOf.get(loops.get(args.at(-1)!)!) ?? '');
+        case 'blkid': {
+          const target = args.at(-1)!;
+          const ino = loops.get(target)?.ino ?? files.get(target)?.ino;
+          return ok(ino === undefined ? '' : uuidOf.get(ino) ?? '');
+        }
         default: return {code: 127, stdout: '', stderr: 'unknown tool'};
       }
     },
@@ -64,11 +75,11 @@ function host(options: {freeBytes?: number; stuckDiscard?: boolean; umountFails?
   };
   /** fstrim: frees an image's unused blocks unless its loop device refuses discard. */
   const trim = (image: string) => {
-    const loop = [...loops].find(([, target]) => target === image)?.[0];
+    const loop = [...loops].find(([, target]) => target.image === image)?.[0];
     if (!loop || discard.get(loop) !== '0') files.get(image)!.blocks = 72 * 2048;
   };
   const reboot = () => { loops.clear(); mounts.clear(); discard.clear(); };
-  return {sys, calls, files, loops, mounts, owners, trim, reboot};
+  return {sys, calls, files, loops, mounts, owners, uuidOf, trim, reboot};
 }
 
 const journal = () => {
@@ -80,10 +91,20 @@ describe('attempt filesystem', () => {
   it('reserves, formats without discard, mounts on its own loop device and journals each identity first', async () => {
     const h = host();
     const j = journal();
-    const record = await createAttemptFs(h.sys, ROOT, 'r1', j.persist);
+    const record = await createAttemptFs(h.sys, ROOT, 'r1', async (r) => {
+      h.calls.push(`persist ino=${r.imageIno ?? '-'} uuid=${r.uuid ?? '-'}`);
+      await j.persist(r);
+    });
     expect(record).toMatchObject({image: `${ROOT}/r1.img`, mountPoint: `${ROOT}/r1`, loop: '/dev/loop0', state: 'mounted', inodes: 399_872});
     expect(j.written.map((r) => r.state)).toEqual(['reserving', 'reserving', 'formatted', 'formatted', 'mounted']);
+    // The identity is journaled before any space is allocated, and the UUID before the first mount.
     expect(j.written[1]).toMatchObject({imageDev: 7, imageIno: 100});
+    const at = (prefix: string) => h.calls.findIndex((c) => c.startsWith(prefix));
+    expect(at('persist ino=100')).toBeLessThan(at('fallocate'));
+    expect(at('persist ino=100 uuid=uuid-100')).toBeLessThan(at('losetup --find'));
+    expect(at('losetup --find')).toBeLessThan(at('mount'));
+    expect(j.written[2]).toMatchObject({uuid: 'uuid-100', state: 'formatted'});
+    expect(j.written[2].loop).toBeUndefined();
     expect(j.written[3].loop).toBe('/dev/loop0');
     expect(h.calls.find((c) => c.startsWith('mkfs.ext4'))).toContain('-E nodiscard');
     expect(h.calls.find((c) => c.startsWith('mount'))).toContain('-o nodev,nosuid,nodiscard /dev/loop0');
@@ -161,5 +182,44 @@ describe('attempt filesystem', () => {
     expect(attemptVolumeCreateArgs(record, 'r1', 'work', {'sift.machine.run': 'r1'})).toEqual(['volume', 'create', '--driver', 'local',
       '--opt', 'type=none', '--opt', 'o=bind', '--opt', `device=${ROOT}/r1/work`, '--label', 'sift.machine.run=r1', 'sift-a-r1-work']);
     expect(() => attemptVolumeCreateArgs({...record, state: 'formatted'}, 'r1', 'work', {})).toThrow(/verified mount/);
+  });
+
+  it('never adopts an existing path at the image, so nothing is allocated or formatted over it', async () => {
+    const h = host();
+    h.files.set(`${ROOT}/r1.img`, {dev: 7, ino: 5, blocks: 8});
+    await expect(createAttemptFs(h.sys, ROOT, 'r1', journal().persist)).rejects.toThrow(/attempt_fs_exists/);
+    expect(h.calls.some((c) => c.startsWith('fallocate') || c.startsWith('mkfs'))).toBe(false);
+  });
+
+  it('refuses to mount a device whose filesystem is not the pinned UUID', async () => {
+    const h = host();
+    const record = await createAttemptFs(h.sys, ROOT, 'r1', journal().persist);
+    h.reboot();
+    h.uuidOf.set(record.imageIno!, 'uuid-other');
+    const mountsBefore = h.calls.filter((c) => c.startsWith('mount')).length;
+    await expect(mountAttemptFs(h.sys, record, journal().persist)).rejects.toThrow(/pinned/);
+    expect(h.calls.filter((c) => c.startsWith('mount')).length).toBe(mountsBefore);
+  });
+
+  it('holds instead of unmounting, detaching or deleting anything that is not provably ours', async () => {
+    // A replaced image: nothing is touched.
+    const replaced = host();
+    const r1 = await createAttemptFs(replaced.sys, ROOT, 'r1', journal().persist);
+    replaced.files.set(r1.image, {...replaced.files.get(r1.image)!, ino: 999});
+    expect(await releaseAttemptFs(replaced.sys, r1)).toEqual([`image_unverified:${r1.image}`]);
+    expect(replaced.calls.some((c) => c.startsWith('umount') || c.startsWith('losetup --detach') || c.startsWith('unlink'))).toBe(false);
+
+    // Something else mounted at the mount point: never unmounted.
+    const foreign = host();
+    const r2 = await createAttemptFs(foreign.sys, ROOT, 'r1', journal().persist);
+    foreign.mounts.set(r2.mountPoint, '/dev/sdb1');
+    expect(await releaseAttemptFs(foreign.sys, r2)).toEqual([`mount_foreign:${r2.mountPoint}`]);
+    expect(foreign.calls.some((c) => c.startsWith('umount') || c.startsWith('unlink'))).toBe(false);
+
+    // A path never verified (a crash before its identity was journaled): held for the operator.
+    const unverified = host();
+    unverified.files.set(`${ROOT}/r9.img`, {dev: 7, ino: 3, blocks: 8});
+    expect(await releaseAttemptFs(unverified.sys, {image: `${ROOT}/r9.img`, mountPoint: `${ROOT}/r9`, state: 'reserving'}))
+      .toEqual([`image_unverified:${ROOT}/r9.img`]);
   });
 });

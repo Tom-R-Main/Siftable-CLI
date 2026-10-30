@@ -12,12 +12,16 @@
  * image's allocated blocks are checked after each step. The machine's global
  * fstrim is never touched.
  *
- * Every identity (image path, device and inode, loop device, filesystem
- * UUID) is journaled before it is relied on. A mount is used only when it is
- * the journaled loop device with the journaled UUID, and the image is
- * unlinked only after the mount and every loop device on it are shown gone.
+ * Every identity is journaled before it is relied on: the image is created
+ * exclusively, without following links, and its device and inode are recorded
+ * before any space is allocated; the filesystem UUID is pinned after mkfs,
+ * before the first mount. A loop device counts as ours only when it backs the
+ * journaled inode, and a mount only when it is our loop device with the pinned
+ * UUID. Release checks the same identities before every destructive step: a
+ * foreign mount, a foreign loop device or a replaced image is left held,
+ * never unmounted, detached or unlinked.
  */
-import {promises as fs} from 'node:fs';
+import {constants, promises as fs} from 'node:fs';
 import path from 'node:path';
 import {execSystemTool} from './systemAccount.js';
 
@@ -42,6 +46,8 @@ export interface AttemptFsRecord {
 }
 
 export interface AttemptFsSystem {
+  /** Creates a new regular file: refuses any existing path, symlinks included. Returns its identity. */
+  createExclusive(file: string, mode: number): Promise<{dev: number; ino: number}>;
   /** Runs a system tool by absolute path, without a shell. */
   run(file: string, args: string[]): Promise<{code: number; stdout: string; stderr: string}>;
   stat(file: string): Promise<{dev: number; ino: number; blocks: number} | null>;
@@ -83,11 +89,21 @@ async function checkReserved(sys: AttemptFsSystem, record: AttemptFsRecord, step
   }
 }
 
-/** The loop devices attached to the image, from `losetup -j`. */
-async function loopsOf(sys: AttemptFsSystem, image: string): Promise<string[]> {
-  const listed = await must(sys, 'attempt_fs_loop', tools.losetup, ['--list', '--noheadings', '--output', 'NAME', '--associated', image]);
-  return listed.split('\n').map((line) => line.trim()).filter(Boolean);
+/** Loop devices attached to the image path, split by whether they back the journaled inode. */
+async function loopsOf(sys: AttemptFsSystem, record: AttemptFsRecord): Promise<{ours: string[]; foreign: string[]}> {
+  const listed = await must(sys, 'attempt_fs_loop', tools.losetup,
+    ['--list', '--noheadings', '--output', 'NAME,BACK-INO', '--associated', record.image]);
+  const ours: string[] = [];
+  const foreign: string[] = [];
+  for (const line of listed.split('\n').map((entry) => entry.trim()).filter(Boolean)) {
+    const [name, ino] = line.split(/\s+/);
+    (record.imageIno !== undefined && Number(ino) === record.imageIno ? ours : foreign).push(name);
+  }
+  return {ours, foreign};
 }
+
+const uuidOf = (sys: AttemptFsSystem, deviceOrImage: string) =>
+  must(sys, 'attempt_fs_mount', tools.blkid, ['--match-tag', 'UUID', '--output', 'value', deviceOrImage]);
 
 /** What is mounted at the mount point, or null when nothing is. */
 async function mountedSource(sys: AttemptFsSystem, mountPoint: string): Promise<string | null> {
@@ -108,42 +124,45 @@ async function disableDiscard(sys: AttemptFsSystem, loop: string): Promise<void>
 /**
  * Attaches the journaled image to a loop device with discard off and mounts it,
  * or verifies a mount that survived (a supervisor restart without a reboot).
- * Shared by the start and by recovery.
+ * Shared by the start and by recovery. The pinned UUID is checked on the loop
+ * device before any mount.
  */
 export async function mountAttemptFs(sys: AttemptFsSystem, record: AttemptFsRecord,
   persist: (record: AttemptFsRecord) => Promise<void>): Promise<AttemptFsRecord> {
+  if (!record.uuid || record.imageIno === undefined) throw new AttemptFsError('attempt_fs_mismatch', 'the image identity was never pinned');
   await checkReserved(sys, record, 'before attach');
   let current = record;
   const source = await mountedSource(sys, current.mountPoint);
-  const loops = await loopsOf(sys, current.image);
+  const loops = await loopsOf(sys, current);
+  if (loops.foreign.length > 0) throw new AttemptFsError('attempt_fs_mismatch', `the image path is attached to ${loops.foreign.join(', ')}, backing another file`);
   if (source !== null) {
-    // Something is mounted there: it must be this image's own journaled loop device.
-    if (!current.loop || source !== current.loop || !loops.includes(current.loop)) {
+    // Something is mounted there: it must be this image's own journaled loop device, with the pinned UUID.
+    if (!current.loop || source !== current.loop || !loops.ours.includes(current.loop)) {
       throw new AttemptFsError('attempt_fs_mismatch', `${current.mountPoint} holds ${source}, not the journaled device`);
     }
+    if (await uuidOf(sys, current.loop) !== current.uuid) throw new AttemptFsError('attempt_fs_mismatch', 'the mounted filesystem UUID changed');
     await disableDiscard(sys, current.loop);
   } else {
-    if (loops.length > 1) throw new AttemptFsError('attempt_fs_mismatch', `the image is attached ${loops.length} times`);
+    if (loops.ours.length > 1) throw new AttemptFsError('attempt_fs_mismatch', `the image is attached ${loops.ours.length} times`);
     // A device left from before a crash is reused only if it is the journaled one; otherwise attach afresh.
-    let loop = loops[0];
+    let loop = loops.ours[0];
     if (loop && loop !== current.loop) throw new AttemptFsError('attempt_fs_mismatch', `the image is attached to ${loop}, not the journaled device`);
     if (!loop) {
       loop = await must(sys, 'attempt_fs_loop', tools.losetup, ['--find', '--show', '--nooverlap', current.image]);
       current = {...current, loop};
       await persist(current);
+      // The new device must back the journaled inode, not whatever the path names now.
+      if (!(await loopsOf(sys, current)).ours.includes(loop)) throw new AttemptFsError('attempt_fs_mismatch', `${loop} does not back the journaled image`);
     }
     await disableDiscard(sys, loop);
+    if (await uuidOf(sys, loop) !== current.uuid) throw new AttemptFsError('attempt_fs_mismatch', 'the filesystem UUID is not the pinned one');
     await sys.mkdir(current.mountPoint, 0o700);
     await must(sys, 'attempt_fs_mount', tools.mount, ['-t', 'ext4', '-o', 'nodev,nosuid,nodiscard', loop, current.mountPoint]);
   }
-  const device = current.loop;
-  if (!device) throw new AttemptFsError('attempt_fs_loop', 'no loop device was journaled');
-  const uuid = await must(sys, 'attempt_fs_mount', tools.blkid, ['--match-tag', 'UUID', '--output', 'value', device]);
-  if (current.uuid && uuid !== current.uuid) throw new AttemptFsError('attempt_fs_mismatch', 'the filesystem UUID changed');
-  if (await mountedSource(sys, current.mountPoint) !== device) throw new AttemptFsError('attempt_fs_mount', 'the mount did not take');
+  if (await mountedSource(sys, current.mountPoint) !== current.loop) throw new AttemptFsError('attempt_fs_mount', 'the mount did not take');
   await checkReserved(sys, current, 'after mount');
   const inodes = (await sys.statfs(current.mountPoint)).files;
-  current = {...current, uuid, inodes, state: 'mounted'};
+  current = {...current, inodes, state: 'mounted'};
   await persist(current);
   return current;
 }
@@ -151,7 +170,7 @@ export async function mountAttemptFs(sys: AttemptFsSystem, record: AttemptFsReco
 /**
  * Reserves, formats and mounts a new attempt filesystem under `root`, journaling
  * each identity before it is relied on. Refuses the start when the host cannot
- * spare the reservation.
+ * spare the reservation, or when anything already exists at the image path.
  */
 export async function createAttemptFs(sys: AttemptFsSystem, root: string, runId: string,
   persist: (record: AttemptFsRecord) => Promise<void>): Promise<AttemptFsRecord> {
@@ -161,17 +180,21 @@ export async function createAttemptFs(sys: AttemptFsSystem, root: string, runId:
     throw new AttemptFsError('insufficient_disk', `${free.bavail * free.bsize} bytes free; an attempt needs ${ATTEMPT_FS_BYTES + HOST_FREE_FLOOR_BYTES}`);
   }
   let record: AttemptFsRecord = {image: path.join(root, `${runId}.img`), mountPoint: path.join(root, runId), state: 'reserving'};
+  // Journaled before the file exists, so a crash here leaves an unverified path that release holds, never deletes.
+  await persist(record);
+  const identity = await sys.createExclusive(record.image, 0o600).catch((error: NodeJS.ErrnoException) => {
+    throw new AttemptFsError(error.code === 'EEXIST' ? 'attempt_fs_exists' : 'attempt_fs_missing', `${record.image}: ${error.message}`);
+  });
+  record = {...record, imageDev: identity.dev, imageIno: identity.ino};
   await persist(record);
   await must(sys, 'insufficient_disk', tools.fallocate, ['--length', String(ATTEMPT_FS_BYTES), record.image]);
-  const stat = await sys.stat(record.image);
-  if (!stat) throw new AttemptFsError('attempt_fs_missing', 'the image was not created');
-  record = {...record, imageDev: stat.dev, imageIno: stat.ino};
-  await persist(record);
   await checkReserved(sys, record, 'after fallocate');
   await must(sys, 'attempt_fs_format', tools.mkfs,
     ['-q', '-F', '-m', '0', '-N', String(ATTEMPT_FS_INODES), '-E', 'nodiscard,root_owner=0:0', record.image]);
   await checkReserved(sys, record, 'after mkfs');
-  record = {...record, state: 'formatted'};
+  const uuid = await uuidOf(sys, record.image);
+  if (!uuid) throw new AttemptFsError('attempt_fs_format', 'mkfs left no filesystem UUID');
+  record = {...record, uuid, state: 'formatted'};
   await persist(record);
   record = await mountAttemptFs(sys, record, persist);
   for (const dir of ATTEMPT_FS_DIRS) {
@@ -183,25 +206,32 @@ export async function createAttemptFs(sys: AttemptFsSystem, root: string, runId:
 }
 
 /**
- * Unmounts and detaches, then deletes the image. Every step is checked: the
- * image is unlinked only when nothing is mounted at the mount point and no
- * loop device is left on it. Returns what is still held; nothing is ever
- * unlinked while anything is.
+ * Unmounts and detaches, then deletes the image, checking the journaled
+ * identities before each destructive step. A replaced or unverified image, a
+ * mount that is not our device with our UUID, or a loop device backing
+ * another file is left held. Nothing is unlinked while anything is held.
  */
 export async function releaseAttemptFs(sys: AttemptFsSystem, record: AttemptFsRecord): Promise<string[]> {
-  const held: string[] = [];
+  const stat = await sys.stat(record.image).catch(() => 'unknown' as const);
+  if (stat === 'unknown') return [`image:${record.image}`];
+  if (stat && (record.imageIno === undefined || stat.dev !== record.imageDev || stat.ino !== record.imageIno)) {
+    return [`image_unverified:${record.image}`];
+  }
   const source = await mountedSource(sys, record.mountPoint).catch(() => 'unknown');
   if (source !== null) {
+    if (!record.loop || source !== record.loop) return [`mount_foreign:${record.mountPoint}`];
+    if (!record.uuid || await uuidOf(sys, source).catch(() => null) !== record.uuid) return [`mount_foreign:${record.mountPoint}`];
     const unmounted = await sys.run(tools.umount, [record.mountPoint]);
-    if (unmounted.code !== 0 || await mountedSource(sys, record.mountPoint).catch(() => 'unknown') !== null) held.push(`mount:${record.mountPoint}`);
+    if (unmounted.code !== 0 || await mountedSource(sys, record.mountPoint).catch(() => 'unknown') !== null) return [`mount:${record.mountPoint}`];
   }
-  if (held.length) return held;
-  const loops = await loopsOf(sys, record.image).catch(() => null);
+  const loops = await loopsOf(sys, record).catch(() => null);
   if (loops === null) return [`loop:${record.image}`];
-  for (const loop of loops) await sys.run(tools.losetup, ['--detach', loop]);
-  const left = await loopsOf(sys, record.image).catch(() => null);
-  if (left === null || left.length > 0) return [`loop:${record.image}`];
-  await sys.unlink(record.image).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') held.push(`image:${record.image}`); });
+  if (loops.foreign.length > 0) return loops.foreign.map((loop) => `loop_foreign:${loop}`);
+  for (const loop of loops.ours) await sys.run(tools.losetup, ['--detach', loop]);
+  const left = await loopsOf(sys, record).catch(() => null);
+  if (left === null || left.ours.length + left.foreign.length > 0) return [`loop:${record.image}`];
+  const held: string[] = [];
+  if (stat) await sys.unlink(record.image).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') held.push(`image:${record.image}`); });
   await sys.rmdir(record.mountPoint).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') held.push(`dir:${record.mountPoint}`); });
   return held;
 }
@@ -219,6 +249,15 @@ export const attemptVolumeName = (runId: string, dir: typeof ATTEMPT_FS_DIRS[num
 
 /** The real host: system tools by absolute path, and the file system as root. */
 export const hostAttemptFsSystem: AttemptFsSystem = {
+  async createExclusive(file, mode) {
+    const handle = await fs.open(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, mode);
+    try {
+      const stat = await handle.stat({bigint: true});
+      return {dev: Number(stat.dev), ino: Number(stat.ino)};
+    } finally {
+      await handle.close();
+    }
+  },
   run: execSystemTool,
   async stat(file) {
     const found = await fs.lstat(file, {bigint: true}).catch((error: NodeJS.ErrnoException) => {
