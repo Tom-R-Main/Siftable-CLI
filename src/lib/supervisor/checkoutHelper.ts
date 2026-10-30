@@ -23,7 +23,8 @@
  * Output is one JSON line on stdout. Exit 0 means the step succeeded.
  */
 import {spawn} from 'node:child_process';
-import {createWriteStream, promises as fs} from 'node:fs';
+import {createHash} from 'node:crypto';
+import {createReadStream, createWriteStream, promises as fs} from 'node:fs';
 import path from 'node:path';
 
 export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
@@ -194,7 +195,7 @@ const literal = (scopes: string[]) => scopes.map((scope) => `:(literal)${scope}`
  * new blobs land in its own object directory.
  */
 export async function buildPatch(git: Git, work: string, out: string, baseSha: string, writeScope: string[],
-  maxBytes = MAX_PATCH_BYTES): Promise<{bytes: number}> {
+  maxBytes = MAX_PATCH_BYTES): Promise<{bytes: number; changed: string[]}> {
   const gitDir = path.join(out, 'g');
   await fs.rm(gitDir, {recursive: true, force: true});
   await must(git, 'patch_failed', ['init', '--quiet', '--bare', gitDir]);
@@ -213,8 +214,11 @@ export async function buildPatch(git: Git, work: string, out: string, baseSha: s
     throw new CheckoutRefused('patch_too_large', `more than ${maxBytes} bytes`);
   }
   if (diff.code !== 0) throw new CheckoutRefused('patch_failed', `git diff exited ${diff.code}: ${diff.stderr.trim().slice(0, 500)}`);
+  // Every path the patch touches, renames as a delete plus an add, for the frozen-test check (U3).
+  const names = await must(git, 'patch_failed', ['diff', '--cached', '--name-only', '-z', '--no-renames', baseSha, '--', ...literal(writeScope)],
+    {cwd: work, env});
   await fs.rm(gitDir, {recursive: true, force: true});
-  return {bytes: diff.bytes ?? 0};
+  return {bytes: diff.bytes ?? 0, changed: names.toString('utf8').split('\0').filter(Boolean)};
 }
 
 export const INSTALL_LOG = 'install.log';
@@ -286,6 +290,149 @@ export async function runInstall(paths = {build: '/build', home: '/tmp/h'}, prox
   }
 }
 
+/** A repository-relative path, or undefined: no absolute path (but a `/workspace/` prefix), `..`, `.git`, or empty segment. */
+export function repoPath(raw: string): string | undefined {
+  let candidate = raw.trim();
+  if (candidate.startsWith('/workspace/')) candidate = candidate.slice('/workspace/'.length);
+  while (candidate.startsWith('./')) candidate = candidate.slice(2);
+  candidate = candidate.replace(/\/+$/, '');
+  if (!candidate || candidate.startsWith('/') || /[\\\0]/.test(candidate)) return undefined;
+  const segments = candidate.split('/');
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..' || segment === '.git')) return undefined;
+  return segments.join('/');
+}
+
+export interface FrozenPath {path: string; kind: 'file' | 'dir'}
+export type FrozenSource = 'files' | 'selector' | 'report';
+
+/**
+ * The frozen set (verification contract rev 2, D3), checked against the base tree: every prefix a directory, the
+ * path itself a regular file or a directory. A selector token that is not such a path is not a path and is ignored;
+ * an entry from `test.files` or a report `file` attribute that is not one fails closed.
+ */
+export async function resolveFrozen(git: Git, env: NodeJS.ProcessEnv, baseSha: string,
+  candidates: Array<{path: string; source: FrozenSource}>): Promise<FrozenPath[]> {
+  const listing = await must(git, 'verify_failed', ['ls-tree', '-r', '-t', '-z', '--full-tree', baseSha], {env});
+  const modes = new Map<string, string>();
+  for (const record of listing.toString('utf8').split('\0')) {
+    if (!record) continue;
+    const tab = record.indexOf('\t');
+    modes.set(record.slice(tab + 1), record.slice(0, tab).split(/\s+/)[0]);
+  }
+  const frozen = new Map<string, FrozenPath>();
+  for (const candidate of candidates) {
+    const normalized = repoPath(candidate.path);
+    const segments = normalized?.split('/') ?? [];
+    const prefixesAreTrees = segments.slice(0, -1).every((_, i) => modes.get(segments.slice(0, i + 1).join('/')) === TREE);
+    const mode = normalized ? modes.get(normalized) : undefined;
+    const kind = mode === TREE ? 'dir' : mode === '100644' || mode === '100755' ? 'file' : undefined;
+    if (!normalized || !prefixesAreTrees || !kind) {
+      if (candidate.source === 'selector') continue;
+      throw new CheckoutRefused('frozen_path_invalid', `${candidate.source} names ${JSON.stringify(candidate.path)}, which is not a file or directory at the base`);
+    }
+    frozen.set(normalized, {path: normalized, kind});
+  }
+  if (frozen.size === 0) throw new CheckoutRefused('frozen_tests_unknown', 'no test file or directory could be identified to freeze');
+  return [...frozen.values()].sort((a, b) => (a.path < b.path ? -1 : 1));
+}
+
+/** The changed paths that are frozen: equal to a frozen file, or under a frozen directory. */
+export function frozenChanges(changed: string[], frozen: FrozenPath[]): string[] {
+  return changed.filter((file) => frozen.some((entry) => file === entry.path || (entry.kind === 'dir' && file.startsWith(`${entry.path}/`))));
+}
+
+const sha256Hex = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+
+/** A verifier run's own git directory (`<dir>/g`) and tree (`<dir>/src`), reading the base objects through alternates. */
+export function verifyEnv(dir: string, objects: string): NodeJS.ProcessEnv {
+  const gitDir = path.join(dir, 'g');
+  return {GIT_DIR: gitDir, GIT_WORK_TREE: path.join(dir, 'src'), GIT_OBJECT_DIRECTORY: path.join(gitDir, 'objects'),
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: objects, GIT_INDEX_FILE: path.join(gitDir, 'index')};
+}
+
+/**
+ * A fresh tree for one verifier run (rev 2, R1): baseSha checked out from the base objects through alternates into
+ * `<dir>/src` with a git directory of its own at `<dir>/g`, then, for the selected and regression runs, the frozen
+ * patch applied by its digest. Returns the index tree id the run is checked against afterwards.
+ */
+export async function materializeVerify(git: Git, objects: string, dir: string, baseSha: string,
+  patch?: {file: string; sha256: string}): Promise<{treeId: string; env: NodeJS.ProcessEnv}> {
+  const env = verifyEnv(dir, objects);
+  const gitDir = env.GIT_DIR as string;
+  const tree = env.GIT_WORK_TREE as string;
+  // The run directory may exist (a volume subpath); the tree inside it must not.
+  await fs.mkdir(dir, {recursive: true, mode: 0o755});
+  await fs.mkdir(tree, {mode: 0o755});
+  await must(git, 'verify_failed', ['init', '--quiet', '--bare', gitDir]);
+  await must(git, 'verify_failed', ['read-tree', baseSha], {cwd: tree, env});
+  await must(git, 'verify_failed', ['checkout-index', '--all', '-u'], {cwd: tree, env});
+  if (patch) {
+    const stat = await fs.lstat(patch.file).catch(() => undefined);
+    if (!stat?.isFile() || stat.size > MAX_PATCH_BYTES) throw new CheckoutRefused('patch_apply_failed', 'the patch is not a regular file within its cap');
+    const bytes = await fs.readFile(patch.file);
+    if (sha256Hex(bytes) !== patch.sha256) throw new CheckoutRefused('patch_apply_failed', 'the patch does not match its frozen digest');
+    // Applied from a private copy, so the bytes checked are the bytes applied.
+    const copy = path.join(gitDir, 'apply.patch');
+    await fs.writeFile(copy, bytes, {mode: 0o600, flag: 'wx'});
+    await must(git, 'patch_apply_failed', ['apply', '--index', '--whitespace=nowarn', copy], {cwd: tree, env});
+  }
+  const treeId = (await must(git, 'verify_failed', ['write-tree'], {cwd: tree, env})).toString().trim();
+  if (!patch) {
+    const baseTree = (await must(git, 'verify_failed', ['rev-parse', `${baseSha}^{tree}`], {cwd: tree, env})).toString().trim();
+    if (treeId !== baseTree) throw new CheckoutRefused('verify_failed', `the base checkout is tree ${treeId}, not ${baseTree}`);
+  }
+  return {treeId, env};
+}
+
+/** git's object id for a blob of these bytes (SHA-1 repositories). */
+async function blobId(read: () => AsyncIterable<Buffer> | Buffer[], size: number): Promise<{id: string; bytes: number}> {
+  const hash = createHash('sha1').update(`blob ${size}\0`);
+  let bytes = 0;
+  for await (const chunk of read()) { hash.update(chunk); bytes += chunk.length; }
+  return {id: hash.digest('hex'), bytes};
+}
+
+/**
+ * After a run, every tracked path of the recorded tree must still be what the tree says (rev 2, R1): a real
+ * directory at every prefix, the same type and executable bit, and the same blob id computed from the bytes on
+ * disk. `git update-index --refresh` would keep the indexed ids, so nothing here trusts the index. Untracked and
+ * ignored files are not checked. Returns the paths that differ, at most 20.
+ */
+export async function checkTree(git: Git, env: NodeJS.ProcessEnv, tree: string, treeId: string): Promise<string[]> {
+  const format = (await must(git, 'verify_failed', ['rev-parse', '--show-object-format'], {cwd: tree, env})).toString().trim();
+  if (format !== 'sha1') throw new CheckoutRefused('verify_failed', `object format ${format} is not supported`);
+  const listing = await must(git, 'verify_failed', ['ls-tree', '-r', '-z', '--full-tree', treeId], {cwd: tree, env});
+  const changed: string[] = [];
+  const directories = new Map<string, boolean>();
+  const realDirectory = async (relative: string) => {
+    if (!directories.has(relative)) directories.set(relative, Boolean((await fs.lstat(path.join(tree, relative)).catch(() => undefined))?.isDirectory()));
+    return directories.get(relative) as boolean;
+  };
+  for (const record of listing.toString('utf8').split('\0')) {
+    if (!record || changed.length >= 20) continue;
+    const tab = record.indexOf('\t');
+    const [mode, , id] = record.slice(0, tab).split(/\s+/);
+    const relative = record.slice(tab + 1);
+    const segments = relative.split('/');
+    let parentsReal = true;
+    for (let i = 1; i < segments.length && parentsReal; i += 1) parentsReal = await realDirectory(segments.slice(0, i).join('/'));
+    const file = path.join(tree, relative);
+    const stat = parentsReal ? await fs.lstat(file).catch(() => undefined) : undefined;
+    let same = false;
+    if (stat && mode === '120000' && stat.isSymbolicLink()) {
+      const target = await fs.readlink(file, {encoding: 'buffer'});
+      same = (await blobId(() => [target], target.length)).id === id;
+    } else if (stat && (mode === '100644' || mode === '100755') && stat.isFile() && ((stat.mode & 0o100) !== 0) === (mode === '100755')) {
+      const read = await blobId(() => createReadStream(file), stat.size);
+      same = read.bytes === stat.size && read.id === id;
+    } else if (stat && mode === '160000') {
+      same = stat.isDirectory();
+    }
+    if (!same) changed.push(relative);
+  }
+  return changed;
+}
+
 export interface CheckoutRequest {repositoryUrl: string; baseSha: string; writeScope: string[]}
 
 export async function runCheckout(request: CheckoutRequest, paths = {src: '/src', work: '/workspace', home: '/tmp/h'},
@@ -316,10 +463,51 @@ export async function runPatch(request: CheckoutRequest, paths = {work: '/worksp
   }
 }
 
+export interface VerifyRequest {
+  baseSha: string;
+  /** The frozen patch's digest; absent for the base run. */
+  patchSha256?: string;
+  /** Base run only: the frozen-set candidates to resolve against the base tree. */
+  frozen?: Array<{path: string; source: FrozenSource}>;
+}
+
+const VERIFY_PATHS = {objects: '/workspace/.git/objects', dir: '/verify', patch: '/out/sift.patch', home: '/tmp/h'};
+
+async function refusalOf(work: () => Promise<Record<string, unknown>>, fallback: string): Promise<Record<string, unknown>> {
+  try {
+    return await work();
+  } catch (error) {
+    if (error instanceof CheckoutRefused) return {ok: false, code: error.code, detail: error.message};
+    return {ok: false, code: fallback, detail: (error as Error).message.slice(0, 500)};
+  }
+}
+
+/** SIFT_MODE=verify-checkout: a fresh tree for one run, with the patch for selected and regression, and the frozen set for base. */
+export function runVerifyCheckout(request: VerifyRequest, paths = VERIFY_PATHS, git: Git = hostGit(paths.home)): Promise<Record<string, unknown>> {
+  return refusalOf(async () => {
+    await fs.mkdir(paths.home, {recursive: true});
+    const {treeId, env} = await materializeVerify(git, paths.objects, paths.dir, request.baseSha,
+      request.patchSha256 ? {file: paths.patch, sha256: request.patchSha256} : undefined);
+    const frozen = request.frozen ? await resolveFrozen(git, env, request.baseSha, request.frozen) : undefined;
+    return {ok: true, treeId, ...(frozen ? {frozen} : {})};
+  }, 'verify_failed');
+}
+
+/** SIFT_MODE=tree-check: after the run, the tracked paths that no longer match the recorded tree. */
+export function runTreeCheck(request: {treeId: string}, paths = VERIFY_PATHS, git: Git = hostGit(paths.home)): Promise<Record<string, unknown>> {
+  return refusalOf(async () => {
+    await fs.mkdir(paths.home, {recursive: true});
+    const env = verifyEnv(paths.dir, paths.objects);
+    return {ok: true, changed: await checkTree(git, env, env.GIT_WORK_TREE as string, request.treeId)};
+  }, 'verify_failed');
+}
+
 if (require.main === module) {
   const request = JSON.parse(process.env.SIFT_CHECKOUT ?? '{}') as CheckoutRequest;
+  const verify = JSON.parse(process.env.SIFT_VERIFY ?? '{}') as VerifyRequest & {treeId: string};
   const mode = process.env.SIFT_MODE;
-  (mode === 'patch' ? runPatch(request) : mode === 'install' ? runInstall() : runCheckout(request)).then((result) => {
+  (mode === 'patch' ? runPatch(request) : mode === 'install' ? runInstall() : mode === 'verify-checkout' ? runVerifyCheckout(verify)
+    : mode === 'tree-check' ? runTreeCheck(verify) : runCheckout(request)).then((result) => {
     process.stdout.write(`${JSON.stringify(result)}\n`);
     process.exit(result.ok ? 0 : 2);
   }, () => process.exit(1));

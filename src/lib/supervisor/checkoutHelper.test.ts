@@ -3,8 +3,9 @@ import {mkdtempSync, promises as fs, readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
-import {admitBase, buildPatch, CheckoutRefused, checkGit, fetchBase, type Git, gitEnvironment, hostGit, INSTALL_LOG, materialize, NPM_CI_ARGS,
-  hostNpm, type Npm, PATCH_FILE, pinBase, runInstall} from './checkoutHelper.js';
+import {createHash} from 'node:crypto';
+import {admitBase, buildPatch, CheckoutRefused, checkGit, checkTree, fetchBase, frozenChanges, type Git, gitEnvironment, hostGit, INSTALL_LOG,
+  materialize, materializeVerify, NPM_CI_ARGS, hostNpm, type Npm, PATCH_FILE, pinBase, repoPath, resolveFrozen, runInstall} from './checkoutHelper.js';
 
 /** Fixture setup uses plain git; the code under test uses only the controlled environment. */
 const plain = (cwd: string, ...args: string[]) => execFileSync('git', args, {cwd, env: {...process.env, GIT_CONFIG_GLOBAL: '/dev/null',
@@ -115,7 +116,7 @@ describe('checkout helper', () => {
     it('is only its header, but still written, when the writer changed nothing', async () => {
       const {git, work, out} = await written('p-empty');
       const header = `# sift patch v1: base ${base}, write scope ["src/lib"]\n`;
-      expect(await buildPatch(git, work, out, base, ['src/lib'])).toEqual({bytes: header.length});
+      expect(await buildPatch(git, work, out, base, ['src/lib'])).toEqual({bytes: header.length, changed: []});
       // Never empty, so its digest cannot match an empty log's (V502 requires distinct digests).
       expect(readFileSync(path.join(out, PATCH_FILE), 'utf8')).toBe(header);
     });
@@ -128,7 +129,7 @@ describe('checkout helper', () => {
       await fs.rm(path.join(work, 'test', 'a.test.ts'));
       // Outside the scope given to the patch: never in it.
       await fs.writeFile(path.join(work, 'notes.txt'), 'changed\n');
-      await buildPatch(git, work, out, base, ['src/lib']);
+      expect((await buildPatch(git, work, out, base, ['src/lib'])).changed).toEqual(['src/lib/a.ts', 'src/lib/bin.dat', 'src/lib/new.ts']);
       const patch = readFileSync(path.join(out, PATCH_FILE), 'utf8');
       expect(patch).toContain('src/lib/a.ts');
       expect(patch).toContain('src/lib/new.ts');
@@ -229,5 +230,104 @@ describe('checkout helper', () => {
       expect((await fs.stat(path.join(paths.build, 'node_modules'))).isDirectory()).toBe(true);
       await expect(fs.access(path.join(paths.build, INSTALL_LOG))).resolves.toBeUndefined();
     }, 60_000);
+  });
+  describe('verify', () => {
+    /** A writer checkout with a change in src/lib and its patch, as the verifier receives them. */
+    async function patched(name: string) {
+      const {git, src, work} = await staged(name);
+      await materialize(git, src, work, base, ['src/lib', 'test']);
+      await fs.writeFile(path.join(work, 'src', 'lib', 'a.ts'), 'export const a = 3;\n');
+      await fs.writeFile(path.join(work, 'test', 'a.test.ts'), 'weakened\n');
+      const out = path.join(root, name, 'out');
+      await fs.mkdir(out);
+      const {changed} = await buildPatch(git, work, out, base, ['src/lib', 'test']);
+      const file = path.join(out, PATCH_FILE);
+      const sha256 = createHash('sha256').update(readFileSync(file)).digest('hex');
+      return {git, objects: path.join(work, '.git', 'objects'), changed, patch: {file, sha256}, runs: path.join(root, name, 'verify')};
+    }
+
+    it('materializes the base exactly, checked against the base tree, with its own git directory', async () => {
+      const {git, objects, runs} = await patched('v-base');
+      await fs.mkdir(runs);
+      const {treeId, env} = await materializeVerify(git, objects, path.join(runs, 'base'), base);
+      expect(treeId).toBe(plain(fixture, 'rev-parse', `${base}^{tree}`));
+      // Blob bytes, not the fixture's eol=crlf rule; the patch's change is not there.
+      expect(readFileSync(path.join(runs, 'base', 'src', 'src', 'lib', 'a.ts'), 'utf8')).toBe(LF);
+      expect(readFileSync(path.join(runs, 'base', 'src', 'test', 'a.test.ts'), 'utf8')).toBe('test\n');
+      expect(await checkTree(git, env, env.GIT_WORK_TREE as string, treeId)).toEqual([]);
+    });
+
+    it('applies the frozen patch only by its digest, and records the patched tree', async () => {
+      const {git, objects, patch, runs} = await patched('v-patch');
+      await fs.mkdir(runs);
+      const {treeId} = await materializeVerify(git, objects, path.join(runs, 'selected'), base, patch);
+      expect(treeId).not.toBe(plain(fixture, 'rev-parse', `${base}^{tree}`));
+      expect(readFileSync(path.join(runs, 'selected', 'src', 'src', 'lib', 'a.ts'), 'utf8')).toBe('export const a = 3;\n');
+      const wrong = materializeVerify(git, objects, path.join(runs, 'wrong'), base, {...patch, sha256: '0'.repeat(64)});
+      expect(await refusal(wrong)).toBe('patch_apply_failed');
+      await fs.writeFile(path.join(root, 'v-patch', 'bad.patch'), 'diff --git a/nope b/nope\n--- a/nope\n+++ b/nope\n@@ -1 +1 @@\n-x\n+y\n');
+      const bad = path.join(root, 'v-patch', 'bad.patch');
+      const badSha = createHash('sha256').update(readFileSync(bad)).digest('hex');
+      expect(await refusal(materializeVerify(git, objects, path.join(runs, 'bad'), base, {file: bad, sha256: badSha}))).toBe('patch_apply_failed');
+    });
+
+    it('finds every tracked change after a run, and ignores untracked files', async () => {
+      const {git, objects, runs} = await patched('v-tree');
+      await fs.mkdir(runs);
+      const fresh = async (name: string) => {
+        const dir = path.join(runs, name);
+        const {treeId, env} = await materializeVerify(git, objects, dir, base);
+        return {tree: path.join(dir, 'src'), check: () => checkTree(git, env, path.join(dir, 'src'), treeId)};
+      };
+      const untracked = await fresh('untracked');
+      await fs.mkdir(path.join(untracked.tree, 'node_modules', '.cache'), {recursive: true});
+      await fs.writeFile(path.join(untracked.tree, 'coverage.json'), '{}');
+      expect(await untracked.check()).toEqual([]);
+      const edited = await fresh('edited');
+      await fs.writeFile(path.join(edited.tree, 'src', 'lib', 'a.ts'), 'export const a = 9;\n');
+      expect(await edited.check()).toEqual(['src/lib/a.ts']);
+      const sameSize = await fresh('same-size');
+      await fs.writeFile(path.join(sameSize.tree, 'notes.txt'), 'm\n');
+      expect(await sameSize.check()).toEqual(['notes.txt']);
+      const deleted = await fresh('deleted');
+      await fs.rm(path.join(deleted.tree, 'test', 'a.test.ts'));
+      expect(await deleted.check()).toEqual(['test/a.test.ts']);
+      const chmod = await fresh('chmod');
+      await fs.chmod(path.join(chmod.tree, 'notes.txt'), 0o755);
+      expect(await chmod.check()).toEqual(['notes.txt']);
+      const relinked = await fresh('relinked');
+      await fs.rm(path.join(relinked.tree, 'linked'));
+      await fs.symlink('src', path.join(relinked.tree, 'linked'));
+      expect(await relinked.check()).toEqual(['linked']);
+      // A directory swapped for a symlink to an identical copy still fails: every prefix must be a real directory.
+      const swapped = await fresh('swapped');
+      await fs.rename(path.join(swapped.tree, 'test'), path.join(swapped.tree, 'test-copy'));
+      await fs.symlink('test-copy', path.join(swapped.tree, 'test'));
+      expect(await swapped.check()).toEqual(['test/a.test.ts']);
+    });
+
+    it('resolves the frozen set against the base tree, ignoring selector words, refusing unknown named paths', async () => {
+      const {git, objects, runs} = await patched('v-frozen');
+      await fs.mkdir(runs);
+      const {env} = await materializeVerify(git, objects, path.join(runs, 'base'), base);
+      const frozen = await resolveFrozen(git, env, base, [{path: '/workspace/test/a.test.ts', source: 'files'},
+        {path: 'test', source: 'selector'}, {path: 'adds', source: 'selector'}, {path: '--grep', source: 'selector'}]);
+      expect(frozen).toEqual([{path: 'test', kind: 'dir'}, {path: 'test/a.test.ts', kind: 'file'}]);
+      for (const bad of ['linked', 'missing.ts', '../x', 'linked/a.test.ts', 'vendored', '.git/config']) {
+        expect(await refusal(resolveFrozen(git, env, base, [{path: bad, source: 'files'}])), bad).toBe('frozen_path_invalid');
+        expect(await refusal(resolveFrozen(git, env, base, [{path: bad, source: 'report'}])), bad).toBe('frozen_path_invalid');
+      }
+      expect(await refusal(resolveFrozen(git, env, base, [{path: 'adds', source: 'selector'}]))).toBe('frozen_tests_unknown');
+    });
+
+    it('names the changed paths that are frozen', async () => {
+      const {changed} = await patched('v-changes');
+      expect(changed).toEqual(['src/lib/a.ts', 'test/a.test.ts']);
+      expect(frozenChanges(changed, [{path: 'test', kind: 'dir'}])).toEqual(['test/a.test.ts']);
+      expect(frozenChanges(changed, [{path: 'test/a.test.ts', kind: 'file'}])).toEqual(['test/a.test.ts']);
+      expect(frozenChanges(['testing/x.ts', 'test.ts'], [{path: 'test', kind: 'dir'}])).toEqual([]);
+      expect(repoPath('./test//a.ts')).toBeUndefined();
+      expect(repoPath('./test/a.ts/')).toBe('test/a.ts');
+    });
   });
 });
