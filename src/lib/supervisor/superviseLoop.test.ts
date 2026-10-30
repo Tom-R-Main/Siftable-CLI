@@ -85,7 +85,11 @@ interface Scenario {
   /** Delivery receipts are answered with this status. */
   deliveryStatus?: number;
   /** A checkout plan (U5b-2c): the attempt filesystem lives under `root`; the helpers answer with these results. */
-  checkout?: {root: string; result?: object; patchResult?: object; patchRmFails?: boolean; patchCreateLost?: boolean};
+  checkout?: {root: string; result?: object; patchResult?: object; patchRmFails?: boolean; patchCreateLost?: boolean;
+    /** Removing the attempt's volumes fails, as when one is still in use. */
+    volumeRmFails?: boolean;
+    /** Volumes that already exist, left by an earlier run. */
+    seedVolumes?: string[]};
 }
 
 /** An attempt filesystem host where every step succeeds; mount points and directories are real, under the test's root. */
@@ -236,7 +240,7 @@ function world(scenario: Scenario = {}) {
 
   const containers = new Map<string, string[]>();
   const started = new Set<string>();
-  const volumes: string[] = [];
+  const volumes: string[] = [...(scenario.checkout?.seedVolumes ?? [])];
   const mountParts = (m: string) => Object.fromEntries(m.split(',').map((p) => (p.includes('=') ? p.split('=') : [p, 'true']) as [string, string]));
   const flag = (args: string[], name: string) => args.flatMap((arg, i) => (arg === name ? [args[i + 1]] : []));
   const docker: DeadlineDocker = async (args) => {
@@ -252,6 +256,7 @@ function world(scenario: Scenario = {}) {
     if (a === 'volume') {
       events.push(`volume-${b}${b === 'create' ? `:${args.at(-1)!.split('-').at(-1)}` : ''}`);
       if (b === 'create') volumes.push(args.at(-1)!);
+      if (b === 'rm' && scenario.checkout?.volumeRmFails) return {code: 1, stdout: '', stderr: 'volume is in use'};
       if (b === 'rm') volumes.splice(volumes.indexOf(args.at(-1)!), 1);
       return ok(b === 'ls' ? volumes.join('\n') : '');
     }
@@ -1183,7 +1188,7 @@ describe('superviseOnce', () => {
     const queuedRetention = async () => ((await readJournal<{entries: Array<{facts: {recoveryVolumeRetained: boolean}}>}>({root, owner: null}, OUTBOX))
       ?.entries ?? []).map((entry) => entry.facts.recoveryVolumeRetained);
     /** A journal left by a crash after the writer stopped: its log frozen, its patch frozen or not, its filesystem still there. */
-    async function crashedWithCheckout(patchFrozen: boolean) {
+    async function crashedWithCheckout(patchFrozen: boolean, volumeRmFails = false) {
       const attemptRoot = await fs.mkdtemp(path.join(path.dirname(root), 'attempts-'));
       const host = attemptFsHost();
       const dir = path.join(inputRoot, ATTEMPT);
@@ -1202,7 +1207,7 @@ describe('superviseOnce', () => {
           loop: '/dev/loop0', uuid: 'uuid-1', inodes: 400_000, state: 'mounted'},
         ...(patchFrozen ? {patch: {kind: 'patch', contentType: 'text/x-diff', path: patchPath, sha256: sha(patchText), bytes: patchText.length}} : {}),
       } satisfies AttemptJournal);
-      const w = world();
+      const w = world({checkout: {root: attemptRoot, volumeRmFails, seedVolumes: ['sift-a-abc123abc123-work']}});
       const run = () => superviseOnce(deps(w, {attemptFs: {system: host.system, root: attemptRoot}}));
       return {w, host, run};
     }
@@ -1214,6 +1219,16 @@ describe('superviseOnce', () => {
       expect(w.events).toContain('review');
       expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(true);
       expect(await queuedRetention()).toEqual([false, false]);
+    });
+
+    it('after a crash, holds a workspace whose release fails, with cleanup_failed receipts', async () => {
+      const {w, host, run} = await crashedWithCheckout(true, true);
+      expect(await run()).toEqual({kind: 'held', held: ['volume:sift-a-abc123abc123-work']});
+      expect(w.events).toContain('evidence-ack');
+      expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(false);
+      expect(await journal()).toMatchObject({state: 'held'});
+      const outbox = await readJournal<{entries: Array<{facts: {state: string}}>}>({root, owner: null}, OUTBOX);
+      expect(outbox?.entries.map((entry) => entry.facts.state)).toEqual(['execution_stopped', 'cleanup_failed']);
     });
 
     it('after a crash before the patch was frozen, fails the evidence and keeps the filesystem', async () => {
@@ -1269,6 +1284,17 @@ describe('superviseOnce', () => {
       expect(recovered).toMatchObject({kind: 'recovered'});
       expect(host.calls.some((c) => c.startsWith('mkfs'))).toBe(false);
       expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(true);
+    });
+
+    it('holds a workspace whose release fails after acknowledgement, and never reports it cleaned', async () => {
+      const {w, run} = await checkoutWorld({volumeRmFails: true});
+      const outcome = await run();
+      expect(w.events).toContain('evidence-ack');
+      expect(outcome).toMatchObject({kind: 'finished', settled: false, facts: {resourcesRemoved: false,
+        held: expect.arrayContaining([expect.stringMatching(/^volume:sift-a-[0-9a-f]+-work$/)])}});
+      expect(await journal()).toMatchObject({state: 'held'});
+      const outbox = await readJournal<{entries: Array<{facts: {state: string}}>}>({root, owner: null}, OUTBOX);
+      expect(outbox?.entries.map((entry) => entry.facts.state)).toEqual(['execution_stopped', 'cleanup_failed']);
     });
 
     it('holds a patch create whose answer was lost, so the next start looks for it by name', async () => {

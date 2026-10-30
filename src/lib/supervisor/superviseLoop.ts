@@ -388,10 +388,13 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   // A checkout preparation an earlier stop could not wait out may still be allocating or creating: nothing is torn down under it.
   if (earlier?.preparing && preparations.has(earlier.runId)) return {kind: 'held', held: ['workspace:preparing']};
   if (earlier?.preparing) earlier = {...earlier, preparing: false};
+  // The receipts the recovered journal already owed before this cycle's stop added its own.
+  let recoveryReceiptsBefore: CleanupFacts[] = [];
   if (earlier && earlier.state !== 'settling') {
     const reason = earlier.stop?.reason ?? 'recovered';
     // An unanswered create is settled only by finding its resource by name, or by the operator's explicit release.
     const unknown = deps.releaseUnknownCreates ? [] : await unresolvedCreates(deps, earlier);
+    recoveryReceiptsBefore = earlier.receipts ?? [];
     const swept = await settle(deps, {...earlier, pendingCreates: unknown}, reason, earlier.stop?.controlId, undefined,
       Boolean(earlier.fs && earlier.fs.state !== 'released'));
     let {facts, journal} = swept;
@@ -468,6 +471,14 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       if (earlier.fs && earlier.fs.state !== 'released' && deps.attemptFs && !owed) {
         const held = await releaseWorkspace((args) => deps.docker(args), deps.attemptFs.system, earlier.runId, earlier.fs);
         if (held.length > 0) {
+          // The deferred receipts still say cleaned; a release that could not be shown complete makes them cleanup_failed.
+          const prior = earlier.stop?.facts ?? {processesStopped: true, cgroupEmpty: 'empty' as const, resourcesRemoved: true, held: []};
+          const facts = {...prior, resourcesRemoved: false, held: [...prior.held, ...held]};
+          earlier = {...earlier, state: 'held', stop: {...(earlier.stop ?? {reason: 'recovered' as const}), facts}};
+          if (earlier.receiptsQueued === false) {
+            earlier = {...earlier, receipts: await receiptsOwed(deps, {...earlier, receipts: recoveryReceiptsBefore}, facts), receiptsDerived: true};
+          }
+          await writeAttemptJournal(deps, earlier);
           await ensureReceiptsQueued(deps, earlier);
           return {kind: 'held', held};
         }
@@ -721,11 +732,20 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       if (journal.evidence) await save({...journal, evidence: {...journal.evidence, ...evidence}});
       if (!evidence.acknowledged) deps.log(`The attempt's evidence was not acknowledged; its log is kept at ${inputDir}.`);
     }
-    // A helper left behind, or a workspace whose preparation never ended, is held; this stop's receipts, still unqueued
-    // while the filesystem exists, are worked out again from the final facts.
+    // The attempt filesystem goes once nothing on it is owed: the evidence was acknowledged, or the workload never ran.
+    let releaseHeld: string[] = [];
+    if (journal.fs && journal.fs.state !== 'released' && deps.attemptFs && !prepareUnknown && (!journal.evidenceOwed || evidence?.acknowledged)) {
+      releaseHeld = await releaseWorkspace((args) => deps.docker(args, {deadlineMono: deps.clock.monoMs() + STOP_BUDGET_MS}),
+        deps.attemptFs.system, journal.runId, journal.fs);
+      if (releaseHeld.length === 0) await save({...journal, fs: {...journal.fs, state: 'released'}});
+    } else if (journal.fs && journal.fs.state !== 'released') {
+      deps.log(`The attempt's filesystem is kept for recovery at ${journal.fs.image}.`);
+    }
+    // A helper left behind, a workspace whose preparation never ended, or a release that could not be shown complete is
+    // held; this stop's receipts, still unqueued while the filesystem exists, are worked out again from the final facts.
     // A patch create that never answered may still finish in the daemon: held until the next start finds it by name.
     const latePending = (journal.pendingCreates ?? []).filter((role) => role === 'patch').map((role) => `create:${role}`);
-    const lateHeld = [...helperHeld, ...latePending, ...(prepareUnknown ? ['workspace:preparing'] : [])];
+    const lateHeld = [...helperHeld, ...latePending, ...(prepareUnknown ? ['workspace:preparing'] : []), ...releaseHeld];
     if (lateHeld.length > 0) {
       settled.facts = {...settled.facts, resourcesRemoved: false, held: [...settled.facts.held, ...lateHeld]};
       if (journal.receiptsQueued === false) {
@@ -733,15 +753,6 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       }
       // Durable: the next start sees the hold in the journal, not only in this return value.
       await save({...journal, state: 'held', stop: {...(journal.stop ?? {reason}), facts: settled.facts}});
-    }
-    // The attempt filesystem goes once nothing on it is owed: the evidence was acknowledged, or the workload never ran.
-    if (journal.fs && journal.fs.state !== 'released' && deps.attemptFs && !prepareUnknown && (!journal.evidenceOwed || evidence?.acknowledged)) {
-      const held = await releaseWorkspace((args) => deps.docker(args, {deadlineMono: deps.clock.monoMs() + STOP_BUDGET_MS}),
-        deps.attemptFs.system, journal.runId, journal.fs);
-      if (held.length === 0) await save({...journal, fs: {...journal.fs, state: 'released'}});
-      else settled.facts = {...settled.facts, resourcesRemoved: false, held: [...settled.facts.held, ...held]};
-    } else if (journal.fs && journal.fs.state !== 'released') {
-      deps.log(`The attempt's filesystem is kept for recovery at ${journal.fs.image}.`);
     }
     // Questions are closed while the claim holds: received answers recorded delivered, unconfirmed ones failed.
     // 5 s at shutdown (the unit's stop timeout), else 30 s, never past the claim. Anything left unrecorded keeps the
