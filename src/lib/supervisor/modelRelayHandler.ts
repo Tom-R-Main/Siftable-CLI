@@ -18,6 +18,11 @@ export interface ModelRelayTarget {
   workItemId: string;
   attemptId: string;
   claimToken: string;
+  /**
+   * The relay role the API charges the call to (U3-2): the writer by default; the reviewer's sidecar only reaches the
+   * OpenAI Responses route (Taster's codexClient) and never the writer's questions.
+   */
+  role?: 'writer' | 'reviewer';
 }
 
 export interface ModelRelayControl {
@@ -45,11 +50,13 @@ export function attemptRelayHandler(
     if (frame.method === 'GET' && frame.path === DIAGNOSTIC_PATH) {
       return {status: 200, body: JSON.stringify({nonce: deps.diagnosticNonce})};
     }
+    const reviewer = target.role === 'reviewer';
     if (frame.method === 'POST' && (Object.values(QUESTION_PATHS) as string[]).includes(frame.path)) {
+      if (reviewer) return {status: 404, body: ''};
       if (!control.questions || !control.open()) return json(503, 'The attempt is not running; questions are closed.');
       return control.questions.handle(frame.path, Buffer.from(frame.body, 'base64').toString('utf8'), signal);
     }
-    const upstream = frame.method === 'POST' ? UPSTREAM[frame.path] : undefined;
+    const upstream = frame.method === 'POST' && (!reviewer || frame.path === MODEL_PATHS.openai) ? UPSTREAM[frame.path] : undefined;
     if (!upstream) return {status: 404, body: ''};
     if (!control.open()) return json(503, 'The attempt has not started; model calls are closed.');
     const callId = await control.nextCallId();
@@ -62,7 +69,7 @@ export function attemptRelayHandler(
             'Authorization': `Bearer ${target.token}`,
             'Content-Type': 'application/json',
             'X-Sift-Claim-Token': target.claimToken,
-            'X-Sift-Model-Role': 'writer',
+            'X-Sift-Model-Role': reviewer ? 'reviewer' : 'writer',
             'Idempotency-Key': callId,
             ...(target.workspaceId ? {'X-Workspace-Id': target.workspaceId} : {}),
           },

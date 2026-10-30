@@ -58,6 +58,22 @@ describe('attemptRelayHandler', () => {
     expect(String((answer as {body: Buffer}).body)).not.toContain('pat-value');
   });
 
+  it('as the reviewer (U3-2): sends role reviewer, reaches only the Responses route, and never the writer\'s questions', async () => {
+    const roles: Array<string | null> = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      roles.push(new Headers(init.headers).get('X-Sift-Model-Role'));
+      return new Response('event: done\n\n', {status: 200});
+    }) as unknown as typeof fetch;
+    const desk = new QuestionDesk([], async () => undefined, () => 0);
+    const reviewer = attemptRelayHandler({fetch: fetchImpl, diagnosticNonce: 'n'}, {...target, role: 'reviewer'}, {...control(), questions: desk});
+    expect((await reviewer(frame(MODEL_PATHS.openai), signal)).status).toBe(200);
+    expect((await reviewer(frame(MODEL_PATHS.anthropic), signal)).status).toBe(404);
+    for (const path of Object.values(QUESTION_PATHS)) expect((await reviewer(frame(path), signal)).status, path).toBe(404);
+    const writer = attemptRelayHandler({fetch: fetchImpl, diagnosticNonce: 'n'}, target, control());
+    expect((await writer(frame(MODEL_PATHS.anthropic), signal)).status).toBe(200);
+    expect(roles).toEqual(['reviewer', 'writer']);
+  });
+
   it('refuses routes outside the fixed list', async () => {
     const handler = attemptRelayHandler({fetch: (() => { throw new Error('no fetch'); }) as never, diagnosticNonce: 'n'}, target, control());
     expect((await handler(frame('/sift/v1/model/other'), signal)).status).toBe(404);
