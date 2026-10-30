@@ -1426,6 +1426,17 @@ describe('superviseOnce', () => {
         expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(true);
       });
 
+      it('keeps the filesystem holding a failed install\'s output when that output cannot be saved', async () => {
+        // The output's destination is taken by a directory, so saving it fails.
+        await fs.mkdir(path.join(inputRoot, ATTEMPT, 'install.log'), {recursive: true});
+        const {host, run} = await checkoutWorld({files, installResult: {ok: false, code: 'dependency_install_failed', detail: 'npm ci exited 1'}},
+          {}, {}, {resolvePlan: async () => ({...CHECKOUT_PLAN, install: {manager: 'npm'}}), assets: ASSETS});
+        expect(await run()).toMatchObject({kind: 'finished', reason: 'start_failed'});
+        expect(host.calls.some((c) => c.startsWith('unlink'))).toBe(false);
+        const outbox = await readJournal<{entries: Array<{facts: {recoveryVolumeRetained: boolean}}>}>({root, owner: null}, OUTBOX);
+        expect(outbox?.entries.every((entry) => entry.facts.recoveryVolumeRetained)).toBe(true);
+      });
+
       it('refuses an install plan it cannot run, before anything is attached', async () => {
         for (const plan of [{...PLAN, install: {manager: 'npm'}}, {...CHECKOUT_PLAN, install: {manager: 'yarn'}},
           {...CHECKOUT_PLAN, writeScope: ['node_modules/left-pad'], install: {manager: 'npm'}}]) {

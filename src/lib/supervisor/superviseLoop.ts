@@ -739,15 +739,19 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       if (journal.evidence) await save({...journal, evidence: {...journal.evidence, ...evidence}});
       if (!evidence.acknowledged) deps.log(`The attempt's evidence was not acknowledged; its log is kept at ${inputDir}.`);
     }
+    // A failed install's output is the only account of the failure: the filesystem holding it goes only once it is saved.
+    let installOutputSaved = true;
     if (installFailure) {
-      await fs.writeFile(path.join(inputDir, 'install.log'), installFailure, {mode: 0o600}).catch(() => undefined);
-      deps.log(`The dependency install failed; its output is kept at ${path.join(inputDir, 'install.log')}.`);
+      const saved = path.join(inputDir, 'install.log');
+      installOutputSaved = await fs.writeFile(saved, installFailure, {mode: 0o600}).then(() => true, () => false);
+      deps.log(installOutputSaved ? `The dependency install failed; its output is kept at ${saved}.`
+        : `The dependency install failed and its output could not be saved; it stays in the attempt filesystem at ${journal.fs?.image}.`);
     }
     // The attempt filesystem goes once nothing on it is owed: the evidence was acknowledged, or the workload never ran.
     let releaseHeld: string[] = [];
     // A create that never answered (the volume above all) may still finish in the daemon: nothing is released under it.
     const createsSettled = (journal.pendingCreates ?? []).length === 0;
-    if (journal.fs && journal.fs.state !== 'released' && deps.attemptFs && !prepareUnknown && createsSettled
+    if (journal.fs && journal.fs.state !== 'released' && deps.attemptFs && !prepareUnknown && createsSettled && installOutputSaved
       && (!journal.evidenceOwed || evidence?.acknowledged)) {
       releaseHeld = await releaseWorkspace((args) => deps.docker(args, {deadlineMono: deps.clock.monoMs() + STOP_BUDGET_MS}),
         deps.attemptFs.system, {runId: journal.runId, attemptId}, journal.fs);
