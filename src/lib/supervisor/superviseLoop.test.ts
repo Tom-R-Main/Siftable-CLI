@@ -13,6 +13,7 @@ import {commitMachine, ensureStateDirectory, readJournal, writeCredential, write
 import {OUTBOX} from './cleanupReceiptOutbox.js';
 import {ATTEMPT_FS_BYTES, type AttemptFsSystem} from './attemptFilesystem.js';
 import {type AttemptJournal, JOURNAL, superviseOnce, type SuperviseDeps} from './superviseLoop.js';
+import {type AttemptPlan, planSha256, serverPlan, WRITER_ENTRY} from './attemptPlan.js';
 import {systemClock} from './superviseAuthority.js';
 import {parseJUnit} from './junitReport.js';
 import {buildReceipt} from '../review/receipt.js';
@@ -55,6 +56,8 @@ const STEP_ID = (n: number) => `5e000000-0000-4000-8000-00000000000${n}`;
 
 interface Scenario {
   dispatch?: object | null;
+  /** The server's frozen plan for the work item (U6); absent answers 404. */
+  serverPlan?: {plan: object; sha256: string};
   claimExpiresAt?: string | 'none';
   controls?: () => Array<{id: string; action: string; state: string}>;
   heartbeat?: () => {status: number; body: object} | 'throw';
@@ -261,6 +264,10 @@ function world(scenario: Scenario = {}) {
       return reply(200, {attempt: {id: ATTEMPT, state: scenario.attachReplay ? 'ended' : body.state}, replayed: scenario.attachReplay === true});
     }
     if (route.endsWith('/controls/ack')) { events.push(`control-ack:${String(body.state)}`); return reply(200, {}); }
+    if (route.includes('/attempt-plan?')) {
+      events.push(`attempt-plan:${route.split('?')[1]}`);
+      return scenario.serverPlan ? reply(200, scenario.serverPlan) : reply(404, {});
+    }
     if (route.endsWith('/verification-plan')) {
       events.push('verification-plan');
       if (scenario.verify?.plan === 'missing') return reply(404, {});
@@ -616,7 +623,35 @@ describe('superviseOnce', () => {
     expect(w.posts.find((post) => post.path.endsWith('/input'))?.body).toEqual({claimToken: 'claim-secret'});
     // The server's task and digest, not the consume body.
     expect(w.agentInput.value).toEqual({version: 1, attemptId: ATTEMPT, workItemId: WORK_ITEM, inputSha256: INPUT_SHA,
-      task: {version: 2, title: 'From the server'}, plan: PLAN});
+      task: {version: 2, title: 'From the server'}, plan: PLAN, planSha256: planSha256(PLAN)});
+  });
+
+  // U6-D1: the plan is the one the server froze at launch, read after consume and before the attach.
+  it('runs the server\'s frozen plan, read with the machine credential before the attach, and records its sha256', async () => {
+    const plan = {...PLAN, command: ['node', WRITER_ENTRY], writer: {protocol: 'anthropic', model: 'claude-opus-5-5'}};
+    const w = world({serverPlan: {plan, sha256: planSha256(plan as AttemptPlan)}});
+    await superviseOnce(deps(w, {
+      resolvePlan: (workItem, get) => serverPlan(get, String(workItem.id), null),
+      assets: {sidecar: '/opt/sift/relaySidecar.js', launcher: '/opt/sift/attemptLauncher.js', writer: '/opt/sift/writerAdapter.js'},
+    }));
+    expect(w.events.indexOf('attempt-plan:workspaceId=personal')).toBeLessThan(w.events.indexOf('attempt:starting'));
+    const retired = await fs.readdir(path.join(root, 'retired'));
+    const archived = JSON.parse(await fs.readFile(path.join(root, 'retired', retired.find((name) => name.endsWith(JOURNAL))!), 'utf8')) as AttemptJournal;
+    expect(archived.planSha256).toBe(planSha256(plan as AttemptPlan));
+    expect(w.agentInput.value).toMatchObject({plan, planSha256: planSha256(plan as AttemptPlan)});
+    // The adapter is mounted read-only where the plan's command names it.
+    expect(w.containers.get('c-agent')?.join(' ')).toContain(`/opt/sift/writerAdapter.js,target=${WRITER_ENTRY}`);
+  });
+
+  it('refuses a server plan that does not hash to its sha256, and an adapter plan with no writer, before creating anything', async () => {
+    const tampered = world({serverPlan: {plan: PLAN, sha256: 'f'.repeat(64)}});
+    expect(await superviseOnce(deps(tampered, {resolvePlan: (workItem, get) => serverPlan(get, String(workItem.id), null)})))
+      .toEqual({kind: 'refused', reason: 'no_plan'});
+    expect(tampered.events).not.toContain('network-create');
+    const writerless = world();
+    expect(await superviseOnce(deps(writerless, {resolvePlan: async () => ({...PLAN, command: ['node', WRITER_ENTRY]})})))
+      .toEqual({kind: 'refused', reason: 'plan_invalid'});
+    expect(writerless.events).not.toContain('attempt:starting');
   });
 
   it('starts nothing when the server does not return the frozen input, and fails the start truthfully', async () => {

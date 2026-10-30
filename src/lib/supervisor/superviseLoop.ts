@@ -18,10 +18,11 @@ import {hostname} from 'node:os';
 import path from 'node:path';
 import {attemptSliceName, cgroupSetupProblem, isInsideAttemptSlice, parseCgroupV2, type ReadFile} from './attemptCgroup.js';
 import {checkoutPlanProblem} from './attemptCheckout.js';
-import {conflictsOf, postSettlement, type Session} from './attemptReport.js';
+import {type AttemptPlan, planSha256, WRITER_ENTRY, writerPlanProblem} from './attemptPlan.js';
+import {type ApiResult, conflictsOf, postSettlement, type Session} from './attemptReport.js';
 import {captureLog, type EvidenceOutcome, type FrozenArtifact, uploadAgentLog} from './attemptEvidence.js';
 import {resumeEvidence, resumeVerification, saveInstallOutput} from './attemptRecovery.js';
-import {type BaseVerification, freezeVerifierLog, type RunRecord, type TestPlan, VERIFIER_LOG_CONTENT_TYPE, verifyBase, VerifyFailed,
+import {type BaseVerification, freezeVerifierLog, type RunRecord, VERIFIER_LOG_CONTENT_TYPE, verifyBase, VerifyFailed,
   verifyResult} from './attemptVerify.js';
 import {buildSubmissions, pinOf, sendSubmissions, stepResults, testPlanProblem, type VerificationJournal} from './attemptVerifyRecords.js';
 import {reviewEnvelope, type ReviewOutcome, type ReviewRecord, reviewPlanProblem, runReview} from './attemptReview.js';
@@ -45,27 +46,11 @@ import {STOP_BUDGET_MS, type StopFacts} from './stopAttempt.js';
 import {heartbeatDeadlineAt, HEARTBEAT_BUDGET_MS, initialCaps, nextRenewalDelay, renewedCap, type SupervisorClock} from './superviseAuthority.js';
 
 export {JOURNAL, SuperviseError} from './attemptSettle.js';
+export type {AttemptPlan} from './attemptPlan.js';
 const READY_TIMEOUT_MS = 15_000;
 const CONTROL_POLL_MS = 5_000;
 const ACK_ATTEMPTS = 3;
 
-export interface AttemptPlan {
-  repositoryId: string;
-  branch: string;
-  baseSha: string;
-  imageRef: string;
-  /** The workload the launcher starts after `go`, exactly as the plan froze it. */
-  command: string[];
-  /** The checkout (U5b-2c): a public GitHub repository at baseSha, and the directories the writer may change. */
-  repositoryUrl?: string;
-  writeScope?: string[];
-  /** Install the checkout's npm dependencies behind the registry-only proxy before the writer starts. */
-  install?: {manager: 'npm'};
-  /** Verification (U3-1): the test command, the selector for the failing test, and the test files to freeze. */
-  test?: TestPlan;
-  /** Review (U3-2): the pinned reviewer image and the reviewer model; needs `test`. */
-  review?: {imageRef: string; model: string};
-}
 
 export interface SuperviseDeps {
   fetch: typeof fetch;
@@ -77,12 +62,13 @@ export interface SuperviseDeps {
   hostAddresses: () => string[];
   state: MachineStateOptions;
   log: (line: string) => void;
-  assets: {sidecar: string; launcher: string; checkoutHelper?: string; registryProxy?: string; junitReport?: string};
+  assets: {sidecar: string; launcher: string; checkoutHelper?: string; registryProxy?: string; junitReport?: string; writer?: string};
   /** Where attempt filesystems live and how they are made (U5b-2c); a checkout plan is refused without it. */
   attemptFs?: {system: AttemptFsSystem; root: string};
   /** Root-owned directory for read-only attempt inputs, outside the supervisor's state and any home. */
   inputRoot: string;
-  resolvePlan: (workItem: Record<string, unknown>) => Promise<AttemptPlan | null>;
+  /** The plan for the consumed work item; `get` reads the API with the machine's credential (U6: the server's frozen plan). */
+  resolvePlan: (workItem: Record<string, unknown>, get: (route: string) => Promise<ApiResult>) => Promise<AttemptPlan | null>;
   /** Tests shorten these; production uses the defaults. */
   timing?: {controlPollMs?: number; readyTimeoutMs?: number; logDrainMs?: number; prepareDrainMs?: number};
   /** Aborted when the service is stopping: the running attempt is stopped and cleaned up before return. */
@@ -145,6 +131,8 @@ export interface AttemptJournal {
   workspace?: {repositoryId: string; branch: string; baseSha: string};
   /** The server's digest of the attempt's frozen input, the task the agent was given. */
   inputSha256?: string;
+  /** sha256 of the plan's canonical JSON; for a server plan, the sha256 the server froze at launch. */
+  planSha256?: string;
   /** The writer's questions (Needs you) and how far each got; closed and reconciled at any stop. */
   questions?: JournalQuestion[];
   /** Set once the workload ran: its evidence is owed, so a crash before the log is frozen still fails the work. */
@@ -246,7 +234,8 @@ function attemptSpecs(deps: SuperviseDeps, journal: AttemptJournal, attemptId: s
   const agent: SandboxContainerSpec = {
     name: `sift-a-${journal.runId}-agent`, imageRef: plan.imageRef, networkId, labels: labels('agent'),
     entrypoint: 'node', command: ['/sift/attemptLauncher.js', ...plan.command],
-    mounts: [{source: deps.assets.launcher, target: '/sift/attemptLauncher.js'}, {source: inputFile, target: '/sift/input.json'}],
+    mounts: [{source: deps.assets.launcher, target: '/sift/attemptLauncher.js'}, {source: inputFile, target: '/sift/input.json'},
+      ...(deps.assets.writer ? [{source: deps.assets.writer, target: WRITER_ENTRY}] : [])],
     // With a checkout, /workspace is the repository: read-only except the write scope. Without one, empty scratch.
     tmpfs: workspace ? ['/tmp'] : ['/tmp', '/workspace'], ...(workspace ? {volumes: workspace, workdir: '/workspace'} : {}),
     env: {
@@ -468,8 +457,9 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   if (!(capLeft() > 0)) return refuseStart('no_confirmed_lease');
   // A grant-bound dispatch needs an approved managed launch payload; this supervisor does not fake one.
   if (dispatch.computeGrantId) return refuseStart('compute_grant_dispatch_unsupported');
-  const plan = await deps.resolvePlan(workItem);
+  const plan = await deps.resolvePlan(workItem, (route) => session.call('GET', route, undefined, {timeoutMs: within(15_000)}));
   if (!plan) return refuseStart('no_plan');
+  if (writerPlanProblem(plan)) return refuseStart('plan_invalid');
   const checkout = plan.repositoryUrl === undefined && plan.writeScope === undefined ? undefined
     : {repositoryUrl: plan.repositoryUrl as string, baseSha: plan.baseSha, writeScope: plan.writeScope as string[]};
   if (checkout && (checkoutPlanProblem(checkout) || !deps.attemptFs || !deps.assets.checkoutHelper)) return refuseStart('plan_invalid');
@@ -486,7 +476,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   const workspace = {repositoryId: plan.repositoryId, branch: plan.branch, baseSha: plan.baseSha};
 
   await recordDispatch(deps, dispatch.id);
-  await save({...journal, workspace, ...(pin ? {verification: {pin}} : {})});
+  await save({...journal, workspace, planSha256: planSha256(plan), ...(pin ? {verification: {pin}} : {})});
   const attached = await session.call('POST', `/api/v1/work-items/${workItem.id}/execution-attempts`, {
     runtimeId: journal.runtimeId, leaseGeneration: 1, state: 'starting', claimOwner, claimToken, dispatchId: dispatch.id, workspace,
   }, {key: `${journal.runtimeId}:1:starting`, timeoutMs: within(30_000)}).catch(() => null);
@@ -799,7 +789,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     await fs.mkdir(inputDir, {recursive: true, mode: 0o755});
     const inputFile = path.join(inputDir, 'input.json');
     await fs.writeFile(inputFile, JSON.stringify({version: 1, attemptId, workItemId: workItem.id,
-      inputSha256: input.payloadSha256, task: input.task, plan}), {mode: 0o444});
+      inputSha256: input.payloadSha256, task: input.task, plan, planSha256: journal.planSha256}), {mode: 0o444});
 
     // The checkout comes first: the writer's mounts name its volumes. A refusal ends the start before any writer exists.
     // The writer's mounts. Not `workspace`: that name is the attach workspace every attempt report carries.
@@ -987,11 +977,4 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     deps.log(`The attempt failed: ${(error as Error).message}`);
     return finish(expired() ? 'lease_lost' : 'start_failed');
   }
-}
-
-/** The shipped sidecar and launcher programs, beside this module in dist. */
-export function supervisorAssets(): SuperviseDeps['assets'] {
-  return {sidecar: path.join(__dirname, 'relaySidecar.js'), launcher: path.join(__dirname, 'attemptLauncher.js'),
-    checkoutHelper: path.join(__dirname, 'checkoutHelper.js'), registryProxy: path.join(__dirname, 'registryProxy.js'),
-    junitReport: path.join(__dirname, 'junitReport.js')};
 }

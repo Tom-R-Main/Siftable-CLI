@@ -6,7 +6,8 @@ import {hostIPv4Addresses} from '../../lib/supervisor/containerSandbox.js';
 import {createHostDocker, hostAttach} from '../../lib/supervisor/hostDocker.js';
 import {acquireStateLock, MachineStateError, SUPERVISOR_STATE_DIR} from '../../lib/supervisor/machineState.js';
 import {systemClock} from '../../lib/supervisor/superviseAuthority.js';
-import {type AttemptPlan, superviseOnce, SuperviseError, type SuperviseOutcome, supervisorAssets} from '../../lib/supervisor/superviseLoop.js';
+import {type AttemptPlan, isAttemptPlan, serverPlan, supervisorAssets} from '../../lib/supervisor/attemptPlan.js';
+import {superviseOnce, SuperviseError, type SuperviseOutcome} from '../../lib/supervisor/superviseLoop.js';
 import {INPUT_ROOT} from '../../lib/supervisor/supervisorService.js';
 import {ensureSupervisorAccount} from '../../lib/supervisor/systemAccount.js';
 
@@ -15,13 +16,12 @@ const IDLE_MS = 15_000;
 const ATTEMPT_ROOT = '/var/lib/siftable/attempts';
 const BLOCKED_MS = 60_000;
 
-/** A fixture plan file until setup launches record the plan on the work item (U6). */
+/** A test-only plan file; without one, the plan is the one the server froze when the setup launched (U6). */
 async function readPlanFile(file: string): Promise<AttemptPlan> {
   const stat = await fs.lstat(file);
   if (!stat.isFile() || stat.uid !== 0 || (stat.mode & 0o022) !== 0) throw new SuperviseError(`${file} must be a regular file owned by root and not writable by others.`);
-  const plan = JSON.parse(await fs.readFile(file, 'utf8')) as AttemptPlan;
-  if (typeof plan.repositoryId !== 'string' || typeof plan.branch !== 'string' || !/^[0-9a-f]{40}$/.test(String(plan.baseSha))
-    || typeof plan.imageRef !== 'string' || !Array.isArray(plan.command) || !plan.command.every((part) => typeof part === 'string')) {
+  const plan: unknown = JSON.parse(await fs.readFile(file, 'utf8'));
+  if (!isAttemptPlan(plan)) {
     throw new SuperviseError(`${file} is not a plan: repositoryId, branch, baseSha (40 hex), imageRef and command are required.`);
   }
   return plan;
@@ -53,7 +53,7 @@ export default class MachineSupervise extends BaseCommand {
   static flags = {
     ...BaseCommand.baseFlags,
     once: Flags.boolean({default: false, description: 'Run at most one attempt, then exit'}),
-    'plan-file': Flags.string({description: 'Root-owned JSON plan used for every dispatch (test fixture until setup launches record plans)'}),
+    'plan-file': Flags.string({description: 'Test only: a root-owned JSON plan used for every dispatch instead of the plan the server froze at launch'}),
     'release-unknown-creates': Flags.boolean({default: false,
       description: 'After checking Docker yourself: treat held creates whose result was never known, and that are not found by name, as never made'}),
   };
@@ -97,7 +97,8 @@ export default class MachineSupervise extends BaseCommand {
       assets: supervisorAssets(),
       attemptFs: {system: hostAttemptFsSystem, root: ATTEMPT_ROOT},
       inputRoot: INPUT_ROOT,
-      resolvePlan: async () => (flags['plan-file'] ? readPlanFile(flags['plan-file']) : null),
+      resolvePlan: async (workItem: Record<string, unknown>, get: Parameters<typeof serverPlan>[0]) => (flags['plan-file']
+        ? readPlanFile(flags['plan-file']) : serverPlan(get, String(workItem.id), typeof workItem.orgId === 'string' ? workItem.orgId : null)),
     };
     try {
       for (;;) {

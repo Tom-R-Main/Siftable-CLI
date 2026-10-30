@@ -34445,7 +34445,7 @@
           "type": "boolean"
         },
         "plan-file": {
-          "description": "Root-owned JSON plan used for every dispatch (test fixture until setup launches record plans)",
+          "description": "Test only: a root-owned JSON plan used for every dispatch instead of the plan the server froze at launch",
           "name": "plan-file",
           "hasDynamicHelp": false,
           "multiple": false,
