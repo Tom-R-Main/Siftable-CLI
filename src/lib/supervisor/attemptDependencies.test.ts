@@ -41,6 +41,9 @@ const refused = (packageJson: string, lock: string) => {
 describe('dependency admission', () => {
   it('admits an ordinary registry lockfile, counting what it installs', () => {
     expect(admitDependencies(PACKAGE, lockfile())).toEqual({packages: 7});
+    // A bundle inside a bundle inside a checked parent is still covered by that parent's integrity.
+    expect(admitDependencies(PACKAGE, lockfile({'node_modules/vitest/node_modules/bundled-thing/node_modules/deeper':
+      {version: '1.0.0', inBundle: true}}))).toEqual({packages: 7});
     expect(admitDependencies(PACKAGE, lockfile().replace('"lockfileVersion":3', '"lockfileVersion":2'))).toEqual({packages: 7});
   });
 
@@ -70,6 +73,13 @@ describe('dependency admission', () => {
       ['link with registry fields', {'node_modules/x': entry('x', {link: true})}],
       ['outside node_modules', {'../escape': entry('x')}],
       ['dot segment', {'node_modules/../x': entry('x')}],
+      // Bundled entries are exempt only inside a checked parent tarball.
+      ['top-level bundled, no integrity', {'node_modules/x': {version: '1.0.0', inBundle: true}}],
+      ['bundled under a missing parent', {'node_modules/ghost/node_modules/x': {version: '1.0.0', inBundle: true}}],
+      ['bundled chain reaching the top', {'node_modules/y': {version: '1.0.0', inBundle: true},
+        'node_modules/y/node_modules/x': {version: '1.0.0', inBundle: true}}],
+      ['bundled under a parent without integrity', {'node_modules/p': entry('p', {integrity: undefined}),
+        'node_modules/p/node_modules/x': {version: '1.0.0', inBundle: true}}],
     ];
     for (const [label, overrides] of cases) expect(refused(PACKAGE, lockfile(overrides)), label).toBeDefined();
   });

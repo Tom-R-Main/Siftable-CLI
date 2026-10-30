@@ -62,6 +62,27 @@ function specsProblem(owner: string, manifest: Json): string | undefined {
   return undefined;
 }
 
+/** Why an entry is not a registry tarball with a sha512 integrity, or undefined when it is. */
+function sourceProblem(location: string, entry: Json): string | undefined {
+  const resolved = entry.resolved;
+  if (typeof resolved !== 'string' || !resolved.startsWith(REGISTRY) || /[?#\\]|\/\.\.?\//.test(resolved.slice(REGISTRY.length))) {
+    return `package-lock.json entry ${location} does not come from ${REGISTRY}`;
+  }
+  if (typeof entry.integrity !== 'string' || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(entry.integrity)) {
+    return `package-lock.json entry ${location} has no sha512 integrity`;
+  }
+  return undefined;
+}
+
+/**
+ * The location of the package a nested entry sits inside (`node_modules/a/node_modules/b` is inside
+ * `node_modules/a`), or undefined for a top-level entry, which npm fetches on its own.
+ */
+function parentLocation(location: string): string | undefined {
+  const parts = location.split('/node_modules/');
+  return parts.length < 2 ? undefined : parts.slice(0, -1).join('/node_modules/');
+}
+
 /**
  * Admits the checkout's manifests, or throws DependencyRefused naming the
  * first reason. Returns how many packages the lockfile installs.
@@ -85,15 +106,21 @@ export function admitDependencies(packageJsonText: string, lockText: string): {p
     if (!location.startsWith('node_modules/') || location.split('/').some((part) => part === '..' || part === '.')) {
       throw new DependencyRefused(`package-lock.json entry ${location} is outside node_modules`);
     }
-    // A bundled dependency arrives inside its parent's tarball, which was itself checked.
-    if (entry.inBundle === true) continue;
-    const resolved = entry.resolved;
-    if (typeof resolved !== 'string' || !resolved.startsWith(REGISTRY) || /[?#\\]|\/\.\.?\//.test(resolved.slice(REGISTRY.length))) {
-      throw new DependencyRefused(`package-lock.json entry ${location} does not come from ${REGISTRY}`);
+    // A bundled dependency arrives inside its parent's tarball. The flag alone proves nothing (npm fetches a
+    // top-level entry on its own), so it is exempt only when its nearest unbundled ancestor is a checked
+    // registry tarball, whose integrity then covers it.
+    if (entry.inBundle === true) {
+      let ancestor = parentLocation(location);
+      while (ancestor !== undefined && isObject(lock.packages[ancestor]) && (lock.packages[ancestor] as Json).inBundle === true) {
+        ancestor = parentLocation(ancestor);
+      }
+      const owner = ancestor === undefined ? undefined : (lock.packages as Json)[ancestor];
+      if (ancestor === undefined || !isObject(owner) || owner.link === true || sourceProblem(ancestor, owner)) {
+        throw new DependencyRefused(`package-lock.json entry ${location} is marked bundled but no checked package bundles it`);
+      }
+      continue;
     }
-    if (typeof entry.integrity !== 'string' || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(entry.integrity)) {
-      throw new DependencyRefused(`package-lock.json entry ${location} has no sha512 integrity`);
-    }
+    fail(sourceProblem(location, entry));
     packages += 1;
   }
   return {packages};
