@@ -36,6 +36,8 @@ function fakeCodex(): string {
   ].map(event => JSON.stringify(event)).join('\n');
   writeFileSync(bin, `#!${process.execPath}
 const fs = require('fs');
+// Proxy mode first checks the version (Taster QUALIFIED_CODEX_VERSION).
+if (process.argv[2] === '--version') { process.stdout.write('codex-cli 0.159.0\\n'); process.exit(0); }
 const home = process.env.CODEX_HOME;
 fs.writeFileSync(${JSON.stringify(report)}, JSON.stringify({
   entries: fs.readdirSync(home).sort(),
