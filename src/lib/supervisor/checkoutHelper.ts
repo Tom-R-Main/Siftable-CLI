@@ -488,13 +488,16 @@ export const BASE_OBJECTS = '/workspace/.git/objects';
  * The result head (U3-2 contract rev 2, R-D3): a commit of the verified tree with the base as its parent, and a fixed
  * author, committer and date, so the same tree always yields the same id. The git directory gets a file-based
  * alternates entry naming the base objects at the path every reader mounts them, so a reader needs no alternates
- * variable to see the base commit and the unchanged blobs.
+ * variable to see the base commit and the unchanged blobs. The base was fetched at depth 1, so the git directory also
+ * names it as a shallow boundary, as the fetch did for its own repository; without that, `git merge-base` (the
+ * review's) looks for the base's parent, which never arrived.
  */
 export async function writeResultCommit(git: Git, env: NodeJS.ProcessEnv, treeId: string, baseSha: string,
   objects = BASE_OBJECTS): Promise<string> {
   const gitDir = env.GIT_DIR as string;
   await fs.mkdir(path.join(gitDir, 'objects', 'info'), {recursive: true});
   await fs.writeFile(path.join(gitDir, 'objects', 'info', 'alternates'), `${objects}\n`, {mode: 0o644});
+  await fs.writeFile(path.join(gitDir, 'shallow'), `${baseSha}\n`, {mode: 0o644});
   const fixed = {...env, GIT_AUTHOR_NAME: 'sift', GIT_AUTHOR_EMAIL: 'sift@localhost', GIT_AUTHOR_DATE: '@0 +0000',
     GIT_COMMITTER_NAME: 'sift', GIT_COMMITTER_EMAIL: 'sift@localhost', GIT_COMMITTER_DATE: '@0 +0000'};
   const head = (await must(git, 'verify_failed', ['commit-tree', treeId, '-p', baseSha, '-m', 'sift verified result'], {env: fixed}))

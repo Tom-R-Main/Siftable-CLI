@@ -373,6 +373,45 @@ describe('checkout helper', () => {
       expect((await read(['cat-file', '-e', base])).code).not.toBe(0);
     });
 
+    it('reads the merge base when the base was fetched at depth 1 and its parent never arrived', async () => {
+      // The fetch the supervisor really does: --depth=1 of a base that has a parent.
+      const deep = path.join(root, 'deep');
+      await fs.mkdir(path.join(deep, 'src', 'lib'), {recursive: true});
+      await fs.mkdir(path.join(deep, 'test'), {recursive: true});
+      await fs.writeFile(path.join(deep, 'src', 'lib', 'a.ts'), 'export const a = 1;\n');
+      await fs.writeFile(path.join(deep, 'test', 'a.test.ts'), 'test\n');
+      plain(deep, 'init', '--quiet');
+      plain(deep, 'add', '-A');
+      plain(deep, 'commit', '--quiet', '-m', 'parent');
+      await fs.writeFile(path.join(deep, 'src', 'lib', 'a.ts'), 'export const a = 2;\n');
+      plain(deep, 'commit', '--quiet', '-am', 'base');
+      const deepBase = plain(deep, 'rev-parse', 'HEAD');
+      const dir = path.join(root, 'v-shallow');
+      await fs.mkdir(path.join(dir, 'home'), {recursive: true});
+      const git = hostGit(path.join(dir, 'home'));
+      // fetchBase's own fetch, with plain git: the controlled environment refuses the file transport.
+      plain(dir, 'init', '--quiet', '--bare', 'src');
+      plain(path.join(dir, 'src'), 'fetch', '--quiet', '--depth=1', '--no-tags', `file://${deep}`, deepBase);
+      await pinBase(git, path.join(dir, 'src'), deepBase);
+      const work = path.join(dir, 'work');
+      await materialize(git, path.join(dir, 'src'), work, deepBase, ['src/lib', 'test']);
+      await fs.writeFile(path.join(work, 'src', 'lib', 'a.ts'), 'export const a = 3;\n');
+      const out = path.join(dir, 'out');
+      await fs.mkdir(out);
+      await buildPatch(git, work, out, deepBase, ['src/lib', 'test']);
+      const file = path.join(out, PATCH_FILE);
+      const objects = path.join(work, '.git', 'objects');
+      await fs.mkdir(path.join(dir, 'verify'));
+      const {treeId, env} = await materializeVerify(git, objects, path.join(dir, 'verify', 'selected'), deepBase,
+        {file, sha256: createHash('sha256').update(readFileSync(file)).digest('hex')});
+      const head = await writeResultCommit(git, env, treeId, deepBase, objects);
+      const read = (args: string[]) => git(args, {env: {GIT_DIR: env.GIT_DIR, GIT_WORK_TREE: env.GIT_WORK_TREE, GIT_INDEX_FILE: env.GIT_INDEX_FILE}});
+      expect((await read(['merge-base', deepBase, head])).stdout.toString().trim()).toBe(deepBase);
+      // The shallow boundary is what makes it readable: without it git looks for the base's missing parent.
+      await fs.rm(path.join(env.GIT_DIR as string, 'shallow'));
+      expect((await read(['merge-base', deepBase, head])).code).not.toBe(0);
+    });
+
     it('names the changed paths that are frozen', async () => {
       const {changed} = await patched('v-changes');
       expect(changed).toEqual(['src/lib/a.ts', 'test/a.test.ts']);
