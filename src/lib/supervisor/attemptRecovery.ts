@@ -45,6 +45,8 @@ export async function resumeEvidence(deps: SuperviseDeps, session: Session, jour
     log: {path: frozen.path, sha256: frozen.sha256, bytes: frozen.bytes},
     ...(verifierOnly ? {logKind: 'verifier_log' as const, logContentType: VERIFIER_LOG_CONTENT_TYPE} : {}),
     also: [...(patch ? [patch] : []), ...(verifierLog ? [verifierLog] : [])], signal: deps.shutdown,
+    signer: {state: deps.state, enrollmentId: session.machine.enrollmentId, attemptId: journal.attemptId, workItemId: journal.workItemId,
+      orgId: session.workspaceId},
   }) : {acknowledged: false};
   // Shutdown again: still undecided; the journal is left as it was for the next start.
   if (outcome.cancelled) return 'cancelled';

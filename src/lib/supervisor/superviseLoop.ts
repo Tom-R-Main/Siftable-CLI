@@ -709,7 +709,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
         fetch: deps.fetch, monoMs: () => deps.clock.monoMs(), deadlineMono: Math.min(cap, deps.clock.monoMs() + EVIDENCE_BUDGET_MS),
         route: `/api/v1/work-items/${workItem.id}/execution-attempts/${attemptId}/evidence-manifest`, claimToken, log: primary,
         ...(log ? {} : {logKind: 'verifier_log' as const, logContentType: VERIFIER_LOG_CONTENT_TYPE}),
-        also: [...(patch ? [patch] : []), ...(log && verifierLog ? [verifierLog] : [])], signal: deps.shutdown}) : {acknowledged: false};
+        also: [...(patch ? [patch] : []), ...(log && verifierLog ? [verifierLog] : [])], signal: deps.shutdown,
+        signer: {state: deps.state, enrollmentId: machine.enrollmentId, attemptId, workItemId: journal.workItemId, orgId: workspaceId}}) : {acknowledged: false};
       // Shutdown arrived mid-upload: nothing is decided or posted; the next start finishes it under the recovered claim.
       if (evidence.cancelled) return keepUnsettled();
       if (journal.evidence) await save({...journal, evidence: {...journal.evidence, ...evidence}});

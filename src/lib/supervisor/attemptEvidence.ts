@@ -10,9 +10,11 @@
  * resolved by the next round: declaring again returns the stored manifest,
  * acknowledged or not.
  */
-import {createHash} from 'node:crypto';
+import {createHash, createPrivateKey, sign} from 'node:crypto';
 import {createWriteStream, promises as fs} from 'node:fs';
 import path from 'node:path';
+import {type MachineStateOptions, readKey} from './machineState.js';
+import {machineCanonicalJson} from './qualificationProtocol.js';
 
 export const AGENT_LOG = 'agent.log';
 export const EVIDENCE_CONTENT_TYPE = 'text/plain';
@@ -81,6 +83,31 @@ export function captureLog(dir: string, source: NodeJS.ReadableStream, prefix?: 
   };
 }
 
+export const EVIDENCE_STATEMENT_CONTEXT = 'sift.attempt.evidence-statement.v1';
+
+/** Who signs the evidence statement: the enrollment that reserved the attempt, with its key from the machine state. */
+export interface EvidenceSigner {
+  state: MachineStateOptions;
+  enrollmentId: string;
+  attemptId: string;
+  workItemId: string;
+  orgId: string | null;
+}
+
+type Subject = {kind: string; sha256: string; bytes: number};
+
+/**
+ * The statement over the evidence files (V505), as the server's protocol defines it: no timestamp, subjects in
+ * sha256 order, so every acknowledgement of the same files signs the same bytes.
+ */
+export function evidenceStatement(signer: Omit<EvidenceSigner, 'state'>, files: Subject[]): Record<string, unknown> {
+  const subjects = files.map(({kind, sha256, bytes}) => ({kind, sha256, bytes})).sort((a, b) => (a.sha256 < b.sha256 ? -1 : 1));
+  return {context: EVIDENCE_STATEMENT_CONTEXT, version: 1, enrollmentId: signer.enrollmentId, attemptId: signer.attemptId,
+    workItemId: signer.workItemId, orgId: signer.orgId, subjects};
+}
+
+export const evidenceStatementSignedPayload = (statement: Record<string, unknown>): string => machineCanonicalJson(statement);
+
 export type EvidenceCall = (method: 'POST', route: string, body: unknown, options: {timeoutMs: number; signal?: AbortSignal})
   => Promise<{status: number; body: Record<string, unknown>}>;
 
@@ -95,7 +122,9 @@ export interface EvidenceOutcome {
  * Declares, uploads and acknowledges the frozen log in at most three rounds
  * before `deadlineMono`. Retries only what can change: a 5xx, a lost reply or
  * a failed upload. A refusal (403, 404 on declare, 409 on declare) means the
- * claim or attempt no longer allows it, and nothing more is sent.
+ * claim or attempt no longer allows it, and nothing more is sent. The
+ * acknowledgement carries a statement over the files signed with the
+ * enrollment key (V505); a 422 means the server refused the evidence itself.
  */
 export async function uploadAgentLog(input: {
   call: EvidenceCall;
@@ -114,6 +143,8 @@ export async function uploadAgentLog(input: {
   read?: (file: string) => Promise<Buffer>;
   /** Shutdown: aborts the request in flight and starts no other. */
   signal?: AbortSignal;
+  /** The acknowledgement carries the statement this enrollment signs over the files; without its key nothing is sent. */
+  signer: EvidenceSigner;
 }): Promise<EvidenceOutcome> {
   const {call, log, route, claimToken} = input;
   const left = () => input.deadlineMono - input.monoMs();
@@ -129,6 +160,12 @@ export async function uploadAgentLog(input: {
   // Two files with one digest cannot be declared together; the manifest would be refused every round.
   if (bodies.size !== files.length) return {acknowledged: false};
   const artifacts = files.map((file) => ({kind: file.kind, sha256: file.sha256, bytes: file.bytes, contentType: file.contentType}));
+  const {state, ...ids} = input.signer;
+  const statement = evidenceStatement(ids, artifacts);
+  const signature = await readKey(state)
+    .then((pem) => pem ? sign(null, Buffer.from(evidenceStatementSignedPayload(statement)), createPrivateKey(pem)).toString('base64url') : null)
+    .catch(() => null);
+  if (!signature) return {acknowledged: false};
   let manifestDigest: string | undefined;
   const signal = input.signal;
   const cancelled = (): EvidenceOutcome => ({acknowledged: false, cancelled: true, ...(manifestDigest ? {manifestDigest} : {})});
@@ -161,11 +198,12 @@ export async function uploadAgentLog(input: {
     }
     if (!uploaded || left() <= 0) continue;
     if (signal?.aborted) return cancelled();
-    const acknowledged = await call('POST', `${route}/acknowledge`, {claimToken, manifestDigest},
+    const acknowledged = await call('POST', `${route}/acknowledge`, {claimToken, manifestDigest, statement, signature},
       {timeoutMs: Math.max(1, Math.min(70_000, left())), signal}).catch(() => null);
     if (signal?.aborted && acknowledged?.status !== 200) return cancelled();
     if (acknowledged?.status === 200) return {acknowledged: true, manifestDigest};
-    if (acknowledged?.status === 403) break;
+    // 403: the claim or the signature was refused; 422: the server refused the evidence itself. Neither changes on a retry.
+    if (acknowledged?.status === 403 || acknowledged?.status === 422) break;
   }
   return {acknowledged: false, ...(manifestDigest ? {manifestDigest} : {})};
 }

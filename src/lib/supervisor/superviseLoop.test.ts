@@ -1,4 +1,4 @@
-import {createHash} from 'node:crypto';
+import {createHash, createPublicKey, type KeyObject, verify} from 'node:crypto';
 import {promises as fs} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
@@ -11,6 +11,7 @@ import type {Attach} from './machineQualify.js';
 import {generateMachineKey, machineKeyFingerprint, rawEd25519PublicKey} from './machineProtocol.js';
 import {commitMachine, ensureStateDirectory, readJournal, writeCredential, writeJournal, writeKey} from './machineState.js';
 import {OUTBOX} from './cleanupReceiptOutbox.js';
+import {evidenceStatementSignedPayload} from './attemptEvidence.js';
 import {ATTEMPT_FS_BYTES, type AttemptFsSystem} from './attemptFilesystem.js';
 import {type AttemptJournal, JOURNAL, superviseOnce, type SuperviseDeps} from './superviseLoop.js';
 import {type AttemptPlan, planSha256, serverPlan, WRITER_ENTRY} from './attemptPlan.js';
@@ -176,7 +177,8 @@ function world(scenario: Scenario = {}) {
   const sidecarIo: {stdin?: PassThrough; stdout?: PassThrough} = {};
   const agentInput: {value?: Record<string, unknown>} = {};
   const posts: Array<{path: string; body: Record<string, unknown>; key?: string}> = [];
-  const evidence = {puts: [] as Array<{url: string; headers: Record<string, string>; body: string}>, acknowledged: false, declared: [] as unknown[]};
+  const evidence = {puts: [] as Array<{url: string; headers: Record<string, string>; body: string}>, acknowledged: false, declared: [] as unknown[],
+    acks: [] as Array<{statement: Record<string, unknown>; signature: string}>};
   const receipts: Array<Record<string, unknown>> = [];
   const fetchImpl = (async (url: string, init: RequestInit) => {
     if (url.startsWith(STORAGE)) {
@@ -244,6 +246,7 @@ function world(scenario: Scenario = {}) {
     if (route.endsWith('/evidence-manifest/acknowledge')) {
       const n = events.filter((e) => e === 'evidence-ack').length + 1;
       events.push('evidence-ack');
+      evidence.acks.push(body as unknown as {statement: Record<string, unknown>; signature: string});
       const outcome = scenario.evidenceAck?.(n) ?? 200;
       if (outcome === 200) evidence.acknowledged = true;
       if (outcome === 'lost') { evidence.acknowledged = true; throw new TypeError('fetch failed'); }
@@ -559,6 +562,7 @@ function world(scenario: Scenario = {}) {
 
 describe('superviseOnce', () => {
   let root: string;
+  let machinePublicKey: KeyObject;
   let inputRoot: string;
 
   beforeEach(async () => {
@@ -566,6 +570,7 @@ describe('superviseOnce', () => {
     root = path.join(base, 'state');
     inputRoot = path.join(base, 'inputs');
     const key = generateMachineKey();
+    machinePublicKey = createPublicKey(key.privateKey);
     const state = {root, owner: null};
     await ensureStateDirectory(state);
     await writeKey(state, key.pem);
@@ -1105,6 +1110,12 @@ describe('superviseOnce', () => {
       expect(order('evidence-ack')).toBeLessThan(order('review'));
       expect(w.evidence.declared).toEqual([[{kind: 'agent_log', sha256: sha(WORKLOAD_OUTPUT), bytes: WORKLOAD_OUTPUT.length,
         contentType: 'text/plain'}]]);
+      // The acknowledgement carries the statement over the declared file, signed with this machine's enrollment key.
+      const [ack] = w.evidence.acks;
+      expect(ack.statement).toEqual({context: 'sift.attempt.evidence-statement.v1', version: 1, enrollmentId: ENROLLMENT, attemptId: ATTEMPT,
+        workItemId: WORK_ITEM, orgId: null, subjects: [{kind: 'agent_log', sha256: sha(WORKLOAD_OUTPUT), bytes: WORKLOAD_OUTPUT.length}]});
+      expect(verify(null, Buffer.from(evidenceStatementSignedPayload(ack.statement)), machinePublicKey, Buffer.from(ack.signature, 'base64url')))
+        .toBe(true);
       expect(w.evidence.puts).toEqual([{url: `${STORAGE}attempts/${ATTEMPT}/${sha(WORKLOAD_OUTPUT)}`, body: WORKLOAD_OUTPUT,
         headers: {'Content-Type': 'text/plain', 'x-goog-if-generation-match': '0',
           'x-goog-content-length-range': `${WORKLOAD_OUTPUT.length},${WORKLOAD_OUTPUT.length}`}}]);
