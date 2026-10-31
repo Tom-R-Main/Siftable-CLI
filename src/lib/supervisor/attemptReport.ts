@@ -100,8 +100,10 @@ export async function postSettlement(
   const reviews = settlement.work === 'pending' && settlement.started && settlement.reason === 'workload_exited'
     && settlement.exitCode === 0 && settlement.evidence?.acknowledged !== false && verificationPassed(journal.verification);
   // The review records the result under the attempt, which the server accepts only while the attempt is open, so a
-  // review goes before the attempt is reported ended (as the managed worker does), and an unconfirmed review leaves
-  // the attempt open for its retry. Every other work report follows the attempt report.
+  // review goes before the attempt report and the server closes the attempt in the review's transaction (endAttempt).
+  // A committed review whose reply was lost thus leaves nothing open: with the claim released, recovery reads the
+  // attempt closed (reconcileUnclaimed). An unconfirmed review leaves the attempt to its retry. The attempt report
+  // after a confirmed review is then a replay. Every other work report follows the attempt report.
   if (!reviews) await reportAttempt();
   if (settlement.work === 'pending') {
     let reply: ApiResult | null;
@@ -117,7 +119,7 @@ export async function postSettlement(
     } else if (reviews) {
       const manifestDigest = settlement.evidence?.manifestDigest;
       reply = await session.call('POST', `/api/v1/work-items/${journal.workItemId}/review`, {
-        workspaceId, claimOwner, claimToken, ...(journal.attemptId ? {attemptId: journal.attemptId} : {}),
+        workspaceId, claimOwner, claimToken, ...(journal.attemptId ? {attemptId: journal.attemptId, endAttempt: true} : {}),
         resultSummary: journal.verification
           ? 'Verified: the selected test failed on the base commit and passes with the patch, and the test suite passes. The log, patch and verifier log are the acknowledged evidence.'
           : manifestDigest

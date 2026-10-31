@@ -73,6 +73,8 @@ interface Scenario {
   attachReplay?: boolean;
   runningStatus?: number;
   reviewStatus?: number;
+  /** The review commits on the server, but its reply never arrives. */
+  reviewLost?: boolean;
   readyDelayMs?: number;
   /** The running inspect never returns, as a wedged Docker daemon would. */
   hangRunningInspect?: boolean;
@@ -260,7 +262,11 @@ function world(scenario: Scenario = {}) {
       return reply(200, {manifestDigest: MANIFEST, acknowledgedAt: evidence.acknowledged ? '2026-10-29T00:00:00.000Z' : null,
         uploads: evidence.acknowledged ? [] : artifacts.map((artifact) => ({sha256: artifact.sha256, url: `${STORAGE}attempts/${ATTEMPT}/${artifact.sha256}`}))});
     }
-    if (route.endsWith('/review')) { events.push('review'); return reply(scenario.reviewStatus ?? 200, {}); }
+    if (route.endsWith('/review')) {
+      events.push('review');
+      if (scenario.reviewLost) throw new TypeError('fetch failed');
+      return reply(scenario.reviewStatus ?? 200, {});
+    }
     if (route.endsWith('/fail')) { events.push('fail'); return reply(scenario.failStatus ?? 200, {}); }
     if (init.method === 'GET' && route.startsWith(`/api/v1/work-items/${WORK_ITEM}?`) && scenario.observed?.workStatus) {
       events.push(`observe-work:${scenario.observed.workStatus}`);
@@ -617,7 +623,7 @@ describe('superviseOnce', () => {
     expect(order('go')).toBeLessThan(order('kill:c-agent'));
     // The review records the result under the attempt, which the server accepts only while the attempt is open.
     expect(order('review')).toBeLessThan(order('attempt:ended'));
-    expect(w.posts.find((post) => post.path.endsWith('/review'))?.body).toMatchObject({attemptId: ATTEMPT, claimToken: 'claim-secret'});
+    expect(w.posts.find((post) => post.path.endsWith('/review'))?.body).toMatchObject({attemptId: ATTEMPT, endAttempt: true, claimToken: 'claim-secret'});
     // The stop and its cleanup are reported with signed receipts once the run has settled.
     expect(order('attempt:ended')).toBeLessThan(order('receipt:execution_stopped'));
     expect(order('receipt:execution_stopped')).toBeLessThan(order('receipt:cleaned'));
@@ -784,6 +790,31 @@ describe('superviseOnce', () => {
     expect(await superviseOnce(deps(second))).toEqual({kind: 'recovered', settled: true});
     expect(second.events).toEqual(['runner-heartbeat', 'consume', 'review', 'attempt:ended']);
     expect(second.posts.find((post) => post.path.endsWith('/review'))?.body).toMatchObject({attemptId: ATTEMPT});
+    expect(await journal()).toBeNull();
+  });
+
+  it('settles a review that committed but lost its reply: the server closed the attempt with it, so recovery reads it closed', async () => {
+    const first = world({reviewLost: true});
+    expect(await superviseOnce(deps(first))).toMatchObject({kind: 'finished', reason: 'workload_exited', settled: false});
+    expect(first.events).not.toContain('attempt:ended');
+    expect(await journal()).toMatchObject({state: 'settling', settlement: {attemptReport: 'pending', work: 'pending'}});
+    // The review released the claim, so consume offers nothing; the server shows the result under review and the attempt ended.
+    const second = world({dispatch: null, observed: {workStatus: 'needs_review', attemptState: 'ended'}});
+    expect(await superviseOnce(deps(second))).toEqual({kind: 'recovered', settled: true});
+    expect(second.events.some((event) => event === 'review' || event.startsWith('attempt:') || event.startsWith('create:'))).toBe(false);
+    expect(await journal()).toBeNull();
+  });
+
+  it('settles a crash after the confirmed review and before the attempt report from the server\'s record', async () => {
+    await writeJournal({root, owner: null}, JOURNAL, {version: 1, state: 'settling', runId: 'abc123abc123', dispatchId: DISPATCH,
+      workItemId: WORK_ITEM, runtimeId: `machine:${ENROLLMENT}:${DISPATCH}`, attemptId: ATTEMPT,
+      workspace: {repositoryId: PLAN.repositoryId, branch: PLAN.branch, baseSha: PLAN.baseSha}, containers: {}, callSeq: 3,
+      settlement: {reason: 'workload_exited', exitCode: 0, started: true, cgroupEmpty: true, attemptReport: 'pending', work: 'done'},
+    } satisfies AttemptJournal);
+    const after = world({dispatch: null, observed: {attemptState: 'ended'}});
+    expect(await superviseOnce(deps(after))).toEqual({kind: 'recovered', settled: true});
+    expect(after.events).toContain('observe-attempt:ended');
+    expect(after.events.some((event) => event === 'review' || event.startsWith('attempt:'))).toBe(false);
     expect(await journal()).toBeNull();
   });
 
