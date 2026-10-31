@@ -88,14 +88,21 @@ export async function postSettlement(
   const options = (key: string) => ({key, timeoutMs});
   // Without the attach workspace the server cannot match the attempt; nothing can be reported for it.
   if (settlement.attemptReport === 'pending' && !journal.workspace) settlement.attemptReport = 'skipped';
-  if (settlement.attemptReport === 'pending' && journal.workspace) {
+  const reportAttempt = async () => {
+    if (settlement.attemptReport !== 'pending' || !journal.workspace) return;
     const terminal = terminalReport(settlement);
     const reply = await session.call('POST', `/api/v1/work-items/${journal.workItemId}/execution-attempts`, {
       runtimeId: journal.runtimeId, leaseGeneration: 1, state: terminal.state, claimOwner, claimToken, dispatchId: journal.dispatchId,
       workspace: journal.workspace, ...(terminal.endReason ? {endReason: terminal.endReason} : {}),
     }, options(`${journal.runtimeId}:1:${terminal.state}`)).catch(() => null);
     settlement.attemptReport = settledStatus(reply?.status);
-  }
+  };
+  const reviews = settlement.work === 'pending' && settlement.started && settlement.reason === 'workload_exited'
+    && settlement.exitCode === 0 && settlement.evidence?.acknowledged !== false && verificationPassed(journal.verification);
+  // The review records the result under the attempt, which the server accepts only while the attempt is open, so a
+  // review goes before the attempt is reported ended (as the managed worker does), and an unconfirmed review leaves
+  // the attempt open for its retry. Every other work report follows the attempt report.
+  if (!reviews) await reportAttempt();
   if (settlement.work === 'pending') {
     let reply: ApiResult | null;
     if (!settlement.started) {
@@ -107,11 +114,10 @@ export async function postSettlement(
       // Acknowledged only on an observed empty cgroup; the server then cancels the work item.
       reply = await session.call('POST', `/api/v1/work-items/dispatches/${journal.dispatchId}/controls/ack`,
         {workspaceId, controlId: settlement.controlId, claimToken, state: 'acknowledged'}, options(`${settlement.controlId}:ack`)).catch(() => null);
-    } else if (settlement.reason === 'workload_exited' && settlement.exitCode === 0 && settlement.evidence?.acknowledged !== false
-      && verificationPassed(journal.verification)) {
+    } else if (reviews) {
       const manifestDigest = settlement.evidence?.manifestDigest;
       reply = await session.call('POST', `/api/v1/work-items/${journal.workItemId}/review`, {
-        workspaceId, claimOwner, claimToken,
+        workspaceId, claimOwner, claimToken, ...(journal.attemptId ? {attemptId: journal.attemptId} : {}),
         resultSummary: journal.verification
           ? 'Verified: the selected test failed on the base commit and passes with the patch, and the test suite passes. The log, patch and verifier log are the acknowledged evidence.'
           : manifestDigest
@@ -141,5 +147,6 @@ export async function postSettlement(
       if (status && SETTLED_WORK_STATUSES.includes(status)) Object.assign(settlement, {work: 'done', observedWorkStatus: status});
     }
   }
+  if (reviews && settlement.work !== 'pending') await reportAttempt();
   return settlement;
 }

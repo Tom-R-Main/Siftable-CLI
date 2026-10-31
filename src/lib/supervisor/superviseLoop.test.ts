@@ -615,9 +615,11 @@ describe('superviseOnce', () => {
     expect(order('ack:acknowledged')).toBeLessThan(order('attempt:running'));
     expect(order('attempt:running')).toBeLessThan(order('go'));
     expect(order('go')).toBeLessThan(order('kill:c-agent'));
-    expect(order('attempt:ended')).toBeLessThan(order('review'));
+    // The review records the result under the attempt, which the server accepts only while the attempt is open.
+    expect(order('review')).toBeLessThan(order('attempt:ended'));
+    expect(w.posts.find((post) => post.path.endsWith('/review'))?.body).toMatchObject({attemptId: ATTEMPT, claimToken: 'claim-secret'});
     // The stop and its cleanup are reported with signed receipts once the run has settled.
-    expect(order('review')).toBeLessThan(order('receipt:execution_stopped'));
+    expect(order('attempt:ended')).toBeLessThan(order('receipt:execution_stopped'));
     expect(order('receipt:execution_stopped')).toBeLessThan(order('receipt:cleaned'));
     expect(outcome).toMatchObject({settled: true});
     // The per-dispatch runtime identity, the agent's environment and nothing secret on disk.
@@ -775,10 +777,13 @@ describe('superviseOnce', () => {
   it('keeps an unconfirmed settlement and completes it later with the recovered claim, without relaunching', async () => {
     const first = world({reviewStatus: 503});
     expect(await superviseOnce(deps(first))).toMatchObject({kind: 'finished', reason: 'workload_exited', settled: false});
-    expect(await journal()).toMatchObject({state: 'settling', settlement: {attemptReport: 'done', work: 'pending', exitCode: 0}});
+    // The attempt stays open, so the retried review can still record the result under it.
+    expect(first.events).not.toContain('attempt:ended');
+    expect(await journal()).toMatchObject({state: 'settling', settlement: {attemptReport: 'pending', work: 'pending', exitCode: 0}});
     const second = world();
     expect(await superviseOnce(deps(second))).toEqual({kind: 'recovered', settled: true});
-    expect(second.events).toEqual(['runner-heartbeat', 'consume', 'review']);
+    expect(second.events).toEqual(['runner-heartbeat', 'consume', 'review', 'attempt:ended']);
+    expect(second.posts.find((post) => post.path.endsWith('/review'))?.body).toMatchObject({attemptId: ATTEMPT});
     expect(await journal()).toBeNull();
   });
 
