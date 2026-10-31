@@ -67,6 +67,7 @@ const EXPLAINED: Record<string, string> = {
   verification_interrupted: 'the supervisor restarted during verification; no step was repeated',
   verification_record_conflict: 'the server refused a verification record (the plan may have changed)',
   review_failed: 'the review of the verified result did not complete',
+  review_blocked: 'the reviewer found blocking (P0-P1) problems in the verified result; its findings are in the evidence',
   review_head_mismatch: 'the review was not of the verified result',
   review_timeout: 'the review of the verified result ran past its time limit',
   review_interrupted: 'the review stopped before it finished; it was not run again',

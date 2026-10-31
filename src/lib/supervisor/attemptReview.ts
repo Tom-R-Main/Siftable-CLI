@@ -75,7 +75,7 @@ export interface ReviewOutcome {
   /** Every relay call the reviewer made, as forwarded. */
   calls?: ReviewRecord['calls'];
   /** `passed`, or the reason it did not. */
-  outcome: 'passed' | 'review_failed' | 'review_head_mismatch' | 'review_timeout' | 'review_interrupted';
+  outcome: 'passed' | 'review_failed' | 'review_blocked' | 'review_head_mismatch' | 'review_timeout' | 'review_interrupted';
   detail?: string;
   /** The reviewer's receipt as it printed it, kept whatever the verdict. */
   receipt?: Record<string, unknown>;
@@ -86,7 +86,8 @@ export interface ReviewOutcome {
 /**
  * The result line, checked against the receipt `sift review` actually writes (`taster.local-receipt/v1`, Release
  * R14): its digest must verify, `revision.head` must be the result head and `revision.base` the base, and both
- * `completion` and `verdict.kind` must be complete. Anything else fails, keeping the receipt.
+ * `completion` and `verdict.kind` must be complete, and the verdict must have no blocking (P0-P1) findings; advisory
+ * findings still pass. Anything else fails, keeping the receipt.
  */
 export function judgeReview(head: string, line: string, baseSha?: string): ReviewOutcome {
   let result: {version?: unknown; ok?: unknown; code?: unknown; detail?: unknown; receipt?: unknown};
@@ -113,6 +114,10 @@ export function judgeReview(head: string, line: string, baseSha?: string): Revie
   // skipped, incomplete and failed name the head without a review having happened (contract rev 2, R8).
   if (receipt.completion !== 'complete' || receipt.verdict.kind !== 'complete') {
     return {head, outcome: 'review_failed', detail: `verdict ${String(receipt.verdict.kind)}`, receipt: kept};
+  }
+  const {blocking, advisory} = receipt.verdict;
+  if (blocking !== 0) {
+    return {head, outcome: 'review_blocked', detail: `${String(blocking)} blocking, ${String(advisory)} advisory`, receipt: kept};
   }
   return {head, outcome: 'passed', receipt: kept};
 }

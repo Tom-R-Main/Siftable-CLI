@@ -18,6 +18,7 @@ const line = (receipt: object) => JSON.stringify({version: 'sift.review-result/v
 const COVERAGE = {filesInScope: 1, filesReviewed: 1, filesSkipped: [], stages: {}, candidates: {}};
 const VERDICTS = {
   complete: (sha: string) => ({kind: 'complete', reviewedSha: sha, blocking: 0, advisory: 1, coverage: COVERAGE}),
+  blocked: (sha: string) => ({kind: 'complete', reviewedSha: sha, blocking: 2, advisory: 1, coverage: COVERAGE}),
   incomplete: (sha: string) => ({kind: 'incomplete', reviewedSha: sha, coverage: COVERAGE, reason: 'budget'}),
   skipped: (sha: string) => ({kind: 'skipped', reviewedSha: sha, reason: 'no_changes'}),
   failed: (sha: string) => ({kind: 'failed', reviewedSha: sha, reason: 'pre-pass failed'}),
@@ -28,6 +29,12 @@ const receiptOf = (kind: keyof typeof VERDICTS, head = HEAD, base = BASE) => bui
   startedAt: new Date(0), finishedAt: new Date(0)}, VERDICTS[kind](head) as never, []);
 
 describe('review verdicts (R-D5, R8, R14)', () => {
+  it('fails a complete verdict with blocking findings, keeping its receipt; advisory findings alone pass', () => {
+    expect(judgeReview(HEAD, line(receiptOf('blocked')), BASE)).toMatchObject({outcome: 'review_blocked', detail: '2 blocking, 1 advisory',
+      receipt: {completion: 'complete', status: 'findings', verdict: {blocking: 2}}});
+    expect(judgeReview(HEAD, line(receiptOf('complete')), BASE).outcome).toBe('passed');
+  });
+
   it('passes only a complete verdict for exactly the result head, keeping every receipt', () => {
     expect(judgeReview(HEAD, line(receiptOf('complete')), BASE)).toMatchObject({outcome: 'passed', receipt: {completion: 'complete', revision: {head: HEAD}}});
     for (const kind of ['skipped', 'incomplete', 'failed'] as const) {

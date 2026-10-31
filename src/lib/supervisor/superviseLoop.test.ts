@@ -47,10 +47,10 @@ async function until(condition: () => boolean, timeoutMs = 10_000): Promise<void
 interface VerifyScenarioRun {cases?: Array<[string, 'passed' | 'failed' | 'skipped']>; exit?: number; changed?: string[]}
 const REVIEW_HEAD = 'e'.repeat(40);
 /** The receipt the reviewer program prints, from the real producer. */
-const reviewReceipt = (kind: 'complete' | 'incomplete') => buildReceipt({head: REVIEW_HEAD, base: 'c'.repeat(40), mergeBase: 'c'.repeat(40),
+const reviewReceipt = (kind: 'complete' | 'incomplete', blocking = 0) => buildReceipt({head: REVIEW_HEAD, base: 'c'.repeat(40), mergeBase: 'c'.repeat(40),
   baseRef: 'c'.repeat(40), worktreeDirty: false, policy: {name: 'default', revision: 'p1'}, model: 'gpt-6.1-sol', provider: 'codex-proxy',
   finderPasses: 2, problems: [], startedAt: new Date(0), finishedAt: new Date(0)},
-  (kind === 'complete' ? {kind, reviewedSha: REVIEW_HEAD, blocking: 0, advisory: 0, coverage: {filesInScope: 1, filesReviewed: 1, filesSkipped: [],
+  (kind === 'complete' ? {kind, reviewedSha: REVIEW_HEAD, blocking, advisory: 0, coverage: {filesInScope: 1, filesReviewed: 1, filesSkipped: [],
     stages: {}, candidates: {}}} : {kind, reviewedSha: REVIEW_HEAD, reason: 'budget', coverage: {filesInScope: 1, filesReviewed: 0, filesSkipped: [],
     stages: {}, candidates: {}}}) as never, []);
 const STEP_ID = (n: number) => `5e000000-0000-4000-8000-00000000000${n}`;
@@ -1835,16 +1835,15 @@ describe('superviseOnce', () => {
             expect(w.events).toContain('review');
           });
 
-          it('fails the work when the review does not complete, keeping its receipt', async () => {
-            const {w, run} = await reviewWorld({verify: {base: failing, selected: fixed, regression: fixed,
-              review: {version: 'sift.review-result/v1', ok: true, receipt: reviewReceipt('incomplete')}}});
+          it.each([['does not complete', reviewReceipt('incomplete'), 'review_failed', /^Verification failed: review_failed: the review of the verified result did not complete/],
+            ['finds blocking problems', reviewReceipt('complete', 1), 'review_blocked', /^Verification failed: review_blocked: the reviewer found blocking/],
+          ] as const)('fails the work when the review %s, keeping its receipt', async (_case, receipt, outcome, reason) => {
+            const {w, run} = await reviewWorld({verify: {base: failing, selected: fixed, regression: fixed, review: {version: 'sift.review-result/v1', ok: true, receipt}}});
             expect(await run()).toMatchObject({kind: 'finished', settled: true});
-            expect(verifierJson(w)).toMatchObject({outcome: 'review_failed', review: {outcome: 'review_failed', receipt: {completion: 'incomplete'}}});
+            expect(verifierJson(w)).toMatchObject({outcome, review: {outcome, receipt: {completion: receipt.completion, verdict: {kind: receipt.verdict.kind}}}});
             // The verification steps passed and are recorded as passed; the work fails on the review.
-            expect(w.events.filter((e) => e.startsWith('verify-record:'))).toEqual(
-              ['verify-record:base:passed', 'verify-record:selected:passed', 'verify-record:regression:passed']);
-            const fail = w.posts.find((p) => p.path.endsWith('/fail'))!;
-            expect(String(fail.body.failureReason)).toMatch(/^Verification failed: review_failed: the review of the verified result did not complete/);
+            expect(w.events.filter((e) => e.startsWith('verify-record:'))).toEqual(['verify-record:base:passed', 'verify-record:selected:passed', 'verify-record:regression:passed']);
+            expect(String(w.posts.find((p) => p.path.endsWith('/fail'))!.body.failureReason)).toMatch(reason);
             expect(w.events).not.toContain('review');
           });
 
