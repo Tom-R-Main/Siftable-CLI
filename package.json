@@ -16,7 +16,7 @@
     "typecheck": "tsc --noEmit && npm run typecheck:tui",
     "lint": "node ../../scripts/lint/run.mjs project @siftable/cli",
     "typecheck:tui": "tsc --noEmit -p interactive-tui/tsconfig.json",
-    "manifest": "npm run build && oclif manifest",
+    "manifest": "npm run build && node scripts/write-manifest.mjs",
     "interactive:dev": "npm run manifest && (cd interactive-tui && bun run native:build) && SIFT_INTERACTIVE_RUNTIME=source node ./bin/run.js interactive",
     "interactive:help": "npm run build && npm run manifest && node ./bin/run.js interactive --help",
     "package:interactive": "npm run build --workspace @siftable/cli && bun install --cwd interactive-tui --frozen-lockfile && npm run native:release --workspace @siftable/cli && bun run interactive-tui/scripts/build-packaged-runtime.mjs",
