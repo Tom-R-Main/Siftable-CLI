@@ -77,6 +77,7 @@ export function attemptRelayHandler(
             'X-Sift-Model-Role': reviewer ? 'reviewer' : 'writer',
             'Idempotency-Key': callId,
             ...(target.workspaceId ? {'X-Workspace-Id': target.workspaceId} : {}),
+            ...(frame.path === MODEL_PATHS.anthropic && frame.anthropicBeta ? {'Anthropic-Beta': frame.anthropicBeta} : {}),
           },
           body: Buffer.from(frame.body, 'base64'),
         });

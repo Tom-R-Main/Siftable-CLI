@@ -29,7 +29,9 @@ export const QUESTION_PATHS = {
   received: '/sift/v1/questions/received',
 } as const;
 
-export interface SidecarRequestFrame {id: number; method: string; path: string; body: string}
+/** `anthropicBeta`: the agent's anthropic-beta header on the Messages route, which the API reduces to its allowlist. */
+export interface SidecarRequestFrame {id: number; method: string; path: string; body: string; anthropicBeta?: string}
+const MAX_BETA_HEADER = 4096;
 export type SidecarResponseFrame =
   | {id: number; status: number; body: string}
   | {id: number; status: number; stream: true}
@@ -131,7 +133,11 @@ export function startRelaySidecar(io: {input: NodeJS.ReadableStream; output: Nod
         // The agent went away before the answer finished.
         if (finish(id)) io.output.write(`${JSON.stringify({id, cancel: true} satisfies SidecarCancelFrame)}\n`);
       });
-      const frame: SidecarRequestFrame = {id, method: route.method, path, body: Buffer.concat(chunks).toString('base64')};
+      const beta = request.headers['anthropic-beta'];
+      const frame: SidecarRequestFrame = {
+        id, method: route.method, path, body: Buffer.concat(chunks).toString('base64'),
+        ...(path === MODEL_PATHS.anthropic && typeof beta === 'string' && beta.length <= MAX_BETA_HEADER ? {anthropicBeta: beta} : {}),
+      };
       io.output.write(`${JSON.stringify(frame)}\n`);
     });
   });

@@ -2,6 +2,7 @@ import type {Server} from 'node:http';
 import {PassThrough} from 'node:stream';
 import {afterEach, describe, expect, it} from 'vitest';
 import {DIAGNOSTIC_PATH, MODEL_PATHS, startRelaySidecar} from './relaySidecar.js';
+import {attemptRelayHandler} from './modelRelayHandler.js';
 import {diagnosticHandler, serveSidecarFrames} from './sidecarBridge.js';
 
 let server: Server | undefined;
@@ -92,5 +93,29 @@ describe('relay sidecar and bridge', () => {
     });
     // Depending on timing the connection breaks before or after the head; either way it never ends cleanly.
     await expect(fetch(`${base}${MODEL_PATHS.anthropic}`, {method: 'POST', body: '{}'}).then((response) => response.text())).rejects.toThrow();
+  });
+  it('carries the agent\'s anthropic-beta header from the sidecar to the API on the Messages route only', async () => {
+    const BETAS = 'claude-code-20250219,per-turn-control-2026-07-01,effort-2025-11-24';
+    const calls: Array<{url: string; headers: Record<string, string>}> = [];
+    const fakeFetch = (async (url: string, init: {headers: Record<string, string>}) => {
+      calls.push({url, headers: init.headers});
+      return new Response('{}', {status: 200});
+    }) as unknown as typeof fetch;
+    let seq = 0;
+    const {base, forwarded} = await wired(attemptRelayHandler({fetch: fakeFetch, diagnosticNonce: 'n'}, {
+      apiUrl: 'https://api.example', token: 'pat', workspaceId: null, workItemId: 'w', attemptId: 'a', claimToken: 'c',
+    }, {open: () => true, nextCallId: async () => `a:${++seq}`}));
+
+    await fetch(`${base}${MODEL_PATHS.anthropic}`, {method: 'POST', headers: {'anthropic-beta': BETAS}, body: '{}'}).then((r) => r.text());
+    await fetch(`${base}${MODEL_PATHS.openai}`, {method: 'POST', headers: {'anthropic-beta': BETAS}, body: '{}'}).then((r) => r.text());
+    await fetch(`${base}${MODEL_PATHS.anthropic}`, {method: 'POST', headers: {'anthropic-beta': 'x'.repeat(5000)}, body: '{}'}).then((r) => r.text());
+
+    expect(calls.map((call) => call.url.split('/').slice(-3).join('/'))).toEqual([
+      'anthropic/v1/messages', 'openai/v1/responses', 'anthropic/v1/messages',
+    ]);
+    expect(calls[0].headers['Anthropic-Beta']).toBe(BETAS);
+    expect(calls[1].headers).not.toHaveProperty('Anthropic-Beta');
+    expect(calls[2].headers).not.toHaveProperty('Anthropic-Beta');
+    expect(JSON.parse(forwarded.join('').split('\n')[0])).toMatchObject({anthropicBeta: BETAS});
   });
 });
