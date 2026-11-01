@@ -34248,6 +34248,18 @@
           "hasDynamicHelp": false,
           "multiple": false,
           "type": "option"
+        },
+        "hosted": {
+          "description": "A Siftable-hosted machine: enroll with the key the controller bound, instead of a device code",
+          "exclusive": [
+            "setup",
+            "replace",
+            "abandon-runner"
+          ],
+          "name": "hosted",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
         }
       },
       "hasDynamicHelp": false,
@@ -34899,6 +34911,78 @@
         "commands",
         "setup",
         "status.js"
+      ]
+    },
+    "machine:keygen": {
+      "aliases": [],
+      "args": {},
+      "description": "Create (or load) this hosted machine's key and print its public key (run as root by the Siftable controller)",
+      "examples": [
+        "sudo sift machine keygen --hosted <hosted-machine-id>"
+      ],
+      "flags": {
+        "json": {
+          "description": "Format output as json.",
+          "helpGroup": "GLOBAL",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "token": {
+          "description": "Personal access token",
+          "helpGroup": "GLOBAL",
+          "name": "token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "api-url": {
+          "description": "API base URL",
+          "helpGroup": "GLOBAL",
+          "name": "api-url",
+          "default": "https://siftable.io",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "no-input": {
+          "description": "Disable interactive prompts",
+          "helpGroup": "GLOBAL",
+          "name": "no-input",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Workspace org ID to scope operations to",
+          "helpGroup": "GLOBAL",
+          "name": "workspace",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "hosted": {
+          "description": "The hosted machine id this instance was started for",
+          "name": "hosted",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "machine:keygen",
+      "pluginAlias": "@siftable/cli",
+      "pluginName": "@siftable/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": true,
+      "isESM": false,
+      "relativePath": [
+        "dist",
+        "commands",
+        "machine",
+        "keygen.js"
       ]
     }
   },

@@ -2,6 +2,7 @@ import {Flags} from '@oclif/core';
 import {arch, hostname, platform} from 'node:os';
 import {BaseCommand, DEFAULT_API_URL} from '../../lib/base-command.js';
 import {linkMachineCommand} from '../../lib/setupSession.js';
+import {hostedEnroll, readInstanceIdentity} from '../../lib/supervisor/hostedEnroll.js';
 import {enrollMachine, MachineEnrollError} from '../../lib/supervisor/machineEnroll.js';
 import {machineHostLabels, parseMachineScope} from '../../lib/supervisor/machineProtocol.js';
 import {MachineStateError, SUPERVISOR_STATE_DIR} from '../../lib/supervisor/machineState.js';
@@ -24,6 +25,10 @@ export default class MachineEnroll extends BaseCommand {
       dependsOn: ['replace'],
       description: 'With --replace: the runner you revoked in the browser, when the old state cannot revoke itself',
     }),
+    hosted: Flags.string({
+      exclusive: ['setup', 'replace', 'abandon-runner'],
+      description: 'A Siftable-hosted machine: enroll with the key the controller bound, instead of a device code',
+    }),
   };
 
   async run(): Promise<unknown> {
@@ -34,6 +39,7 @@ export default class MachineEnroll extends BaseCommand {
     if (typeof process.getuid !== 'function' || process.getuid() !== 0) {
       this.error('Run this as root (sudo). It creates the siftable-supervisor account, which holds the credential instead of your home directory.');
     }
+    if (flags.hosted) return this.enrollHosted(flags.hosted, (flags['api-url'] || process.env.SIFT_API_URL || DEFAULT_API_URL).replace(/\/+$/, ''));
     let scope;
     try {
       scope = parseMachineScope(flags.workspace);
@@ -65,6 +71,27 @@ export default class MachineEnroll extends BaseCommand {
         if (next) this.log(`Link it to your setup as yourself, without sudo: ${next}`);
       }
       return {...result, dockerGroup: account.dockerGroup, ...(next ? {next} : {})};
+    } catch (error) {
+      if (error instanceof MachineEnrollError || error instanceof MachineStateError) this.error(error.message);
+      throw error;
+    }
+  }
+
+  private async enrollHosted(hostedMachineId: string, apiUrl: string): Promise<unknown> {
+    const account = await ensureSupervisorAccount();
+    try {
+      const result = await hostedEnroll({
+        fetch: globalThis.fetch,
+        state: {root: SUPERVISOR_STATE_DIR, owner: {uid: account.uid, gid: account.gid}},
+        now: () => new Date(),
+        identity: () => readInstanceIdentity(globalThis.fetch),
+      }, {apiUrl, hostedMachineId});
+      if (!this.jsonEnabled()) {
+        this.log(result.saved
+          ? `Enrolled hosted machine. Enrollment ${result.enrollmentId}, runner ${result.runnerId}, credential generation ${result.credentialGeneration}.`
+          : `A newer credential (generation ${result.credentialGeneration}) was already saved; kept it.`);
+      }
+      return result;
     } catch (error) {
       if (error instanceof MachineEnrollError || error instanceof MachineStateError) this.error(error.message);
       throw error;

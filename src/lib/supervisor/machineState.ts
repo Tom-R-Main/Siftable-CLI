@@ -54,6 +54,8 @@ export interface MachineRecord {
   enrolledAt: string;
   /** The enrolling PAT's id, as the server reports it to that PAT; challenges are bound to it. */
   credentialId?: string;
+  /** Set on a Siftable-hosted machine (hosted-machines-v1.md): the server's hosted machine id. */
+  hostedMachineId?: string;
 }
 
 export type MachineStateKind =
@@ -135,6 +137,21 @@ export const writePending = (options: MachineStateOptions, pending: PendingEnrol
   writeFileAtomic(options, FILES.pending, `${JSON.stringify(pending, null, 2)}\n`);
 export const writeCredential = (options: MachineStateOptions, token: string) =>
   writeFileAtomic(options, FILES.credential, `${JSON.stringify({token})}\n`);
+
+/**
+ * A hosted machine's credential carries its generation, so a late enrollment
+ * reply with an older one is never saved over it (hosted-machines-v1.md).
+ */
+export const writeCredentialRecord = (options: MachineStateOptions, record: {token: string; generation: number}) =>
+  writeFileAtomic(options, FILES.credential, `${JSON.stringify(record)}\n`);
+
+export async function readCredentialRecord(options: MachineStateOptions): Promise<{token: string; generation?: number} | null> {
+  const raw = await readRegularFile(options, FILES.credential);
+  if (raw === null) return null;
+  const parsed = JSON.parse(raw) as {token?: unknown; generation?: unknown};
+  if (typeof parsed.token !== 'string' || parsed.token.length === 0) throw new MachineStateError('credential.json has no token');
+  return {token: parsed.token, ...(typeof parsed.generation === 'number' ? {generation: parsed.generation} : {})};
+}
 
 export async function readCredential(options: MachineStateOptions): Promise<string | null> {
   const raw = await readRegularFile(options, FILES.credential);
