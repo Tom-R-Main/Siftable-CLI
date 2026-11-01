@@ -26,7 +26,8 @@ export default class SetupPrepare extends BaseCommand {
     const provenance = this.parseJsonFlag<Record<string, unknown>>(flags.provenance, 'provenance');
     const body = await this.apiRequest<{session: SetupSession}>(scopeFlags(flags, scope), '/api/v1/setup/sessions', {
       method: 'POST',
-      body: {workspaceId: setupWorkspace(scope), surface: 'cli', input: {recipe: 'fix_failing_test', ...input},
+      // With no --workspace and no saved selection, the server picks the user's only workspace.
+      body: {...(flags.workspace === undefined && scope === null ? {} : {workspaceId: setupWorkspace(scope)}), surface: 'cli', input: {recipe: 'fix_failing_test', ...input},
         ...(provenance ? {provenance} : {})},
       idempotencyKey: flags['idempotency-key'] ?? this.idempotencyKey(),
     });

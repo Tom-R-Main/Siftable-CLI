@@ -76,10 +76,17 @@ describe('sift setup', () => {
       [body], {json: true});
     expect(apiRequest).toHaveBeenCalledWith(expect.anything(), '/api/v1/setup/sessions', {
       method: 'POST', idempotencyKey: 'cli-key',
-      body: {workspaceId: 'personal', surface: 'cli', input: {recipe: 'fix_failing_test', repository: {url: 'https://github.com/acme/parser'}}},
+      // No --workspace and no saved selection: the server picks the user's only workspace.
+      body: {surface: 'cli', input: {recipe: 'fix_failing_test', repository: {url: 'https://github.com/acme/parser'}}},
     });
     expect(result).toEqual(body);
     expect(lines).toEqual([]);
+  });
+
+  it('prepares in Personal context only when --workspace personal says so', async () => {
+    const {apiRequest} = await run(SetupPrepare, {flags: {input: '{}', workspace: 'personal'}}, [{session: session()}]);
+    expect(apiRequest.mock.calls[0][0]).toMatchObject({workspace: null});
+    expect(apiRequest.mock.calls[0][2]).toMatchObject({body: {workspaceId: 'personal'}});
   });
 
   it('reuses a given key to retry a lost prepare, and names the workspace', async () => {
