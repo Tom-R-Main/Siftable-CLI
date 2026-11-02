@@ -39,7 +39,7 @@ export const EXPLORER_EVAL_PROMPTS = [
   'scour this repo and explain how local search works',
   'find where repo_explorer is injected into the model turn',
   'why might the search tool skip files unexpectedly?',
-  'map the path from a TUI prompt to OpenFunction/Codex',
+  'map the path from a TUI prompt to the agent harness or Codex',
   'find the tests that prove explorer behavior',
   'where should we add parallel scout fan-out?',
   'explain the native/TS fallback boundary for file search',
@@ -50,7 +50,7 @@ export const EXPLORER_EVAL_FIXTURES: ExplorerEvalFixture[] = [
   {
     prompt: 'how does our cli work?',
     expectedFiles: ['packages/exf-cli/package.json', 'packages/exf-cli/src', 'packages/exf-cli/interactive-tui'],
-    forbiddenTopFiles: ['apps/best-edit'],
+    forbiddenTopFiles: ['apps/editorial-workbench'],
   },
   {
     prompt: 'why does Explorer show duplicate blocks?',
@@ -63,7 +63,7 @@ export const EXPLORER_EVAL_FIXTURES: ExplorerEvalFixture[] = [
   {
     prompt: 'where is command routing?',
     expectedFiles: ['packages/exf-cli/interactive-tui/commands.ts', 'packages/exf-cli/src/commands'],
-    forbiddenTopFiles: ['apps/best-edit'],
+    forbiddenTopFiles: ['apps/editorial-workbench'],
   },
   {
     prompt: 'where is repo_explorer injected?',

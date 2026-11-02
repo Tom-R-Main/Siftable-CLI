@@ -13,28 +13,39 @@
  * Everything external is injectable (`deps`) so the sequencing — and especially
  * the cleanup branch — is unit-testable on a real temp Git repo without a TUI.
  */
+import {realpathSync} from "node:fs";
 import {homedir} from "node:os";
 import {join} from "node:path";
 import {getSessionCwd} from "./navigation";
 import {
+  enqueueSessionInstruction,
+  SessionMailboxPublicationIndeterminateError,
+} from "./sessionMailbox";
+import {
   createChildWorktree,
+  listWorktrees,
   removeChildWorktree,
+  resolveCommit,
   resolveRepoRoot,
   createGitRunner,
   squashMergeChild,
   rebaseChildOntoBase,
+  validateChildWorktreePath,
   WorktreeError,
   type GitRunner,
 } from "./worktreeService";
-import {appendTurn, rolloutPathForThread, persistEnabled} from "./openfunction/framework/rollout";
 import {assembleParentMergeView, type MergeReadinessRow, type ParentMergeView} from "./mergeView";
 import {
   conversationKeyForSession,
+  buildChildBranchName,
   createGatedChildSession,
   createParentSession,
   evaluateChildAdmission,
+  forgetChildSessionSidecars,
   getMergeMasterSession,
+  getWorkIdentity,
   isTerminalStatus,
+  resolveChildWorktreePath,
   setSessionHeadCommit,
   transitionSessionStatus,
   type CreateChildInput,
@@ -42,9 +53,21 @@ import {
   type GatedChildResult,
   type MergeMasterAccessMode,
   type MergeMasterStatus,
+  type MergeMasterWorkIdentity,
 } from "./mergeMaster";
 import {commitChild as gitCommitChild, evaluateMerge, type MergePacket} from "./mergeGate";
 import {isWorktreeDirty} from "./worktreeService";
+import {
+  evaluateReadyProof,
+  isCompleteReadyProofIdentity,
+  loadReadyProof,
+  receiptMatches,
+  resolveReadyProofPolicy,
+  type ReadyProofDecision,
+  type ReadyPacket,
+  type ReadyProofReceipt,
+  type WorkProofClient,
+} from "./workProof";
 
 /** A child session this controller created and tracks for enter/list/remove. */
 export interface ChildSessionRecord {
@@ -62,6 +85,8 @@ export interface ChildSessionRecord {
   accessMode: MergeMasterAccessMode;
   writeScope: string[];
   conversationKey: string;
+  /** Safe contracted-work identity; lease credentials are never stored here. */
+  work?: MergeMasterWorkIdentity;
 }
 
 /** A record enriched with the child's live registry status, for the agent bar. */
@@ -80,11 +105,41 @@ export interface SpawnChildInput {
   focus?: string;
   /** Where to resolve the repo from; defaults to the active session cwd. */
   cwd?: string;
+  /** Safe authoritative work identity for the contracted orchestration path. */
+  work?: MergeMasterWorkIdentity;
+}
+
+export interface ChildSessionLaunch {
+  repoRoot: string;
+  baseBranch: string;
+  baseCommit: string;
+  seed: string;
+  branch: string;
+  worktreePath: string;
+  conversationKey: string;
 }
 
 export type SpawnChildResult =
   | {ok: true; session: ChildSessionRecord}
-  | {ok: false; reason: string; blockedBy?: number; sharedScope?: string[]};
+  | {
+      ok: false;
+      reason: string;
+      blockedBy?: number;
+      sharedScope?: string[];
+      /** A post-creation failure already attempted worktree compensation. */
+      worktreeCleanupAttempted?: boolean;
+      /** Explicit failure from that compensation attempt, when any. */
+      cleanupFailure?: string;
+    };
+
+export class ChildSessionSpawnError extends Error {
+  readonly worktreeCleanupAttempted = true;
+
+  constructor(message: string, readonly cleanupFailure?: string, cause?: unknown) {
+    super(message, {cause});
+    this.name = "ChildSessionSpawnError";
+  }
+}
 
 export interface ChildSessionControllerDeps {
   /** Git command runner — inject a spy to observe (or a fake to drive) git. */
@@ -99,11 +154,22 @@ export interface ChildSessionControllerDeps {
   now?: () => number;
   /**
    * Post a parent instruction into a child's conversation thread (lane F
-   * send-back). Defaults to appending a user-role turn to the child's rollout;
-   * inject a spy in tests. Returns true when the message was persisted.
+   * send-back). Defaults to publishing into the child's durable mailbox; inject
+   * a spy in tests. Distinguishes confirmed durability from publication
+   * whose crash durability could not be confirmed.
    */
-  postToThread?: (conversationKey: string, instruction: string) => boolean;
+  postToThread?: (
+    conversationKey: string,
+    instruction: string,
+  ) => SessionInstructionPostResult;
+  /** Optional for compatibility; production supplies it to activate the independent proof policy. */
+  readyProof?: {client?: WorkProofClient; env?: NodeJS.ProcessEnv};
 }
+
+export type SessionInstructionPostResult =
+  | {status: "durable"}
+  | {status: "indeterminate"}
+  | {status: "failed"};
 
 /** Options for {@link ChildSessionController.reviewChild}. */
 export interface ReviewChildOptions {
@@ -125,6 +191,8 @@ export type ReviewChildResult =
       committed: boolean;
       /** Set when the verdict could not be applied (e.g. illegal transition). */
       note?: string;
+      proofDecision?: ReadyProofDecision;
+      proofPacket?: ReadyPacket;
     }
   | {ok: false; reason: string};
 
@@ -150,6 +218,7 @@ export type MergeChildResult =
       cleaned: boolean;
       /** Extra context (already-up-to-date, cleanup skipped/failed, …). */
       note?: string;
+      proofDecision?: ReadyProofDecision;
     }
   | {ok: false; reason: string; packet?: MergePacket};
 
@@ -170,27 +239,44 @@ export type RebaseChildResult =
 
 /** Outcome of sending a child back to work with instructions (lane F). */
 export type SendBackChildResult =
-  | {ok: true; posted: boolean; conversationKey: string}
+  | {
+      ok: true;
+      posted: true;
+      durability: "durable" | "indeterminate";
+      conversationKey: string;
+    }
   | {ok: false; reason: string};
 
 export interface ChildSessionController {
-  spawnChild(input: SpawnChildInput): SpawnChildResult;
+  /** Resolve the launch context before claim or filesystem mutation. */
+  resolveLaunch(input: SpawnChildInput): ChildSessionLaunch;
+  spawnChild(input: SpawnChildInput, launch?: ChildSessionLaunch): SpawnChildResult;
+  /** Create the prepared child or adopt the exact worktree left by a crashed creator. */
+  spawnOrAdoptChild(input: SpawnChildInput, launch: ChildSessionLaunch): SpawnChildResult;
+  /** Re-register an exact, already-existing child worktree after restart. */
+  adoptChild(record: ChildSessionRecord): SpawnChildResult;
   listChildSessions(): ChildSessionView[];
   getChild(sessionId: number): ChildSessionRecord | undefined;
   /** Run the ready-to-merge gate (lane D) and set ready_to_merge / merge_blocked. */
-  reviewChild(sessionId: number, opts?: ReviewChildOptions): ReviewChildResult;
+  reviewChild(sessionId: number, opts?: ReviewChildOptions): ReviewChildResult | Promise<ReviewChildResult>;
   /** Stage + commit a child's working changes (no gate). Returns the new tip. */
   commitChild(sessionId: number, message?: string): {ok: boolean; committed?: boolean; headCommit?: string; reason?: string};
   /** Read-only dashboard: every child's mergeability as the parent sees it. */
   listMergeReadiness(): ParentMergeView;
   /** Land a ready child onto the base via squash-merge (lane E). */
-  mergeChild(sessionId: number, opts?: MergeChildOptions): MergeChildResult;
+  mergeChild(sessionId: number, opts?: MergeChildOptions): MergeChildResult | Promise<MergeChildResult>;
   /** Replay a (usually blocked) child onto the moved base; re-gate on success (lane F). */
-  rebaseChild(sessionId: number): RebaseChildResult;
+  rebaseChild(sessionId: number): RebaseChildResult | Promise<RebaseChildResult>;
   /** Resume a reviewed child, posting the parent's instructions into its thread (lane F). */
   sendBackChild(sessionId: number, instruction: string): SendBackChildResult;
   /** Reject a reviewed child: terminal, but keep its worktree + branch inspectable (lane F). */
   rejectChild(sessionId: number, reason?: string): {ok: boolean; reason?: string};
+  /** Fail-stop a child while retaining its worktree and branch for inspection. */
+  abandonChild(sessionId: number): {ok: boolean; reason?: string};
+  /** Remove a recorded child or confirm its managed worktree is already absent. */
+  teardownChild(record: ChildSessionRecord): {ok: boolean; reason?: string};
+  /** Remove the exact prepared worktree when session registration never completed. */
+  teardownLaunch(launch: ChildSessionLaunch): {ok: boolean; reason?: string};
   removeChild(
     sessionId: number,
     opts?: {deleteBranch?: boolean; force?: boolean},
@@ -207,19 +293,21 @@ export function createChildSessionController(
   const now = deps.now ?? (() => 0);
   const postToThread =
     deps.postToThread ??
-    ((conversationKey: string, instruction: string): boolean => {
-      // Append the parent's instruction as a user-role turn so the child agent
-      // picks it up on resume. Skipped if rollout persistence is off / unavailable.
-      if (!persistEnabled()) return false;
+    ((conversationKey: string, instruction: string): SessionInstructionPostResult => {
+      // The event journal is authoritative, so cross-session instructions use
+      // an independent durable mailbox rather than the legacy rollout mirror.
       try {
-        appendTurn(rolloutPathForThread(conversationKey), instruction, null);
-        return true;
-      } catch {
-        return false;
+        enqueueSessionInstruction(conversationKey, instruction);
+        return {status: "durable"};
+      } catch (error) {
+        return error instanceof SessionMailboxPublicationIndeterminateError
+          ? {status: "indeterminate"}
+          : {status: "failed"};
       }
     });
 
   const records = new Map<number, ChildSessionRecord>();
+  const receipts = new Map<number, ReadyProofReceipt>();
   const parents = new Map<string, number>(); // repoRoot → parent sessionId
   let seedCounter = 0;
 
@@ -246,23 +334,50 @@ export function createChildSessionController(
     return id;
   }
 
-  function cleanupWorktree(repoRoot: string, worktreePath: string): void {
-    // Best-effort: we are already on a failure path; force past a dirty tree and
-    // drop the branch so a retry with the same seed isn't blocked by leftovers.
+  function cleanupWorktree(repoRoot: string, worktreePath: string): string | undefined {
     try {
       removeChildWorktree({repoRoot, worktreePath, deleteBranch: true, force: true}, runner);
-    } catch {
-      /* nothing else we can do here — the caller surfaces the original failure */
+      return undefined;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
     }
   }
 
-  function spawnChild(input: SpawnChildInput): SpawnChildResult {
+  function canonicalPath(path: string): string | undefined {
+    try {
+      return realpathSync(path);
+    } catch {
+      return undefined;
+    }
+  }
+
+  function resolveLaunch(input: SpawnChildInput): ChildSessionLaunch {
+    const startCwd = input.cwd ?? getSessionCwd();
+    const repoRoot = resolveRepoRoot(startCwd, runner);
+    const baseBranch = input.baseBranch ?? currentBranch(repoRoot);
+    const baseCommit = resolveCommit(repoRoot, baseBranch, runner);
+    if (!baseCommit) throw new Error(`base branch not found: ${baseBranch}`);
+    const seed = input.work?.workItemId ?? `${input.title}#${++seedCounter}`;
+    const branch = buildChildBranchName(seed, input.focus ?? input.title);
+    const worktreePath = resolveChildWorktreePath({worktreesRoot}, repoRoot, branch);
+    return {
+      repoRoot,
+      baseBranch,
+      baseCommit,
+      seed,
+      branch,
+      worktreePath,
+      conversationKey: conversationKeyForSession({repoRoot, role: "child", branch, seed}),
+    };
+  }
+
+  function spawnChild(input: SpawnChildInput, prepared?: ChildSessionLaunch): SpawnChildResult {
     // 1. Gate-A preflight — needs only access mode + scope, so do it before Git.
     const admission = evaluateChildAdmission({
       accessMode: input.accessMode,
       writeScope: input.writeScope,
     });
-    if (!admission.admit) {
+    if (admission.admit === false) {
       return {
         ok: false,
         reason: admission.reason,
@@ -273,39 +388,50 @@ export function createChildSessionController(
 
     // 2. Resolve repo/base/parent (still no mutation of the tree).
     const startCwd = input.cwd ?? getSessionCwd();
-    const repoRoot = resolveRepoRoot(startCwd, runner);
-    const baseBranch = input.baseBranch ?? currentBranch(repoRoot);
+    const launch = prepared ?? resolveLaunch(input);
+    const {repoRoot, baseBranch} = launch;
     const parentSessionId = ensureParent(repoRoot, baseBranch, startCwd);
 
     // 3. Create the worktree. Past this point, any failure must clean it up.
-    const seed = `${input.title}#${++seedCounter}`;
     const wt = createChildWorktree(
-      {repoRoot, baseBranch, seed, focus: input.focus ?? input.title, layout: {worktreesRoot}},
+      {
+        repoRoot,
+        baseBranch: launch.baseCommit,
+        seed: launch.seed,
+        focus: input.focus ?? input.title,
+        branch: launch.branch,
+        worktreePath: launch.worktreePath,
+        layout: {worktreesRoot},
+      },
       runner,
     );
     try {
-      const conversationKey = conversationKeyForSession({
-        repoRoot,
-        role: "child",
-        branch: wt.branch,
-        seed,
-      });
+      if (wt.baseCommit !== launch.baseCommit) {
+        throw new Error("prepared child base changed before worktree creation");
+      }
+      const conversationKey = launch.conversationKey;
       const gated = registerSession({
         parentSessionId,
         accessMode: input.accessMode,
         branch: wt.branch,
         worktreePath: wt.worktreePath,
         sessionCwd: wt.worktreePath,
-        baseBranch: wt.baseBranch,
+        baseBranch,
         baseCommit: wt.baseCommit,
         headCommit: wt.headCommit,
         writeScope: input.writeScope,
+        work: input.work,
         conversationKey,
         nowMs: now(),
       });
-      if (!gated.admitted) {
-        cleanupWorktree(repoRoot, wt.worktreePath);
-        return {ok: false, reason: gated.admission.reason};
+      if (gated.admitted === false) {
+        const cleanupFailure = cleanupWorktree(repoRoot, wt.worktreePath);
+        return {
+          ok: false,
+          reason: gated.admission.reason,
+          worktreeCleanupAttempted: true,
+          cleanupFailure,
+        };
       }
       const record: ChildSessionRecord = {
         sessionId: gated.sessionId,
@@ -313,7 +439,7 @@ export function createChildSessionController(
         title: input.title,
         repoRoot,
         branch: wt.branch,
-        baseBranch: wt.baseBranch,
+        baseBranch,
         worktreePath: wt.worktreePath,
         sessionCwd: wt.worktreePath,
         baseCommit: wt.baseCommit,
@@ -321,13 +447,144 @@ export function createChildSessionController(
         accessMode: input.accessMode,
         writeScope: input.writeScope ?? [],
         conversationKey,
+        work: input.work ? getWorkIdentity(gated.sessionId) ?? input.work : undefined,
       };
       records.set(record.sessionId, record);
       return {ok: true, session: record};
     } catch (err) {
-      cleanupWorktree(repoRoot, wt.worktreePath);
-      throw err;
+      const cleanupFailure = cleanupWorktree(repoRoot, wt.worktreePath);
+      throw new ChildSessionSpawnError(
+        err instanceof Error ? err.message : String(err),
+        cleanupFailure,
+        err,
+      );
     }
+  }
+
+  function spawnOrAdoptChild(
+    input: SpawnChildInput,
+    launch: ChildSessionLaunch,
+  ): SpawnChildResult {
+    let existing;
+    try {
+      existing = listWorktrees(launch.repoRoot, runner).find(
+        (candidate) => candidate.branch === launch.branch,
+      );
+    } catch (error) {
+      return {ok: false, reason: error instanceof Error ? error.message : String(error)};
+    }
+    if (!existing) return spawnChild(input, launch);
+    const existingPath = canonicalPath(existing.path);
+    const launchPath = canonicalPath(launch.worktreePath);
+    if (
+      existing.isPrimary
+      || existing.prunable
+      || !existing.isSiftManaged
+      || existingPath === undefined
+      || launchPath === undefined
+      || existingPath !== launchPath
+    ) {
+      return {
+        ok: false,
+        reason: `prepared child branch is registered to a mismatched worktree: ${launch.branch}`,
+      };
+    }
+    return adoptPreparedChild({
+      title: input.title,
+      repoRoot: launch.repoRoot,
+      branch: launch.branch,
+      baseBranch: launch.baseBranch,
+      worktreePath: launch.worktreePath,
+      sessionCwd: launch.worktreePath,
+      baseCommit: launch.baseCommit,
+      headCommit: existing.head,
+      accessMode: input.accessMode,
+      writeScope: input.writeScope ?? [],
+      conversationKey: launch.conversationKey,
+      work: input.work,
+    });
+  }
+
+  function adoptPreparedChild(
+    record: Omit<ChildSessionRecord, "sessionId" | "parentSessionId">,
+  ): SpawnChildResult {
+    let worktree;
+    let canonicalRecordedPath: string;
+    try {
+      canonicalRecordedPath = validateChildWorktreePath(realpathSync(record.worktreePath), {
+        worktreesRoot,
+        repoRoot: record.repoRoot,
+      });
+      worktree = listWorktrees(record.repoRoot, runner).find(
+        (candidate) =>
+          !candidate.isPrimary
+          && !candidate.prunable
+          && candidate.isSiftManaged
+          && canonicalPath(candidate.path) === canonicalRecordedPath
+          && candidate.branch === record.branch,
+      );
+    } catch (err) {
+      return {ok: false, reason: err instanceof Error ? err.message : String(err)};
+    }
+    if (!worktree) {
+      return {
+        ok: false,
+        reason: `recorded child worktree is missing or mismatched: ${record.worktreePath} (${record.branch})`,
+      };
+    }
+
+    const canonicalWorktreePath = canonicalRecordedPath;
+    const baseCommit = resolveCommit(record.repoRoot, record.baseCommit, runner);
+    const headCommit = resolveCommit(canonicalWorktreePath, "HEAD", runner);
+    if (baseCommit !== record.baseCommit || !headCommit) {
+      return {ok: false, reason: "recorded child worktree has an unavailable immutable base or head"};
+    }
+    if (runner(["merge-base", "--is-ancestor", baseCommit, headCommit], record.repoRoot).status !== 0) {
+      return {
+        ok: false,
+        reason: `recorded child worktree no longer descends from immutable base ${baseCommit}`,
+      };
+    }
+    const parentSessionId = ensureParent(record.repoRoot, record.baseBranch, record.repoRoot);
+    const gated = registerSession({
+      parentSessionId,
+      accessMode: record.accessMode,
+      branch: record.branch,
+      worktreePath: canonicalWorktreePath,
+      sessionCwd: canonicalWorktreePath,
+      baseBranch: record.baseBranch,
+      baseCommit: record.baseCommit,
+      headCommit,
+      writeScope: record.writeScope,
+      work: record.work,
+      conversationKey: record.conversationKey,
+      nowMs: now(),
+    });
+    if (gated.admitted === false) {
+      return {
+        ok: false,
+        reason: gated.admission.reason,
+        blockedBy: gated.admission.conflictSessionId || undefined,
+        sharedScope: gated.admission.sharedScope,
+      };
+    }
+
+    const adopted: ChildSessionRecord = {
+      ...record,
+      sessionId: gated.sessionId,
+      parentSessionId,
+      worktreePath: canonicalWorktreePath,
+      sessionCwd: canonicalWorktreePath,
+      headCommit,
+      work: record.work ? getWorkIdentity(gated.sessionId) ?? record.work : undefined,
+    };
+    records.set(adopted.sessionId, adopted);
+    return {ok: true, session: adopted};
+  }
+
+  function adoptChild(record: ChildSessionRecord): SpawnChildResult {
+    const {sessionId: _sessionId, parentSessionId: _parentSessionId, ...prepared} = record;
+    return adoptPreparedChild(prepared);
   }
 
   function listChildSessions(): ChildSessionView[] {
@@ -353,7 +610,7 @@ export function createChildSessionController(
     }
   }
 
-  function reviewChild(sessionId: number, opts: ReviewChildOptions = {}): ReviewChildResult {
+  function legacyReviewChild(sessionId: number, opts: ReviewChildOptions = {}): ReviewChildResult {
     const rec = records.get(sessionId);
     if (!rec) return {ok: false, reason: "unknown child session"};
     const live = getMergeMasterSession(sessionId);
@@ -390,6 +647,9 @@ export function createChildSessionController(
 
   function listMergeReadiness(): ParentMergeView {
     const rows: MergeReadinessRow[] = [];
+    const configured = deps.readyProof
+      ? resolveReadyProofPolicy(deps.readyProof.env ?? process.env)
+      : {ok: true as const, policy: "off" as const};
     for (const rec of records.values()) {
       const live = getMergeMasterSession(rec.sessionId);
       const status = live?.status ?? "unknown";
@@ -411,7 +671,20 @@ export function createChildSessionController(
       }
       try {
         const packet = evaluateMerge(rec, runner);
-        rows.push({
+        const identity = packet.work;
+        const receipt = receipts.get(rec.sessionId);
+        const exactReceipt = configured.ok && configured.policy === "enforce"
+          && identity?.revision !== undefined
+          ? receiptMatches(receipt, {
+              policy: configured.policy,
+              childHead: packet.headCommit,
+              baseTip: packet.baseTip,
+              workRevision: identity.revision,
+              planId: identity.plan.planId,
+              planVersion: identity.plan.planVersion,
+            })
+          : configured.ok && configured.policy !== "enforce";
+        const row: MergeReadinessRow = {
           sessionId: rec.sessionId,
           branch: rec.branch,
           baseBranch: rec.baseBranch,
@@ -422,7 +695,20 @@ export function createChildSessionController(
           deletions: packet.totalDeletions,
           behindBy: packet.behindBy,
           blockers: packet.blockers,
-        });
+        };
+        if (!(configured.ok && configured.policy === "off")) {
+          row.mergeEligibility = packet.verdict === "ready_to_merge" && exactReceipt;
+          row.proofCode = configured.ok
+            ? (configured.policy === "enforce"
+                ? (!identity
+                    ? "work_link_required"
+                    : !isCompleteReadyProofIdentity(identity)
+                      ? "identity_incomplete"
+                      : exactReceipt ? "ready_proof_pass" : receipt ? "proof_receipt_stale" : "proof_receipt_missing")
+                : "proof_warn")
+            : "ready_proof_config_invalid";
+        }
+        rows.push(row);
       } catch (err) {
         rows.push({
           sessionId: rec.sessionId,
@@ -438,10 +724,13 @@ export function createChildSessionController(
         });
       }
     }
-    return assembleParentMergeView(rows);
+    const view = assembleParentMergeView(rows);
+    return configured.ok && configured.policy === "off"
+      ? view
+      : {...view, proofPolicy: configured.ok ? configured.policy : undefined};
   }
 
-  function mergeChild(sessionId: number, opts: MergeChildOptions = {}): MergeChildResult {
+  function legacyMergeChild(sessionId: number, opts: MergeChildOptions = {}): MergeChildResult {
     const rec = records.get(sessionId);
     if (!rec) return {ok: false, reason: "unknown child session"};
     const live = getMergeMasterSession(sessionId);
@@ -512,7 +801,7 @@ export function createChildSessionController(
     return {ok: true, merged: result.merged, packet, baseCommit: result.baseCommitAfter, cleaned, note};
   }
 
-  function rebaseChild(sessionId: number): RebaseChildResult {
+  function legacyRebaseChild(sessionId: number): RebaseChildResult {
     const rec = records.get(sessionId);
     if (!rec) return {ok: false, reason: "unknown child session"};
     const live = getMergeMasterSession(sessionId);
@@ -552,6 +841,239 @@ export function createChildSessionController(
     }
   }
 
+  async function resolveProof(rec: ChildSessionRecord): Promise<{
+    packet: MergePacket;
+    decision: ReadyProofDecision;
+    proofPacket?: ReadyPacket;
+  }> {
+    const configured = resolveReadyProofPolicy(deps.readyProof?.env ?? process.env);
+    const p1 = evaluateMerge(rec, runner);
+    if (!configured.ok) {
+      return {
+        packet: p1,
+        decision: {policy: "enforce", allowed: false, code: "ready_proof_config_invalid"},
+      };
+    }
+    if (configured.policy === "off") {
+      return {
+        packet: p1,
+        decision: {policy: "off", allowed: true, code: "proof_not_required"},
+      };
+    }
+    const loaded = await Promise.resolve(loadReadyProof({
+      policy: configured.policy,
+      merge: p1,
+      client: deps.readyProof?.client,
+    }));
+    const p2 = evaluateMerge(rec, runner);
+    const proofPacket = loaded;
+    if (p1.headCommit !== p2.headCommit) {
+      const decision: ReadyProofDecision = configured.policy === "enforce"
+        ? {policy: "enforce", allowed: false, code: "head_drift"}
+        : {policy: "warn", allowed: true, code: "proof_warn", advisoryCode: "head_drift"};
+      return {packet: p2, decision, proofPacket};
+    }
+    if (p1.baseTip !== p2.baseTip) {
+      const decision: ReadyProofDecision = configured.policy === "enforce"
+        ? {policy: "enforce", allowed: false, code: "base_drift"}
+        : {policy: "warn", allowed: true, code: "proof_warn", advisoryCode: "base_drift"};
+      return {packet: p2, decision, proofPacket};
+    }
+    return {
+      packet: p2,
+      decision: evaluateReadyProof({policy: configured.policy, merge: p2, packet: proofPacket}),
+      proofPacket,
+    };
+  }
+
+  function reviewChild(
+    sessionId: number,
+    opts: ReviewChildOptions = {},
+  ): ReviewChildResult | Promise<ReviewChildResult> {
+    if (!deps.readyProof) return legacyReviewChild(sessionId, opts);
+    const configured = resolveReadyProofPolicy(deps.readyProof.env ?? process.env);
+    if (configured.ok && configured.policy === "off") return legacyReviewChild(sessionId, opts);
+    return (async () => {
+      const rec = records.get(sessionId);
+      if (!rec) return {ok: false, reason: "unknown child session"};
+      const initial = getMergeMasterSession(sessionId);
+      if (initial && isTerminalStatus(initial.status)) {
+        return {ok: false, reason: `child #${sessionId} is ${initial.status} (terminal) — nothing to review`};
+      }
+      let committed = false;
+      try {
+        if (opts.autoCommit && isWorktreeDirty(rec.worktreePath, runner)) {
+          const commit = gitCommitChild(rec, opts.message ?? `sift: child #${sessionId} work`, runner);
+          committed = commit.committed;
+          if (commit.committed) {
+            receipts.delete(sessionId);
+            setSessionHeadCommit(sessionId, commit.headCommit, now());
+          }
+        }
+        const previousReceipt = receipts.get(sessionId);
+        const currentHead = resolveCommit(rec.repoRoot, rec.branch, runner);
+        if (previousReceipt && currentHead !== previousReceipt.childHead) {
+          receipts.delete(sessionId);
+          const live = getMergeMasterSession(sessionId);
+          if (live?.status === "ready_to_merge" || live?.status === "merge_blocked") {
+            transitionSessionStatus(sessionId, "running", now());
+          }
+        }
+        const resolved = await resolveProof(rec);
+        setSessionHeadCommit(sessionId, resolved.packet.headCommit, now());
+        const effectiveVerdict = resolved.packet.verdict === "ready_to_merge" && resolved.decision.allowed
+          ? "ready_to_merge"
+          : "merge_blocked";
+        const before = getMergeMasterSession(sessionId);
+        const code = before?.status === effectiveVerdict
+          ? 0
+          : transitionSessionStatus(sessionId, effectiveVerdict, now());
+        if (
+          code === 0
+          && effectiveVerdict === "ready_to_merge"
+          && resolved.decision.policy === "enforce"
+          && resolved.decision.allowed
+        ) {
+          receipts.set(sessionId, resolved.decision.receipt);
+        } else {
+          receipts.delete(sessionId);
+        }
+        return {
+          ok: true,
+          packet: {...resolved.packet, verdict: effectiveVerdict},
+          statusApplied: code === 0,
+          committed,
+          proofDecision: resolved.decision,
+          proofPacket: resolved.proofPacket,
+          note: code === 0 ? undefined : `verdict ${effectiveVerdict} not applied`,
+        };
+      } catch (error) {
+        return {ok: false, reason: error instanceof Error ? error.message : String(error)};
+      }
+    })();
+  }
+
+  function mergeChild(
+    sessionId: number,
+    opts: MergeChildOptions = {},
+  ): MergeChildResult | Promise<MergeChildResult> {
+    if (!deps.readyProof) return legacyMergeChild(sessionId, opts);
+    const configured = resolveReadyProofPolicy(deps.readyProof.env ?? process.env);
+    if (configured.ok && configured.policy === "off") return legacyMergeChild(sessionId, opts);
+    return (async () => {
+      const rec = records.get(sessionId);
+      if (!rec) return {ok: false, reason: "unknown child session"};
+      const live = getMergeMasterSession(sessionId);
+      if (live && isTerminalStatus(live.status)) {
+        return {ok: false, reason: `child #${sessionId} is ${live.status} (terminal) — nothing to merge`};
+      }
+      let resolved: Awaited<ReturnType<typeof resolveProof>>;
+      try {
+        resolved = await resolveProof(rec);
+      } catch (error) {
+        return {ok: false, reason: error instanceof Error ? error.message : String(error)};
+      }
+      setSessionHeadCommit(sessionId, resolved.packet.headCommit, now());
+      if (!resolved.decision.allowed) {
+        return {
+          ok: false,
+          reason: `merge blocked: ${resolved.decision.code}`,
+          packet: {...resolved.packet, verdict: "merge_blocked"},
+        };
+      }
+      if (resolved.packet.verdict !== "ready_to_merge") {
+        return {
+          ok: false,
+          reason: `merge blocked: ${resolved.packet.blockers.join("; ") || "not ready"}`,
+          packet: {...resolved.packet, verdict: "merge_blocked"},
+        };
+      }
+      const current = getMergeMasterSession(sessionId);
+      if (current?.status !== "ready_to_merge") {
+        return {ok: false, reason: `child #${sessionId} is ${current?.status ?? "unknown"} — run ready before merging`, packet: resolved.packet};
+      }
+      try {
+        const result = squashMergeChild({
+          repoRoot: rec.repoRoot,
+          parentWorktreePath: rec.repoRoot,
+          baseBranch: rec.baseBranch,
+          childBranch: rec.branch,
+          expectedChildHead: resolved.packet.headCommit,
+          expectedBaseTip: resolved.packet.baseTip,
+          message: opts.message ?? `sift: merge child #${sessionId} (${rec.branch}) — ${rec.title}`,
+        }, runner);
+        transitionSessionStatus(sessionId, "merged", now());
+        setSessionHeadCommit(rec.parentSessionId, result.baseCommitAfter, now());
+        receipts.delete(sessionId);
+        let cleaned = false;
+        let note = result.alreadyUpToDate ? "child had no net changes (already up-to-date)" : undefined;
+        if (!opts.keep) {
+          const removal = removeChild_internal(rec, {deleteBranch: true, forceBranchDelete: true});
+          cleaned = removal.ok;
+          if (removal.ok) records.delete(sessionId);
+          else note = `merged, but cleanup failed: ${removal.reason}`;
+        }
+        return {
+          ok: true,
+          merged: result.merged,
+          packet: resolved.packet,
+          baseCommit: result.baseCommitAfter,
+          cleaned,
+          note,
+          proofDecision: resolved.decision,
+        };
+      } catch (error) {
+        if (error instanceof WorktreeError && (error.kind === "merge_conflict" || error.kind === "ref_mismatch")) {
+          transitionSessionStatus(sessionId, "merge_blocked", now());
+        }
+        return {ok: false, reason: error instanceof Error ? error.message : String(error), packet: resolved.packet};
+      }
+    })();
+  }
+
+  function rebaseChild(sessionId: number): RebaseChildResult | Promise<RebaseChildResult> {
+    if (!deps.readyProof) return legacyRebaseChild(sessionId);
+    const configured = resolveReadyProofPolicy(deps.readyProof.env ?? process.env);
+    if (configured.ok && configured.policy === "off") return legacyRebaseChild(sessionId);
+    return (async () => {
+      const rec = records.get(sessionId);
+      if (!rec) return {ok: false, reason: "unknown child session"};
+      const live = getMergeMasterSession(sessionId);
+      if (live && isTerminalStatus(live.status)) {
+        return {ok: false, reason: `child #${sessionId} is ${live.status} (terminal) — nothing to rebase`};
+      }
+      receipts.delete(sessionId);
+      try {
+        const result = rebaseChildOntoBase(
+          {worktreePath: rec.worktreePath, childBranch: rec.branch, baseBranch: rec.baseBranch},
+          runner,
+        );
+        setSessionHeadCommit(sessionId, result.headCommitAfter, now());
+        const current = getMergeMasterSession(sessionId);
+        if (current?.status === "ready_to_merge" || current?.status === "merge_blocked") {
+          transitionSessionStatus(sessionId, "running", now());
+        }
+        const reviewed = await reviewChild(sessionId);
+        if (!reviewed.ok) {
+          return {ok: false, reason: "reason" in reviewed ? reviewed.reason : "ready review failed"};
+        }
+        return {
+          ok: true,
+          rebased: result.rebased,
+          headCommit: reviewed.packet.headCommit,
+          verdict: reviewed.packet.verdict,
+          statusApplied: reviewed.statusApplied,
+        };
+      } catch (error) {
+        if (error instanceof WorktreeError && error.kind === "merge_conflict") {
+          transitionSessionStatus(sessionId, "merge_blocked", now());
+          return {ok: false, reason: error.message, conflicts: error.paths ?? []};
+        }
+        return {ok: false, reason: error instanceof Error ? error.message : String(error)};
+      }
+    })();
+  }
+
   function sendBackChild(sessionId: number, instruction: string): SendBackChildResult {
     const rec = records.get(sessionId);
     if (!rec) return {ok: false, reason: "unknown child session"};
@@ -565,14 +1087,38 @@ export function createChildSessionController(
       // running→running set as an idempotent no-op, so guard it here explicitly.)
       return {ok: false, reason: `child #${sessionId} is already running — nothing to send back`};
     }
-    // Resume the work first; only post once the transition is legal.
+    const text = instruction.trim();
+    if (!text) return {ok: false, reason: `send-back instruction is required for child #${sessionId}`};
+
+    // Resume the work first; only publish once the transition is legal. Restore
+    // the reviewed state only when publication definitely failed. An
+    // indeterminate post-publication sync keeps the child running because it
+    // may already observe and consume the instruction.
     const code = transitionSessionStatus(sessionId, "running", now());
     if (code !== 0) {
       return {ok: false, reason: `cannot resume child #${sessionId} from ${live.status}`};
     }
-    const text = instruction.trim();
-    const posted = text ? postToThread(rec.conversationKey, text) : false;
-    return {ok: true, posted, conversationKey: rec.conversationKey};
+    let postResult: SessionInstructionPostResult = {status: "failed"};
+    try {
+      postResult = postToThread(rec.conversationKey, text);
+    } catch {
+      postResult = {status: "failed"};
+    }
+    if (postResult.status === "failed") {
+      const rollbackCode = transitionSessionStatus(sessionId, live.status, now());
+      return {
+        ok: false,
+        reason: rollbackCode === 0
+          ? `could not durably enqueue send-back instruction for child #${sessionId}; status restored to ${live.status}`
+          : `could not durably enqueue send-back instruction for child #${sessionId}; status rollback from running to ${live.status} also failed`,
+      };
+    }
+    return {
+      ok: true,
+      posted: true,
+      durability: postResult.status,
+      conversationKey: rec.conversationKey,
+    };
   }
 
   function rejectChild(sessionId: number, _reason?: string): {ok: boolean; reason?: string} {
@@ -592,6 +1138,76 @@ export function createChildSessionController(
     // Deliberately leave the worktree + branch on disk: rejected is terminal but
     // inspectable. The record stays tracked so it still shows in the merge view.
     return {ok: true};
+  }
+
+  function abandonChild(sessionId: number): {ok: boolean; reason?: string} {
+    const rec = records.get(sessionId);
+    if (!rec) return {ok: false, reason: "unknown child session"};
+    const live = getMergeMasterSession(sessionId);
+    if (live && !isTerminalStatus(live.status)) {
+      const code = transitionSessionStatus(sessionId, "abandoned", now());
+      if (code !== 0) return {ok: false, reason: `cannot abandon child #${sessionId}`};
+    }
+    return {ok: true};
+  }
+
+  function teardownChild(record: ChildSessionRecord): {ok: boolean; reason?: string} {
+    const tracked = records.get(record.sessionId);
+    if (tracked) return removeChild(record.sessionId, {deleteBranch: true, force: true});
+
+    let listed;
+    try {
+      const expected = validateChildWorktreePath(record.worktreePath, {
+        worktreesRoot,
+        repoRoot: record.repoRoot,
+      });
+      const canonicalExpected = canonicalPath(expected);
+      if (canonicalExpected === undefined) {
+        return {ok: false, reason: `recorded child worktree path cannot be resolved: ${record.worktreePath}`};
+      }
+      listed = listWorktrees(record.repoRoot, runner).find((candidate) => {
+        const candidatePath = canonicalPath(candidate.path);
+        return !candidate.isPrimary
+          && candidatePath !== undefined
+          && candidatePath === canonicalExpected
+          && candidate.branch === record.branch;
+      });
+    } catch (error) {
+      return {ok: false, reason: error instanceof Error ? error.message : String(error)};
+    }
+    if (!listed) return {ok: true};
+
+    const adopted = adoptChild(record);
+    if (!adopted.ok) return adopted;
+    return removeChild(adopted.session.sessionId, {deleteBranch: true, force: true});
+  }
+
+  function teardownLaunch(launch: ChildSessionLaunch): {ok: boolean; reason?: string} {
+    try {
+      const expected = validateChildWorktreePath(launch.worktreePath, {
+        worktreesRoot,
+        repoRoot: launch.repoRoot,
+      });
+      const canonicalExpected = canonicalPath(expected);
+      if (canonicalExpected === undefined) {
+        return {ok: false, reason: `prepared child worktree path cannot be resolved: ${launch.worktreePath}`};
+      }
+      const listed = listWorktrees(launch.repoRoot, runner).find((candidate) => {
+        const candidatePath = canonicalPath(candidate.path);
+        return candidatePath !== undefined && candidatePath === canonicalExpected;
+      });
+      if (!listed) return {ok: true};
+      if (listed.isPrimary || !listed.isSiftManaged || listed.branch !== launch.branch) {
+        return {
+          ok: false,
+          reason: `prepared child worktree path is occupied by a mismatched checkout: ${launch.worktreePath}`,
+        };
+      }
+      const cleanupFailure = cleanupWorktree(launch.repoRoot, expected);
+      return cleanupFailure ? {ok: false, reason: cleanupFailure} : {ok: true};
+    } catch (error) {
+      return {ok: false, reason: error instanceof Error ? error.message : String(error)};
+    }
   }
 
   /** Internal worktree teardown that does not touch registry status (merge already did). */
@@ -622,11 +1238,6 @@ export function createChildSessionController(
   ): {ok: boolean; reason?: string} {
     const rec = records.get(sessionId);
     if (!rec) return {ok: false, reason: "unknown child session"};
-    // Free the child's Gate-A scope so coupled work can be admitted again.
-    const live = getMergeMasterSession(sessionId);
-    if (live && !isTerminalStatus(live.status)) {
-      transitionSessionStatus(sessionId, "abandoned", now());
-    }
     try {
       removeChildWorktree(
         {
@@ -640,12 +1251,22 @@ export function createChildSessionController(
     } catch (err) {
       return {ok: false, reason: err instanceof Error ? err.message : String(err)};
     }
+    // Keep Gate A occupied until local teardown succeeds. If Git refuses the
+    // removal, the session remains live and serialized for operator recovery.
+    const live = getMergeMasterSession(sessionId);
+    if (live && !isTerminalStatus(live.status)) {
+      transitionSessionStatus(sessionId, "abandoned", now());
+    }
     records.delete(sessionId);
+    forgetChildSessionSidecars(sessionId);
     return {ok: true};
   }
 
   return {
+    resolveLaunch,
     spawnChild,
+    spawnOrAdoptChild,
+    adoptChild,
     listChildSessions,
     getChild: (sessionId) => records.get(sessionId),
     reviewChild,
@@ -655,6 +1276,9 @@ export function createChildSessionController(
     rebaseChild,
     sendBackChild,
     rejectChild,
+    abandonChild,
+    teardownChild,
+    teardownLaunch,
     removeChild,
   };
 }

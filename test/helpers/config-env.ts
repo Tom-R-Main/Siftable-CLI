@@ -10,6 +10,8 @@ export function installIsolatedConfigDirHooks(prefix = 'exf-cli-test-'): () => {
 } {
   const originalSiftConfigDir = process.env.SIFT_CONFIG_DIR;
   const originalExfConfigDir = process.env.EXF_CONFIG_DIR;
+  const originalSiftToken = process.env.SIFT_TOKEN;
+  const originalExfToken = process.env.EXF_TOKEN;
   let configDir = '';
   let legacyConfigDir = '';
 
@@ -18,6 +20,8 @@ export function installIsolatedConfigDirHooks(prefix = 'exf-cli-test-'): () => {
     legacyConfigDir = mkdtempSync(join(tmpdir(), `${prefix}legacy-`));
     process.env.SIFT_CONFIG_DIR = configDir;
     process.env.EXF_CONFIG_DIR = legacyConfigDir;
+    delete process.env.SIFT_TOKEN;
+    delete process.env.EXF_TOKEN;
   });
 
   afterEach(() => {
@@ -31,6 +35,18 @@ export function installIsolatedConfigDirHooks(prefix = 'exf-cli-test-'): () => {
       delete process.env.EXF_CONFIG_DIR;
     } else {
       process.env.EXF_CONFIG_DIR = originalExfConfigDir;
+    }
+
+    if (originalSiftToken === undefined) {
+      delete process.env.SIFT_TOKEN;
+    } else {
+      process.env.SIFT_TOKEN = originalSiftToken;
+    }
+
+    if (originalExfToken === undefined) {
+      delete process.env.EXF_TOKEN;
+    } else {
+      process.env.EXF_TOKEN = originalExfToken;
     }
 
     if (configDir) {

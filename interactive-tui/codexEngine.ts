@@ -11,7 +11,7 @@
  *
  * Wiring:
  *   - brain.ts dynamically imports `codexAsk` and routes to it when the active
- *     provider is `codex` (the dispatcher in openfunctionAsk).
+ *     provider is `codex` (the dispatcher in agentHarnessAsk).
  *   - localControlClient.ts imports the control ops (account/login/logout) to
  *     back the optional ControlTransport codex* methods and the `/codex` command.
  *
@@ -49,7 +49,7 @@ function defaultCodexSpawn(): CodexProc {
 }
 
 /** Default Codex model surfaced when the user switches the engine on. */
-export const CODEX_DEFAULT_MODEL = 'gpt-5.6-sol';
+export const CODEX_DEFAULT_MODEL = 'gpt-6.1-sol';
 export const CODEX_PROVIDER = 'codex';
 
 export interface CodexAccount {
@@ -69,6 +69,14 @@ export type CodexInstallState = 'unknown' | 'ok' | 'missing';
 
 type JsonValue = unknown;
 type NotificationListener = (method: string, params: Record<string, JsonValue>) => void;
+type DisconnectListener = (err: Error) => void;
+
+interface CodexGeneration {
+  proc: CodexProc;
+  disconnectListeners: Set<DisconnectListener>;
+  onError: (err: Error) => void;
+  onExit: () => void;
+}
 
 /** A pending JSON-RPC request awaiting its response. */
 interface Pending {
@@ -164,7 +172,7 @@ export function buildApprovalRequest(
   };
 }
 
-type Approver = (req: CodexApprovalRequest) => Promise<ApprovalDecision>;
+type Approver = (req: CodexApprovalRequest, signal: AbortSignal) => Promise<ApprovalDecision>;
 
 /**
  * One persistent `codex app-server` process and the JSON-RPC plumbing over its
@@ -173,6 +181,10 @@ type Approver = (req: CodexApprovalRequest) => Promise<ApprovalDecision>;
  */
 export class CodexClient {
   private proc: CodexProc | null = null;
+  private readonly ownedProcs = new Set<CodexProc>();
+  private closing: Promise<void> | null = null;
+  private closed = false;
+  private generation: CodexGeneration | null = null;
   private buffer = '';
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
@@ -185,17 +197,32 @@ export class CodexClient {
     this.spawnProc = spawnProc;
   }
 
+  /** SIGKILL every owned child that has not closed; synchronous, for process exit. */
+  killLiveChildrenSync(): void {
+    for (const proc of this.ownedProcs) {
+      try { proc.kill('SIGKILL'); } catch { /* already gone */ }
+    }
+  }
+
+  /** True while any app-server child this client spawned has not closed. */
+  hasLiveChild(): boolean {
+    return this.ownedProcs.size > 0;
+  }
+
   /** Install the approval handler (wired to the confirm gate by getClient). */
   setApprover(fn: Approver): void {
     this.approver = fn;
   }
 
+  /** Share one initialization handshake; a drained client cannot reconnect. */
   async ensureReady(): Promise<void> {
+    if (this.closed) throw new Error('codex client shut down');
     if (this.ready) return this.ready;
     this.ready = this.connect();
     return this.ready;
   }
 
+  /** Spawn an owned app-server generation and initialize its JSON-RPC transport. */
   private connect(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       let proc: CodexProc;
@@ -206,18 +233,32 @@ export class CodexClient {
         return;
       }
       this.proc = proc;
-      proc.on('error', (err) => {
-        // ENOENT etc. — surface to all current waiters and reset.
-        this.failAll(err instanceof Error ? err : new Error(String(err)));
-        reject(err instanceof Error ? err : new Error(String(err)));
-      });
-      proc.on('exit', () => {
-        this.failAll(new Error('codex app-server exited'));
-        this.proc = null;
-        this.ready = null;
-      });
+      this.ownedProcs.add(proc);
+      proc.once('close', () => this.ownedProcs.delete(proc));
+      const onError = (err: Error) => {
+        // A child-process error is not guaranteed to be followed by exit.
+        // Tear down and terminate this generation here so the next request can
+        // respawn without leaving the failed child orphaned.
+        const error = err instanceof Error ? err : new Error(String(err));
+        this.teardownGeneration(proc, error, true);
+        reject(error);
+      };
+      const onExit = () => {
+        this.teardownGeneration(proc, new Error('codex app-server exited'));
+      };
+      this.generation = {
+        proc,
+        disconnectListeners: new Set(),
+        onError,
+        onExit,
+      };
+      proc.on('error', onError);
+      proc.on('exit', onExit);
+      // Fresh generation, fresh framing state (a data event queued between
+      // the old proc's exit and this connect could have re-dirtied it).
+      this.buffer = '';
       proc.stdout.setEncoding('utf8');
-      proc.stdout.on('data', (chunk: string) => this.onData(chunk));
+      proc.stdout.on('data', (chunk: string) => this.onData(proc, chunk));
 
       // Handshake: initialize → initialized.
       this.request('initialize', {
@@ -228,8 +269,56 @@ export class CodexClient {
           this.notify('initialized', {});
           resolve();
         })
-        .catch(reject);
+        .catch((err: unknown) => {
+          const error = err instanceof Error ? err : new Error(String(err));
+          // An initialize rejection leaves no usable generation. Tear down the
+          // child and its listeners before exposing the failure so the next
+          // ensureReady() can create a fresh app-server. teardownGeneration's
+          // identity guard makes this safe when exit/error already won the race.
+          this.teardownGeneration(proc, error, true);
+          reject(error);
+        });
     });
+  }
+
+  private teardownGeneration(proc: CodexProc, err: Error, terminate = false): void {
+    // A late error/exit from an older child must not tear down the replacement
+    // generation or reject its requests.
+    if (this.proc !== proc) return;
+    const generation = this.generation;
+    this.failAll(err);
+    this.proc = null;
+    this.generation = null;
+    this.ready = null;
+    // Nothing from the dead generation may leak into the next one: a
+    // half-written frame left in the buffer would concatenate with the fresh
+    // server's first response and silently drop it, and the dead stream's
+    // listener could still append late flushes.
+    proc.stdout.removeAllListeners('data');
+    if (generation?.proc === proc) {
+      proc.removeListener('error', generation.onError);
+      proc.removeListener('exit', generation.onExit);
+    }
+    this.buffer = '';
+    // Cached thread ids live in the dead server's memory. A respawned
+    // app-server does not know them, so a stale id would make the next turn
+    // fail (or resume the wrong state) — drop them with the process.
+    threads.clear();
+    // Remove this generation's event handlers before termination. Although a
+    // real ChildProcess emits exit asynchronously, this ordering also keeps
+    // teardown idempotent for implementations that emit it from kill().
+    if (terminate) {
+      try {
+        proc.kill('SIGTERM');
+      } catch {
+        /* already gone */
+      }
+    }
+    if (generation?.proc === proc) {
+      const listeners = [...generation.disconnectListeners];
+      generation.disconnectListeners.clear();
+      for (const listener of listeners) listener(err);
+    }
   }
 
   private failAll(err: Error): void {
@@ -237,7 +326,10 @@ export class CodexClient {
     this.pending.clear();
   }
 
-  private onData(chunk: string): void {
+  private onData(proc: CodexProc, chunk: string): void {
+    // A queued data event from a disconnected child must never be parsed as
+    // part of its replacement generation.
+    if (this.proc !== proc || this.generation?.proc !== proc) return;
     this.buffer += chunk;
     let nl: number;
     while ((nl = this.buffer.indexOf('\n')) >= 0) {
@@ -250,17 +342,18 @@ export class CodexClient {
       } catch {
         continue; // ignore non-JSON lines (defensive; stderr is already dropped)
       }
-      this.dispatch(msg);
+      this.dispatch(proc, msg);
     }
   }
 
-  private dispatch(msg: Record<string, JsonValue>): void {
+  private dispatch(proc: CodexProc, msg: Record<string, JsonValue>): void {
     const hasId = msg.id !== undefined && msg.id !== null;
     const method = typeof msg.method === 'string' ? msg.method : undefined;
 
     if (hasId && method) {
       // Server→client request (approvals, tool calls). Route through the gate.
       void this.handleServerRequest(
+        proc,
         msg.id as number | string,
         method,
         (msg.params as Record<string, JsonValue>) ?? {},
@@ -294,21 +387,42 @@ export class CodexClient {
    * unknown methods are declined as "unsupported" (safe = not granted).
    */
   private async handleServerRequest(
+    proc: CodexProc,
     id: number | string,
     method: string,
     params: Record<string, JsonValue>,
   ): Promise<void> {
     if (!APPROVAL_METHODS.has(method)) {
-      this.send({ id, error: { code: -32601, message: 'unsupported by sift_tui' } });
+      this.sendToGeneration(proc, { id, error: { code: -32601, message: 'unsupported by sift_tui' } });
       return;
     }
+    const approval = new AbortController();
+    const offDisconnect = this.onDisconnect(() => approval.abort());
     let decision: ApprovalDecision = 'deny';
     try {
-      decision = await this.approver(buildApprovalRequest(method, params));
+      decision = await this.approver(buildApprovalRequest(method, params), approval.signal);
     } catch {
       decision = 'deny';
+    } finally {
+      offDisconnect();
     }
-    this.send({ id, result: codexApprovalResponse(method, decision) });
+    this.sendToGeneration(proc, { id, result: codexApprovalResponse(method, decision) });
+  }
+
+  /**
+   * Reply only to the process generation that originated a server request.
+   * Approval handlers may await the UI for an arbitrary time; if that process
+   * disconnects meanwhile, its response is obsolete and must not be written to
+   * a replacement app-server whose JSON-RPC ids may have restarted.
+   */
+  private sendToGeneration(proc: CodexProc, obj: Record<string, JsonValue>): void {
+    if (this.proc !== proc || this.generation?.proc !== proc) return;
+    try {
+      proc.stdin.write(JSON.stringify(obj) + '\n');
+    } catch {
+      // The generation disconnected between the identity check and write.
+      // Teardown owns reconnection; a stale approval response is safe to drop.
+    }
   }
 
   private send(obj: Record<string, JsonValue>): void {
@@ -317,10 +431,28 @@ export class CodexClient {
   }
 
   request(method: string, params: Record<string, JsonValue>): Promise<Record<string, JsonValue>> {
+    const proc = this.proc;
+    const generation = this.generation;
+    if (!proc || !generation || generation.proc !== proc) {
+      return Promise.reject(new Error('codex app-server disconnected'));
+    }
     const id = this.nextId++;
     return new Promise<Record<string, JsonValue>>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      this.send({ jsonrpc: '2.0', id, method, params });
+      // Bind the request to the generation observed above. If teardown ever
+      // occurs before the frame is written, do not leave an unowned pending
+      // promise that no future app-server generation can resolve.
+      if (this.proc !== proc || this.generation !== generation) {
+        this.pending.delete(id);
+        reject(new Error('codex app-server disconnected'));
+        return;
+      }
+      try {
+        proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+      } catch (err) {
+        this.pending.delete(id);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
     });
   }
 
@@ -333,34 +465,78 @@ export class CodexClient {
     return () => this.listeners.delete(fn);
   }
 
+  /** Subscribe to the current app-server generation ending. */
+  onDisconnect(fn: DisconnectListener): () => void {
+    const generation = this.generation;
+    if (!generation || generation.proc !== this.proc) {
+      queueMicrotask(() => fn(new Error('codex app-server disconnected')));
+      return () => {};
+    }
+    generation.disconnectListeners.add(fn);
+    return () => generation.disconnectListeners.delete(fn);
+  }
+
+  /** Stop only this client's children and wait for process and stdio closure. */
+  close(graceMs = 1000): Promise<void> {
+    if (this.closing) return this.closing;
+    this.closed = true;
+    this.closing = Promise.allSettled([...this.ownedProcs].map(proc => this.drainChild(proc, graceMs)))
+      .then(results => {
+        const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+        if (failures.length) throw new AggregateError(failures.map(result => result.reason),
+          'codex app-server did not close after shutdown; process ownership retained');
+      }).finally(() => { this.closing = null; });
+    return this.closing;
+  }
+
+  /** Wait for one owned child to close, escalating within a bounded grace period. */
+  private drainChild(proc: CodexProc, graceMs: number): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout>;
+      const onClose = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      proc.once('close', onClose);
+      timer = setTimeout(() => {
+        try { proc.kill('SIGKILL'); } catch { /* bounded close evidence still required */ }
+        if (!this.ownedProcs.has(proc)) return;
+        timer = setTimeout(() => {
+          proc.removeListener('close', onClose);
+          reject(new Error('codex app-server did not close after shutdown; process ownership retained'));
+        }, graceMs);
+      }, graceMs);
+      if (this.proc === proc) this.shutdown();
+      else {
+        try { proc.kill('SIGTERM'); } catch { /* wait for close or bounded failure */ }
+      }
+    });
+  }
+
   shutdown(): void {
     if (this.proc) {
-      try {
-        this.proc.kill('SIGTERM');
-      } catch {
-        /* already gone */
-      }
-      this.proc = null;
+      this.teardownGeneration(this.proc, new Error('codex client shut down'), true);
+    } else {
+      this.failAll(new Error('codex client shut down'));
+      this.ready = null;
     }
-    this.ready = null;
-    this.failAll(new Error('codex client shut down'));
   }
 }
 
 // ── Singleton + lifecycle ────────────────────────────────────────────────────
 let client: CodexClient | null = null;
+let closingCodex = false;
 let installState: CodexInstallState = 'unknown';
 // One Codex thread per active-session context, keyed by `${cwd}|${workspaceRoot}|${model}`.
 // Lane C: a child session runs in its own worktree (cwd), so it must hold its own
 // thread — switching to a child and back must not tear down the parent's thread.
 // Model is part of the key so a `/model` switch starts a fresh thread (matching
-// the OpenFunction agent's reset-on-model-change), rather than silently reusing
+// the agent harness's reset-on-model-change), rather than silently reusing
 // a thread bound to the old model. See docs/architecture/mergemaster-session-and-git-model.md.
 const threads = new Map<string, string>();
 let accountCache: { account: CodexAccount | null; ts: number } | null = null;
 const ACCOUNT_TTL_MS = 15_000;
 
-/** Resolve (or lazily spawn) the Codex client; null if the CLI is unavailable. */
 /** Repo/workspace root codex may write to, and run commands from. */
 function workspaceRoot(): string {
   return getWorkspaceRoot() || getSessionCwd();
@@ -371,27 +547,39 @@ function approvalPolicyNow(): 'never' | 'on-request' {
   return isBypassing() ? 'never' : 'on-request';
 }
 
+/** Resolve the ready singleton, or return null while draining or when unavailable. */
 async function getClient(): Promise<CodexClient | null> {
+  if (closingCodex) return null;
   if (!client) {
-    client = new CodexClient();
+    client = new CodexClient(spawnOverride ?? undefined);
     // Route codex's approval requests through the shared 4-way confirm gate.
-    client.setApprover((req) =>
+    client.setApprover((req, signal) =>
       requestApproval({
         kind: req.kind === 'edit' ? 'edit' : 'command',
         path: req.target,
         detail: req.detail,
         allowAlways: true,
-      }),
+      }, signal),
     );
   }
+  // Concurrent callers share one handshake. Operate on the instance this call
+  // awaited, never on the module slot, which another waiter may have cleared.
+  const pending = client;
   try {
-    await client.ensureReady();
+    await pending.ensureReady();
     installState = 'ok';
-    return client;
+    return client === pending ? pending : null;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (/ENOENT|not found|spawn/i.test(message)) installState = 'missing';
-    client = null;
+    if (!closingCodex) {
+      // A failed handshake SIGTERMs its child, which may ignore it. Keep
+      // ownership until the child is confirmed closed, so shutdown and stop
+      // confirmation still drain it (SIGTERM, SIGKILL, then fail). The set
+      // holds each client once, however many callers shared the handshake.
+      if (pending.hasLiveChild()) failedClients.add(pending);
+      if (client === pending) client = null;
+    }
     return null;
   }
 }
@@ -400,8 +588,29 @@ export function getCodexInstallState(): CodexInstallState {
   return installState;
 }
 
+/** Drain the owned sidecar; permit reuse only after successful process closure. */
+export async function closeCodex(): Promise<void> {
+  closingCodex = true;
+  const owned = client;
+  // Drain the live client and every failed-handshake client still owning a child.
+  const failed = [...failedClients];
+  const results = await Promise.allSettled([owned?.close(), ...failed.map((stale) => stale.close())]);
+  failed.forEach((stale, index) => {
+    if (results[index + 1].status === 'fulfilled' || !stale.hasLiveChild()) failedClients.delete(stale);
+  });
+  const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failures.length) throw failures.length === 1 ? failures[0].reason : new AggregateError(failures.map((f) => f.reason), 'codex app-server did not close after shutdown; process ownership retained');
+  if (client === owned) client = null;
+  threads.clear();
+  accountCache = null;
+  // A different session may fail to close, leaving the interface alive.
+  // Reopen Codex normally after a confirmed drain, but keep the guard on failure.
+  closingCodex = false;
+}
+
 export function shutdownCodex(): void {
   client?.shutdown();
+  for (const stale of failedClients) void stale.close().catch(() => undefined);
   client = null;
   threads.clear();
   accountCache = null;
@@ -412,8 +621,50 @@ export function __resetCodexThreadsForTests(): void {
   threads.clear();
 }
 
+/** Clients whose handshake failed but whose child has not confirmed closing. */
+const failedClients = new Set<CodexClient>();
+
+/** Test seam: how many failed-handshake clients are still tracked. */
+export function __failedCodexClientCountForTests(): number {
+  return failedClients.size;
+}
+
+/** True while any app-server child this module spawned is not confirmed closed. */
+export function codexChildAlive(): boolean {
+  return Boolean(client?.hasLiveChild()) || [...failedClients].some((stale) => stale.hasLiveChild());
+}
+
+let spawnOverride: CodexSpawnFn | null = null;
+/** Test seam: the spawn function used when getClient() has to create a client. */
+export function __setCodexSpawnForTests(spawn: CodexSpawnFn | null): void {
+  spawnOverride = spawn;
+}
+
+/** Test seam: install a ready injected client and authenticated account. */
+export function __setCodexClientForTests(
+  nextClient: CodexClient | null,
+  account: CodexAccount | null = null,
+): void {
+  closingCodex = false;
+  client = nextClient;
+  failedClients.clear();
+  threads.clear();
+  accountCache = nextClient ? { account, ts: Date.now() } : null;
+}
+
 // Best-effort cleanup so we never orphan an app-server process.
-process.once('exit', () => client?.shutdown());
+/**
+ * Process-exit cleanup. Exit handlers cannot await, so every tracked child
+ * that is still alive (the current client's and any failed-handshake
+ * client's, which may have ignored SIGTERM) is SIGKILLed synchronously.
+ */
+export function killCodexChildrenOnExit(): void {
+  client?.shutdown();
+  client?.killLiveChildrenSync();
+  for (const stale of failedClients) stale.killLiveChildrenSync();
+}
+
+process.once('exit', killCodexChildrenOnExit);
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.once(sig, () => {
     client?.shutdown();
@@ -560,6 +811,12 @@ function itemOutput(item: Record<string, JsonValue>): string | undefined {
   return undefined;
 }
 
+/** The item id shared by item/started and item/completed — the TUI uses it to
+ * settle the matching tool row when parallel calls share a name. */
+function itemCallId(item: Record<string, JsonValue>): string | undefined {
+  return typeof item.id === 'string' && item.id ? item.id : undefined;
+}
+
 function itemSucceeded(item: Record<string, JsonValue>): boolean {
   const status = typeof item.status === 'string' ? item.status : '';
   if (status && /fail|error|denied|declined|cancel|abort/i.test(status)) return false;
@@ -586,7 +843,15 @@ export function mapCodexNotification(
       const name = toolNameFor(item);
       if (!name) return null;
       const detail = itemDetail(item);
-      return { type: 'tool_call', toolCall: detail ? { name, detail } : { name } };
+      const callId = itemCallId(item);
+      return {
+        type: 'tool_call',
+        toolCall: {
+          name,
+          ...(detail ? { detail } : {}),
+          ...(callId ? { callId } : {}),
+        },
+      };
     }
     case 'item/completed': {
       const item = params.item as Record<string, JsonValue> | undefined;
@@ -595,9 +860,15 @@ export function mapCodexNotification(
       if (!name) return null;
       const success = itemSucceeded(item);
       const output = itemOutput(item);
+      const callId = itemCallId(item);
       return {
         type: 'tool_result',
-        toolResult: output ? { name, success, output } : { name, success },
+        toolResult: {
+          name,
+          success,
+          ...(output ? { output, ...(item.type === 'commandExecution' ? { outputFormat: 'text' as const } : {}) } : {}),
+          ...(callId ? { callId } : {}),
+        },
       };
     }
     case 'error': {
@@ -652,87 +923,229 @@ export async function ensureThread(c: CodexClient, model?: string): Promise<stri
 }
 
 /**
- * Run one turn against Codex. Mirrors openfunctionAsk: streams BrainEvents to
+ * Run one turn against Codex. Mirrors agentHarnessAsk: streams BrainEvents to
  * onEvent and resolves with the assembled reply (never throws — a failure comes
  * back as {error} so the TUI renders a degraded state). The thread is reused
  * across calls so the conversation keeps context within the session.
  */
-/** Reasoning efforts Codex accepts on a turn. GPT-5.6 adds `max`; `none`/`minimal` map to omitting it. */
-const CODEX_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+/** Catalogued Codex efforts; Luna supports none and Astra supports ultra. */
+const CODEX_EFFORTS = new Set(['none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 
-export function isCodexReasoningEffort(effort: string | undefined): effort is string {
-  return typeof effort === 'string' && CODEX_EFFORTS.has(effort);
+export function isCodexReasoningEffort(effort: string | undefined, model?: string): effort is string {
+  if (typeof effort !== 'string' || !CODEX_EFFORTS.has(effort)) return false;
+  if (!model) return true;
+  if (model === 'gpt-6-luna') return effort !== 'ultra';
+  if (model === 'gpt-6-astra') return effort !== 'none';
+  return effort !== 'none' && effort !== 'ultra';
+}
+
+/**
+ * Cancelled while app-server was still being set up. No turn/start was sent,
+ * so no turn can be running, but the stalled child may still hold requests.
+ * Drain it: the stop is confirmed only if the child is confirmed gone within
+ * the bound. Pending setup requests are rejected by the drain.
+ */
+async function abortCodexSetup(setup: Promise<unknown>, stopTimeoutMs: number): Promise<BrainAskResult> {
+  void setup.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // Confirmed only when the child is drained, the setup call itself has
+  // settled (so it cannot start anything later), and no app-server is alive.
+  const stopped = closeCodex()
+    .then(() => setup.then(() => undefined, () => undefined))
+    .then(() => !codexChildAlive(), () => false);
+  const bound = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), stopTimeoutMs); });
+  const confirmed = await Promise.race([stopped, bound]);
+  clearTimeout(timer);
+  return confirmed
+    ? { text: '', status: 'interrupted', stopConfirmed: true }
+    : { text: '', status: 'interrupted', stopConfirmed: false,
+      error: `Cancelled during Codex setup; app-server was not confirmed closed within ${stopTimeoutMs} ms` };
+}
+
+/**
+ * The turn a notification belongs to, per the codex-cli 0.156.1 app-server
+ * schema (generate-ts): turn/started and turn/completed carry `turn: Turn`
+ * (`turn.id`); every other turn-scoped notification carries `turnId`. A
+ * turn-bearing notification without a usable id returns null (never matches);
+ * thread-scoped ones (no turn field, or `turnId: null` as on hooks and goals)
+ * return undefined.
+ */
+export function notificationTurnId(method: string, params: Record<string, JsonValue>): string | null | undefined {
+  if (method === 'turn/started' || method === 'turn/completed') {
+    const id = (params.turn as Record<string, JsonValue> | undefined)?.id;
+    return typeof id === 'string' ? id : null;
+  }
+  if (typeof params.turnId === 'string') return params.turnId;
+  // Usage is always turn-scoped in the schema; one without a turn id is unattributable.
+  if (method === 'thread/tokenUsage/updated') return null;
+  return undefined;
 }
 
 export async function codexAsk(
   input: ChatInput,
   onEvent: (event: BrainEvent) => void,
-  opts: { signal?: AbortSignal; model?: string; effort?: string } = {},
+  opts: { signal?: AbortSignal; model?: string; effort?: string; stopTimeoutMs?: number } = {},
 ): Promise<BrainAskResult> {
-  const c = await getClient();
-  if (!c) {
-    return {
-      text: '',
-      error: 'Codex CLI not found. Install it (https://developers.openai.com/codex), then retry.',
-    };
-  }
+  const stopTimeoutMs = opts.stopTimeoutMs ?? 10_000;
+  // No turn exists yet, so a pre-aborted call has nothing to stop.
+  if (opts.signal?.aborted) return { text: '', status: 'interrupted', stopConfirmed: true };
 
-  const account = await getCodexAccount();
-  if (!account) {
-    return { text: '', error: 'Not signed in to Codex. Run /codex login.' };
-  }
-
-  let tid: string;
-  try {
-    tid = await ensureThread(c, opts.model);
-  } catch (err) {
-    return { text: '', error: err instanceof Error ? err.message : String(err) };
-  }
+  // Setup (spawn + initialize, account/read, thread/start) can stall inside
+  // app-server. Race it against cancellation so a cancel is always bounded.
+  type Setup = { ok: true; c: CodexClient; tid: string } | { ok: false; result: BrainAskResult };
+  // Each step re-checks cancellation first: after a cancel, setup must never
+  // reach getClient() (which could spawn a replacement app-server once the
+  // drain lifts its closing guard) or send any further request.
+  const cancelled: Setup = { ok: false, result: { text: '', status: 'interrupted', stopConfirmed: true } };
+  const setup = (async (): Promise<Setup> => {
+    if (opts.signal?.aborted) return cancelled;
+    const c = await getClient();
+    if (opts.signal?.aborted) return cancelled;
+    if (!c) {
+      return { ok: false, result: { text: '', status: 'failed',
+        error: 'Codex CLI not found. Install it (https://developers.openai.com/codex), then retry.' } };
+    }
+    const account = await getCodexAccount();
+    if (opts.signal?.aborted) return cancelled;
+    if (!account) return { ok: false, result: { text: '', status: 'failed', error: 'Not signed in to Codex. Run /codex login.' } };
+    try {
+      return { ok: true, c, tid: await ensureThread(c, opts.model) };
+    } catch (err) {
+      return { ok: false, result: { text: '', status: 'failed', error: err instanceof Error ? err.message : String(err) } };
+    }
+  })();
+  let onSetupAbort = () => {};
+  const setupAborted = new Promise<'aborted'>((resolve) => {
+    onSetupAbort = () => resolve('aborted');
+    opts.signal?.addEventListener('abort', onSetupAbort, { once: true });
+  });
+  const first = await Promise.race([setup, setupAborted]);
+  opts.signal?.removeEventListener('abort', onSetupAbort);
+  if (first === 'aborted') return abortCodexSetup(setup, stopTimeoutMs);
+  if (opts.signal?.aborted) return abortCodexSetup(setup, stopTimeoutMs);
+  // Discriminate by property: the TUI tsconfig is not strict, so `ok` does not narrow.
+  if ('result' in first) return first.result;
+  const { c, tid } = first;
 
   let assembled = '';
   let turnId: string | undefined;
+  // Sum of the per-response `last` breakdowns from thread/tokenUsage/updated.
+  let engineUsage: NonNullable<BrainAskResult['engineUsage']> | undefined;
 
   return new Promise<BrainAskResult>((resolve) => {
     let settled = false;
+    let stopping = false;
+    let stopTimer: ReturnType<typeof setTimeout> | undefined;
+    let offDisconnect = () => {};
     const finish = (result: BrainAskResult) => {
       if (settled) return;
       settled = true;
+      clearTimeout(stopTimer);
       off();
+      offDisconnect();
       if (opts.signal) opts.signal.removeEventListener('abort', onAbort);
-      resolve(result);
+      resolve(engineUsage ? { ...result, engineUsage } : result);
     };
 
     const off = c.onNotification((method, params) => {
-      // Scope to this thread/turn (single turn at a time, but stay strict).
+      // Scope to this thread (single turn at a time, but stay strict).
       if (params.threadId && params.threadId !== tid) return;
-      if (turnId && params.turnId && params.turnId !== turnId) return;
-
-      if (method === 'turn/completed') {
-        const turn = params.turn as Record<string, JsonValue> | undefined;
-        const status = turn && typeof turn.status === 'string' ? turn.status : 'completed';
-        onEvent({ type: 'done', message: { content: assembled } });
-        if (status === 'failed') {
-          const err = (turn?.error as { message?: string } | undefined)?.message;
-          finish({ text: assembled, error: err || 'codex turn failed' });
-        } else {
-          finish({ text: assembled });
-        }
+      const scopedId = notificationTurnId(method, params);
+      // Thread-scoped notifications (no turn id, or turnId: null) pass through.
+      if (scopedId === undefined) return dispatch(method, params);
+      // Before the turn/start ACK names this turn, a turn-scoped notification
+      // may belong to the previous turn on the thread: hold it, in order, and
+      // judge it once the id is known.
+      if (!turnId) {
+        earlyNotifications.push({ method, params });
         return;
       }
+      if (scopedId === turnId) dispatch(method, params);
+    });
 
+    const earlyNotifications: Array<{ method: string; params: Record<string, JsonValue> }> = [];
+    const dispatch = (method: string, params: Record<string, JsonValue>) => {
+      if (settled) return;
+      if (method === 'thread/tokenUsage/updated') {
+        countUsage(params);
+        return;
+      }
+      if (method === 'turn/completed') {
+        completeTurn(params);
+        return;
+      }
       const event = mapCodexNotification(method, params);
       if (!event) return;
       if (event.type === 'token' && typeof event.content === 'string') assembled += event.content;
       onEvent(event);
+    };
+    const countUsage = (params: Record<string, JsonValue>) => {
+      const last = (params.tokenUsage as Record<string, JsonValue> | undefined)?.last as Record<string, JsonValue> | undefined;
+      if (!last || typeof last !== 'object') return;
+      const count = (key: string) => {
+        const value = last[key];
+        return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+      };
+      engineUsage ??= { requests: 0, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0 };
+      engineUsage.requests += 1;
+      engineUsage.inputTokens += count('inputTokens');
+      engineUsage.outputTokens += count('outputTokens');
+      engineUsage.cachedInputTokens += count('cachedInputTokens');
+      engineUsage.totalTokens += count('totalTokens');
+    };
+    const TERMINAL_TURN_STATUSES = new Set(['completed', 'interrupted', 'failed']);
+    const completeTurn = (params: Record<string, JsonValue>) => {
+      const turn = params.turn as Record<string, JsonValue> | undefined;
+      // After an interrupt, app-server's turn/completed for THIS turn is the
+      // only proof that the turn stopped, and only with a terminal status.
+      if (stopping) {
+        finish(typeof turn?.status === 'string' && TERMINAL_TURN_STATUSES.has(turn.status)
+          ? { text: assembled, status: 'interrupted', stopConfirmed: true }
+          : { text: assembled, status: 'interrupted', stopConfirmed: false,
+            error: `Codex reported turn/completed with status ${String(turn?.status)} while stopping` });
+        return;
+      }
+      const error = (turn?.error as { message?: string } | null | undefined)?.message;
+      onEvent({ type: 'done', message: { content: assembled } });
+      // TurnStatus (codex-cli 0.156.1): completed | interrupted | failed | inProgress.
+      switch (turn?.status) {
+        case 'completed':
+          finish({ text: assembled, status: 'completed' });
+          return;
+        case 'interrupted':
+          finish({ text: assembled, status: 'interrupted', error: error || 'Codex turn was interrupted' });
+          return;
+        case 'failed':
+          finish({ text: assembled, status: 'failed', error: error || 'codex turn failed' });
+          return;
+        default:
+          // inProgress or an unknown value on a completion is a protocol fault.
+          finish({ text: assembled, status: 'failed', error: `Codex reported turn/completed with status ${String(turn?.status)}` });
+      }
+    };
+
+    offDisconnect = c.onDisconnect((err) => {
+      // A disconnect is not evidence that the turn stopped.
+      finish(stopping
+        ? { text: assembled, status: 'interrupted', stopConfirmed: false, error: err.message }
+        : { text: assembled, error: err.message });
     });
 
+    const interrupt = () => {
+      void c.request('turn/interrupt', { threadId: tid, turnId: turnId! }).catch(() => {});
+    };
     const onAbort = () => {
-      if (turnId) void c.request('turn/interrupt', { threadId: tid, turnId }).catch(() => {});
-      finish({ text: assembled });
+      if (stopping) return;
+      stopping = true;
+      stopTimer = setTimeout(() => finish({ text: assembled, status: 'interrupted', stopConfirmed: false,
+        error: `Codex did not confirm the turn stopped within ${stopTimeoutMs} ms` }), stopTimeoutMs);
+      // Before the turn/start ACK there is no turn id; interrupt on the ACK.
+      if (turnId) interrupt();
     };
     if (opts.signal) {
       if (opts.signal.aborted) {
-        finish({ text: '' });
+        // No turn was started.
+        finish({ text: '', status: 'interrupted', stopConfirmed: true });
         return;
       }
       opts.signal.addEventListener('abort', onAbort, { once: true });
@@ -750,14 +1163,29 @@ export async function codexAsk(
         excludeSlashTmp: false,
       },
       ...(opts.model ? { model: opts.model } : {}),
-      ...(isCodexReasoningEffort(opts.effort) ? { effort: opts.effort } : {}),
+      ...(isCodexReasoningEffort(opts.effort, opts.model ?? CODEX_DEFAULT_MODEL) ? { effort: opts.effort } : {}),
     })
       .then((ack) => {
         const turn = ack.turn as Record<string, JsonValue> | undefined;
         if (turn && typeof turn.id === 'string') turnId = turn.id;
+        if (settled) return;
+        if (!turnId) {
+          // Without an id no completion can ever be matched to this turn.
+          finish(stopping
+            ? { text: assembled, status: 'interrupted', stopConfirmed: false, error: 'Codex turn/start returned no turn id to interrupt' }
+            : { text: assembled, status: 'failed', error: 'Codex turn/start returned no turn id' });
+          return;
+        }
+        if (stopping) interrupt();
+        // Replay this turn's held notifications in arrival order; drop the rest.
+        for (const held of earlyNotifications.splice(0)) {
+          if (notificationTurnId(held.method, held.params) === turnId) dispatch(held.method, held.params);
+        }
       })
       .catch((err) => {
-        finish({ text: assembled, error: err instanceof Error ? err.message : String(err) });
+        const error = err instanceof Error ? err.message : String(err);
+        // A rejected turn/start never began a turn, so a pending stop is confirmed.
+        finish(stopping ? { text: assembled, status: 'interrupted', stopConfirmed: true, error } : { text: assembled, error });
       });
   });
 }

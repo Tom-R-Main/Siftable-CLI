@@ -1,5 +1,6 @@
 import {mockFetch, fixtures, runCommand, restoreFetch} from '../helpers/mock-api';
 import {installIsolatedConfigDirHooks} from '../helpers/config-env';
+import TasksList from '../../src/commands/tasks/list';
 
 installIsolatedConfigDirHooks('exf-cli-tasks-test-');
 
@@ -9,6 +10,14 @@ afterAll(() => {
 
 describe('tasks commands', () => {
   describe('tasks list', () => {
+    it('matches the backend default and maximum page size', () => {
+      expect(TasksList.flags.limit).toEqual(expect.objectContaining({
+        default: 25,
+        min: 1,
+        max: 100,
+      }));
+    });
+
     it('lists tasks in table format', async () => {
       mockFetch()
         .on('GET', '/api/v1/tasks')
@@ -20,16 +29,186 @@ describe('tasks commands', () => {
       expect(result.stdout).toContain('Second task');
     });
 
-    it('returns JSON array when --json is passed', async () => {
+    it('returns tasks with truthful page metadata in JSON mode', async () => {
       mockFetch()
         .on('GET', '/api/v1/tasks')
-        .reply(200, {tasks: [fixtures.task()]})
+        .query({limit: '1'})
+        .reply(200, {
+          tasks: [fixtures.task()],
+          nextCursor: 'task-cursor-2',
+          totalCount: 8,
+        })
         .install();
 
-      const result = await runCommand(['tasks', 'list', '--token', 'exf_pat_test', '--json']);
+      const result = await runCommand([
+        'tasks',
+        'list',
+        '--limit',
+        '1',
+        '--token',
+        'exf_pat_test',
+        '--json',
+      ]);
       const json = JSON.parse(result.stdout);
-      expect(Array.isArray(json)).toBe(true);
-      expect(json[0].id).toBe('task-001');
+      expect(json).toEqual({
+        ok: true,
+        tasks: [expect.objectContaining({id: 'task-001'})],
+        page: {
+          returned: 1,
+          nextCursor: 'task-cursor-2',
+          total: 8,
+          complete: false,
+          snapshotId: null,
+        },
+        omissions: [],
+        warnings: [],
+      });
+    });
+
+    it('forwards a continuation cursor', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/tasks')
+        .query({limit: '1', cursor: 'task-cursor-2'})
+        .reply(200, {tasks: [fixtures.task({id: 'task-002'})], totalCount: 2})
+        .install();
+
+      const result = await runCommand([
+        'tasks',
+        'list',
+        '--limit',
+        '1',
+        '--cursor',
+        'task-cursor-2',
+        '--token',
+        'exf_pat_test',
+        '--json',
+      ]);
+      const json = JSON.parse(result.stdout);
+      expect(json.page).toMatchObject({returned: 1, nextCursor: null, total: 2, complete: true});
+    });
+
+    it('omits a broad backend total for exact or prefix title filters', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/tasks')
+        .query({limit: '1', titleEquals: 'foo'})
+        .reply(200, {tasks: [fixtures.task({title: 'foo'})], totalCount: 2})
+        .install();
+
+      const result = await runCommand([
+        'tasks',
+        'list',
+        '--limit',
+        '1',
+        '--title-equals',
+        'foo',
+        '--token',
+        'exf_pat_test',
+        '--json',
+      ]);
+      const json = JSON.parse(result.stdout);
+
+      expect(json.page).toMatchObject({
+        returned: 1,
+        nextCursor: null,
+        total: null,
+        complete: false,
+      });
+      expect(json.omissions).toEqual(['totalCount', 'continuationCursor']);
+      expect(json.warnings).toEqual([
+        'The collection may contain more results, but no safe continuation cursor is available. Narrow filters or raise the limit.',
+      ]);
+    });
+
+    it('uses the backend default page size when inferring filtered completion', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/tasks')
+        .query({limit: '25', titleEquals: 'foo'})
+        .reply(200, {tasks: [fixtures.task({title: 'foo'})], totalCount: 1})
+        .install();
+
+      const result = await runCommand([
+        'tasks',
+        'list',
+        '--title-equals',
+        'foo',
+        '--token',
+        'exf_pat_test',
+        '--json',
+      ]);
+      const json = JSON.parse(result.stdout);
+
+      expect(json.page).toMatchObject({
+        returned: 1,
+        nextCursor: null,
+        total: null,
+        complete: true,
+      });
+      expect(json.warnings).toEqual([]);
+    });
+
+    it('does not expose a broad-page cursor for post-filtered title results', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/tasks')
+        .query({limit: '5', titleStartsWith: 'foo'})
+        .reply(200, {
+          tasks: [fixtures.task({title: 'foo one'})],
+          nextCursor: 'unsafe-broad-page-cursor',
+          totalCount: 12,
+        })
+        .install();
+
+      const result = await runCommand([
+        'tasks',
+        'list',
+        '--limit',
+        '5',
+        '--title-starts-with',
+        'foo',
+        '--token',
+        'exf_pat_test',
+        '--json',
+      ]);
+      const json = JSON.parse(result.stdout);
+
+      expect(json.page).toMatchObject({
+        returned: 1,
+        nextCursor: null,
+        total: null,
+        complete: false,
+      });
+      expect(json.omissions).toEqual(['totalCount', 'continuationCursor']);
+    });
+
+    it('marks a post-filtered page reached by cursor as incomplete', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/tasks')
+        .query({limit: '25', cursor: 'broad-page-cursor', titleEquals: 'foo'})
+        .reply(200, {tasks: [fixtures.task({title: 'foo'})], totalCount: 1})
+        .install();
+
+      const result = await runCommand([
+        'tasks',
+        'list',
+        '--cursor',
+        'broad-page-cursor',
+        '--title-equals',
+        'foo',
+        '--token',
+        'exf_pat_test',
+        '--json',
+      ]);
+      const json = JSON.parse(result.stdout);
+
+      expect(json.page).toMatchObject({
+        returned: 1,
+        nextCursor: null,
+        total: null,
+        complete: false,
+      });
+      expect(json.omissions).toEqual(['totalCount', 'continuationCursor']);
+      expect(json.warnings).toEqual([
+        'The collection may contain more results, but no safe continuation cursor is available. Narrow filters or raise the limit.',
+      ]);
     });
 
     it('shows "No results" for empty list', async () => {
@@ -137,7 +316,7 @@ describe('tasks commands', () => {
         'Focus queue full: You already have 3 tasks in Now. Move something to Today or Soon first.'
       );
       expect(json.error.code).toBe('bad_request');
-      expect(json.error.exit).toBe(400);
+      expect(json.error.exit).toBe(1);
       expect(json.error.statusCode).toBe(400);
       expect(json.error.api.title).toBe('Focus queue full');
     });
@@ -223,6 +402,56 @@ describe('tasks commands', () => {
   });
 
   describe('error handling', () => {
+    it.each([
+      [401, 'Authentication failed'],
+      [404, 'Not found'],
+      [429, 'Rate limited'],
+    ])('retains HTTP status %i in structured errors', async (statusCode, message) => {
+      mockFetch()
+        .on('GET', '/api/v1/tasks')
+        .reply(statusCode, {error: 'bounded failure'})
+        .install();
+
+      const result = await runCommand([
+        'tasks',
+        'list',
+        '--token',
+        'exf_pat_test',
+        '--json',
+      ]);
+      const json = JSON.parse(result.stdout);
+      expect(result.exitCode).toBe(1);
+      expect(json.error).toMatchObject({
+        exit: 1,
+        message: expect.stringContaining(message),
+        statusCode,
+      });
+    });
+
+    it('retains an unstructured 403 status in JSON mode', async () => {
+      global.fetch = jest.fn(async () => ({
+        ok: false,
+        status: 403,
+        headers: new Headers({'content-type': 'text/plain'}),
+        text: async () => 'plain permission denial',
+      } as Response));
+
+      const result = await runCommand([
+        'tasks',
+        'list',
+        '--token',
+        'exf_pat_test',
+        '--json',
+      ]);
+      const json = JSON.parse(result.stdout);
+      expect(result.exitCode).toBe(1);
+      expect(json.error).toMatchObject({
+        exit: 1,
+        message: 'Permission denied: plain permission denial',
+        statusCode: 403,
+      });
+    });
+
     it('handles 401 with auth suggestion', async () => {
       mockFetch()
         .on('GET', '/api/v1/tasks')

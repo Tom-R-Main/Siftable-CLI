@@ -151,7 +151,7 @@ const Writer = struct {
 
     fn appendFmt(self: *Writer, comptime fmt: []const u8, args: anytype) void {
         var scratch: [1024]u8 = undefined;
-        const rendered = std.fmt.bufPrint(&scratch, fmt, args) catch {
+        const rendered = std.mem.print(&scratch, fmt, args) catch {
             self.overflow = true;
             self.needed += scratch.len;
             return;

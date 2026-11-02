@@ -1,16 +1,32 @@
-import {readFile, readdir, realpath, stat, writeFile} from 'node:fs/promises';
+import {spawn} from 'node:child_process';
+import {EventEmitter, once} from 'node:events';
+import {PassThrough} from 'node:stream';
+import {mkdir, open, readFile, readdir, realpath, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {mkdtemp, rm} from 'node:fs/promises';
-import {afterEach, describe, expect, it} from 'vitest';
+import {afterEach, describe, expect, it, vi} from 'vitest';
 import {
   buildMacOsKeychainWriteCommand,
+  fingerprintMaterializerPublicKey,
   loadOrCreateMaterializerDeviceIdentity,
   type MaterializerIdentityStore,
 } from './materializerDeviceIdentity.js';
 
+vi.mock('node:fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {...actual, open: vi.fn(actual.open)};
+});
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {...actual, spawn: vi.fn(actual.spawn)};
+});
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+
 class MemoryIdentityStore implements MaterializerIdentityStore {
   readonly values = new Map<string, Buffer>();
+
+  constructor(private readonly afterWrite?: () => Promise<void>) {}
 
   async read(account: string): Promise<Buffer | null> {
     const value = this.values.get(account);
@@ -19,6 +35,11 @@ class MemoryIdentityStore implements MaterializerIdentityStore {
 
   async write(account: string, value: Buffer): Promise<void> {
     this.values.set(account, Buffer.from(value));
+    await this.afterWrite?.();
+  }
+
+  async remove(account: string): Promise<void> {
+    this.values.delete(account);
   }
 }
 
@@ -31,12 +52,28 @@ async function temporaryDirectory(): Promise<string> {
 }
 
 afterEach(async () => {
+  Object.defineProperty(process, 'platform', platformDescriptor);
+  vi.restoreAllMocks();
+  vi.resetAllMocks();
   await Promise.all(temporaryDirectories.splice(0).map(directory => (
     rm(directory, {recursive: true, force: true})
   )));
 });
 
 describe('materializer device identity', () => {
+  it('fingerprints the canonical public key rather than its text encoding', async () => {
+    const stateDirectory = await temporaryDirectory();
+    const identity = await loadOrCreateMaterializerDeviceIdentity({
+      apiUrl: 'https://siftable.io',
+      stateDirectory,
+      store: new MemoryIdentityStore(),
+    });
+
+    expect(fingerprintMaterializerPublicKey(
+      identity.publicKeyPem.replaceAll('\n', '\r\n'),
+    )).toBe(identity.fingerprint);
+  });
+
   it('keeps Keychain secret data in interpreter stdin instead of process arguments', () => {
     const account = 'a'.repeat(64);
     const value = Buffer.from('11'.repeat(32), 'hex');
@@ -98,6 +135,69 @@ describe('materializer device identity', () => {
     })).rejects.toThrow('credential-store key is missing');
   });
 
+  it('rejects a shortened authentication tag in stored encrypted identity state', async () => {
+    const stateDirectory = await temporaryDirectory();
+    const store = new MemoryIdentityStore();
+    const input = {apiUrl: 'https://siftable.io', stateDirectory, store};
+    const first = await loadOrCreateMaterializerDeviceIdentity(input);
+    expect((await loadOrCreateMaterializerDeviceIdentity(input)).fingerprint)
+      .toBe(first.fingerprint);
+    const [stateFile] = await readdir(stateDirectory);
+    const filePath = path.join(stateDirectory, stateFile);
+    const state = JSON.parse(await readFile(filePath, 'utf8'));
+    const tag = Buffer.from(state.authTag, 'base64url');
+    expect(tag).toHaveLength(16);
+    state.authTag = tag.subarray(0, 4).toString('base64url');
+    await writeFile(filePath, JSON.stringify(state), {mode: 0o600});
+
+    await expect(loadOrCreateMaterializerDeviceIdentity(input)).rejects.toThrow();
+    expect(store.values.size).toBe(1);
+    expect(JSON.parse(await readFile(filePath, 'utf8')).authTag).toBe(state.authTag);
+  });
+
+  it('rolls back the wrapping key when encrypted state persistence fails', async () => {
+    const stateDirectory = await temporaryDirectory();
+    const apiUrl = 'https://siftable.io';
+    const originHash = await import('node:crypto').then(({createHash}) => (
+      createHash('sha256').update(new URL(apiUrl).origin).digest('hex')
+    ));
+    const store = new MemoryIdentityStore(async () => {
+      await mkdir(path.join(stateDirectory, `${originHash}.json`));
+    });
+
+    await expect(loadOrCreateMaterializerDeviceIdentity({
+      apiUrl,
+      stateDirectory,
+      store,
+    })).rejects.toThrow();
+
+    expect(store.values.size).toBe(0);
+  });
+
+  it('repairs an interrupted first enrollment with a key but no encrypted state', async () => {
+    const stateDirectory = await temporaryDirectory();
+    const apiUrl = 'https://siftable.io';
+    const account = await import('node:crypto').then(({createHash}) => (
+      createHash('sha256').update(new URL(apiUrl).origin).digest('hex')
+    ));
+    const orphanedKey = Buffer.alloc(32, 7);
+    const store = new MemoryIdentityStore();
+    store.values.set(account, Buffer.from(orphanedKey));
+
+    await expect(loadOrCreateMaterializerDeviceIdentity({
+      apiUrl,
+      stateDirectory,
+      store,
+    })).resolves.toEqual(expect.objectContaining({
+      fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+    }));
+
+    expect(store.values.size).toBe(1);
+    expect(store.values.get(account)).not.toEqual(orphanedKey);
+    await expect(readFile(path.join(stateDirectory, `${account}.json`), 'utf8'))
+      .resolves.toContain('"algorithm":"aes-256-gcm"');
+  });
+
   it('uses distinct identities for distinct API origins', async () => {
     const stateDirectory = await temporaryDirectory();
     const store = new MemoryIdentityStore();
@@ -116,28 +216,105 @@ describe('materializer device identity', () => {
     expect(store.values.size).toBe(2);
   });
 
-  it.skipIf(process.platform !== 'darwin')(
-    'recovers a lock left behind by a process that no longer exists',
-    async () => {
-      const stateDirectory = await temporaryDirectory();
-      const store = new MemoryIdentityStore();
-      const account = 'https://siftable.io';
-      const originHash = await import('node:crypto').then(({createHash}) => (
-        createHash('sha256').update(new URL(account).origin).digest('hex')
-      ));
-      await writeFile(
-        path.join(stateDirectory, `${originHash}.json.lock`),
-        '2147483647',
-        {mode: 0o600},
-      );
+  it.runIf(process.platform === 'linux')('uses the kernel lock even when its file already exists', async () => {
+    const stateDirectory = await temporaryDirectory();
+    const store = new MemoryIdentityStore();
+    const account = 'https://siftable.io';
+    const originHash = await import('node:crypto').then(({createHash}) => (
+      createHash('sha256').update(new URL(account).origin).digest('hex')
+    ));
+    await writeFile(
+      path.join(stateDirectory, `${originHash}.json.lock`),
+      '2147483647',
+      {mode: 0o600},
+    );
 
-      await expect(loadOrCreateMaterializerDeviceIdentity({
-        apiUrl: account,
-        stateDirectory,
-        store,
-      })).resolves.toEqual(expect.objectContaining({
-        fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
-      }));
-    },
-  );
+    await expect(loadOrCreateMaterializerDeviceIdentity({
+      apiUrl: account,
+      stateDirectory,
+      store,
+    })).resolves.toEqual(expect.objectContaining({
+      fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+    }));
+  });
+
+  it.runIf(process.platform === 'linux')('serializes concurrent identity preparation', async () => {
+    const stateDirectory = await temporaryDirectory();
+    const store = new MemoryIdentityStore();
+    const input = {apiUrl: 'https://siftable.io', stateDirectory, store};
+
+    const [first, second] = await Promise.all([
+      loadOrCreateMaterializerDeviceIdentity(input),
+      loadOrCreateMaterializerDeviceIdentity(input),
+    ]);
+
+    expect(second.fingerprint).toBe(first.fingerprint);
+    expect(store.values.size).toBe(1);
+  });
+
+  it.runIf(process.platform === 'linux')('releases the kernel lock when its holder crashes', async () => {
+    const stateDirectory = await temporaryDirectory();
+    const store = new MemoryIdentityStore();
+    const account = 'https://siftable.io';
+    const originHash = await import('node:crypto').then(({createHash}) => (
+      createHash('sha256').update(new URL(account).origin).digest('hex')
+    ));
+    const lockPath = path.join(stateDirectory, `${originHash}.json.lock`);
+    const lockHandle = await open(lockPath, 'a+', 0o600);
+    const holder = spawn(
+      '/bin/sh',
+      ['-c', 'flock -n -E 75 3 || exit $?; printf "ready\\n"; IFS= read -r _ || true'],
+      {stdio: ['pipe', 'pipe', 'pipe', lockHandle.fd], env: {PATH: '/usr/bin:/bin'}},
+    );
+    await lockHandle.close();
+    await new Promise<void>((resolve, reject) => {
+      holder.once('error', reject);
+      holder.stdout.on('data', chunk => {
+        if (chunk.toString().includes('ready\n')) resolve();
+      });
+    });
+    holder.kill('SIGKILL');
+    await once(holder, 'close');
+
+    await expect(loadOrCreateMaterializerDeviceIdentity({
+      apiUrl: account,
+      stateDirectory,
+      store,
+    })).resolves.toEqual(expect.objectContaining({
+      fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+    }));
+  });
+
+});
+
+it('observes a contending helper exit during parent descriptor closure', async () => {
+  Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'linux' });
+  const stateDirectory = await temporaryDirectory();
+  const fakeHelper = () => Object.assign(new EventEmitter(), {
+    stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+  });
+  const contending = fakeHelper();
+  const acquired = fakeHelper();
+  acquired.stdin.on('finish', () => { acquired.emit('close', 0, null); });
+  vi.mocked(spawn).mockImplementationOnce(() => contending as unknown as ReturnType<typeof spawn>);
+  vi.mocked(spawn).mockImplementationOnce(() => {
+    setImmediate(() => acquired.stdout.write('sift-lock-ready\n'));
+    return acquired as unknown as ReturnType<typeof spawn>;
+  });
+  const {open: actualOpen} = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+  vi.mocked(open).mockImplementationOnce(async (...args) => {
+    const handle = await actualOpen(...args);
+    const close = handle.close.bind(handle);
+    handle.close = async () => {
+      // A fast flock failure can close the child while this async fd close yields.
+      contending.emit('close', 75, null);
+      await close();
+    };
+    return handle;
+  });
+  const identity = await loadOrCreateMaterializerDeviceIdentity({
+    apiUrl: 'https://siftable.io', stateDirectory, store: new MemoryIdentityStore(),
+  });
+  expect(identity.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+  expect(spawn).toHaveBeenCalledTimes(2);
 });

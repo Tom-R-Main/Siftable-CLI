@@ -4,6 +4,7 @@ import {BaseCommand, DEFAULT_API_URL} from '../lib/base-command.js';
 import {resolveToken} from '../lib/auth.js';
 import {getConfigDir} from '../lib/config.js';
 import {renderDetail, renderTable} from '../lib/output.js';
+import {looksLikeLocalPath, readSavedWorkspaceSelection} from '../lib/workspace-context.js';
 
 function envValue(primary: string, legacy: string): string | undefined {
   return process.env[primary] || process.env[legacy];
@@ -43,8 +44,10 @@ export default class Doctor extends BaseCommand {
     const tokenSource = hasFlagToken ? 'flag' : (envTokenSource || (hasSavedToken ? `config file (${getConfigDir()}/auth.json)` : null));
     const apiUrl = flags['api-url'] || envValue('SIFT_API_URL', 'EXF_API_URL') || DEFAULT_API_URL;
     const envWorkspaceSource = process.env.SIFT_WORKSPACE_ID ? 'SIFT_WORKSPACE_ID' : (process.env.EXF_WORKSPACE_ID ? 'EXF_WORKSPACE_ID' : undefined);
-    const workspace = flags.workspace || envValue('SIFT_WORKSPACE_ID', 'EXF_WORKSPACE_ID') || null;
-    const workspaceSource = flags.workspace ? 'flag' : (workspace ? envWorkspaceSource || null : null);
+    const savedWorkspace = readSavedWorkspaceSelection();
+    const workspace = flags.workspace || envValue('SIFT_WORKSPACE_ID', 'EXF_WORKSPACE_ID') || savedWorkspace?.workspaceId || null;
+    const workspaceSource = flags.workspace ? 'flag' : (envWorkspaceSource || (savedWorkspace ? 'saved selection' : null));
+    const workspaceIsPath = Boolean(workspace && looksLikeLocalPath(workspace));
     const manifestPath = join(packageJsonPath(), '..', 'oclif.manifest.json');
 
     const checks = [
@@ -62,17 +65,31 @@ export default class Doctor extends BaseCommand {
       },
       {
         name: 'workspace',
-        ok: Boolean(workspace),
-        status: workspace ? `configured via ${workspaceSource || 'unknown'}` : 'not set',
-        next: workspace ? null : 'Set --workspace or SIFT_WORKSPACE_ID when operating in a specific workspace.',
+        ok: !workspaceIsPath,
+        status: workspaceIsPath
+          ? 'invalid: local filesystem path supplied as tenant ID'
+          : workspace
+            ? `configured via ${workspaceSource || 'unknown'}`
+            : 'not set (Personal context)',
+        next: workspaceIsPath
+          ? 'Move the local path to --workspace-root; use an exact tenant ID with --workspace.'
+          : workspace
+            ? null
+            : 'Run `sift workspaces list` when you want to select a collaborative workspace.',
       },
       {
         name: 'workspace_service_token_setup',
-        ok: Boolean(tokenSource && workspace),
-        status: tokenSource && workspace ? 'ready for workspace-scoped server integrations' : 'requires token and workspace',
-        next: tokenSource && workspace
-          ? null
-          : 'For server integrations, set a scoped token as SIFT_TOKEN and set SIFT_WORKSPACE_ID to the workspace org ID.',
+        ok: !workspaceIsPath,
+        status: workspaceIsPath
+          ? 'blocked by invalid workspace tenant value'
+          : workspace
+          ? tokenSource
+            ? 'ready for workspace-scoped server integrations'
+            : 'workspace selected; token missing'
+          : 'not applicable (Personal context)',
+        next: workspace && !tokenSource
+          ? 'For server integrations, set a scoped token as SIFT_TOKEN and set SIFT_WORKSPACE_ID to the workspace org ID.'
+          : null,
       },
       {
         name: 'manifest',
@@ -83,7 +100,7 @@ export default class Doctor extends BaseCommand {
     ];
 
     const result = {
-      ok: checks.every((check) => check.ok || check.name === 'workspace' || check.name === 'manifest'),
+      ok: checks.every((check) => check.ok || check.name === 'manifest'),
       cli: {
         package: '@siftable/cli',
         version: readPackageVersion(),
@@ -103,7 +120,9 @@ export default class Doctor extends BaseCommand {
       },
       checks,
       next: [
-        'For Replit/server integrations, map the secret value to SIFT_TOKEN and set SIFT_WORKSPACE_ID.',
+        workspace
+          ? 'For server integrations, map the secret value to SIFT_TOKEN and set SIFT_WORKSPACE_ID.'
+          : 'Personal context is ready without SIFT_WORKSPACE_ID.',
         'Run `sift commands --json` to inspect command topics.',
         'Run `sift capabilities --json` to inspect readiness.',
         'Run `sift recipes list --json` to choose a research workflow.',
@@ -127,6 +146,8 @@ export default class Doctor extends BaseCommand {
         {key: 'next', header: 'Next'},
       ]);
     }
+
+    if (!result.ok) process.exitCode = 1;
 
     return result;
   }

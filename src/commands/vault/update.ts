@@ -1,5 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from '../../lib/vault-owner-context.js';
 
 export default class VaultUpdate extends BaseCommand {
   static description = 'Update vault entry metadata (requires vault:manage)';
@@ -17,11 +18,13 @@ export default class VaultUpdate extends BaseCommand {
     tags: Flags.string({description: 'Comma-separated tags'}),
     category: Flags.string({description: 'Category'}),
     url: Flags.string({description: 'Associated URL'}),
+    owner: vaultOwnerFlag,
   };
 
   async run(): Promise<unknown> {
     const {args, flags} = await this.parse(VaultUpdate);
-    const client = await this.client(flags);
+    const owner = resolveVaultOwnerContext(flags);
+    const client = await this.client(vaultApiFlags(flags, owner));
 
     const updates: Record<string, unknown> = {};
     if (flags.name !== undefined) updates.name = flags.name;

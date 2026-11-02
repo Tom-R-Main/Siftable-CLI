@@ -38,7 +38,7 @@ This program is intentionally gate-heavy. A stage is not done until deterministi
 | G4 Cwd Scoring | Package-local retrieval | Cwd fixture evals | CLI prompt must not rank unrelated apps |
 | G5 UI Truthfulness | Explorer activity rendering | Snapshot tests | Weak evidence and duplicate rows |
 | G6 Eval Harness | File/range retrieval scoring | Deterministic eval report | Precision-weighted file/range metrics |
-| G7 Zig Native Lane | Native traversal acceleration | Parity tests and benchmarks | Zig 0.16.0 gates and before/after numbers |
+| G7 Zig Native Lane | Native traversal acceleration | Parity tests and benchmarks | Zig 0.17.0 gates and before/after numbers |
 | G8 Rollout | Flags and fallback | Rollout smoke matrix | One-env rollback and no raw context dumps |
 
 ## G0: Baseline
@@ -140,7 +140,7 @@ Implementation tasks:
 
 Fixture repo requirements:
 - Nested package: `packages/exf-cli`.
-- Unrelated app path: `apps/best-edit`.
+- Unrelated app path: `apps/editorial-workbench`.
 - Generated/ignored dirs: `node_modules`, `dist`, `.git`, `.zig-cache`, `zig-out`.
 - Hidden safe files and env-like files.
 - Tests and source files with overlapping terms.
@@ -221,7 +221,7 @@ Implementation tasks:
 
 Deterministic tests:
 - From `packages/exf-cli`, `how does our cli work?` ranks CLI files before unrelated apps.
-- `apps/best-edit/*` never appears in top candidates for the CLI prompt.
+- `apps/editorial-workbench/*` never appears in top candidates for the CLI prompt.
 - `queries.length === 0` produces low evidence, not primary candidates.
 - Package-local `package.json`, command files, and `interactive-tui` files receive cwd boost.
 
@@ -319,7 +319,7 @@ Pass criteria:
 Purpose: accelerate traversal only where measured. Zig is not the orchestration layer.
 
 Version assumption:
-- Local `zig version`: `0.16.0`.
+- Required `zig version`: `0.17.0` (repository `.zig-version`).
 - Existing native surface: `packages/exf-cli/interactive-tui/build.zig`.
 
 Allowed Zig scope:
@@ -362,7 +362,7 @@ bun run native:bench
 ```
 
 Pass criteria:
-- Correctness passes in Debug/ReleaseSafe lanes before benchmark claims.
+- Correctness passes in debug/safe lanes before benchmark claims.
 - Any speedup claim includes before/after `native:bench` numbers.
 - Native path can be disabled without changing behavior.
 

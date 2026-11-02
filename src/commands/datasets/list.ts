@@ -1,5 +1,6 @@
 import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {collectionNavigation} from '../../lib/collection-navigation.js';
 import {renderTable, formatDate} from '../../lib/output.js';
 
 export default class DatasetsList extends BaseCommand {
@@ -7,7 +8,7 @@ export default class DatasetsList extends BaseCommand {
 
   static flags = {
     ...BaseCommand.baseFlags,
-    limit: Flags.integer({description: 'Maximum number of results', default: 50}),
+    limit: Flags.integer({description: 'Maximum number of results', default: 50, min: 1, max: 200}),
   };
 
   async run(): Promise<unknown> {
@@ -20,6 +21,7 @@ export default class DatasetsList extends BaseCommand {
     const result = {
       ok: true,
       datasets,
+      ...collectionNavigation(datasets.length, flags.limit, {cursorSupported: false}),
     };
 
     if (!this.jsonEnabled()) {

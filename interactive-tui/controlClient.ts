@@ -26,8 +26,8 @@ export interface SseEvent {
   type: string;
   content?: string;
   text?: string;
-  toolCall?: { name: string; args?: Record<string, unknown>; detail?: string };
-  toolResult?: { name: string; success?: boolean; output?: string; explorerActivity?: unknown };
+  toolCall?: { name: string; args?: Record<string, unknown>; detail?: string; callId?: string };
+  toolResult?: { name: string; success?: boolean; executionOutcome?: "succeeded" | "failed" | "unknown"; output?: string; outputFormat?: "text"; explorerActivity?: unknown; callId?: string };
   message?: { content?: string };
   result?: { content?: string; text?: string } | unknown;
   error?: string;
@@ -62,12 +62,12 @@ export interface CodexLogin {
 /** Result of an explicit `/compact` (manual context compaction). */
 export interface CompactionReport {
   /** Which engine handled the request. Codex compacts server-side. */
-  engine: "openfunction" | "codex";
+  engine: "agent-harness" | "codex";
   /** True when the conversation history was actually rewritten. */
   ran: boolean;
   /** When ran=false, a human-readable reason. */
   reason?: string;
-  /** Heuristic token estimate before/after (OpenFunction engine only). */
+  /** Heuristic token estimate before/after (agent-harness engine only). */
   beforeTokens?: number;
   afterTokens?: number;
   /** Messages whose tool output was cleared. */
@@ -93,7 +93,17 @@ export interface ControlTransport {
   codexSetActive?(active: boolean): Promise<{ provider: string; model: string }>;
   /** Force a context compaction now. Optional: only the local brain implements it. */
   compact?(): Promise<CompactionReport>;
+  /**
+   * Send a correction into the running turn; it joins after the in-flight tool
+   * batch settles. Optional: transports without it, or a refusal, mean the
+   * caller queues the input as the next task instead.
+   */
+  steer?(text: string): Promise<SteerOutcome>;
 }
+
+export type SteerOutcome =
+  | { accepted: true; id: string; durability: "confirmed" | "unconfirmed" }
+  | { accepted: false; reason: string };
 
 export class ControlClient implements ControlTransport {
   constructor(

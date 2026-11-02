@@ -294,7 +294,7 @@ const RawScanCtx = struct {
         var matches: u32 = 0;
         for (0..self.file_count) |i| {
             if (matches >= self.max_matches) break;
-            const path = std.fmt.bufPrint(&path_buf, "{s}/file-{d:0>3}.txt", .{ self.root, i }) catch {
+            const path = std.mem.print(&path_buf, "{s}/file-{d:0>3}.txt", .{ self.root, i }) catch {
                 std.debug.panic("raw scan path buffer too small", .{});
             };
             const data = Dir.cwd().readFileAlloc(io(), path, allocator, .limited(1024 * 1024 + 1)) catch |err| {
@@ -617,19 +617,19 @@ pub fn main(init: std.process.Init) !void {
 
     var path_buf: [128]u8 = undefined;
     for (0..200) |i| {
-        const path = try std.fmt.bufPrint(&path_buf, BENCH_DIR ++ "/search/file-{d:0>3}.txt", .{i});
+        const path = try std.mem.print(&path_buf, BENCH_DIR ++ "/search/file-{d:0>3}.txt", .{i});
         writeFixture(path, &file_body);
     }
     for (0..20) |i| {
-        const path = try std.fmt.bufPrint(&path_buf, BENCH_DIR ++ "/search-common/file-{d:0>3}.txt", .{i});
+        const path = try std.mem.print(&path_buf, BENCH_DIR ++ "/search-common/file-{d:0>3}.txt", .{i});
         writeFixture(path, &common_body);
     }
     for (0..20) |i| {
-        const path = try std.fmt.bufPrint(&path_buf, BENCH_DIR ++ "/search-filter/src/file-{d:0>3}.txt", .{i});
+        const path = try std.mem.print(&path_buf, BENCH_DIR ++ "/search-filter/src/file-{d:0>3}.txt", .{i});
         writeFixture(path, &file_body);
     }
     for (0..200) |i| {
-        const path = try std.fmt.bufPrint(&path_buf, BENCH_DIR ++ "/search-filter/node_modules/file-{d:0>3}.txt", .{i});
+        const path = try std.mem.print(&path_buf, BENCH_DIR ++ "/search-filter/node_modules/file-{d:0>3}.txt", .{i});
         writeFixture(path, &file_body);
     }
     writeFixture(BENCH_DIR ++ "/search-large-no-match/file-000.txt", large_no_match);
@@ -641,23 +641,23 @@ pub fn main(init: std.process.Init) !void {
     writeFixture(BENCH_DIR ++ "/matcher-match-middle/file-000.txt", matcher_match_middle);
     writeFixture(BENCH_DIR ++ "/matcher-common-token/file-000.txt", matcher_common_token);
     for (0..20) |i| {
-        const path = try std.fmt.bufPrint(&path_buf, BENCH_DIR ++ "/search-large-guard/file-{d:0>3}.txt", .{i});
+        const path = try std.mem.print(&path_buf, BENCH_DIR ++ "/search-large-guard/file-{d:0>3}.txt", .{i});
         writeFixture(path, large_no_match[0 .. 128 * 1024]);
     }
     for (0..20) |i| {
-        const path = try std.fmt.bufPrint(&path_buf, BENCH_DIR ++ "/search-pathology/src/file-{d:0>3}.txt", .{i});
+        const path = try std.mem.print(&path_buf, BENCH_DIR ++ "/search-pathology/src/file-{d:0>3}.txt", .{i});
         writeFixture(path, &file_body);
     }
     for (0..120) |i| {
-        const path = try std.fmt.bufPrint(&path_buf, BENCH_DIR ++ "/search-pathology/node_modules/file-{d:0>3}.txt", .{i});
+        const path = try std.mem.print(&path_buf, BENCH_DIR ++ "/search-pathology/node_modules/file-{d:0>3}.txt", .{i});
         writeFixture(path, &file_body);
     }
     for (0..80) |i| {
-        const path = try std.fmt.bufPrint(&path_buf, BENCH_DIR ++ "/search-pathology/dist/file-{d:0>3}.txt", .{i});
+        const path = try std.mem.print(&path_buf, BENCH_DIR ++ "/search-pathology/dist/file-{d:0>3}.txt", .{i});
         writeFixture(path, &file_body);
     }
     for (0..80) |i| {
-        const path = try std.fmt.bufPrint(&path_buf, BENCH_DIR ++ "/search-pathology/binary/file-{d:0>3}.bin", .{i});
+        const path = try std.mem.print(&path_buf, BENCH_DIR ++ "/search-pathology/binary/file-{d:0>3}.bin", .{i});
         writeFixture(path, &binary_body);
     }
 
@@ -1025,6 +1025,12 @@ pub fn main(init: std.process.Init) !void {
     try runBench("composer decision only, 16 KiB paste", 100_000, paste.len, &composer_ctx, ComposerCtx.decision);
     try runBench("composer full analysis, 16 KiB paste", 50_000, paste.len, &composer_ctx, ComposerCtx.full);
 
+    const skill_body = comptime body: {
+        const line = "Body prose the parser scans past but never copies. ";
+        var bytes: [line.len * 12]u8 = undefined;
+        for (0..12) |i| @memcpy(bytes[i * line.len ..][0..line.len], line);
+        break :body bytes;
+    };
     const skill_md =
         "---\n" ++
         "name: branches\n" ++
@@ -1038,7 +1044,7 @@ pub fn main(init: std.process.Init) !void {
         "metadata:\n" ++
         "  author: siftable\n" ++
         "---\n\n# Branches\n\n" ++
-        ("Body prose the parser scans past but never copies. " ** 12) ++ "\n";
+        skill_body ++ "\n";
     var skill_ctx: SkillMetaCtx = .{ .input = skill_md };
     try runBench("skill_meta parse, realistic SKILL.md", 1_000_000, skill_md.len, &skill_ctx, SkillMetaCtx.step);
 

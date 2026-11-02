@@ -1,5 +1,6 @@
 import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {collectionNavigation} from '../../lib/collection-navigation.js';
 import {renderTable} from '../../lib/output.js';
 
 export default class TasksList extends BaseCommand {
@@ -18,7 +19,8 @@ export default class TasksList extends BaseCommand {
       options: ['inbox', 'next_action', 'in_progress', 'waiting_for', 'completed', 'archived'],
     }),
     project: Flags.string({description: 'Filter by project ID'}),
-    limit: Flags.integer({description: 'Maximum number of results'}),
+    limit: Flags.integer({description: 'Maximum number of results', default: 25, min: 1, max: 100}),
+    cursor: Flags.string({description: 'Continuation cursor from a previous page'}),
     phase: Flags.string({
       description: 'Filter by phase',
       options: ['draft', 'open', 'in_flight', 'review', 'blocked', 'done', 'cancelled'],
@@ -39,6 +41,7 @@ export default class TasksList extends BaseCommand {
       status: flags.status,
       projectId: flags.project,
       limit: flags.limit,
+      cursor: flags.cursor,
       phase: flags.phase,
       effort: flags.effort,
       titleStartsWith: flags['title-starts-with'],
@@ -48,6 +51,28 @@ export default class TasksList extends BaseCommand {
     this.handleApiError(response);
 
     const tasks = this.unwrapList(response, 'tasks');
+    const data = response.data as Record<string, unknown> | undefined;
+    const nextCursor = typeof data?.nextCursor === 'string' ? data.nextCursor : null;
+    const hasPostFilteredTitlePredicate = Boolean(flags['title-starts-with'] || flags['title-equals']);
+    const effectiveLimit = flags.limit;
+    const postFilteredPageMayBeIncomplete = hasPostFilteredTitlePredicate
+      && (Boolean(flags.cursor) || tasks.length >= effectiveLimit || nextCursor !== null);
+    const totalIsAuthoritative = !hasPostFilteredTitlePredicate;
+    const total = totalIsAuthoritative && Number.isInteger(data?.totalCount)
+      ? data?.totalCount as number
+      : null;
+    const result = {
+      ok: true,
+      tasks,
+      ...collectionNavigation(tasks.length, effectiveLimit, {
+        nextCursor: hasPostFilteredTitlePredicate ? null : nextCursor,
+        total,
+        cursorSupported: true,
+        ...(postFilteredPageMayBeIncomplete
+          ? {completeOverride: false}
+          : {}),
+      }),
+    };
 
     if (!this.jsonEnabled()) {
       renderTable(tasks, [
@@ -60,6 +85,6 @@ export default class TasksList extends BaseCommand {
       ]);
     }
 
-    return tasks;
+    return result;
   }
 }

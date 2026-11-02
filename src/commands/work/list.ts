@@ -1,5 +1,6 @@
 import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {collectionNavigation} from '../../lib/collection-navigation.js';
 import {renderTable} from '../../lib/output.js';
 import {formatClaimability, formatDependencies} from '../../lib/work-dependencies.js';
 
@@ -17,7 +18,7 @@ export default class WorkList extends BaseCommand {
     agent: Flags.string({description: 'Filter by assigned agent alias'}),
     project: Flags.string({description: 'Filter by project ID'}),
     task: Flags.string({description: 'Filter by parent human planning task ID'}),
-    limit: Flags.integer({description: 'Maximum results'}),
+    limit: Flags.integer({description: 'Maximum results', default: 50, min: 1, max: 200}),
   };
 
   async run(): Promise<unknown> {
@@ -32,6 +33,11 @@ export default class WorkList extends BaseCommand {
     });
     this.handleApiError(response);
     const workItems = this.unwrapList(response, 'workItems').map(redactClaimToken);
+    const result = {
+      ok: true,
+      workItems,
+      ...collectionNavigation(workItems.length, flags.limit, {cursorSupported: false}),
+    };
     if (!this.jsonEnabled()) {
       renderTable(workItems, [
         {key: 'id', header: 'ID'},
@@ -48,6 +54,6 @@ export default class WorkList extends BaseCommand {
         {key: 'claimability', header: 'Claimability', get: (r) => formatClaimability(r.claimability)},
       ]);
     }
-    return workItems;
+    return result;
   }
 }

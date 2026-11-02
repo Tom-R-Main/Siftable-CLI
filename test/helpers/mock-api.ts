@@ -231,7 +231,8 @@ export async function runCommand(argv: string[]): Promise<{stdout: string; error
   try {
     const {run} = require('@oclif/core');
     await run(argv, {root: path.join(__dirname, '..', '..')});
-    exitCode = process.exitCode ?? 0;
+    const commandExitCode = process.exitCode;
+    exitCode = typeof commandExitCode === 'number' ? commandExitCode : Number(commandExitCode ?? 0);
   } catch (err: any) {
     error = err;
     exitCode = err.oclif?.exit ?? 1;

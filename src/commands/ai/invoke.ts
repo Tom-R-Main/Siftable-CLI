@@ -50,7 +50,7 @@ export default class AiInvoke extends BaseCommand {
       for await (const event of client.generateAiStream(input)) {
         if (event.type === 'delta') {
           text += event.text;
-          if (!this.jsonEnabled()) this.log(event.text);
+          if (!this.jsonEnabled()) process.stdout.write(event.text);
         }
         if (event.type === 'usage') {
           inputTokens = event.inputTokens;
@@ -58,9 +58,10 @@ export default class AiInvoke extends BaseCommand {
         }
         if (event.type === 'completed') finishReason = event.finishReason;
         if (event.type === 'failed') {
-          this.error(`Connected model stream failed (${event.code}).`, {
-            exit: event.statusCode,
-          });
+          this.handleAiApiError({
+            statusCode: event.statusCode,
+            error: JSON.stringify({type: event.code}),
+          }, 'ai:invoke');
         }
       }
       return {

@@ -1,0 +1,1077 @@
+/**
+ * Siftable - Tool Definitions
+ *
+ * Each function returns an array of ToolDefinitions for a capability domain.
+ * Tools follow the framework's defineTool() pattern and are tagged for
+ * agent filtering.
+ */
+
+import { randomUUID } from "node:crypto";
+import type { ToolDefinition } from "../../framework/types.js";
+import { defineTool, ok, err } from "../../framework/tool.js";
+import type { ExfClient } from "./client.js";
+import {
+  WorkContractValidationError,
+  defaultWorkContractActions,
+  requireBuiltWorkContract,
+} from "../../../../src/lib/work-contract.js";
+
+function generateIdempotencyKey(prefix: string): string {
+  return `${prefix}-${Date.now()}-${randomUUID()}`;
+}
+
+// ─── Tasks ──────────────────────────────────────────────────────────────────
+
+/** Valid task-status filter values accepted by the Siftable API. */
+const TASK_STATUSES = [
+  "inbox",
+  "next_action",
+  "in_progress",
+  "waiting_for",
+  "completed",
+  "archived",
+] as const;
+const TASK_STATUS_SET = new Set<string>(TASK_STATUSES);
+const WORK_ITEM_STATUSES = [
+  "queued",
+  "claimed",
+  "running",
+  "blocked",
+  "needs_review",
+  "done",
+  "failed",
+  "cancelled",
+] as const;
+type WorkItemStatus = (typeof WORK_ITEM_STATUSES)[number];
+/** Common model-invented synonyms → the real enum. */
+const TASK_STATUS_SYNONYMS: Record<string, string> = {
+  pending: "next_action",
+  todo: "inbox",
+  to_do: "inbox",
+  open: "next_action",
+  active: "in_progress",
+  doing: "in_progress",
+  blocked: "waiting_for",
+  waiting: "waiting_for",
+  done: "completed",
+  complete: "completed",
+  closed: "completed",
+};
+
+/**
+ * Map a requested status to a valid enum value. Returns undefined (no filter)
+ * for unrecognized values so the API returns all tasks instead of HTTP 400.
+ */
+function normalizeTaskStatus(status?: string): string | undefined {
+  if (!status) return undefined;
+  const s = status.trim().toLowerCase();
+  if (TASK_STATUS_SET.has(s)) return s;
+  return TASK_STATUS_SYNONYMS[s];
+}
+
+export function createTaskTools(client: ExfClient): ToolDefinition<any, any>[] {
+  return [
+    defineTool<{ projectId?: string; status?: string; limit?: number }>({
+      name: "exf_tasks_list",
+      description:
+        "List Sift tasks from Siftable. Sift tasks are human planning tasks, not executable agent work items. Filter by project, status (inbox/next_action/" +
+        "in_progress/waiting_for/completed/archived), or limit. Returns task titles, " +
+        "priorities, statuses, and due dates.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          projectId: { type: "string", description: "Filter by project ID" },
+          status: {
+            type: "string",
+            enum: [...TASK_STATUSES],
+            description:
+              "Filter by status: inbox, next_action, in_progress, waiting_for, completed, archived",
+          },
+          limit: { type: "integer", description: "Max tasks to return (default 20)" },
+        },
+      },
+      tags: ["tasks"],
+      handler: async (params) => {
+        // Normalize the status: map common synonyms to the real enum and drop
+        // anything unrecognized so a bad value returns all tasks instead of a
+        // 400 (the model sometimes invents "pending").
+        const normalized = { ...params, status: normalizeTaskStatus(params.status) };
+        const data = await client.listTasks(normalized);
+        return ok(data, `Found ${data.tasks.length} task(s)`);
+      },
+    }),
+
+    defineTool<{ title: string; description?: string; priority?: string; projectId?: string; dueAt?: string; acceptanceCriteria?: string }>({
+      name: "exf_tasks_create",
+      description:
+        "Create a new Sift task in Siftable for human planning. Supports priority levels: " +
+        "do_now, do_next, do_later, delegate, drop. Acceptance criteria are semicolon-separated.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "Task title" },
+          description: { type: "string", description: "Task details" },
+          priority: { type: "string", description: "Priority: do_now, do_next, do_later, delegate, drop" },
+          projectId: { type: "string", description: "Project to assign to" },
+          dueAt: { type: "string", description: "Due date (ISO 8601)" },
+          acceptanceCriteria: { type: "string", description: 'Semicolon-separated criteria, e.g. "criterion 1; criterion 2"' },
+        },
+        required: ["title"],
+      },
+      tags: ["tasks"],
+      handler: async (params) => {
+        const data = await client.createTask(params);
+        return ok(data, `Created task: ${params.title}`);
+      },
+    }),
+
+    defineTool<{ taskId: string; title?: string; description?: string; priority?: string; status?: string; dueAt?: string }>({
+      name: "exf_tasks_update",
+      description: "Update an existing task's title, description, priority, status, or due date.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          taskId: { type: "string", description: "Task ID to update" },
+          title: { type: "string", description: "New title" },
+          description: { type: "string", description: "New description" },
+          priority: { type: "string", description: "New priority" },
+          status: { type: "string", description: "New status" },
+          dueAt: { type: "string", description: "New due date (ISO 8601)" },
+        },
+        required: ["taskId"],
+      },
+      tags: ["tasks"],
+      handler: async ({ taskId, ...updates }) => {
+        const filtered: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(updates)) {
+          if (v !== undefined) filtered[k] = v;
+        }
+        const data = await client.updateTask(taskId, filtered);
+        return ok(data);
+      },
+    }),
+
+    defineTool<{ taskId: string; completionNotes?: string }>({
+      name: "exf_tasks_complete",
+      description: "Mark a task as completed, optionally with completion notes.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          taskId: { type: "string", description: "Task ID to complete" },
+          completionNotes: { type: "string", description: "Notes about how the task was completed" },
+        },
+        required: ["taskId"],
+      },
+      tags: ["tasks"],
+      handler: async ({ taskId, completionNotes }) => {
+        const data = await client.completeTask(taskId, completionNotes);
+        return ok(data, "Task completed");
+      },
+    }),
+  ];
+}
+
+// ─── Calendar ───────────────────────────────────────────────────────────────
+
+export function createCalendarTools(client: ExfClient): ToolDefinition<any, any>[] {
+  return [
+    defineTool<{ startDate: string; endDate: string; limit?: number }>({
+      name: "exf_calendar_list",
+      description:
+        "List calendar events from Siftable for a date range. " +
+        "Returns event titles, times, locations, and descriptions.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          startDate: { type: "string", description: "Start date (YYYY-MM-DD)" },
+          endDate: { type: "string", description: "End date (YYYY-MM-DD)" },
+          limit: { type: "integer", description: "Max events to return" },
+        },
+        required: ["startDate", "endDate"],
+      },
+      tags: ["calendar"],
+      handler: async (params) => {
+        const data = await client.listEvents(params);
+        return ok(data, `Found ${data.events.length} event(s)`);
+      },
+    }),
+
+    defineTool<{ title: string; startTime: string; endTime?: string; description?: string; location?: string; allDay?: boolean }>({
+      name: "exf_calendar_create",
+      description: "Create a new calendar event in Siftable.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "Event title" },
+          startTime: { type: "string", description: "Start time (ISO 8601)" },
+          endTime: { type: "string", description: "End time (ISO 8601)" },
+          description: { type: "string", description: "Event description" },
+          location: { type: "string", description: "Event location" },
+          allDay: { type: "boolean", description: "Whether this is an all-day event" },
+        },
+        required: ["title", "startTime"],
+      },
+      tags: ["calendar"],
+      handler: async (params) => {
+        const data = await client.createEvent(params);
+        return ok(data, `Created event: ${params.title}`);
+      },
+    }),
+
+    defineTool<{ eventId: string; title?: string; startTime?: string; endTime?: string; description?: string; location?: string }>({
+      name: "exf_calendar_update",
+      description: "Update an existing calendar event.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          eventId: { type: "string", description: "Event ID to update" },
+          title: { type: "string", description: "New title" },
+          startTime: { type: "string", description: "New start time (ISO 8601)" },
+          endTime: { type: "string", description: "New end time (ISO 8601)" },
+          description: { type: "string", description: "New description" },
+          location: { type: "string", description: "New location" },
+        },
+        required: ["eventId"],
+      },
+      tags: ["calendar"],
+      handler: async ({ eventId, ...updates }) => {
+        const filtered: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(updates)) {
+          if (v !== undefined) filtered[k] = v;
+        }
+        const data = await client.updateEvent(eventId, filtered);
+        return ok(data);
+      },
+    }),
+  ];
+}
+
+// ─── Knowledge / Notes ──────────────────────────────────────────────────────
+
+export function createKnowledgeTools(client: ExfClient): ToolDefinition<any, any>[] {
+  return [
+    defineTool<{ query: string; limit?: number }>({
+      name: "exf_notes_search",
+      description:
+        "Semantic search across the Siftable knowledge base. " +
+        "Finds notes, decisions, meeting notes, and references by meaning.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Search query (natural language)" },
+          limit: { type: "integer", description: "Max notes to return (default 10)" },
+        },
+        required: ["query"],
+      },
+      tags: ["knowledge"],
+      handler: async ({ query, limit }) => {
+        const data = await client.searchNotes(query, limit);
+        return ok(data, `Found ${data.notes.length} note(s)`);
+      },
+    }),
+
+    defineTool<{ title: string; content: string; noteType?: string; projectId?: string; tags?: string[] }>({
+      name: "exf_notes_create",
+      description:
+        "Create a new note in the Siftable knowledge base. " +
+        "Supports markdown, note types (note/reference/decision/meeting/journal), and tags.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "Note title" },
+          content: { type: "string", description: "Note content (markdown)" },
+          noteType: { type: "string", description: "Type: note, reference, decision, meeting, journal" },
+          projectId: { type: "string", description: "Project to associate with" },
+          tags: { type: "array", items: { type: "string" }, description: "Tags for categorization" },
+        },
+        required: ["title", "content"],
+      },
+      tags: ["knowledge"],
+      handler: async (params) => {
+        const data = await client.createNote(params);
+        return ok(data, `Created note: ${params.title}`);
+      },
+    }),
+
+    defineTool<{ noteId: string }>({
+      name: "exf_notes_get",
+      description: "Retrieve the full content of a specific note by ID.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          noteId: { type: "string", description: "Note ID to retrieve" },
+        },
+        required: ["noteId"],
+      },
+      tags: ["knowledge"],
+      handler: async ({ noteId }) => {
+        const data = await client.getNote(noteId);
+        return ok(data);
+      },
+    }),
+  ];
+}
+
+// ─── Projects ───────────────────────────────────────────────────────────────
+
+export function createProjectTools(client: ExfClient): ToolDefinition<any, any>[] {
+  return [
+    defineTool<{ status?: string }>({
+      name: "exf_projects_list",
+      description:
+        "List Siftable projects. Filter by status: " +
+        "planning, active, on_hold, blocked, completed, archived.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          status: { type: "string", description: "Filter by status" },
+        },
+      },
+      tags: ["projects"],
+      handler: async (params) => {
+        const data = await client.listProjects(params);
+        return ok(data, `Found ${data.projects.length} project(s)`);
+      },
+    }),
+
+    defineTool<{ projectId: string }>({
+      name: "exf_projects_context",
+      description:
+        "Get full context for a project: active tasks, recent notes, signals, and status. " +
+        "Useful for understanding what's happening before taking action.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          projectId: { type: "string", description: "Project ID" },
+        },
+        required: ["projectId"],
+      },
+      tags: ["projects"],
+      handler: async ({ projectId }) => {
+        const data = await client.getProjectContext(projectId);
+        return ok(data);
+      },
+    }),
+  ];
+}
+
+// ─── People / CRM ───────────────────────────────────────────────────────────
+
+export function createPeopleTools(client: ExfClient): ToolDefinition<any, any>[] {
+  return [
+    defineTool<{ search: string }>({
+      name: "exf_people_search",
+      description: "Search contacts in Siftable CRM by name, role, or organization.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          search: { type: "string", description: "Search query" },
+        },
+        required: ["search"],
+      },
+      tags: ["people"],
+      handler: async ({ search }) => {
+        const data = await client.searchPeople(search);
+        return ok(data, `Found ${data.people.length} contact(s)`);
+      },
+    }),
+
+    defineTool<{ name: string; email?: string; phone?: string; relationship?: string; organizationId?: string; notes?: string }>({
+      name: "exf_person_create",
+      description: "Create a new contact in Siftable CRM.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Full name" },
+          email: { type: "string", description: "Email address" },
+          phone: { type: "string", description: "Phone number" },
+          relationship: { type: "string", description: 'Relationship: friend, colleague, contact, client, etc.' },
+          organizationId: { type: "string", description: "Organization to associate with" },
+          notes: { type: "string", description: "Notes about this person" },
+        },
+        required: ["name"],
+      },
+      tags: ["people"],
+      handler: async (params) => {
+        const data = await client.createPerson(params);
+        return ok(data, `Created contact: ${params.name}`);
+      },
+    }),
+
+    defineTool<{ search: string }>({
+      name: "exf_org_search",
+      description: "Search organizations in Siftable CRM by name or domain.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          search: { type: "string", description: "Search query" },
+        },
+        required: ["search"],
+      },
+      tags: ["organizations"],
+      handler: async ({ search }) => {
+        const data = await client.searchOrganizations(search);
+        return ok(data, `Found ${data.organizations.length} organization(s)`);
+      },
+    }),
+  ];
+}
+
+// ─── Work Items ─────────────────────────────────────────────────────────────
+//
+// Work items are Siftable's executable agent work queue: discrete units
+// of work that can be claimed by an agent alias, transitioned through
+// states (started → done / blocked / failed), and tracked separately
+// from human-planning tasks. The old custom client didn't expose these;
+// we reach them via client.raw() (the underlying SiftClient).
+
+export function createWorkItemTools(client: ExfClient): ToolDefinition<any, any>[] {
+  const sift = client.raw();
+
+  const redactWorkItemTokens = <T>(data: T): T => {
+    if (!data || typeof data !== "object" || Array.isArray(data)) return data;
+    const record = data as Record<string, unknown>;
+    const redact = (value: unknown): unknown => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+      const {claimToken: _claimToken, ...safe} = value as Record<string, unknown>;
+      return safe;
+    };
+    if (record.workItem) return {...record, workItem: redact(record.workItem)} as T;
+    if (Array.isArray(record.workItems)) return {...record, workItems: record.workItems.map(redact)} as T;
+    return data;
+  };
+
+  return [
+    defineTool<{
+      title: string;
+      profile: "coding" | "read_only";
+      prompt?: string;
+      assignedAlias?: string;
+      projectId?: string;
+      taskId?: string;
+      acceptanceCriteria?: string[];
+      scope?: string[];
+      excludeScope?: string[];
+      verificationCommands?: string[];
+      allowNetwork?: boolean;
+      allowVault?: boolean;
+      allowDeploy?: boolean;
+      allowMigrate?: boolean;
+      dependsOn?: Array<{workItemId: string; requiredGate?: "done" | "commands_passed"}>;
+    }>({
+      name: "exf_work_item_create",
+      description:
+        "Create executable agent work with an explicit Work Contract V1. Choose coding or read_only; " +
+        "coding requires scope and verification commands. dependsOn remains authoritative.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          title: {type: "string", description: "Executable work-item title"},
+          profile: {type: "string", enum: ["coding", "read_only"], description: "Least-privilege execution profile"},
+          prompt: {type: "string", description: "Agent instructions"},
+          assignedAlias: {type: "string", description: "Optional assigned agent alias"},
+          projectId: {type: "string", description: "Optional project UUID"},
+          taskId: {type: "string", description: "Optional parent human task UUID"},
+          acceptanceCriteria: {type: "array", items: {type: "string"}, description: "Observable outcome criteria"},
+          scope: {type: "array", items: {type: "string"}, description: "Workspace-relative paths coding work may write"},
+          excludeScope: {type: "array", items: {type: "string"}, description: "Workspace-relative exclusions"},
+          verificationCommands: {type: "array", items: {type: "string"}, description: "Commands that prove the outcome"},
+          dependsOn: {
+            type: "array",
+            description: "Authoritative prerequisite work-item UUIDs and their required gates",
+            items: {
+              type: "object",
+              properties: {
+                workItemId: {type: "string", description: "Prerequisite work-item UUID"},
+                requiredGate: {
+                  type: "string",
+                  enum: ["done", "commands_passed"],
+                  description: "Optional gate override",
+                },
+              },
+              required: ["workItemId"],
+            },
+          },
+        },
+        required: ["title", "profile"],
+      },
+      tags: ["work_items"],
+      handler: async (input) => {
+        const elevatedActions = [
+          ["network", input.allowNetwork],
+          ["vault", input.allowVault],
+          ["deploy", input.allowDeploy],
+          ["migrate", input.allowMigrate],
+        ].filter((entry) => entry[1]).map((entry) => entry[0]);
+        if (elevatedActions.length) {
+          return err(`Elevated actions require operator approval: ${elevatedActions.join(", ")}`);
+        }
+        let contract;
+        try {
+          const allowedActions = defaultWorkContractActions(input.profile);
+          contract = requireBuiltWorkContract({
+            profile: input.profile,
+            acceptanceCriteria: (input.acceptanceCriteria ?? []).map((text) => ({text, met: false})),
+            allowedActions,
+            writeScope: {include: input.scope ?? [], exclude: input.excludeScope ?? []},
+            verificationCommands: input.verificationCommands ?? [],
+          });
+        } catch (error) {
+          if (error instanceof WorkContractValidationError) return err(error.message);
+          throw error;
+        }
+        const {
+          profile: _profile,
+          acceptanceCriteria: _acceptanceCriteria,
+          scope: _scope,
+          excludeScope: _excludeScope,
+          verificationCommands: _verificationCommands,
+          allowNetwork: _allowNetwork,
+          allowVault: _allowVault,
+          allowDeploy: _allowDeploy,
+          allowMigrate: _allowMigrate,
+          ...identity
+        } = input;
+        const res = await sift.createWorkItem({
+          ...identity,
+          contract,
+          captureApplicability: 'conversational_capture_required',
+        });
+        if (res.error || !res.data) return err(`createWorkItem failed (${res.statusCode}): ${res.error}`);
+        const warning = res.warnings?.length ? ` Warning: ${res.warnings.join("; ")}` : "";
+        return ok(redactWorkItemTokens(res.data), `Created work item: ${input.title}.${warning}`);
+      },
+    }),
+
+    defineTool<{
+      status?: WorkItemStatus;
+      assignedAlias?: string;
+      projectId?: string;
+      taskId?: string;
+      limit?: number;
+    }>({
+      name: "exf_work_items_list",
+      description:
+        "List work items from Siftable's executable agent work queue. " +
+        "Filter by status (queued/claimed/running/blocked/needs_review/done/failed/cancelled), assigned " +
+        "agent alias, project, or task. Returns work-item titles, statuses, " +
+        "and current assignees.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          status: {
+            type: "string",
+            enum: [...WORK_ITEM_STATUSES],
+            description: "Filter by the exact backend work-item status",
+          },
+          assignedAlias: {
+            type: "string",
+            description: "Filter by agent alias (e.g. 'claude-code')",
+          },
+          projectId: { type: "string", description: "Filter by project ID" },
+          taskId: { type: "string", description: "Filter by parent task ID" },
+          limit: { type: "integer", description: "Max work items to return (default 20)" },
+        },
+      },
+      tags: ["work_items"],
+      handler: async (params) => {
+        const res = await sift.listWorkItems(params);
+        if (res.error || !res.data) {
+          return err(`listWorkItems failed (${res.statusCode}): ${res.error}`);
+        }
+        return ok(redactWorkItemTokens(res.data), `Found ${res.data.workItems.length} work item(s)`);
+      },
+    }),
+
+    defineTool<{ workItemId: string }>({
+      name: "exf_work_item_get",
+      description:
+        "Get a single work item by ID. Returns the full work-item record " +
+        "including status, assignment, and any progress notes.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          workItemId: { type: "string", description: "Work item ID" },
+        },
+        required: ["workItemId"],
+      },
+      tags: ["work_items"],
+      handler: async ({ workItemId }) => {
+        const res = await sift.getWorkItem(workItemId);
+        if (res.error || !res.data) {
+          return err(`getWorkItem failed (${res.statusCode}): ${res.error}`);
+        }
+        return ok(redactWorkItemTokens(res.data));
+      },
+    }),
+
+    defineTool<{
+      alias?: string;
+      claimOwner: string;
+      workItemId?: string;
+      leaseSeconds?: number;
+    }>({
+      name: "exf_work_item_claim",
+      description:
+        "Atomically claim the next dependency-ready work item. Optionally target a specific work item. " +
+        "Returns a claim token required by lease-owned transitions.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          alias: {
+            type: "string",
+            description: "Agent alias claiming the work (e.g. 'claude-code')",
+          },
+          claimOwner: {type: "string", description: "Unique owner identity for this worker/session"},
+          workItemId: {type: "string", description: "Optional specific work-item UUID"},
+          leaseSeconds: {type: "integer", description: "Claim lease duration in seconds"},
+        },
+        required: ["claimOwner"],
+      },
+      tags: ["work_items"],
+      handler: async ({ alias, claimOwner, workItemId, leaseSeconds }) => {
+        const input = {
+          claimOwner,
+          ...(alias ? {assignedAlias: alias} : {}),
+          ...(workItemId ? {workItemId} : {}),
+          ...(leaseSeconds ? {leaseSeconds} : {}),
+        };
+        const res = await sift.claimWorkItem(
+          input,
+          generateIdempotencyKey("interactive-work-claim"),
+        );
+        if (res.error || !res.data) {
+          return err(`claimWorkItem failed (${res.statusCode}): ${res.error}`);
+        }
+        return ok(res.data, `Claimed work item for ${alias ?? claimOwner}`);
+      },
+    }),
+
+    defineTool<{
+      workItemId: string;
+      action: "start" | "heartbeat" | "release" | "review" | "complete" | "block" | "fail" | "cancel" | "requeue";
+      claimOwner?: string;
+      claimToken?: string;
+      leaseSeconds?: number;
+      resultSummary?: string;
+      reason?: string;
+    }>({
+      name: "exf_work_item_transition",
+      description:
+        "Transition a work item. start/heartbeat/block/fail require claimOwner and claimToken; " +
+        "review may omit lease credentials only when parking a queued doNotClaim review gate. " +
+        "release requires claimOwner and claimToken. Active cancel requires both credentials; queued/blocked cancel omits both. " +
+        "requeue is tokenless operator recovery for blocked work. complete may omit lease credentials from needs_review; " +
+        "the server enforces dependency readiness but does not distinguish human and automated work:write callers.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          workItemId: { type: "string", description: "Work item ID" },
+          action: {
+            type: "string",
+            enum: ["start", "heartbeat", "release", "review", "complete", "block", "fail", "cancel", "requeue"],
+            description: "Lifecycle transition action",
+          },
+          claimOwner: {type: "string", description: "Owner identity returned with the claim"},
+          claimToken: {type: "string", description: "Opaque token returned with the claim"},
+          leaseSeconds: {type: "integer", description: "Heartbeat/start lease duration"},
+          resultSummary: {type: "string", description: "Review/completion summary"},
+          reason: {type: "string", description: "Block or failure reason"},
+        },
+        required: ["workItemId", "action"],
+      },
+      tags: ["work_items"],
+      handler: async ({workItemId, action, claimOwner, claimToken, leaseSeconds, resultSummary, reason}) => {
+        const ownerBound = new Set(["start", "heartbeat", "block", "fail"]);
+        if (ownerBound.has(action) && (!claimOwner || !claimToken)) {
+          return err(`${action} requires claimOwner and claimToken from the active claim`);
+        }
+        if (action === "release" && (!claimOwner || !claimToken)) {
+          return err("release requires claimOwner and claimToken from the active claim");
+        }
+        if (action === "cancel" && Boolean(claimOwner) !== Boolean(claimToken)) {
+          return err("cancel requires claimOwner and claimToken together for active work; omit both only for queued/blocked cancellation");
+        }
+        const input: Record<string, unknown> = {};
+        if (claimOwner) input.claimOwner = claimOwner;
+        if (claimToken) input.claimToken = claimToken;
+        if (leaseSeconds) input.leaseSeconds = leaseSeconds;
+        if (resultSummary) input.resultSummary = resultSummary;
+        if (reason) {
+          input.blockedReason = reason;
+          input.failureReason = reason;
+        }
+        const res = await sift.transitionWorkItem(workItemId, action, input);
+        if (res.error || !res.data) {
+          return err(`transitionWorkItem failed (${res.statusCode}): ${res.error}`);
+        }
+        return ok(redactWorkItemTokens(res.data), `Work item transitioned: ${action}`);
+      },
+    }),
+
+    defineTool<{
+      workItemId: string;
+      dependsOn: Array<{workItemId: string; requiredGate?: "done" | "commands_passed"}>;
+    }>({
+      name: "exf_work_item_dependencies_replace",
+      description: "Atomically replace authoritative work-item dependencies. Pass an empty array to clear them.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          workItemId: {type: "string", description: "Successor work-item UUID"},
+          dependsOn: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                workItemId: {type: "string", description: "Prerequisite work-item UUID"},
+                requiredGate: {type: "string", enum: ["done", "commands_passed"]},
+              },
+              required: ["workItemId"],
+            },
+          },
+        },
+        required: ["workItemId", "dependsOn"],
+      },
+      tags: ["work_items"],
+      handler: async ({workItemId, dependsOn}) => {
+        const res = await sift.replaceWorkItemDependencies(workItemId, dependsOn);
+        if (res.error || !res.data) return err(`replaceWorkItemDependencies failed (${res.statusCode}): ${res.error}`);
+        return ok(res.data, "Replaced authoritative work-item dependencies");
+      },
+    }),
+
+    defineTool<{projectId: string; defaultRequiredGate?: "done" | "commands_passed"}>({
+      name: "exf_work_dependency_policy",
+      description: "Get or update the project's default gate for work dependencies that omit requiredGate.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          projectId: {type: "string", description: "Project UUID"},
+          defaultRequiredGate: {
+            type: "string",
+            enum: ["done", "commands_passed"],
+            description: "When omitted, read the current policy; when present, update it",
+          },
+        },
+        required: ["projectId"],
+      },
+      tags: ["work_items"],
+      handler: async ({projectId, defaultRequiredGate}) => {
+        const res = defaultRequiredGate
+          ? await sift.updateWorkDependencyPolicy(projectId, {defaultRequiredGate})
+          : await sift.getWorkDependencyPolicy(projectId);
+        if (res.error || !res.data) return err(`workDependencyPolicy failed (${res.statusCode}): ${res.error}`);
+        return ok(res.data);
+      },
+    }),
+  ];
+}
+
+// ─── Vault ──────────────────────────────────────────────────────────────────
+//
+// Vault stores encrypted secrets (API keys, credentials, etc.). Read
+// operations are audit-logged on the Siftable side — surface this in
+// the tool description so models pause before invoking them.
+
+export function createVaultTools(client: ExfClient): ToolDefinition<any, any>[] {
+  const sift = client.raw();
+
+  return [
+    defineTool<{ entryType?: string; category?: string; search?: string; limit?: number }>({
+      name: "exf_vault_list",
+      description:
+        "List Siftable vault entries (metadata only — does not return secret " +
+        "payloads). Filter by entry type, category, or search string.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          entryType: { type: "string", description: "Filter by entry type" },
+          category: { type: "string", description: "Filter by category" },
+          search: { type: "string", description: "Substring match on name/description" },
+          limit: { type: "integer", description: "Max entries to return (default 50)" },
+        },
+      },
+      tags: ["vault"],
+      handler: async (params) => {
+        const res = await sift.listVaultEntries(params);
+        if (res.error || !res.data) {
+          return err(`listVaultEntries failed (${res.statusCode}): ${res.error}`);
+        }
+        return ok(res.data, `Found ${res.data.entries.length} vault entr(ies)`);
+      },
+    }),
+
+    defineTool<{ query: string; limit?: number }>({
+      name: "exf_vault_search",
+      description:
+        "Search vault entries by query string (metadata only — does not return " +
+        "secret payloads).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Search query" },
+          limit: { type: "integer", description: "Max results (default 20)" },
+        },
+        required: ["query"],
+      },
+      tags: ["vault"],
+      handler: async ({ query, limit }) => {
+        const res = await sift.searchVaultEntries(query, limit);
+        if (res.error || !res.data) {
+          return err(`searchVaultEntries failed (${res.statusCode}): ${res.error}`);
+        }
+        return ok(res.data, `Found ${res.data.entries.length} match(es)`);
+      },
+    }),
+
+    defineTool<{
+      name: string;
+      payload: Record<string, string>;
+      slug?: string;
+      entryType?: string;
+      description?: string;
+      tags?: string[];
+      category?: string;
+      url?: string;
+    }>({
+      name: "exf_vault_create",
+      description:
+        "Create a new vault entry. Payload is a string→string map of " +
+        "key/value pairs (e.g. { token: 'abc' } or { username: 'x', password: 'y' }).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Entry display name" },
+          payload: {
+            type: "object",
+            description: "Key/value secret payload (string values only)",
+            properties: {},
+          },
+          slug: { type: "string", description: "Stable identifier (auto-derived if omitted)" },
+          entryType: { type: "string", description: "Entry type (api_key, password, etc.)" },
+          description: { type: "string", description: "Human-readable description" },
+          tags: { type: "array", items: { type: "string" }, description: "Tags" },
+          category: { type: "string", description: "Category for grouping" },
+          url: { type: "string", description: "Associated URL" },
+        },
+        required: ["name", "payload"],
+      },
+      tags: ["vault"],
+      handler: async (params) => {
+        const res = await sift.createVaultEntry(
+          params,
+          generateIdempotencyKey("interactive-vault-create"),
+        );
+        if (res.error || !res.data) {
+          return err(`createVaultEntry failed (${res.statusCode}): ${res.error}`);
+        }
+        return ok(res.data, `Created vault entry: ${params.name}`);
+      },
+    }),
+  ];
+}
+
+// ─── Datasets ───────────────────────────────────────────────────────────────
+//
+// Datasets are Siftable's structured data tables (notes-as-tables).
+// We wrap the highest-value subset; bucket/rank/analyze/export remain
+// reachable via client.raw() if a tool author needs them.
+
+export function createDatasetTools(client: ExfClient): ToolDefinition<any, any>[] {
+  const sift = client.raw();
+
+  return [
+    defineTool<{ limit?: number }>({
+      name: "exf_datasets_list",
+      description:
+        "List datasets in the workspace. Returns dataset IDs, titles, and " +
+        "field schemas. Pass an ID to exf_dataset_query to read rows.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          limit: { type: "integer", description: "Max datasets (default 20)" },
+        },
+      },
+      tags: ["datasets"],
+      handler: async ({ limit }) => {
+        const res = await sift.listDatasets(limit);
+        if (res.error || !res.data) {
+          return err(`listDatasets failed (${res.statusCode}): ${res.error}`);
+        }
+        return ok(res.data, `Found ${res.data.datasets.length} dataset(s)`);
+      },
+    }),
+
+    defineTool<{
+      datasetId: string;
+      filters?: Array<Record<string, unknown>>;
+      sorts?: Array<Record<string, unknown>>;
+      limit?: number;
+      cursor?: string;
+    }>({
+      name: "exf_dataset_query",
+      description:
+        "Query rows from a dataset. Supports filters, sorts, pagination via " +
+        "cursor, and a limit. Returns the matching rows plus next-cursor if " +
+        "more pages exist.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          datasetId: { type: "string", description: "Dataset ID" },
+          filters: {
+            type: "array",
+            items: { type: "object", properties: {} },
+            description: "Filter clauses (Siftable filter shape)",
+          },
+          sorts: {
+            type: "array",
+            items: { type: "object", properties: {} },
+            description: "Sort clauses (Siftable sort shape)",
+          },
+          limit: { type: "integer", description: "Max rows (default 100)" },
+          cursor: { type: "string", description: "Pagination cursor from prior call" },
+        },
+        required: ["datasetId"],
+      },
+      tags: ["datasets"],
+      handler: async ({ datasetId, ...input }) => {
+        const res = await sift.queryDataset(datasetId, input);
+        if (res.error || !res.data) {
+          return err(`queryDataset failed (${res.statusCode}): ${res.error}`);
+        }
+        return ok(res.data);
+      },
+    }),
+
+    defineTool<{ datasetId: string }>({
+      name: "exf_dataset_summarize",
+      description:
+        "Get a summary of a dataset: row count, schema, value distributions " +
+        "for low-cardinality fields. Cheaper than querying all rows when you " +
+        "just want shape + scale.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          datasetId: { type: "string", description: "Dataset ID" },
+        },
+        required: ["datasetId"],
+      },
+      tags: ["datasets"],
+      handler: async ({ datasetId }) => {
+        const res = await sift.summarizeDataset(datasetId);
+        if (res.error || !res.data) {
+          return err(`summarizeDataset failed (${res.statusCode}): ${res.error}`);
+        }
+        return ok(res.data);
+      },
+    }),
+  ];
+}
+
+// ─── Code Memories ──────────────────────────────────────────────────────────
+//
+// Code memories are durable facts about a codebase (e.g. "the rate limiter
+// in middleware/rateLimit.ts uses a leaky bucket per workspace_id, not
+// per user"). Stored once, recalled via semantic search later. Distinct
+// from RAG — these are facts the AGENT writes after learning something.
+
+export function createCodeMemoryTools(client: ExfClient): ToolDefinition<any, any>[] {
+  const sift = client.raw();
+
+  return [
+    defineTool<{
+      fact: string;
+      category: string;
+      filePath?: string;
+      repositoryId?: string;
+    }>({
+      name: "exf_code_memory_store",
+      description:
+        "Persist a fact about the codebase for future recall. Use after " +
+        "discovering something non-obvious (a hidden invariant, a workaround, " +
+        "an architectural quirk). The category groups related facts and " +
+        "filePath/repositoryId scope where the fact applies.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          fact: { type: "string", description: "The fact to remember (one sentence)" },
+          category: { type: "string", description: "Category, e.g. 'invariant', 'gotcha', 'design-decision'" },
+          filePath: { type: "string", description: "Path the fact relates to (optional)" },
+          repositoryId: { type: "string", description: "Repository scope (optional)" },
+        },
+        required: ["fact", "category"],
+      },
+      tags: ["code_memory"],
+      handler: async (params) => {
+        const res = await sift.storeCodeMemory(
+          params,
+          generateIdempotencyKey("interactive-code-memory-store"),
+        );
+        if (res.error || !res.data) {
+          return err(`storeCodeMemory failed (${res.statusCode}): ${res.error}`);
+        }
+        return ok(res.data, "Code memory stored");
+      },
+    }),
+
+    defineTool<{
+      query: string;
+      category?: string;
+      repositoryId?: string;
+      scopePaths?: string[];
+      limit?: number;
+    }>({
+      name: "exf_code_memory_search",
+      description:
+        "Semantic search over stored code memories. Use when about to do " +
+        "something in an area you've worked on before — there may be a " +
+        "warning or convention already recorded.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Natural-language query" },
+          category: { type: "string", description: "Filter by category" },
+          repositoryId: { type: "string", description: "Filter by repository" },
+          scopePaths: {
+            type: "array",
+            items: { type: "string" },
+            description: "Filter to memories scoped to these paths",
+          },
+          limit: { type: "integer", description: "Max results (default 10)" },
+        },
+        required: ["query"],
+      },
+      tags: ["code_memory"],
+      handler: async (params) => {
+        const res = await sift.searchCodeMemories(params);
+        if (res.error || !res.data) {
+          return err(`searchCodeMemories failed (${res.statusCode}): ${res.error}`);
+        }
+        return ok(res.data);
+      },
+    }),
+
+    defineTool<{ memoryId: string }>({
+      name: "exf_code_memory_delete",
+      description:
+        "Delete a code memory by ID. Use when a stored fact is no longer " +
+        "true (e.g. the convention changed, the gotcha was fixed).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          memoryId: { type: "string", description: "Code memory ID" },
+        },
+        required: ["memoryId"],
+      },
+      tags: ["code_memory"],
+      handler: async ({ memoryId }) => {
+        const res = await sift.deleteCodeMemory(memoryId);
+        if (res.error || !res.data) {
+          return err(`deleteCodeMemory failed (${res.statusCode}): ${res.error}`);
+        }
+        return ok(res.data, "Code memory deleted");
+      },
+    }),
+  ];
+}

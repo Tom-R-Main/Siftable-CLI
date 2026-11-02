@@ -1,12 +1,14 @@
 import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
 import {renderDetail} from '../../lib/output.js';
+import {datasetIdempotencyKeyFlag} from '../../lib/dataset-idempotency.js';
 
 export default class DatasetsMaterialize extends BaseCommand {
   static description = 'Materialize a derived result into a new scratch dataset';
 
   static flags = {
     ...BaseCommand.baseFlags,
+    'idempotency-key': datasetIdempotencyKeyFlag,
     title: Flags.string({description: 'Title of the new dataset', required: true}),
     description: Flags.string({description: 'Dataset description'}),
     'source-result': Flags.string({description: 'Inline JSON for a derived result', required: false}),
@@ -30,7 +32,7 @@ export default class DatasetsMaterialize extends BaseCommand {
       sourceResult,
       title: flags.title,
       description: flags.description,
-    });
+    }, flags['idempotency-key']);
     this.handleApiError(response);
 
     const data = response.data as any;

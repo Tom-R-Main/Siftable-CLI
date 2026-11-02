@@ -1,5 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {parseDatasetFiltersFlag, parseDatasetSortsFlag} from '../../lib/dataset-query.js';
 import {renderTable, truncate} from '../../lib/output.js';
 
 export default class DatasetsJoin extends BaseCommand {
@@ -38,10 +39,10 @@ export default class DatasetsJoin extends BaseCommand {
       rightAlias: flags['right-alias'],
       joinType: flags['join-type'] as 'inner' | 'left' | 'right',
       joinKeys: this.parseJsonFlag(flags['join-keys'], '--join-keys') as Array<{ leftField: string; rightField: string }>,
-      leftFilters: this.parseJsonFlag(flags['left-filters'], '--left-filters') as Array<Record<string, unknown>> | undefined,
-      rightFilters: this.parseJsonFlag(flags['right-filters'], '--right-filters') as Array<Record<string, unknown>> | undefined,
+      leftFilters: parseDatasetFiltersFlag(flags['left-filters'], '--left-filters'),
+      rightFilters: parseDatasetFiltersFlag(flags['right-filters'], '--right-filters'),
       select: flags.select?.split(',').map((part) => part.trim()).filter(Boolean),
-      sorts: this.parseJsonFlag(flags.sorts, '--sorts') as Array<Record<string, unknown>> | undefined,
+      sorts: parseDatasetSortsFlag(flags.sorts),
       limit: flags.limit,
     });
     this.handleApiError(response);

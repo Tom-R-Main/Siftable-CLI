@@ -21,6 +21,12 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+zig_version="$(zig version)"
+if [ "$zig_version" != "0.17.0" ]; then
+  echo "error: native TUI builds require Zig 0.17.0; found $zig_version" >&2
+  exit 1
+fi
+
 # 1. Host build (required): tests, host natives, cell-render vendoring.
 echo ">> Building host natives (required)..."
 ./scripts/build-native.sh
@@ -32,7 +38,7 @@ CROSS_TARGETS=(
 
 for triple in "${CROSS_TARGETS[@]}"; do
   echo ">> Cross-building native libs for ${triple}..."
-  if zig build native -Doptimize=ReleaseSafe -Dtarget="${triple}" -p .; then
+  if zig build native -Doptimize=safe -Dtarget="${triple}" -p .; then
     echo ">> ok: ${triple}"
   else
     echo "warning: cross build for ${triple} failed; that platform will use the TypeScript fallback" >&2

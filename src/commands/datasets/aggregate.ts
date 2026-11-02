@@ -1,5 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {parseDatasetFiltersFlag, parseDatasetSortsFlag} from '../../lib/dataset-query.js';
 
 export default class DatasetsAggregate extends BaseCommand {
   static description = 'Aggregate dataset records with grouped metrics (count, avg, sum, min, max, median, stddev, percentile, ratio)';
@@ -25,8 +26,8 @@ export default class DatasetsAggregate extends BaseCommand {
     const options: Record<string, unknown> = {limit: flags.limit};
     if (flags['group-by']) options.groupBy = flags['group-by'].split(',').map((s) => s.trim());
     if (flags.metrics) options.metrics = JSON.parse(flags.metrics);
-    if (flags.filters) options.filters = JSON.parse(flags.filters);
-    if (flags.sorts) options.sorts = JSON.parse(flags.sorts);
+    if (flags.filters) options.filters = parseDatasetFiltersFlag(flags.filters);
+    if (flags.sorts) options.sorts = parseDatasetSortsFlag(flags.sorts);
     if (flags.having) options.having = JSON.parse(flags.having);
 
     const response = await client.aggregateDataset(args.id, options as any);

@@ -56,7 +56,7 @@ describe("lane D D3 — gate wired to the registry", () => {
 
       // A dirty child cannot merge: reviewChild (no autoCommit) blocks on it.
       await writeFile(join(child.worktreePath, "feature.ts"), "export const x = 1;\n", "utf8");
-      const dirtyReview = controller.reviewChild(child.sessionId);
+      const dirtyReview = await controller.reviewChild(child.sessionId);
       expect(dirtyReview.ok).toBe(true);
       if (!dirtyReview.ok) return;
       expect(dirtyReview.packet.verdict).toBe("merge_blocked");
@@ -68,7 +68,7 @@ describe("lane D D3 — gate wired to the registry", () => {
       expect(commit.ok).toBe(true);
       expect(commit.committed).toBe(true);
 
-      const okReview = controller.reviewChild(child.sessionId);
+      const okReview = await controller.reviewChild(child.sessionId);
       expect(okReview.ok).toBe(true);
       if (!okReview.ok) return;
       expect(okReview.packet.verdict).toBe("ready_to_merge");
@@ -93,7 +93,7 @@ describe("lane D D3 — gate wired to the registry", () => {
       const child = spawn.session;
       await writeFile(join(child.worktreePath, "auto.ts"), "export const y = 2;\n", "utf8");
 
-      const review = controller.reviewChild(child.sessionId, {autoCommit: true, message: "auto work"});
+      const review = await controller.reviewChild(child.sessionId, {autoCommit: true, message: "auto work"});
       expect(review.ok).toBe(true);
       if (!review.ok) return;
       expect(review.committed).toBe(true);
@@ -114,8 +114,8 @@ describe("lane D D3 — gate wired to the registry", () => {
       await writeFile(join(child.worktreePath, "idem.ts"), "1\n", "utf8");
       controller.commitChild(child.sessionId, "idem");
 
-      const first = controller.reviewChild(child.sessionId);
-      const second = controller.reviewChild(child.sessionId);
+      const first = await controller.reviewChild(child.sessionId);
+      const second = await controller.reviewChild(child.sessionId);
       expect(first.ok && first.packet.verdict).toBe("ready_to_merge");
       expect(second.ok && second.packet.verdict).toBe("ready_to_merge");
       expect(second.ok && second.statusApplied).toBe(true); // same-status no-op accepted
@@ -141,7 +141,7 @@ describe("lane D D3 — gate wired to the registry", () => {
       await fx.write("shared.txt", "line1\nMAIN\n");
       fx.run(["commit", "-am", "main moves"]);
 
-      const blocked = controller.reviewChild(child.sessionId);
+      const blocked = await controller.reviewChild(child.sessionId);
       expect(blocked.ok).toBe(true);
       if (!blocked.ok) return;
       expect(blocked.packet.verdict).toBe("merge_blocked");
@@ -152,7 +152,7 @@ describe("lane D D3 — gate wired to the registry", () => {
       // Resolve: rebase the child onto the moved base, taking the base's content.
       fx.run(["rebase", "-X", "theirs", "main"], child.worktreePath);
 
-      const ready = controller.reviewChild(child.sessionId);
+      const ready = await controller.reviewChild(child.sessionId);
       expect(ready.ok).toBe(true);
       if (!ready.ok) return;
       expect(ready.packet.conflicts).toEqual([]);

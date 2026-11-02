@@ -9,6 +9,7 @@ import {
   type SearchSkippedByReason,
 } from './fsEngine';
 import { getSessionCwd, getWorkspaceRoot } from './navigation';
+import {mergeSearchScans, searchScanFromStats, searchPresentation, searchCancellation, validateSearchLimits, type SearchScan, type SearchPresentation} from './searchResult';
 import { relative as relativePath, resolve as resolvePath } from 'node:path';
 
 export type ExplorerMode = 'skipped' | 'targeted' | 'broad';
@@ -190,6 +191,9 @@ export interface ExplorerPrepareResult {
 export interface ExplorerGlobResult {
   matches: Array<{ path: string; bytes: number; depth: number }>;
   stats: {
+    scan: SearchScan;
+    presentation: SearchPresentation;
+    skippedByReason: SearchSkippedByReason;
     scannedFiles: number;
     skippedFiles: number;
     matchedFiles: number;
@@ -202,6 +206,9 @@ export interface ExplorerGlobResult {
 export interface ExplorerGrepResult {
   matches: Array<{ path: string; line: number; preview: string }>;
   stats: {
+    scan: SearchScan;
+    presentation: SearchPresentation;
+    skippedByReason: SearchSkippedByReason;
     scannedFiles: number;
     skippedFiles: number;
     matchedFiles: number;
@@ -386,6 +393,8 @@ export interface ExplorerOptions {
   scout?: RepoExplorerScoutState;
   parallelScouts?: RepoExplorerFanoutReport;
   fanout?: RepoExplorerFanoutState;
+  /** Cancels the preflight between its phases; in-flight reads settle first. */
+  signal?: AbortSignal;
 }
 
 interface RepoExplorerCacheEntry {
@@ -396,7 +405,7 @@ interface RepoExplorerCacheEntry {
 }
 
 const CODE_HINT_RE =
-  /\b(codebase|repo|repository|explorer|repo_explorer|openfunction|localcontrolclient|file|files|function|class|symbol|implementation|implemented|handled|debug|bug|stack|trace|typescript|react|component|hook|route|controller|service|test|spec|zig|native|cli|tui|fsengine|codexengine|brain\.ts)\b/i;
+  /\b(codebase|repo|repository|explorer|repo_explorer|openfunction|agent[_ -]?harness|localcontrolclient|file|files|function|class|symbol|implementation|implemented|handled|debug|bug|stack|trace|typescript|react|component|hook|route|controller|service|test|spec|zig|native|cli|tui|fsengine|codexengine|brain\.ts)\b/i;
 const PATH_HINT_RE = /(?:^|\s)(?:\.?\.?\/)?[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+|[A-Za-z0-9_.-]+\.(?:ts|tsx|js|jsx|zig|rs|go|py|json|md)\b/;
 const BROAD_RE = /\b(scour|audit|map|trace|find|where|why|how|look into|figure out|investigate|review)\b/i;
 const IDENT_RE = /\b[A-Za-z_$][A-Za-z0-9_$:-]{2,}\b/g;
@@ -467,13 +476,13 @@ const MAX_RETRIEVAL_CONTEXT_CHARS = 8_000;
 // Per-role budget acts as a *ceiling* only. The effective scout budget is
 // min(role, profile) (see runRepoExplorerFanoutBranch), so these must sit at or
 // above the deepest profile or they silently starve it — which is exactly what
-// the old 4-call / 6s / 8k values did to "deep" (12 calls / 20s / 18k). Keep
+// shorter role limits did to "deep" (12 calls / 60s / 18k). Keep
 // this higher than any profile so the profile is the real knob.
 const DEFAULT_ROLE_BUDGET = {
   maxToolCalls: 16,
   maxSearches: 12,
   maxFilesRead: 8,
-  maxElapsedMs: 24_000,
+  maxElapsedMs: 60_000,
   maxReturnedChars: 18_000,
 };
 
@@ -509,7 +518,7 @@ export const EXPLORER_SCOUT_ROLES: Record<ExplorerScoutRoleId, ExplorerScoutRole
     id: 'routing_config',
     description: 'Find model routing, flags, environment config, and provider seams.',
     focus: 'Find routing, config, environment flags, and integration seams relevant to the user prompt.',
-    triggers: { promptKeywords: ['config', 'env', 'flag', 'provider', 'codex', 'openfunction', 'model'], promptClasses: ['config_routing'] },
+    triggers: { promptKeywords: ['config', 'env', 'flag', 'provider', 'codex', 'agent harness', 'model'], promptClasses: ['config_routing'] },
     tools: ['inspect_workspace', 'glob_local_files', 'grep_local_files', 'search_local_files', 'read_file_region', 'read_many_regions'],
     budget: DEFAULT_ROLE_BUDGET,
     outputCapChars: DEFAULT_ROLE_BUDGET.maxReturnedChars,
@@ -840,7 +849,7 @@ function repoExplorerActivityEvidenceQuality(report: ExplorerReport): ExplorerCo
 }
 
 export function classifyExplorerPrompt(text: string): ExplorerMode {
-  const trimmed = text.trim();
+  const trimmed = chatInputText(text).trim();
   if (!trimmed || resolveExplorerRuntimeMode() === 'off') return 'skipped';
   const hasCodeHint = CODE_HINT_RE.test(trimmed) || PATH_HINT_RE.test(trimmed);
   if (!hasCodeHint) return 'skipped';
@@ -851,7 +860,7 @@ export function classifyExplorerPromptClass(text: string): ExplorerPromptClass {
   const lower = text.toLowerCase();
   if (/\b(tui|ui|keyboard|hotkey|shortcut|transcript|render|row|copy|ctrl|screen|panel)\b/.test(lower)) return 'ui_behavior';
   if (/\b(native|zig|ffi|fallback boundary|native boundary)\b/.test(lower)) return 'native_boundary';
-  if (/\b(config|env|flag|provider|codex|openfunction|model routing|route|api key|kill switch)\b/.test(lower)) return 'config_routing';
+  if (/\b(config|env|flag|provider|codex|openfunction|agent[_ -]?harness|model routing|route|api key|kill switch)\b/.test(lower)) return 'config_routing';
   if (/\b(performance|latency|slow|benchmark|cache|scan|speed|optimi[sz]e)\b/.test(lower)) return 'performance_investigation';
   if (/\b(test|tests|spec|coverage|prove|regression)\b/.test(lower)) return 'test_discovery';
   if (/\b(bug|debug|error|failed|failure|unexpected|skip|cap|capped|timeout|crash|why)\b/.test(lower)) return 'bug_debug';
@@ -886,7 +895,7 @@ export function assignRepoExplorerScoutRoles(input: ExplorerChatInput, report: E
   if (/\b(native|zig|ffi|fallback|benchmark|latency|scan)\b/.test(lower) || /\.zig\b|native\//.test(pathText)) {
     add('native_boundary', 'signal:native_boundary');
   }
-  if (/\b(config|env|flag|provider|codex|openfunction|model|routing)\b/.test(lower) || /codexengine|package\.json|tsconfig|oclif|config/.test(pathText)) {
+  if (/\b(config|env|flag|provider|codex|openfunction|agent[_ -]?harness|model|routing)\b/.test(lower) || /codexengine|package\.json|tsconfig|oclif|config/.test(pathText)) {
     add('routing_config', 'signal:routing_config');
   }
   if (/\b(bug|debug|error|failed|failure|unexpected|skip|cap|capped|timeout|fallback)\b/.test(lower) || report.diagnostics.errors.length > 0) {
@@ -921,8 +930,11 @@ export function assignRepoExplorerScoutRoles(input: ExplorerChatInput, report: E
 }
 
 export function chatInputText(input: ExplorerChatInput): string {
-  if (typeof input === 'string') return input;
-  return input.map((part) => part.type === 'text' ? part.text : '').filter(Boolean).join('\n');
+  const text = typeof input === 'string' ? input
+    : input.map((part) => part.type === 'text' ? part.text : '').filter(Boolean).join('\n');
+  // Routing and retrieval use the request, not the generated repository paths
+  // appended by skill preflight. The original input still reaches the model.
+  return text.replace(/\n\n<skill_preflight_context>\n[\s\S]*\n<\/skill_preflight_context>\s*$/, '');
 }
 
 export function compileExplorerQueries(text: string, maxQueries = 5): string[] {
@@ -969,36 +981,39 @@ export function compileExplorerQueries(text: string, maxQueries = 5): string[] {
 
 export async function globLocalFilesForExplorer(input: {
   root?: string;
+  signal?: AbortSignal;
   pattern: string;
   maxFiles?: number;
 }): Promise<ExplorerGlobResult> {
+  validateSearchLimits({maxFiles: input.maxFiles});
   const root = input.root || getWorkspaceRoot() || getSessionCwd();
   const pattern = String(input.pattern || '').trim();
-  if (!pattern) {
-    return {
-      matches: [],
-      stats: { scannedFiles: 0, skippedFiles: 0, matchedFiles: 0, truncated: false, capped: false, capReason: null },
-    };
-  }
+  if (!pattern) throw new Error('Glob pattern must not be empty');
   const maxFiles = Math.min(Math.max(input.maxFiles ?? 64, 1), 500);
   const manifest = await scanRepositoryManifest(root, {
     maxFiles: Math.max(maxFiles * 20, 1000),
     maxDepth: 12,
+    signal: input.signal,
     sourceOnly: true,
   });
   const regex = globToRegExp(pattern);
-  const matched = manifest.files
+  const allMatched = manifest.files
     .filter((file) => !isSecretLikeExplorerPath(file.path))
-    .filter((file) => regex.test(file.path))
-    .slice(0, maxFiles);
+    .filter((file) => regex.test(file.path));
+  const matched = allMatched.slice(0, maxFiles);
+  const presentation = searchPresentation(...(allMatched.length > maxFiles ? ["maxFiles"] : []));
+  const scan = mergeSearchScans(manifest.stats.scan, searchCancellation(input.signal));
   const capped = manifest.stats.capped || matched.length >= maxFiles;
   return {
     matches: matched,
     stats: {
+      scan,
+      presentation,
+      skippedByReason: {...manifest.stats.skippedByReason},
       scannedFiles: manifest.stats.scannedFiles,
       skippedFiles: manifest.stats.skippedFiles,
-      matchedFiles: matched.length,
-      truncated: manifest.stats.truncated > 0 || capped,
+      matchedFiles: allMatched.length,
+      truncated: scan.status !== "complete" || presentation.clipped,
       capped,
       capReason: manifest.stats.capReason || (matched.length >= maxFiles ? 'maxFiles' : null),
     },
@@ -1007,19 +1022,16 @@ export async function globLocalFilesForExplorer(input: {
 
 export async function grepLocalFilesForExplorer(input: {
   root?: string;
+  signal?: AbortSignal;
   pattern: string;
   include?: string;
   maxFiles?: number;
   maxMatches?: number;
 }): Promise<ExplorerGrepResult> {
+  validateSearchLimits({maxFiles: input.maxFiles, maxMatches: input.maxMatches});
   const root = input.root || getWorkspaceRoot() || getSessionCwd();
   const pattern = String(input.pattern || '').trim();
-  if (!pattern) {
-    return {
-      matches: [],
-      stats: { scannedFiles: 0, skippedFiles: 0, matchedFiles: 0, matches: 0, truncated: false, capped: false, capReason: null },
-    };
-  }
+  if (!pattern) throw new Error('Grep pattern must not be empty');
   const maxFiles = Math.min(Math.max(input.maxFiles ?? 250, 1), 1000);
   const maxMatches = Math.min(Math.max(input.maxMatches ?? 64, 1), 250);
   let regex: RegExp;
@@ -1032,28 +1044,37 @@ export async function grepLocalFilesForExplorer(input: {
   const manifest = await scanRepositoryManifest(root, {
     maxFiles: Math.max(maxFiles * 10, 1000),
     maxDepth: 12,
+    signal: input.signal,
     sourceOnly: true,
   });
-  const files = manifest.files
+  const eligibleFiles = manifest.files
     .filter((file) => !isSecretLikeExplorerPath(file.path))
-    .filter((file) => !includeRegex || includeRegex.test(file.path))
-    .slice(0, maxFiles);
+    .filter((file) => !includeRegex || includeRegex.test(file.path));
+  const files = eligibleFiles.slice(0, maxFiles);
+  const skippedByReason = {...manifest.stats.skippedByReason};
+  const scans: SearchScan[] = [manifest.stats.scan];
+  const displayReasons: string[] = [];
+  let scannedFiles = 0;
+  let readErrors = 0;
   const matches: ExplorerGrepResult['matches'] = [];
   const matchedFiles = new Set<string>();
   let truncated = manifest.stats.truncated > 0 || manifest.stats.capped;
   for (const file of files) {
+    if (input.signal?.aborted) break;
     if (matches.length >= maxMatches) {
       truncated = true;
       break;
     }
     try {
       const read = await readText(resolvePath(root, file.path), 96 * 1024);
-      if (read.truncated) truncated = true;
+      scannedFiles += 1;
+      if (read.truncated) { truncated = true; scans.push({status: "partial", reasons: ["maxBytes"]}); }
       const lines = read.content.split(/\r\n|\r|\n/);
       for (let index = 0; index < lines.length; index += 1) {
         regex.lastIndex = 0;
         if (!regex.test(lines[index])) continue;
         matchedFiles.add(file.path);
+        if (lines[index].length > 180) displayReasons.push("previewBytes");
         matches.push({ path: file.path, line: index + 1, preview: cleanScoutText(lines[index], 180) });
         if (matches.length >= maxMatches) {
           truncated = true;
@@ -1061,20 +1082,28 @@ export async function grepLocalFilesForExplorer(input: {
         }
       }
     } catch {
+      readErrors += 1;
+      skippedByReason.ioError += 1;
       truncated = true;
     }
   }
-  const capped = manifest.stats.capped || files.length >= maxFiles || matches.length >= maxMatches;
+  const capped = manifest.stats.capped || eligibleFiles.length > maxFiles || matches.length >= maxMatches;
+  const capReason = manifest.stats.capReason || (matches.length >= maxMatches ? "maxMatches" : eligibleFiles.length > maxFiles ? "maxFiles" : null);
+  const scan = mergeSearchScans(...scans, searchScanFromStats({capped, capReason, skippedByReason}), searchCancellation(input.signal));
+  const presentation = searchPresentation(...displayReasons);
   return {
     matches,
     stats: {
-      scannedFiles: files.length,
-      skippedFiles: manifest.stats.skippedFiles,
+      scan,
+      presentation,
+      skippedByReason,
+      scannedFiles,
+      skippedFiles: manifest.stats.skippedFiles + readErrors,
       matchedFiles: matchedFiles.size,
       matches: matches.length,
-      truncated,
+      truncated: truncated || scan.status !== "complete" || presentation.clipped,
       capped,
-      capReason: manifest.stats.capReason || (matches.length >= maxMatches ? 'maxMatches' : files.length >= maxFiles ? 'maxFiles' : null),
+      capReason,
     },
   };
 }
@@ -1134,6 +1163,10 @@ export async function buildExplorerReport(
   metrics.queriesRun = queries.length;
   const fileScores = new Map<string, ExplorerFileFinding>();
   if (options.forceRefresh) clearRepoExplorerCache(root);
+  const checkAborted = () => {
+    if (options.signal?.aborted) throw new DOMException('Explorer cancelled', 'AbortError');
+  };
+  checkAborted();
   const workspace = await inspectLocalWorkspace(root).catch((err) => {
     diagnostics.errors.push(`inspect_local_workspace: ${err instanceof Error ? err.message : String(err)}`);
     return null;
@@ -1160,6 +1193,7 @@ export async function buildExplorerReport(
     }
   }
 
+  checkAborted();
   const pathQueries = queries.slice(0, Math.min(3, queries.length));
   const pathResults = await Promise.all(
     pathQueries.flatMap((query) =>
@@ -1186,6 +1220,7 @@ export async function buildExplorerReport(
     }
   }
 
+  checkAborted();
   const searchResults = await Promise.all(
     queries.flatMap((query) =>
       [

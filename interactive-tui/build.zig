@@ -19,18 +19,18 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const bench_optimize = b.option(
-        std.builtin.OptimizeMode,
+        std.lang.Optimize,
         "bench-optimize",
         "Optimization mode for native benchmark executable",
-    ) orelse .ReleaseFast;
+    ) orelse .fast;
 
     const native_step = b.step("native", "Build Bun-loadable native dynamic libraries");
     const test_step = b.step("test", "Run native Zig tests");
 
     // Strip debug info from release native libraries so the shipped .dylib/.so
     // stay small in the npm tarball (unstripped linux .so are ~3.2MB each).
-    // Tests stay on Debug and are unaffected.
-    const strip_native = optimize != .Debug;
+    // Tests stay on debug and are unaffected.
+    const strip_native = optimize != .debug;
 
     for (native_sources) |source| {
         const root_module = b.createModule(.{
@@ -56,7 +56,7 @@ pub fn build(b: *std.Build) !void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path(source.path),
                 .target = target,
-                .optimize = .Debug,
+                .optimize = .debug,
             }),
         });
         const test_run = b.addRunArtifact(test_exe);
@@ -72,7 +72,7 @@ pub fn build(b: *std.Build) !void {
         }),
     });
     const bench_run = b.addRunArtifact(bench_exe);
-    if (b.args) |args| bench_run.addArgs(args);
+    bench_run.addPassthruArgs();
 
     const bench_step = b.step("bench", "Run native Zig benchmarks");
     bench_step.dependOn(&bench_run.step);

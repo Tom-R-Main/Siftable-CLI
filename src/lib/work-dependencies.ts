@@ -1,4 +1,4 @@
-export const WORK_DEPENDENCY_GATES = ['done', 'commands_passed', 'verified'] as const;
+export const WORK_DEPENDENCY_GATES = ['done', 'commands_passed'] as const;
 
 export type WorkDependencyGate = typeof WORK_DEPENDENCY_GATES[number];
 
@@ -21,7 +21,7 @@ export function parseWorkDependencies(value: string | undefined): WorkDependency
   try {
     parsed = JSON.parse(value) as unknown;
   } catch {
-    throw new Error('Invalid dependencies JSON. Expected an array of {"workItemId":"<uuid>","requiredGate"?:"done"|"commands_passed"|"verified"}.');
+    throw new Error('Invalid dependencies JSON. Expected an array of {"workItemId":"<uuid>","requiredGate"?:"done"|"commands_passed"}.');
   }
 
   if (!Array.isArray(parsed)) throw new Error('Dependencies must be a JSON array.');
@@ -36,7 +36,7 @@ export function parseWorkDependencies(value: string | undefined): WorkDependency
       throw new Error(`Dependency ${index + 1} workItemId must be a UUID.`);
     }
     if (record.requiredGate !== undefined && !isDependencyGate(record.requiredGate)) {
-      throw new Error(`Dependency ${index + 1} requiredGate must be done, commands_passed, or verified.`);
+      throw new Error(`Dependency ${index + 1} requiredGate must be done or commands_passed.`);
     }
     const normalizedId = record.workItemId.toLowerCase();
     if (seen.has(normalizedId)) {

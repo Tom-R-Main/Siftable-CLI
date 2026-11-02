@@ -1,0 +1,56 @@
+[
+  {
+    "workspaceId": null,
+    "claimToken": "claim-token",
+    "state": "failed"
+  },
+  {
+    "workspaceId": null,
+    "claimToken": "claim-token",
+    "state": "failed",
+    "reason": "base_test_passes",
+    "detail": "the selected test passes on the base commit, so there is nothing to fix (detail from the helper)"
+  },
+  {
+    "workspaceId": null,
+    "claimToken": "claim-token",
+    "state": "failed",
+    "reason": "verify_checkout_timeout",
+    "detail": "verification failed (detail from the helper)"
+  },
+  {
+    "workspaceId": null,
+    "claimToken": "claim-token",
+    "state": "failed",
+    "reason": "tree_check_sandbox",
+    "detail": "verification failed (detail from the helper)"
+  },
+  {
+    "workspaceId": null,
+    "claimToken": "claim-token",
+    "state": "failed",
+    "reason": "report_missing",
+    "detail": "the test command wrote no JUnit report at $SIFT_TEST_REPORT (detail from the helper)"
+  },
+  {
+    "workspaceId": null,
+    "claimToken": "claim-token",
+    "state": "failed",
+    "reason": "verifier_sandbox",
+    "detail": "verification failed (detail from the helper)"
+  },
+  {
+    "workspaceId": null,
+    "claimToken": "claim-token",
+    "state": "failed",
+    "reason": "frozen_tests_unknown",
+    "detail": "no test file could be identified to freeze; name them in test.files (detail from the helper)"
+  },
+  {
+    "workspaceId": null,
+    "claimToken": "claim-token",
+    "state": "failed",
+    "reason": "interrupted",
+    "detail": "verification failed (detail from the helper)"
+  }
+]

@@ -1,5 +1,6 @@
 import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {resolveVaultOwnerContext, vaultApiFlags, vaultOwnerFlag} from '../../lib/vault-owner-context.js';
 
 export default class VaultCreate extends BaseCommand {
   static description = 'Store a new encrypted secret (requires vault:manage)';
@@ -23,11 +24,13 @@ export default class VaultCreate extends BaseCommand {
     tags: Flags.string({description: 'Comma-separated tags'}),
     category: Flags.string({description: 'Category'}),
     url: Flags.string({description: 'Associated URL'}),
+    owner: vaultOwnerFlag,
   };
 
   async run(): Promise<unknown> {
     const {flags} = await this.parse(VaultCreate);
-    const client = await this.client(flags);
+    const owner = resolveVaultOwnerContext(flags);
+    const client = await this.client(vaultApiFlags(flags, owner));
 
     let payload: Record<string, string>;
     try {
@@ -45,7 +48,7 @@ export default class VaultCreate extends BaseCommand {
       tags: flags.tags?.split(',').map(t => t.trim()),
       category: flags.category,
       url: flags.url,
-    });
+    }, this.idempotencyKey());
     this.handleApiError(response);
 
     const entry = this.unwrapOne(response, 'entry');

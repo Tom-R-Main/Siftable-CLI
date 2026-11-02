@@ -11,6 +11,7 @@ import { readdir, readFile, writeFile, rename, mkdir, stat, chmod, unlink, realp
 import { extname, join, dirname, resolve as resolvePath, relative, isAbsolute, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { getSessionCwd, getWorkspaceRoot } from "./navigation";
+import { completeSearchScan, mergeSearchScans, searchScanFromStats, searchPresentation, searchCancellation, validateSearchLimits, type SearchScan, type SearchPresentation } from "./searchResult";
 
 export interface ReadTextResult {
   path: string;
@@ -36,6 +37,25 @@ export interface EditTextResult {
   source: "zig" | "ts";
 }
 
+/** Exact-match validation refused this edit before any write was attempted. */
+export class AmbiguousEditError extends Error {
+  constructor() {
+    super("edit_file: ambiguous edit: the text to replace appears more than once");
+    this.name = "AmbiguousEditError";
+  }
+}
+
+/** Evidence from the mutation boundary, never inferred from an error message. */
+export class MutationReceiptError extends Error {
+  constructor(
+    readonly mutationState: "not_applied" | "applied" | "unknown",
+    cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = "MutationReceiptError";
+  }
+}
+
 export interface WriteTextOptions {
   /** Writable root the target must sit within. Empty/undefined disables the jail. */
   root?: string;
@@ -54,6 +74,7 @@ export interface EditTextOptions {
 }
 
 export interface SearchCaps {
+  signal?: AbortSignal;
   maxFiles?: number;
   maxMatches?: number;
   maxDepth?: number;
@@ -81,6 +102,8 @@ export interface RepositoryScanManifest {
     depth: number;
   }>;
   stats: {
+    scan: SearchScan;
+    presentation: SearchPresentation;
     scannedFiles: number;
     skippedFiles: number;
     truncated: number;
@@ -118,6 +141,8 @@ export interface SearchSkippedByReason {
 export interface SearchResult {
   matches: SearchMatch[];
   stats: {
+    scan: SearchScan;
+    presentation: SearchPresentation;
     searchedFiles: number;
     skippedFiles: number;
     matchedFiles: number;
@@ -191,6 +216,9 @@ export interface CodeSearchResult {
   }>;
   followups: Array<{ tool: "batch_read_files"; args: { path: string; startLine: number; endLine: number }; reason: string }>;
   stats: {
+    scan: SearchScan;
+    presentation: SearchPresentation;
+    skippedByReason: SearchSkippedByReason;
     searchedFiles: number;
     matchedFiles: number;
     searchedBytes: number;
@@ -261,7 +289,7 @@ export interface FileSearchResult {
     language: string;
     reason?: WorkspaceFile["keyReason"];
   }>;
-  stats: { scannedFiles: number; skippedFiles: number; truncated: boolean; cacheHit?: boolean; fileSetId?: string };
+  stats: { scan: SearchScan; presentation: SearchPresentation; skippedByReason: SearchSkippedByReason; scannedFiles: number; skippedFiles: number; truncated: boolean; cacheHit?: boolean; fileSetId?: string };
   source: "ts";
 }
 
@@ -283,6 +311,19 @@ const decoder = new TextDecoder("utf-8", { fatal: false });
 
 const STATUS_OK = 0;
 const STATUS_OUTPUT_TOO_SMALL = 9;
+/**
+ * Native statuses that can only be produced before any byte is written (CLI-047).
+ * The native ABI does not distinguish preflight from commit-phase failures, so a
+ * status is listed here only when the commit phase (createFileAtomic, which may
+ * create parent directories under makePath, the streamed write, and the rename)
+ * cannot also produce it. For edits the read/validate phase alone yields invalid
+ * arguments, outside-root, binary, invalid UTF-8, no match, ambiguous match and
+ * stale; not-found, not-a-file, too-large, permission and I/O can come from either
+ * phase and stay unknown. For writes only argument, root and exists checks precede
+ * the commit phase.
+ */
+const EDIT_PRE_WRITE_STATUSES: ReadonlySet<number> = new Set([1, 6, 8, 11, 12, 14, 15]);
+const WRITE_PRE_WRITE_STATUSES: ReadonlySet<number> = new Set([1, 10, 15]);
 const WRITE_FLAG_CREATE_ONLY = 0x1;
 const WRITE_FLAG_MAKE_PATH = 0x2;
 const EDIT_FLAG_REQUIRE_UNIQUE = 0x1;
@@ -325,6 +366,8 @@ const BUILD_OUTPUT_DIRS = new Set([
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".zig", ".rs", ".go", ".py", ".swift", ".java", ".kt", ".rb", ".php", ".css", ".scss", ".html", ".json", ".md", ".toml", ".yaml", ".yml"]);
 
 type WorkspaceFileCollection = {
+  scan: SearchScan;
+  skippedByReason: SearchSkippedByReason;
   files: WorkspaceFile[];
   skippedFiles: number;
   sensitiveExcludedFiles: number;
@@ -364,6 +407,7 @@ type TraversalPolicy = {
 };
 
 type TraversalResult = {
+  scan: SearchScan;
   files: TraversalFile[];
   skippedFiles: number;
   sensitiveExcludedFiles: number;
@@ -456,6 +500,7 @@ type NativeSymbols = {
 };
 
 let native: NativeSymbols | null | undefined;
+let nativeMutationReceiptSafe = false;
 
 function nativeSymbols(): NativeSymbols | null {
   if (native !== undefined) return native;
@@ -538,7 +583,46 @@ function nativeSymbols(): NativeSymbols | null {
   });
 
   native = lib.symbols as NativeSymbols;
+  // A missing/older capability leaves native reads available, but mutations
+  // select the TS implementation before making any native mutation call.
+  try {
+    const capability = dlopen(nativeLibraryPath, {
+      sift_fs_mutation_abi_version: { args: [], returns: FFIType.u32 },
+    });
+    try {
+      nativeMutationReceiptSafe = capability.symbols.sift_fs_mutation_abi_version() === 1;
+    } finally {
+      capability.close();
+    }
+  } catch {
+    nativeMutationReceiptSafe = false;
+  }
   return native;
+}
+
+function growMutationReceipt(cap: number, needed: Uint32Array): number {
+  const next = grow(cap, needed);
+  if (next > 1024 * 1024) {
+    throw new MutationReceiptError("not_applied", new Error("Native mutation receipt exceeds the 1 MiB limit"));
+  }
+  return next;
+}
+
+function invokeNativeMutation(invoke: () => number): number {
+  try {
+    return invoke();
+  } catch (error) {
+    throw new MutationReceiptError("unknown", error);
+  }
+}
+
+function deliverMutationReceipt<T>(deliver: () => T): T {
+  try {
+    clearWorkspaceFileCache();
+    return deliver();
+  } catch (error) {
+    throw new MutationReceiptError("applied", error);
+  }
 }
 
 function readJsonFromOut(out: Uint8Array, written: Uint32Array): string {
@@ -573,8 +657,11 @@ export async function readText(path: string, maxBytes = DEFAULT_READ_BYTES): Pro
 }
 
 export async function searchLiteral(root: string, query: string, caps: SearchCaps = {}): Promise<SearchResult> {
+  validateSearchLimits({maxFiles: caps.maxFiles, maxMatches: caps.maxMatches, maxDepth: caps.maxDepth, maxFileBytes: caps.maxFileBytes, previewBytes: caps.previewBytes});
+  await assertSearchDirectory(root);
+  if (!query) throw new Error("Search query must not be empty");
   const symbols = nativeSymbols();
-  if (symbols && !caps.excludeSensitive) {
+  if (symbols && !caps.excludeSensitive && !caps.signal && caps.maxDepth !== 0 && caps.previewBytes !== 0) {
     const rootBytes = encoder.encode(root);
     const queryBytes = encoder.encode(query);
     const capWords = new Uint32Array([
@@ -604,7 +691,17 @@ export async function searchLiteral(root: string, query: string, caps: SearchCap
         needed,
         stats,
       );
-      if (status === STATUS_OK) return { ...JSON.parse(readJsonFromOut(out, written)), source: "zig" };
+      if (status === STATUS_OK) {
+        const result = JSON.parse(readJsonFromOut(out, written));
+        const hasPreviews = (caps.detail ?? "snippets") === "snippets" || caps.detail === "full";
+        // Older native search frames lack display completeness. Repeating this read-only
+        // operation in TS is safe; never infer an uncut preview from absent metadata.
+        if (hasPreviews && typeof result.stats.previewClipped !== "boolean") {
+          return searchLiteralFallback(root, query, caps);
+        }
+        return {...result, stats: {...result.stats, scan: searchScanFromStats(result.stats),
+          presentation: searchPresentation(...(result.stats.previewClipped ? ["previewBytes"] : []))}, source: "zig"};
+      }
       if (status === STATUS_OUTPUT_TOO_SMALL) {
         cap = grow(cap, needed);
         continue;
@@ -616,8 +713,10 @@ export async function searchLiteral(root: string, query: string, caps: SearchCap
 }
 
 export async function scanRepositoryManifest(root: string, caps: RepositoryScanCaps = {}): Promise<RepositoryScanManifest> {
+  validateSearchLimits({maxFiles: caps.maxFiles, maxDepth: caps.maxDepth, maxFileBytes: caps.maxFileBytes});
+  await assertSearchDirectory(root);
   const symbols = nativeSymbols();
-  if (symbols) {
+  if (symbols && !caps.signal && caps.maxDepth !== 0) {
     const rootBytes = encoder.encode(root);
     const capWords = new Uint32Array([
       caps.maxFiles ?? DEFAULT_MAX_FILES,
@@ -642,7 +741,10 @@ export async function scanRepositoryManifest(root: string, caps: RepositoryScanC
         needed,
         stats,
       );
-      if (status === STATUS_OK) return { ...JSON.parse(readJsonFromOut(out, written)), source: "zig" };
+      if (status === STATUS_OK) {
+        const result = JSON.parse(readJsonFromOut(out, written));
+        return {...result, stats: {...result.stats, scan: searchScanFromStats(result.stats), presentation: searchPresentation()}, source: "zig"};
+      }
       if (status === STATUS_OUTPUT_TOO_SMALL) {
         cap = grow(cap, needed);
         continue;
@@ -846,8 +948,14 @@ function toSlash(path: string): string {
   return path.split(sep).join("/");
 }
 
+async function assertSearchDirectory(root: string): Promise<void> {
+  const info = await stat(resolvePath(root || "."));
+  if (!info.isDirectory()) throw new Error("Search root must be a directory");
+}
+
 async function collectTraversalFiles(root: string, policy: TraversalPolicy): Promise<TraversalResult> {
   const absRoot = resolvePath(root || ".");
+  await assertSearchDirectory(absRoot);
   const files: TraversalFile[] = [];
   const skippedByReason = emptySearchSkippedByReason();
   const gitRoot = policy.respectGitignore ? findGitRoot(absRoot) : null;
@@ -867,6 +975,7 @@ async function collectTraversalFiles(root: string, policy: TraversalPolicy): Pro
   };
 
   async function walk(dir: string, depth: number, inheritedRules: GitignoreRule[]): Promise<void> {
+    if (policy.caps.signal?.aborted) return;
     if (depth > policy.maxDepth) {
       cap("maxDepth");
       skip("depth");
@@ -888,10 +997,13 @@ async function collectTraversalFiles(root: string, policy: TraversalPolicy): Pro
     }
 
     const relDir = toSlash(relative(absRoot, dir));
-    const localRules = gitRoot ? await loadGitignoreRules(dir, relDir) : [];
+    let localRules: GitignoreRule[];
+    try { localRules = gitRoot ? await loadGitignoreRules(dir, relDir) : []; }
+    catch { skip("ioError"); return; }
     const rules = localRules.length ? inheritedRules.concat(localRules) : inheritedRules;
 
     for (const entry of entries) {
+      if (policy.caps.signal?.aborted) return;
       if (files.length >= policy.maxFiles) {
         cap("maxFiles");
         return;
@@ -954,6 +1066,7 @@ async function collectTraversalFiles(root: string, policy: TraversalPolicy): Pro
   await walk(absRoot, 0, ancestorRules);
   return {
     files,
+    scan: mergeSearchScans(searchScanFromStats({capped: truncated, capReason, skippedByReason}), searchCancellation(policy.caps.signal)),
     skippedFiles,
     sensitiveExcludedFiles,
     skippedByReason,
@@ -989,7 +1102,8 @@ async function loadGitignoreRules(dir: string, baseRel: string): Promise<Gitigno
   let text: string;
   try {
     text = await readFile(join(dir, ".gitignore"), "utf8");
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     return [];
   }
   const normalizedBase = toSlash(baseRel).replace(/^\/+|\/+$/g, "");
@@ -1096,7 +1210,7 @@ async function atomicWriteTs(path: string, content: string, makePath: boolean): 
 export async function writeText(path: string, content: string, opts: WriteTextOptions = {}): Promise<WriteTextResult> {
   const root = opts.root ?? "";
   const symbols = nativeSymbols();
-  if (symbols) {
+  if (symbols && nativeMutationReceiptSafe) {
     const rootBytes = encoder.encode(root);
     const pathBytes = encoder.encode(path);
     const contentBytes = encoder.encode(content);
@@ -1106,7 +1220,7 @@ export async function writeText(path: string, content: string, opts: WriteTextOp
       const out = new Uint8Array(cap);
       const written = new Uint32Array(1);
       const needed = new Uint32Array(1);
-      const status = symbols.sift_fs_write_text(
+      const status = invokeNativeMutation(() => symbols.sift_fs_write_text(
         rootBytes,
         rootBytes.byteLength,
         pathBytes,
@@ -1118,17 +1232,17 @@ export async function writeText(path: string, content: string, opts: WriteTextOp
         out.byteLength,
         written,
         needed,
-      );
+      ));
       if (status === STATUS_OK) {
-        clearWorkspaceFileCache();
-        return { ...JSON.parse(readJsonFromOut(out, written)), source: "zig" };
+        return deliverMutationReceipt(() => ({ ...JSON.parse(readJsonFromOut(out, written)), source: "zig" }));
       }
       if (status === STATUS_OUTPUT_TOO_SMALL) {
-        cap = grow(cap, needed);
+        cap = growMutationReceipt(cap, needed);
         continue;
       }
-      throw new Error(nativeStatusMessage(status, "write_file"));
+      throw new MutationReceiptError(WRITE_PRE_WRITE_STATUSES.has(status) ? "not_applied" : "unknown", new Error(nativeStatusMessage(status, "write_file")));
     }
+    throw new MutationReceiptError("not_applied", new Error("write_file: native mutation receipt remained too small; no write was performed"));
   }
   return writeTextFallback(path, content, opts);
 }
@@ -1143,7 +1257,7 @@ export async function editText(
   const requireUnique = opts.requireUnique ?? true;
   const checkFreshness = opts.expectedHash != null;
   const symbols = nativeSymbols();
-  if (symbols) {
+  if (symbols && nativeMutationReceiptSafe) {
     const rootBytes = encoder.encode(root);
     const pathBytes = encoder.encode(path);
     const oldBytes = encoder.encode(oldString);
@@ -1155,7 +1269,7 @@ export async function editText(
       const out = new Uint8Array(cap);
       const written = new Uint32Array(1);
       const needed = new Uint32Array(1);
-      const status = symbols.sift_fs_edit_text(
+      const status = invokeNativeMutation(() => symbols.sift_fs_edit_text(
         rootBytes,
         rootBytes.byteLength,
         pathBytes,
@@ -1167,29 +1281,35 @@ export async function editText(
         out.byteLength,
         written,
         needed,
-      );
+      ));
       if (status === STATUS_OK) {
-        clearWorkspaceFileCache();
-        return { ...JSON.parse(readJsonFromOut(out, written)), source: "zig" };
+        return deliverMutationReceipt(() => ({ ...JSON.parse(readJsonFromOut(out, written)), source: "zig" }));
       }
       if (status === STATUS_OUTPUT_TOO_SMALL) {
-        cap = grow(cap, needed);
+        // Only the admitted ABI can return this status; it guarantees no effects.
+        cap = growMutationReceipt(cap, needed);
         continue;
       }
-      throw new Error(nativeStatusMessage(status, "edit_file"));
+      if (status === 12) throw new AmbiguousEditError();
+      throw new MutationReceiptError(EDIT_PRE_WRITE_STATUSES.has(status) ? "not_applied" : "unknown", new Error(nativeStatusMessage(status, "edit_file")));
     }
+    throw new MutationReceiptError("not_applied", new Error("edit_file: native mutation receipt remained too small; no edit was performed"));
   }
   return editTextFallback(path, oldString, newString, opts);
 }
 
 async function writeTextFallback(path: string, content: string, opts: WriteTextOptions): Promise<WriteTextResult> {
   const root = opts.root ?? "";
-  if (!withinRoot(root, path)) throw new Error("write_file: path is outside the writable root");
+  // Everything before the atomic write is a typed not-applied rejection.
+  if (!withinRoot(root, path)) throw new MutationReceiptError("not_applied", new Error("write_file: path is outside the writable root"));
   const created = !existsSync(path);
-  if (opts.createOnly && !created) throw new Error("write_file: file already exists");
-  await atomicWriteTs(path, content, Boolean(opts.makePath));
-  clearWorkspaceFileCache();
-  return { path, bytesWritten: Buffer.byteLength(content), created, source: "ts" };
+  if (opts.createOnly && !created) throw new MutationReceiptError("not_applied", new Error("write_file: file already exists"));
+  try {
+    await atomicWriteTs(path, content, Boolean(opts.makePath));
+  } catch (error) {
+    throw new MutationReceiptError("unknown", error);
+  }
+  return deliverMutationReceipt(() => ({ path, bytesWritten: Buffer.byteLength(content), created, source: "ts" }));
 }
 
 async function editTextFallback(
@@ -1199,21 +1319,30 @@ async function editTextFallback(
   opts: EditTextOptions,
 ): Promise<EditTextResult> {
   const root = opts.root ?? "";
-  if (!oldString) throw new Error("edit_file: the text to replace must not be empty");
-  if (!withinRoot(root, path)) throw new Error("edit_file: path is outside the writable root");
-  const data = (await readFile(path)).toString("utf8");
+  // Everything before the atomic write is a typed not-applied rejection (CLI-047).
+  if (!oldString) throw new MutationReceiptError("not_applied", new Error("edit_file: the text to replace must not be empty"));
+  if (!withinRoot(root, path)) throw new MutationReceiptError("not_applied", new Error("edit_file: path is outside the writable root"));
+  let data: string;
+  try {
+    data = (await readFile(path)).toString("utf8");
+  } catch (error) {
+    throw new MutationReceiptError("not_applied", error);
+  }
   if (opts.expectedHash != null && contentHash(data) !== (opts.expectedHash >>> 0)) {
-    throw new Error("edit_file: stale: the file changed since it was read");
+    throw new MutationReceiptError("not_applied", new Error("edit_file: stale: the file changed since it was read"));
   }
   const occ = countOccurrencesTs(data, oldString);
-  if (occ === 0) throw new Error("edit_file: no match for the text to replace");
+  if (occ === 0) throw new MutationReceiptError("not_applied", new Error("edit_file: no match for the text to replace"));
   if ((opts.requireUnique ?? true) && occ > 1) {
-    throw new Error("edit_file: ambiguous edit: the text to replace appears more than once");
+    throw new AmbiguousEditError();
   }
   const next = data.split(oldString).join(newString);
-  await atomicWriteTs(path, next, false);
-  clearWorkspaceFileCache();
-  return { path, bytesWritten: Buffer.byteLength(next), replacements: occ, newHash: contentHash(next), source: "ts" };
+  try {
+    await atomicWriteTs(path, next, false);
+  } catch (error) {
+    throw new MutationReceiptError("unknown", error);
+  }
+  return deliverMutationReceipt(() => ({ path, bytesWritten: Buffer.byteLength(next), replacements: occ, newHash: contentHash(next), source: "ts" }));
 }
 
 async function readTextFallback(path: string, maxBytes: number): Promise<ReadTextResult> {
@@ -1248,6 +1377,8 @@ async function searchLiteralFallback(root: string, query: string, caps: SearchCa
     respectGitignore: caps.respectGitignore !== false,
   });
   const stats: SearchResult["stats"] = {
+    scan: completeSearchScan(),
+    presentation: searchPresentation(),
     searchedFiles: 0,
     skippedFiles: traversal.skippedFiles,
     matchedFiles: 0,
@@ -1269,6 +1400,7 @@ async function searchLiteralFallback(root: string, query: string, caps: SearchCa
   };
 
   for (const file of traversal.files) {
+    if (caps.signal?.aborted) break;
     if (stats.searchedFiles >= maxFiles || matches.length >= maxMatches) {
       cap(stats.searchedFiles >= maxFiles ? "maxFiles" : "maxMatches");
       break;
@@ -1309,6 +1441,7 @@ async function searchLiteralFallback(root: string, query: string, caps: SearchCa
             const startPreview = Math.max(0, index - Math.floor(previewBytes / 2));
             const endPreview = Math.min(text.length, end + Math.floor(previewBytes / 2));
             preview = text.slice(startPreview, endPreview);
+            if (startPreview > 0 || endPreview < text.length) stats.presentation = searchPresentation("previewBytes");
           }
         }
         matches.push({
@@ -1333,6 +1466,7 @@ async function searchLiteralFallback(root: string, query: string, caps: SearchCa
       skip("ioError");
     }
   }
+  stats.scan = mergeSearchScans(traversal.scan, searchScanFromStats(stats), searchCancellation(caps.signal));
   return { matches, stats, source: "ts" };
 }
 
@@ -1352,6 +1486,7 @@ async function scanRepositoryManifestFallback(root: string, caps: RepositoryScan
   const files: RepositoryScanManifest["files"] = [];
 
   for (const file of traversal.files) {
+    if (caps.signal?.aborted) break;
     try {
       const data = await readFile(file.absPath);
       if (isLikelyBinaryBuffer(data)) {
@@ -1381,6 +1516,8 @@ async function scanRepositoryManifestFallback(root: string, caps: RepositoryScan
   return {
     files,
     stats: {
+      scan: mergeSearchScans(traversal.scan, searchScanFromStats({skippedByReason}), searchCancellation(caps.signal)),
+      presentation: searchPresentation(),
       scannedFiles: files.length,
       skippedFiles,
       truncated: traversal.truncated ? 1 : 0,
@@ -1476,6 +1613,8 @@ async function searchWorkspaceFiles(
   let searchReadWallMs = 0;
   let searchScanWallMs = 0;
   const stats: SearchResult["stats"] = {
+    scan: completeSearchScan(),
+    presentation: searchPresentation(),
     searchedFiles: 0,
     skippedFiles: 0,
     matchedFiles: 0,
@@ -1493,6 +1632,7 @@ async function searchWorkspaceFiles(
   };
 
   for (const file of files.slice(0, maxFiles)) {
+    if (caps.signal?.aborted) break;
     if (matches.length >= maxMatches) {
       cap("maxMatches");
       break;
@@ -1527,6 +1667,7 @@ async function searchWorkspaceFiles(
             const startPreview = Math.max(0, index - Math.floor(previewBytes / 2));
             const endPreview = Math.min(text.length, end + Math.floor(previewBytes / 2));
             preview = text.slice(startPreview, endPreview);
+            if (startPreview > 0 || endPreview < text.length) stats.presentation = searchPresentation("previewBytes");
           }
         }
         matches.push({
@@ -1558,6 +1699,7 @@ async function searchWorkspaceFiles(
     searchReadWallMs,
     searchScanWallMs,
   };
+  stats.scan = mergeSearchScans(searchScanFromStats(stats), searchCancellation(caps.signal));
   return { matches, stats, source: "ts" };
 }
 
@@ -1618,6 +1760,7 @@ async function readWorkspaceFileForSearch(
 
 export async function codeSearch(input: {
   root?: string;
+  signal?: AbortSignal;
   authorizedRoot?: string;
   intent: string;
   queries?: string[];
@@ -1631,6 +1774,7 @@ export async function codeSearch(input: {
   maxContentCacheBytes?: number;
   respectGitignore?: boolean;
 }): Promise<CodeSearchResult> {
+  validateSearchLimits({maxFiles: input.maxFiles, maxSpans: input.maxSpans, contextLines: input.contextLines});
   const totalStart = performance.now();
   const root = resolvePath(input.root || getWorkspaceRoot() || getSessionCwd());
   if (input.authorizedRoot) {
@@ -1638,9 +1782,12 @@ export async function codeSearch(input: {
   }
   const maxSpans = input.maxSpans ?? 12;
   const contextLines = input.contextLines ?? 2;
-  const queries = compileQueries(input.intent, input.queries).slice(0, 8);
+  const compiledQueries = compileQueries(input.intent, input.queries);
+  if (!compiledQueries.length) throw new Error("Code search requires at least one literal query or searchable identifier");
+  const queries = compiledQueries.slice(0, 8);
   const collectedFiles = await collectWorkspaceFiles(root, {
     maxFiles: input.maxFiles ?? 2000,
+    signal: input.signal,
     maxDepth: 10,
     forceRefresh: input.forceRefresh,
     maxCacheAgeMs: input.maxCacheAgeMs,
@@ -1677,6 +1824,9 @@ export async function codeSearch(input: {
     evictions: 0,
     skippedTooLarge: 0,
   };
+  const scans: SearchScan[] = [files.scan];
+  if (compiledQueries.length > queries.length) scans.push({status: "partial", reasons: ["maxQueries"]});
+  const skippedByReason = {...files.skippedByReason};
   let searchedFiles = 0;
   let searchedBytes = 0;
 
@@ -1703,11 +1853,14 @@ export async function codeSearch(input: {
     const result = await searchWorkspaceFiles(root, files.files, query, {
       maxMatches: Math.max(maxSpans * 3, 24),
       maxFiles: input.maxFiles ?? 2000,
+    signal: input.signal,
       detail: "locations",
       useContentCache: input.useContentCache,
       maxContentCacheBytes: input.maxContentCacheBytes,
       contentCacheStats,
     });
+    scans.push(result.stats.scan);
+    for (const reason of Object.keys(skippedByReason) as Array<keyof SearchSkippedByReason>) skippedByReason[reason] += result.stats.skippedByReason[reason];
     phaseTimings.searchWallMs += performance.now() - searchStart;
     phaseTimings.searchReadWallMs += result.stats.phaseTimings?.searchReadWallMs ?? 0;
     phaseTimings.searchScanWallMs += result.stats.phaseTimings?.searchScanWallMs ?? 0;
@@ -1732,7 +1885,8 @@ export async function codeSearch(input: {
   }
 
   shapeStart = performance.now();
-  const candidateSpans = dedupeSpans(spans)
+  const allSpans = dedupeSpans(spans);
+  const candidateSpans = allSpans
     .sort((a, b) => b.score - a.score)
     .slice(0, maxSpans);
   phaseTimings.shapeWallMs += performance.now() - shapeStart;
@@ -1752,17 +1906,24 @@ export async function codeSearch(input: {
     ...span,
     preview: previewBySpan.get(`${span.path}:${span.startLine}:${span.endLine}`) ?? span.preview,
   }));
-  const rankedFiles = [...fileScores.entries()]
-    .filter(([, info]) => info.score > 0)
+  const allRankedFiles = [...fileScores.entries()].filter(([, info]) => info.score > 0);
+  const rankedFiles = allRankedFiles
     .sort((a, b) => b[1].score - a[1].score)
     .slice(0, 12)
     .map(([path, info]) => ({ path, score: info.score, reasons: [...info.reasons], symbols: [...info.symbols] }));
   phaseTimings.shapeWallMs += performance.now() - shapeStart;
   phaseTimings.totalWallMs = performance.now() - totalStart;
 
+  if (previewReads.files.some(file => file.error)) scans.push({status: "partial", reasons: ["previewReadError"]});
+  const scan = mergeSearchScans(...scans, searchCancellation(input.signal));
+  const presentation = searchPresentation(
+    ...(allSpans.length > maxSpans ? ["maxSpans"] : []),
+    ...(allRankedFiles.length > 12 ? ["rankedFiles"] : []),
+    ...(previewReads.files.some(file => file.truncated) ? ["previewBytes"] : []),
+  );
   return {
-    answerHint: files.truncated
-      ? "Search was partial because the eligible file set was capped. Narrow the query/path or explicitly broaden scope before treating absence as definitive."
+    answerHint: scan.status !== "complete"
+      ? `Search is ${scan.status} (${scan.reasons.join(", ")}); absence is not definitive. Narrow the query/path or explicitly broaden scope.`
       : dedupedSpans.length
       ? "Use the ranked spans first; call batch_read_files only for the files needed to answer."
       : "No literal spans matched. Use inspect_local_workspace for a repo map or try more exact identifiers.",
@@ -1774,10 +1935,13 @@ export async function codeSearch(input: {
       reason: `Inspect ranked span matching ${span.matchedQueries.join(", ")}`,
     })),
     stats: {
+      scan,
+      presentation,
+      skippedByReason,
       searchedFiles,
-      matchedFiles: new Set(dedupedSpans.map((span) => span.path)).size,
+      matchedFiles: new Set(spans.map((span) => span.path)).size,
       searchedBytes,
-      truncated: files.truncated || dedupedSpans.length >= maxSpans,
+      truncated: scan.status !== "complete" || presentation.clipped,
       cacheHit: files.cacheHit,
       fileSetId: files.fileSetId,
       eligibleFiles: files.files.length,
@@ -1797,21 +1961,24 @@ export async function codeSearch(input: {
  */
 export async function findLocalFiles(input: {
   root?: string;
+  signal?: AbortSignal;
   query: string;
   limit?: number;
   maxFiles?: number;
   respectGitignore?: boolean;
 }): Promise<FileSearchResult> {
+  validateSearchLimits({maxFiles: input.maxFiles, limit: input.limit});
   const root = resolvePath(input.root || getSessionCwd());
   const query = String(input.query || "").trim();
-  if (!query) return { matches: [], stats: { scannedFiles: 0, skippedFiles: 0, truncated: false }, source: "ts" };
+  if (!query) throw new Error("File search query must not be empty");
 
   const files = await collectWorkspaceFiles(root, {
     maxFiles: input.maxFiles ?? 5000,
+    signal: input.signal,
     maxDepth: 10,
     respectGitignore: input.respectGitignore,
   });
-  const matches = files.files
+  const allMatches = files.files
     .map((file) => {
       const ranked = fuzzyPathScore(file.path, query);
       if (!ranked) return null;
@@ -1824,15 +1991,20 @@ export async function findLocalFiles(input: {
       };
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item))
-    .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
-    .slice(0, input.limit ?? 64);
+    .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+  const matches = allMatches.slice(0, Math.max(0, input.limit ?? 64));
+  const scan = mergeSearchScans(files.scan, searchCancellation(input.signal));
+  const presentation = searchPresentation(...(matches.length < allMatches.length ? ["limit"] : []));
 
   return {
     matches,
     stats: {
+      scan,
+      presentation,
+      skippedByReason: {...files.skippedByReason},
       scannedFiles: files.files.length,
       skippedFiles: files.skippedFiles,
-      truncated: files.truncated,
+      truncated: scan.status !== "complete" || presentation.clipped,
       cacheHit: files.cacheHit,
       fileSetId: files.fileSetId,
     },
@@ -1897,6 +2069,8 @@ function cloneWorkspaceFileCollection(
 ): WorkspaceFileCollection {
   return {
     files: result.files.map((file) => ({ ...file })),
+    scan: mergeSearchScans(result.scan),
+    skippedByReason: {...result.skippedByReason},
     skippedFiles: result.skippedFiles,
     sensitiveExcludedFiles: result.sensitiveExcludedFiles,
     truncated: result.truncated,
@@ -1908,19 +2082,20 @@ function cloneWorkspaceFileCollection(
 
 async function collectWorkspaceFiles(
   root: string,
-  opts: { maxFiles: number; maxDepth: number; forceRefresh?: boolean; maxCacheAgeMs?: number; respectGitignore?: boolean },
+  opts: { maxFiles: number; maxDepth: number; forceRefresh?: boolean; maxCacheAgeMs?: number; respectGitignore?: boolean; signal?: AbortSignal },
 ): Promise<WorkspaceFileCollection> {
   const collectStart = performance.now();
   const files: WorkspaceFile[] = [];
   let fileSetStatWallMs = 0;
   let fileSetReadWallMs = 0;
   const absRoot = resolvePath(root || ".");
+  await assertSearchDirectory(absRoot);
   const cacheKey = workspaceFileCacheKey(absRoot, opts);
   const cacheLookupStart = performance.now();
   const cached = workspaceFileCache.get(cacheKey);
   const cacheLookupWallMs = performance.now() - cacheLookupStart;
   const maxCacheAgeMs = Math.max(0, opts.maxCacheAgeMs ?? WORKSPACE_FILE_CACHE_TTL_MS);
-  if (!opts.forceRefresh && cached && Date.now() - cached.createdAt <= maxCacheAgeMs) {
+  if (!opts.signal?.aborted && !opts.forceRefresh && cached && Date.now() - cached.createdAt <= maxCacheAgeMs) {
     return cloneWorkspaceFileCollection(cached.result, true, {
       cacheLookupWallMs,
       fileSetBuildWallMs: 0,
@@ -1934,6 +2109,7 @@ async function collectWorkspaceFiles(
     maxDepth: opts.maxDepth,
     maxFileBytes: DEFAULT_MAX_FILE_BYTES,
     caps: {
+      signal: opts.signal,
       includeHidden: false,
       includeVendor: false,
       includeBuildOutputs: false,
@@ -1944,13 +2120,16 @@ async function collectWorkspaceFiles(
   });
   fileSetStatWallMs += traversal.fileSetStatWallMs;
   let skippedFiles = traversal.skippedFiles;
+  const skippedByReason = {...traversal.skippedByReason};
   for (const file of traversal.files) {
+    if (opts.signal?.aborted) break;
     try {
       const readStart = performance.now();
       const data = await readFile(file.absPath);
       fileSetReadWallMs += performance.now() - readStart;
       if (isLikelyBinaryBuffer(data) || !isValidUtf8(data)) {
         skippedFiles += 1;
+        skippedByReason[isLikelyBinaryBuffer(data) ? "binary" : "invalidUtf8"] += 1;
         continue;
       }
       files.push({
@@ -1964,10 +2143,13 @@ async function collectWorkspaceFiles(
       });
     } catch {
       skippedFiles += 1;
+      skippedByReason.ioError += 1;
     }
   }
   const result: WorkspaceFileCollection = {
     files,
+    scan: mergeSearchScans(traversal.scan, searchScanFromStats({skippedByReason, capped: files.length >= opts.maxFiles, capReason: files.length >= opts.maxFiles ? "maxFiles" : null}), searchCancellation(opts.signal)),
+    skippedByReason,
     skippedFiles,
     sensitiveExcludedFiles: traversal.sensitiveExcludedFiles,
     truncated: traversal.truncated || files.length >= opts.maxFiles,
@@ -1980,7 +2162,7 @@ async function collectWorkspaceFiles(
       fileSetReadWallMs,
     },
   };
-  workspaceFileCache.set(cacheKey, {
+  if (result.scan.status !== "cancelled") workspaceFileCache.set(cacheKey, {
     createdAt: Date.now(),
     result: cloneWorkspaceFileCollection(result, false),
   });
@@ -2049,7 +2231,7 @@ function compileQueries(intent: string, explicit: string[] = []): string[] {
     if (STOP_WORDS.has(token.toLowerCase())) continue;
     queries.add(token);
   }
-  return [...queries].slice(0, 10);
+  return [...queries];
 }
 
 const STOP_WORDS = new Set(["this", "that", "with", "from", "codebase", "scour", "search", "find", "where", "what", "how", "why", "the", "and", "for", "about", "local", "files"]);

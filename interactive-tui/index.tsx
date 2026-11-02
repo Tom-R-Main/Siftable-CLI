@@ -2,7 +2,8 @@
  * sift interactive — terminal copilot TUI on @opentui/solid.
  *
  * Fine-grained Solid reactivity (only changed nodes redraw → no flicker) +
- * native <markdown streaming>. A0 runs the OpenFunction brain IN-PROCESS via
+ * native <markdown streaming>. A0 runs the bundled Siftable agent harness
+ * IN-PROCESS via
  * LocalControlClient (selected by SIFT_LOCAL_BRAIN); the daemon HTTP/SSE
  * ControlClient path is retained for the future hostless mode. Both transports
  * implement ControlTransport, so the UI below is transport-agnostic.
@@ -17,12 +18,17 @@
  *   ↑/↓            prompt history         Shift+Enter  newline
  *   /              command palette (Tab-complete)   @  (todo) entity ref
  *   !cmd           run a shell command, drop output into the transcript
- *   Enter while busy → queue the message; it runs when the turn finishes
+ *   Enter while busy → steer: the message joins the running turn after its
+ *                      in-flight tools settle (queues if the engine can't)
+ *   Tab while busy   → queue the message; it runs when the turn finishes
  *
  * Launched by the oclif `sift interactive` command, which resolves the token
- * and sets SIFT_LOCAL_BRAIN=1 + SIFT_PAT/SIFT_API_URL. The OpenFunction runtime
- * used by the local brain is vendored under interactive-tui/openfunction.
+ * and sets SIFT_LOCAL_BRAIN=1 + SIFT_PAT/SIFT_API_URL. The local brain uses the
+ * Siftable-owned harness bundled with the TUI.
  */
+import {randomUUID} from "node:crypto";
+import { runSupervisedShell } from "./shellExecution";
+
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { type KeyEvent, type PasteEvent, type TextareaRenderable } from "@opentui/core";
 import { createSignal, createMemo, createEffect, For, Show, Switch, Match, onMount, onCleanup } from "solid-js";
@@ -35,6 +41,7 @@ import {
   type ChatInputPart,
   type CompactionReport,
   type ControlTransport,
+  type SteerOutcome,
   type RunningAgent,
   type SseEvent,
 } from "./controlClient";
@@ -50,6 +57,7 @@ import {
   explorerModelChoices,
   modeUsesScoutModel,
   ensureExplorerProviderKey,
+  autoloadProviderKeysFromKeychain,
   restoreSavedModel,
   explorerSettingsSummary,
   runInteractiveCommand,
@@ -57,15 +65,26 @@ import {
   workItemEvidence,
   createHandoffWorkItem,
   INTERACTIVE_MODEL_CHOICES,
+  favoriteModelIds,
+  toggleFavoriteModel,
   type CommandMessage,
   type ExplorerSettings,
 } from "./commands";
+import { orderModelChoices, modelPickerRow, modelPickerWindow } from "./modelPicker";
 import { copyTextToClipboard, readClipboardContent } from "./clipboard";
 import { isExplicitCopyChord } from "./keybindings";
 import { play as playSound, initSounds, setSoundsEnabled, soundsEnabled, disposeSounds } from "./audio";
-import { analyzePaste, type PasteAnalysis } from "./composerPolicy";
+import { analyzePaste } from "./composerPolicy";
+import { appendTextPart, formatBytes, formatContextTokens, imageMimeFromPath, imagePathFromPastedText, wrapIndex } from "./composerInput";
+import type { ComposerAttachment, ImageAttachment, PasteTextAttachment, QueuedPrompt } from "./composerInput";
 import { estimateTokens } from "./threadEngine";
-import { setConfirmListener, resolveApproval, type ConfirmRequest, type ApprovalDecision } from "./confirmGate";
+import {
+  setConfirmCancellationListener,
+  setConfirmListener,
+  resolveApproval,
+  type ConfirmRequest,
+  type ApprovalDecision,
+} from "./confirmGate";
 import { normalizeImageForModel } from "./imageEngine";
 import { extractMermaidBlocks, renderMermaidSource, resolveCellRenderBin } from "./cellRender";
 import { discoverSkills } from "./skillsEngine";
@@ -77,27 +96,42 @@ import {
   formatExplorerActivityLine,
   isExplorerToolName,
   toolCallLabel,
-  clipOutput,
+  summarizeToolOutput,
   gutterIndent,
 } from "./toolView";
+import { ToolRowTracker } from "./toolRowTracker";
+import { createConfirmedQuit } from "./confirmedQuit";
 import { serializeConversation } from "./transcript";
 import { getSessionCwd, getWorkspaceRoot, setSessionCwd } from "./navigation";
 import { createChildSessionController } from "./childSessionController";
-import { setSessionController } from "./brain";
+import {
+  closeBrain,
+  inspectActiveThread,
+  verifyActiveCandidate,
+  readActiveToolOutput,
+  resetActiveThread,
+  setAgentConversationKey,
+  setSessionController,
+} from "./brain";
 import { reduceBranchesKey, initialBranchesState, draftToSpawnInput, type BranchesState } from "./branchesOverlay";
 import {
   reduceWorkKey,
   initialWorkState,
   draftToHandoffInput,
+  formatWorkRow,
+  handoffPreviewLines,
+  workDetailLines,
   type WorkState,
   type WorkBoardData,
 } from "./workHubOverlay";
+import {createWorkRunController} from "./workRunController";
+import {createChildSessionStore} from "./childSessionStore";
 import type { ParentMergeView } from "./mergeView";
 import { createSessionContext } from "./sessionContext";
 import { loadPrefs } from "./prefs";
 import { formatChildBar, formatChildBarLine, type ChildBarEntry } from "./childBar";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, extname } from "node:path";
+import { readFileSync } from "node:fs";
+import { basename } from "node:path";
 import {
   theme,
   buildSyntaxStyle,
@@ -109,7 +143,7 @@ import {
   SCHEMES,
   type SchemeName,
 } from "./theme";
-import { ApprovalOverlay } from "./views";
+import { ApprovalOverlay, AssistantReply } from "./views";
 import {createCrewFromTemplate, listCrewDefinitions, type SiftCrewDefinition} from "./crewRegistry";
 
 // The markdown/code highlight theme is derived from the active palette inside
@@ -117,7 +151,7 @@ import {createCrewFromTemplate, listCrewDefinitions, type SiftCrewDefinition} fr
 
 // ── Transport seam ─────────────────────────────────────────────────────────
 // The ONLY place that differs between in-process (A0) and daemon (future)
-// modes. SIFT_LOCAL_BRAIN ⇒ run the OpenFunction brain in this process.
+// modes. SIFT_LOCAL_BRAIN ⇒ run the bundled Siftable harness in this process.
 const LOCAL = Boolean(process.env.SIFT_LOCAL_BRAIN);
 let baseUrl: string;
 let client: ControlTransport;
@@ -143,9 +177,8 @@ if (LOCAL) {
   client = new ControlClient(baseUrl, process.env.EXECUTERM_DASHBOARD_TOKEN);
 }
 
-// Phase 1 of the thread-engine rollout: a live context-size meter in the status
-// bar, driven by the Zig token estimator. Gated until the compaction planner and
-// rollout persistence land; off by default.
+// Compaction controls the live meter/planner only. Durable event-journal
+// persistence is always active and must not be coupled to this display flag.
 const COMPACTION_ENABLED = process.env.SIFT_CONTEXT_COMPACTION !== "0";
 
 type Msg = {
@@ -153,23 +186,9 @@ type Msg = {
   text: string;
   streaming?: boolean;
   out?: string;
+  toolArgs?: Record<string, unknown>;
   explorer?: boolean;
 };
-type PasteTextAttachment = { type: "text"; id: number; label: string; text: string; analysis: PasteAnalysis };
-type ImageAttachment = {
-  type: "image";
-  id: number;
-  label: string;
-  mime: string;
-  dataUrl: string;
-  bytes: number;
-  width: number;
-  height: number;
-  source: string;
-  validatedBy: "zig" | "ts";
-};
-type ComposerAttachment = PasteTextAttachment | ImageAttachment;
-type QueuedPrompt = { sendInput: ChatInput; displayText: string };
 type CrewCreateDraft = {
   scope: "project" | "user";
   templateId: string;
@@ -185,60 +204,7 @@ const SLASH_COMMAND_COLUMN_WIDTH = Math.max(14, ...COMMANDS.map((command) => com
 const WORD = /\w/;
 const MAX_COMPOSER_LINES = 12;
 const THEME_WINDOW = 7; // visible rows in the appearance picker (keeps it short)
-const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
 const STREAMING_TEXT_FLUSH_MS = 33;
-
-function appendTextPart(parts: ChatInputPart[], text: string) {
-  if (!text) return;
-  const last = parts[parts.length - 1];
-  if (last?.type === "text") last.text += text;
-  else parts.push({ type: "text", text });
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-}
-
-function formatContextTokens(tokens: number): string {
-  if (tokens < 1000) return `~${tokens} ctx`;
-  return `~${(tokens / 1000).toFixed(1)}k ctx`;
-}
-
-function wrapIndex(index: number, length: number): number {
-  if (length <= 0) return 0;
-  return ((index % length) + length) % length;
-}
-
-function imageMimeFromPath(path: string): string {
-  switch (extname(path).toLowerCase()) {
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".gif":
-      return "image/gif";
-    case ".webp":
-      return "image/webp";
-    case ".bmp":
-      return "image/bmp";
-    default:
-      return "image/png";
-  }
-}
-
-function imagePathFromPastedText(text: string): string | null {
-  const trimmed = text.trim().replace(/^file:\/\//, "");
-  if (!trimmed || trimmed.includes("\n") || trimmed.includes("\r")) return null;
-  if (!IMAGE_EXTENSIONS.has(extname(trimmed).toLowerCase())) return null;
-  try {
-    if (!existsSync(trimmed)) return null;
-    const stat = statSync(trimmed);
-    return stat.isFile() ? trimmed : null;
-  } catch {
-    return null;
-  }
-}
 
 function App() {
   const renderer = useRenderer();
@@ -254,6 +220,7 @@ function App() {
   // separate from the backend RunningAgent rows above.
   const [childBar, setChildBar] = createSignal<ChildBarEntry[]>([]);
   const [model, setModel] = createSignal("");
+  const [providerUsage, setProviderUsage] = createSignal("");
   const [effort, setEffort] = createSignal("");
   const [busy, setBusy] = createSignal(false);
   const [queued, setQueued] = createSignal<QueuedPrompt[]>([]);
@@ -264,6 +231,9 @@ function App() {
   // Most recent rendered diagram (full natural size) + the pannable viewer overlay.
   const [lastDiagram, setLastDiagram] = createSignal<string | null>(null);
   const [viewer, setViewer] = createSignal<{ lines: string[]; w: number; h: number; x: number; y: number } | null>(null);
+  const [modelFavorites, setModelFavorites] = createSignal(favoriteModelIds());
+  const [modelFavoriteError, setModelFavoriteError] = createSignal("");
+  const modelChoices = createMemo(() => orderModelChoices(INTERACTIVE_MODEL_CHOICES, modelFavorites()));
   // Interactive model picker: stage "model" (↑/↓) → stage "effort" (←/→).
   const [picker, setPicker] = createSignal<
     { stage: "model" | "effort"; modelIdx: number; effortIdx: number } | null
@@ -302,7 +272,7 @@ function App() {
   // and swap cwd + the visible transcript on enter/leave (sessionContext owns the
   // active-session pointer + per-session transcript buffers). The parent (root)
   // session is anchored at the workspace the TUI launched in.
-  const childController = createChildSessionController();
+  const childController = createChildSessionController({readyProof: {client: apiClient, env: process.env}});
   // Register the live controller with the in-process brain so its agent tools
   // (list_branches, …) drive the SAME safe lanes A–E controller the human UI
   // uses — not raw shell git. A direct in-process handle (the control transport
@@ -310,9 +280,12 @@ function App() {
   setSessionController(childController);
   const sessionCtx = createSessionContext<Msg>({
     sessionId: 0,
-    conversationKey: `parent:${getWorkspaceRoot() || getSessionCwd()}`,
+    // Preserve the historical parent rollout identity; child sessions use the
+    // controller-provided conversationKey so send-back and resume agree.
+    conversationKey: getWorkspaceRoot() || getSessionCwd(),
     sessionCwd: getSessionCwd(),
   });
+  setAgentConversationKey(sessionCtx.activeConversationKey());
   let attachmentSeq = 0;
   let histIndex = 0;
 
@@ -344,9 +317,46 @@ function App() {
   });
 
   const push = (m: Msg) => setMessages(messages.length, m);
-  const quit = () => {
+  let quitRequested = false;
+  const closeForQuit = createConfirmedQuit(closeBrain, () => {
     if (!renderer.isDestroyed) renderer.destroy();
+  });
+  const finishQuit = async () => {
+    setBusy(true);
+    setStatus("stopping… waiting for session jobs to close");
+    try {
+      await closeForQuit();
+    } catch (error) {
+      // Keep ownership and a usable UI when bounded cleanup cannot confirm
+      // absence. A later quit request may retry the retained shutdown work.
+      quitRequested = false;
+      setBusy(false);
+      setStatus("shutdown incomplete — retry quit to reconcile remaining jobs");
+      push({role: "system", text: `Session shutdown failed: ${error instanceof Error ? error.message : String(error)}`});
+    }
   };
+  const quit = () => {
+    quitRequested = true;
+    if (busy() && abortController) {
+      abortController.abort();
+      setStatus("stopping… waiting for active work to settle");
+      return;
+    }
+    void finishQuit();
+  };
+
+  const workRunController = createWorkRunController({
+    client: {
+      getWorkItem: (workItemId) => apiClient.getWorkItem(workItemId),
+      getWorkVerificationPlan: (workItemId) => apiClient.getWorkVerificationPlan(workItemId),
+      claimWorkItem: (input) => apiClient.claimWorkItem(input, randomUUID()),
+      transitionWorkItem: (workItemId, action, input, request) => apiClient.transitionWorkItem(workItemId, action, input, request),
+    },
+    childController,
+    store: createChildSessionStore(),
+    cwd: getWorkspaceRoot() || getSessionCwd(),
+    onLeaseFailure: ({reason}) => push({role: "system", text: `work run contained: ${reason}`}),
+  });
 
   const pasteChipLabel = (attachment: Omit<PasteTextAttachment, "label">) =>
     `[pasted text #${attachment.id} · ${attachment.analysis.chars} chars · ${attachment.analysis.lines} lines]`;
@@ -577,7 +587,9 @@ function App() {
           setStatus(
             s.model?.provider === "codex"
               ? "not signed in to Codex — run `/codex login`"
-              : "not signed in — run `sift auth login`",
+              : LOCAL
+                ? `${s.model?.provider || "Selected provider"} API key missing — use /key to configure it or /model to choose a provider`
+                : "not signed in — run `sift auth login`",
           );
         } else setStatus("ready");
       }
@@ -589,7 +601,7 @@ function App() {
   // --- Enter dispatch: slash / shell / queue-while-busy / send --------------
   function onEnter() {
     const text = input().trim();
-    if (!text) return;
+    if (!text || quitRequested) return;
     setTranscriptSelected(false);
     setText("");
     history.push(text);
@@ -599,14 +611,12 @@ function App() {
       void handleSlash(text);
       return;
     }
-    if (text.startsWith("!")) {
-      void runShell(text.slice(1).trim());
+    if (busy()) {
+      void steerOrQueue(text);
       return;
     }
-    if (busy()) {
-      setQueued((q) => [...q, { sendInput: buildChatInput(text), displayText: text }]);
-      clearUsedPasteChips(text);
-      push({ role: "system", text: `↳ queued (${queued().length}) — runs when this turn finishes` });
+    if (text.startsWith("!")) {
+      void runShell(text.slice(1).trim());
       return;
     }
     const sendInput = buildChatInput(text);
@@ -614,80 +624,125 @@ function App() {
     void submitOne(sendInput, text);
   }
 
+  // Accepted steering by id, shown in the transcript once it is delivered.
+  const pendingSteers = new Map<string, string>();
+
+  function queueDraft(text: string, note?: string) {
+    setQueued((q) => [...q, { sendInput: buildChatInput(text), displayText: text,
+      ...(text.startsWith("!") ? {shellCommand: text.slice(1).trim()} : {}) }]);
+    clearUsedPasteChips(text);
+    push({ role: "system", text: `↳ queued (${queued().length}) — runs when this turn finishes${note ? ` (${note})` : ""}` });
+  }
+
+  // Enter while busy. Steering is acknowledged only after the brain has
+  // published it durably; anything it cannot carry becomes the next task.
+  async function steerOrQueue(text: string) {
+    const sendInput = buildChatInput(text);
+    if (text.startsWith("!")) return queueDraft(text);
+    if (typeof sendInput !== "string") return queueDraft(text, "images can't steer a running turn");
+    if (!client.steer) return queueDraft(text, "this connection can't steer a running turn");
+    let outcome: SteerOutcome;
+    try {
+      outcome = await client.steer(sendInput);
+    } catch (err) {
+      outcome = { accepted: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+    if (outcome.accepted === false) return queueDraft(text, outcome.reason);
+    clearUsedPasteChips(text);
+    if (!busy()) {
+      // The turn ended while this was being saved; the next turn receives it.
+      push({ role: "system", text: `↳ saved for the next turn: ${text}` });
+      return;
+    }
+    // The message row appears where the model receives it, not where it was typed.
+    pendingSteers.set(outcome.id, text);
+    push({
+      role: "system",
+      text: `↳ steering saved — joins this run after the tools in flight${outcome.durability === "unconfirmed" ? " (not confirmed crash-safe)" : ""}`,
+    });
+  }
+
+  function drainNextQueued() {
+    if (quitRequested || busy()) return;
+    const q = queued();
+    if (!q.length) return;
+    setQueued(q.slice(1));
+    if (q[0].shellCommand !== undefined) void runShell(q[0].shellCommand);
+    else void submitOne(q[0].sendInput, q[0].displayText);
+  }
+
   async function runShell(cmd: string) {
-    if (!cmd) return;
+    if (!cmd || quitRequested) return;
+    if (busy()) {
+      setQueued((q) => [...q, { sendInput: `!${cmd}`, displayText: `!${cmd}`, shellCommand: cmd }]);
+      return;
+    }
+    // The typed !command is itself the user's approval. It still shares the
+    // same admission, environment, cancellation, and settlement boundary.
+    setBusy(true);
+    const controller = new AbortController();
+    abortController = controller;
+    const cwd = getSessionCwd();
+    const workspaceRoot = getWorkspaceRoot();
+    setStatus("running command… (Esc to stop)");
     push({ role: "shell", text: `$ ${cmd}` });
-    const cdMatch = cmd.trim().match(/^cd(?:\s+(.+))?$/);
-    if (cdMatch) {
-      try {
+    let succeeded = false;
+    try {
+      const cdMatch = cmd.trim().match(/^cd(?:\s+(.+))?$/);
+      if (cdMatch) {
         const result = setSessionCwd((cdMatch[1] || process.env.HOME || ".").trim());
         push({ role: "shell", text: `workdir → ${result.cwd}\nworkspace → ${result.workspaceRoot}` });
-      } catch (err) {
-        push({ role: "system", text: `cd error: ${err instanceof Error ? err.message : String(err)}` });
+        succeeded = true;
+        return;
       }
-      return;
-    }
-    if (typeof Bun === "undefined") {
-      push({ role: "system", text: "shell unavailable (no Bun runtime)" });
-      return;
-    }
-    try {
-      const proc = Bun.spawnSync(["bash", "-lc", cmd], {
-        cwd: getSessionCwd(),
-        stdout: "pipe",
-        stderr: "pipe",
+      const result = await runSupervisedShell(cmd, cwd, {
+        context: { sessionId: `human:${workspaceRoot}`, turnId: randomUUID(), callId: randomUUID(),
+          workspaceRoot, sessionCwd: cwd, signal: controller.signal },
       });
-      const out = new TextDecoder().decode(proc.stdout).trimEnd();
-      const errOut = new TextDecoder().decode(proc.stderr).trimEnd();
-      const body = [out, errOut].filter(Boolean).join("\n") || "(no output)";
+      const body = result.output || "(no output)";
       const clipped = body.length > 4000 ? body.slice(0, 4000) + "\n… (truncated)" : body;
-      push({ role: "shell", text: clipped + (proc.exitCode ? `\n[exit ${proc.exitCode}]` : "") });
+      const outcome = result.executionOutcome === "unknown"
+        ? `\n[${result.cancelled ? "interrupted" : result.timedOut ? "timed out" : "outcome unknown"}; inspect effects before retrying${result.terminationConfirmed ? "" : "; process termination unconfirmed"}]`
+        : result.exitCode ? `\n[exit ${result.exitCode}; file effects were not rolled back]` : "";
+      push({ role: "shell", text: clipped + outcome });
+      succeeded = result.executionOutcome === "succeeded";
     } catch (err) {
       push({ role: "system", text: `shell error: ${err instanceof Error ? err.message : String(err)}` });
+    } finally {
+      if (abortController === controller) abortController = null;
+      setBusy(false);
+      setStatus("ready");
+      if (quitRequested) {
+        void finishQuit();
+      } else if (succeeded) drainNextQueued();
     }
   }
 
   async function submitOne(input: ChatInput, displayText = typeof input === "string" ? input : input.map((p) => (p.type === "text" ? p.text : "[image]")).join("")) {
-    push({ role: "you", text: displayText });
-    // If the active explorer mode needs a provider key that isn't loaded (e.g.
-    // warp-grep → MORPH_API_KEY), pause and offer to apply it from vault before
-    // running the turn, rather than dead-ending on "key not set".
-    try {
-      const keyMsg = await ensureExplorerProviderKey(commandCtx());
-      if (keyMsg) push({ role: "system", text: keyMsg });
-    } catch (err) {
-      push({ role: "system", text: `vault key check failed: ${err instanceof Error ? err.message : String(err)}` });
+    if (quitRequested) return;
+    if (busy()) {
+      setQueued((q) => [...q, { sendInput: input, displayText }]);
+      return;
     }
-    let sendInput = input;
-    try {
-      const preflight = await renderSkillPreflight({
-        userText: displayText,
-        cwd: commandCtx().cwd(),
-        workspaceRoot: commandCtx().workspaceRoot(),
-        skills: discoverSkills({ projectRoot: commandCtx().workspaceRoot(), cwd: commandCtx().cwd() }),
-        apiClient,
-      });
-      if (preflight.text) {
-        sendInput = appendSkillPreflightContext(input, preflight.text);
-        if (process.env.SIFT_SKILL_PREFLIGHT_DEBUG === "1") push({ role: "system", text: preflight.summary });
-      }
-    } catch (err) {
-      if (process.env.SIFT_SKILL_PREFLIGHT_DEBUG === "1") {
-        push({ role: "system", text: `skill preflight unavailable: ${err instanceof Error ? err.message : String(err)}` });
-      }
-    }
-    playSound("confirm");
     setBusy(true);
-    setStatus("thinking… (Esc to stop)");
+    const controller = new AbortController();
+    abortController = controller;
+    const admissionCwd = getSessionCwd();
+    const admissionRoot = getWorkspaceRoot();
+    const assertAdmission = () => {
+      if (controller.signal.aborted || quitRequested) throw new DOMException("Turn interrupted during preparation", "AbortError");
+      if (getSessionCwd() !== admissionCwd || getWorkspaceRoot() !== admissionRoot) throw new Error("Workspace changed during preparation; submit again in the current workspace");
+    };
+    push({ role: "you", text: displayText });
+    setStatus("preparing… (Esc to stop)");
     const turnStart = messages.length;
-    abortController = new AbortController();
     let firstTool = true;
     // Lazy assistant bubble: text segments and tool-step lines interleave in
     // event order. A tool call closes the current text bubble so the next text
     // starts a fresh one below the step.
     let assistantIdx: number | null = null;
-    let lastToolIdx: number | null = null;
-    const toolIndexes = new Map<string, number[]>();
+    const toolRows = new ToolRowTracker();
+    let turnSucceeded = false;
     let pendingAssistantIdx: number | null = null;
     const pendingTextDeltas: string[] = [];
     let textFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -730,13 +785,86 @@ function App() {
         }
       }
     };
+    const settleInterruptedToolRows = (aborted: boolean) => {
+      const icon = aborted ? "⏸" : "✗";
+      for (const toolIdx of toolRows.drain()) {
+        setMessages(toolIdx, "text", (text) =>
+          `${text.replace(/^(⚙|◇)/, icon)}  interrupted`,
+        );
+      }
+    };
     try {
+      // If the active explorer mode needs a provider key that isn't loaded (e.g.
+      // warp-grep → MORPH_API_KEY), pause and offer to apply it from vault before
+      // running the turn, rather than dead-ending on "key not set".
+      try {
+        const keyMsg = await ensureExplorerProviderKey(commandCtx());
+        if (keyMsg) push({ role: "system", text: keyMsg });
+      } catch (err) {
+        push({ role: "system", text: `vault key check failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+      assertAdmission();
+      let sendInput = input;
+      try {
+        const preflight = await renderSkillPreflight({
+          userText: displayText,
+          cwd: admissionCwd,
+          workspaceRoot: admissionRoot,
+          skills: discoverSkills({ projectRoot: admissionRoot, cwd: admissionCwd }),
+          apiClient,
+        });
+        if (preflight.text) {
+          sendInput = appendSkillPreflightContext(input, preflight.text);
+          if (process.env.SIFT_SKILL_PREFLIGHT_DEBUG === "1") push({ role: "system", text: preflight.summary });
+        }
+      } catch (err) {
+        if (process.env.SIFT_SKILL_PREFLIGHT_DEBUG === "1") {
+          push({ role: "system", text: `skill preflight unavailable: ${err instanceof Error ? err.message : String(err)}` });
+        }
+      }
+      assertAdmission();
+      playSound("confirm");
+      setStatus("thinking… (Esc to stop)");
       await client.send(
         sendInput,
         (e) => {
+          if (e.type === "status" && e.status === "stopping") {
+            setStatus("stopping… waiting for active work to settle");
+            return;
+          }
+          if (e.type === "status" && e.status === "steering_delivered") {
+            flushStreamingText();
+            const id = String(e.steeringId ?? "");
+            push({ role: "you", text: pendingSteers.get(id) ?? "(steering)" });
+            pendingSteers.delete(id);
+            assistantIdx = null; // the reply to the steering opens a fresh bubble below it
+            return;
+          }
+          if (e.type === "status" && e.status === "steering_carried") {
+            const n = Number(e.count) || 0;
+            const undelivered = [...pendingSteers.values()];
+            pendingSteers.clear();
+            push({
+              role: "system",
+              text: `↳ ${n} steering message${n === 1 ? "" : "s"} did not reach this turn — saved for the next one${undelivered.length ? `:\n${undelivered.map((t) => `  • ${t}`).join("\n")}` : ""}`,
+            });
+            return;
+          }
+          if (e.type === "provider") {
+            const provider = e.providerEvent as { type?: string; delayMs?: number; requestedModel?: string; receipt?: {servedModel?: string; usage?: {inputTokens?: number; outputTokens?: number}} } | undefined;
+            if (provider?.type === "provider.response") {
+              const usage = provider.receipt?.usage;
+              setProviderUsage(usage ? `${usage.inputTokens ?? "?"} in / ${usage.outputTokens ?? "?"} out` : "usage unknown");
+            }
+            if (!abortController?.signal.aborted) {
+              if (provider?.type === "provider.retry") setStatus(`retrying in ${Math.ceil((provider.delayMs || 0) / 1000)}s… (Esc to stop)`);
+              else if (provider?.type === "provider.attempt") setStatus(`requesting ${provider.requestedModel || "model"}… (Esc to stop)`);
+            }
+            return;
+          }
           const delta = eventTextDelta(e);
           if (delta) {
-            if (!got) setStatus("responding… (Esc to stop)");
+            if (!got && !abortController?.signal.aborted) setStatus("responding… (Esc to stop)");
             got = true;
             queueStreamingText(ensureAssistant(), delta);
           } else if (e.type === "tool_call" && e.toolCall) {
@@ -745,11 +873,8 @@ function App() {
             const text = isExplorerToolName(e.toolCall.name)
               ? explorerToolCallText(e.toolCall.name, e.toolCall.detail)
               : `⚙ ${e.toolCall.name}${label ? `  ${label}` : ""}`;
-            lastToolIdx = messages.length;
-            const indexes = toolIndexes.get(e.toolCall.name) ?? [];
-            indexes.push(lastToolIdx);
-            toolIndexes.set(e.toolCall.name, indexes);
-            push({ role: "tool", text });
+            toolRows.register(e.toolCall.name, e.toolCall.callId, messages.length);
+            push({ role: "tool", text, toolArgs: e.toolCall.args });
             // The "sift" sound, once per turn, when work starts churning.
             if (firstTool) {
               firstTool = false;
@@ -759,10 +884,10 @@ function App() {
             setStatus(`⚙ ${e.toolCall.name}… (Esc to stop)`);
           } else if (e.type === "tool_result") {
             const name = e.toolResult?.name ?? "";
-            const matchingIndexes = toolIndexes.get(name);
-            const toolIdx = matchingIndexes?.length ? matchingIndexes[matchingIndexes.length - 1] : lastToolIdx;
+            const toolIdx = toolRows.settle(name, e.toolResult?.callId);
             if (toolIdx !== null && toolIdx !== undefined) {
               const ok = e.toolResult?.success !== false;
+              const unknown = e.toolResult?.executionOutcome === "unknown";
               const activity = asExplorerActivityView(e.toolResult?.explorerActivity);
               if (activity) {
                 setMessages(toolIdx, "text", `${ok ? "✓" : "✗"} ${formatExplorerActivityLine(activity)}`);
@@ -772,12 +897,15 @@ function App() {
                   latestExplorerReport = activity.rawReport;
                 }
               } else {
-                setMessages(toolIdx, "text", (t) => t.replace(/^(⚙|◇)/, ok ? "✓" : "✗"));
-                const preview = clipOutput(e.toolResult?.output ?? "");
+                setMessages(toolIdx, "text", (t) => t.replace(/^(⚙|◇)/, unknown ? "?" : ok ? "✓" : "✗"));
+                const preview = summarizeToolOutput(name, e.toolResult?.output ?? "", {
+                  width: Math.max(4, terminal().width - 10), args: messages[toolIdx].toolArgs,
+                  format: e.toolResult?.outputFormat,
+                });
                 if (preview) setMessages(toolIdx, "out", preview);
               }
             }
-            setStatus("working… (Esc to stop)");
+            if (!abortController?.signal.aborted) setStatus("working… (Esc to stop)");
           } else if (e.type === "error") {
             flushStreamingText();
             got = true;
@@ -788,23 +916,29 @@ function App() {
             done = e;
           }
         },
-        abortController.signal
+        controller.signal
       );
+      // A clean stream normally leaves no open rows. If the transport ends
+      // without a matching result, make the terminal UI state explicit while
+      // the durable session kernel remains the sole owner of receipt repair.
+      settleInterruptedToolRows(false);
       flushStreamingText();
       if (!got) {
         const fallback = done ? doneFallbackText(done) : "";
         setMessages(ensureAssistant(), "text", fallback || "(no response)");
       }
       finalizeAssistantMarkdown();
+      turnSucceeded = true;
       playSound("notify"); // turn complete
       autoRenderMermaid(turnStart);
     } catch (err) {
       flushStreamingText();
       const aborted = err instanceof Error && err.name === "AbortError";
+      settleInterruptedToolRows(aborted);
       playSound(aborted ? "panelClose" : "block");
       setMessages(ensureAssistant(), "text", (t) =>
         aborted
-          ? `${t}${t ? "  " : ""}⏸ paused`
+          ? `${t}${t ? "  " : ""}⏸ interrupted`
           : `[error: ${err instanceof Error ? err.message : String(err)}]`
       );
       finalizeAssistantMarkdown();
@@ -813,15 +947,13 @@ function App() {
         clearTimeout(textFlushTimer);
         textFlushTimer = null;
       }
-      abortController = null;
+      if (abortController === controller) abortController = null;
       setBusy(false);
       setStatus("ready");
       // Drain one queued message, if any.
-      const q = queued();
-      if (q.length) {
-        setQueued(q.slice(1));
-        void submitOne(q[0].sendInput, q[0].displayText);
-      }
+      if (quitRequested) {
+        void finishQuit();
+      } else if (turnSucceeded) drainNextQueued();
     }
   }
 
@@ -894,6 +1026,28 @@ function App() {
         setSessionCwd(p);
       },
       workspaceRoot: () => getWorkspaceRoot(),
+      conversationKey: () => sessionCtx.activeConversationKey(),
+      resetThread: () => resetActiveThread(),
+      inspectThread: () => inspectActiveThread(),
+      readToolOutput: (reference: number, offset?: number) => readActiveToolOutput(reference, offset),
+      verifyCandidate: async (argv: string[], files: string[]) => {
+        if (busy()) { push({role: "system", text: "Wait for the active turn to settle before verifying."}); return; }
+        setBusy(true);
+        const controller = new AbortController();
+        abortController = controller;
+        setStatus("verifying… (Esc to stop)");
+        try {
+          const receipt = await verifyActiveCandidate(argv, files, controller.signal, 'allow');
+          push({role: "system", text: `Verification ${receipt.status}: ${receipt.files.length} explicit file(s) · candidate ${receipt.after?.sha256.slice(0, 12) || 'unavailable'}\n${receipt.reason || ''}\n${receipt.stdout}${receipt.stderr}${receipt.outputTruncated ? '\n[output truncated]' : ''}`});
+        } catch (error) {
+          push({role: "system", text: `Verification failed: ${error instanceof Error ? error.message : String(error)}`});
+        } finally {
+          if (abortController === controller) abortController = null;
+          setBusy(false);
+          setStatus("ready");
+          if (quitRequested) void finishQuit();
+        }
+      },
       push,
       setMessages: (next: CommandMessage[]) => setMessages(next),
       submit: (sendText: string, displayText?: string) => {
@@ -914,7 +1068,7 @@ function App() {
       compactThread: async (): Promise<CompactionReport> =>
         client.compact
           ? client.compact()
-          : { engine: "openfunction", ran: false, reason: "compaction is only available with the local brain" },
+          : { engine: "agent-harness", ran: false, reason: "compaction is only available with the local brain" },
       showDiagram: (fullText: string) => showDiagramInline(fullText),
       viewLastDiagram: () => openDiagramViewer(),
       sessions: {
@@ -931,6 +1085,7 @@ function App() {
             conversationKey: rec.conversationKey,
             sessionCwd: rec.worktreePath,
           });
+          setAgentConversationKey(sw.session.conversationKey);
           setMessages([...sw.transcript]);
           return { ok: true, session: rec };
         },
@@ -939,6 +1094,7 @@ function App() {
           sessionCtx.replaceTranscript([...messages]);
           const sw = sessionCtx.leave();
           if (!sw) return { ok: false, reason: "not in a child session" };
+          setAgentConversationKey(sw.session.conversationKey);
           setMessages([...sw.transcript]);
           return { ok: true };
         },
@@ -958,15 +1114,16 @@ function App() {
     setExplorerPicker(null);
     setCrewPicker(null);
     // Open on the currently active model when we can match it.
+    setModelFavoriteError("");
     const cur = model();
-    const found = INTERACTIVE_MODEL_CHOICES.findIndex((c) => c.model === cur || c.id === cur);
+    const found = modelChoices().findIndex((c) => c.model === cur || c.id === cur);
     setPicker({ stage: "model", modelIdx: Math.max(0, found), effortIdx: 0 });
   }
 
   function pickerEnterModel() {
     const p = picker();
     if (!p) return;
-    const choice = INTERACTIVE_MODEL_CHOICES[p.modelIdx];
+    const choice = modelChoices()[p.modelIdx];
     const efforts = choice.reasoningEfforts ?? [];
     if (!efforts.length) {
       void confirmPicker(choice, undefined);
@@ -1276,6 +1433,13 @@ function App() {
         const isEnter =
           key.name === "return" || key.name === "enter" || key.sequence === "\r" || key.sequence === "\n";
         const k = (n: string) => key.name === n || key.sequence === n || key.sequence === n.toUpperCase();
+        if (key.ctrl && key.name === "c" && abortController) {
+          abortController.abort();
+          resolveApproval(cf.id, "deny");
+          setConfirm(null);
+          setStatus("stopping… waiting for active work to settle");
+          return;
+        }
         let decision: ApprovalDecision | null = null;
         if (k("y") || isEnter) decision = "allow";
         else if (k("a") && cf.allowAlways !== false) decision = "always";
@@ -1335,16 +1499,30 @@ function App() {
         if (pk.stage === "model") {
           if (key.name === "up") setPicker({ ...pk, modelIdx: Math.max(0, pk.modelIdx - 1) });
           else if (key.name === "down")
-            setPicker({ ...pk, modelIdx: Math.min(INTERACTIVE_MODEL_CHOICES.length - 1, pk.modelIdx + 1) });
+            setPicker({ ...pk, modelIdx: Math.min(modelChoices().length - 1, pk.modelIdx + 1) });
+          else if (key.name === "f" || key.sequence === "*") {
+            const selected = modelChoices()[pk.modelIdx];
+            if (!selected) return;
+            const next = toggleFavoriteModel(selected.id);
+            if (next.saved) {
+              setModelFavorites(next.favorites);
+              setPicker({ ...pk, modelIdx: modelChoices().findIndex((choice) => choice.id === selected.id) });
+              playSound(next.added ? "toggleOn" : "toggleOff");
+              setModelFavoriteError("");
+            } else setModelFavoriteError("Could not save favorites. Check ~/.siftable permissions.");
+          }
           else if (isEnter) pickerEnterModel();
           return;
         }
         // effort stage
-        const efforts = INTERACTIVE_MODEL_CHOICES[pk.modelIdx].reasoningEfforts ?? [];
+        const efforts = modelChoices()[pk.modelIdx]?.reasoningEfforts ?? [];
         if (key.name === "left") setPicker({ ...pk, effortIdx: Math.max(0, pk.effortIdx - 1) });
         else if (key.name === "right")
           setPicker({ ...pk, effortIdx: Math.min(efforts.length - 1, pk.effortIdx + 1) });
-        else if (isEnter) void confirmPicker(INTERACTIVE_MODEL_CHOICES[pk.modelIdx], efforts[pk.effortIdx]);
+        else if (isEnter) {
+          const choice = modelChoices()[pk.modelIdx];
+          if (choice) void confirmPicker(choice, efforts[pk.effortIdx]);
+        }
         return;
       }
 
@@ -1505,24 +1683,27 @@ function App() {
           setBranchesPicker(null);
           commandCtx().sessions.enter(action.sessionId);
         } else if (action.kind === "ready") {
-          const res = childController.reviewChild(action.sessionId);
-          refreshBranchesPicker(
-            res.ok ? `#${action.sessionId} → ${res.packet.verdict}` : `ready: ${res.reason}`,
-          );
+          void Promise.resolve(childController.reviewChild(action.sessionId)).then((res) => {
+            refreshBranchesPicker(
+              res.ok === true ? `#${action.sessionId} → ${res.packet.verdict}` : `ready: ${res.reason}`,
+            );
+          });
         } else if (action.kind === "merge") {
-          const res = childController.mergeChild(action.sessionId);
-          refreshBranchesPicker(
-            res.ok
-              ? `${res.merged ? "merged" : "up-to-date"} #${action.sessionId} → ${res.packet.baseBranch} (${res.baseCommit.slice(0, 7)})${res.cleaned ? " · cleaned" : ""}`
-              : `merge: ${res.reason}`,
-          );
+          void Promise.resolve(childController.mergeChild(action.sessionId)).then((res) => {
+            refreshBranchesPicker(
+              res.ok === true
+                ? `${res.merged ? "merged" : "up-to-date"} #${action.sessionId} → ${res.packet.baseBranch} (${res.baseCommit.slice(0, 7)})${res.cleaned ? " · cleaned" : ""}`
+                : `merge: ${res.reason}`,
+            );
+          });
         } else if (action.kind === "rebase") {
-          const res = childController.rebaseChild(action.sessionId);
-          refreshBranchesPicker(
-            res.ok
-              ? `${res.rebased ? "rebased" : "current"} #${action.sessionId} → ${res.verdict}`
-              : `rebase: ${res.reason}${res.conflicts?.length ? ` (${res.conflicts.join(", ")})` : ""}`,
-          );
+          void Promise.resolve(childController.rebaseChild(action.sessionId)).then((res) => {
+            refreshBranchesPicker(
+              res.ok === true
+                ? `${res.rebased ? "rebased" : "current"} #${action.sessionId} → ${res.verdict}`
+                : `rebase: ${res.reason}${res.conflicts?.length ? ` (${res.conflicts.join(", ")})` : ""}`,
+            );
+          });
         } else if (action.kind === "reject") {
           const res = childController.rejectChild(action.sessionId);
           refreshBranchesPicker(
@@ -1533,11 +1714,11 @@ function App() {
           refreshBranchesPicker(res.ok ? `abandoned #${action.sessionId}` : `abandon: ${res.reason}`);
         } else if (action.kind === "spawn") {
           const mapped = draftToSpawnInput(action.draft);
-          if (!mapped.ok) {
+          if (mapped.ok === false) {
             setBranchesPicker({ ...bp, status: `spawn: ${mapped.error}` }); // stay in the form
           } else {
             const res = commandCtx().sessions.spawn(mapped.input);
-            if (res.ok) {
+            if (res.ok === true) {
               setBranchesPicker({
                 state: initialBranchesState(),
                 view: childController.listMergeReadiness(),
@@ -1564,7 +1745,7 @@ function App() {
         if (action.kind === "none") {
           // Any state change also clears a stale evidence panel (it described a
           // prior selection); skip the re-render when the state object is the same.
-          if (action.state !== wp.state) setWorkPicker({ ...wp, state: action.state, evidence: undefined });
+          if (action.state !== wp.state) setWorkPicker({ ...wp, state: action.state, status: undefined, evidence: undefined });
         } else if (action.kind === "close") {
           setWorkPicker(null);
         } else if (action.kind === "run") {
@@ -1585,9 +1766,30 @@ function App() {
                 if (cur) setWorkPicker({ ...cur, status: `evidence: ${err instanceof Error ? err.message : String(err)}` });
               });
           }
+        } else if (action.kind === "runWork") {
+          const item = wp.data.items[action.rowIdx];
+          if (item) {
+            // "Prepare", not "run": this claims the item, creates/adopts the
+            // worktree, and starts lease heartbeats — it does not dispatch the
+            // work prompt. Saying "started" here would overclaim.
+            setWorkPicker({...wp, status: `claiming and preparing "${item.title}"…`, evidence: undefined});
+            void workRunController.startContractedWork(item.id)
+              .then((result) => {
+                if (result.ok === true) {
+                  void refreshWorkBoard(`prepared #${result.run.session.sessionId} on ${result.run.session.branch} — enter the session to run it`);
+                } else {
+                  const cur = workPicker();
+                  if (cur) setWorkPicker({...cur, status: `prepare blocked at ${result.stage}: ${result.reason}`});
+                }
+              })
+              .catch((err) => {
+                const cur = workPicker();
+                if (cur) setWorkPicker({...cur, status: `prepare: ${err instanceof Error ? err.message : String(err)}`});
+              });
+          }
         } else if (action.kind === "handoff") {
           const mapped = draftToHandoffInput(action.draft);
-          if (!mapped.ok) {
+          if (mapped.ok === false) {
             setWorkPicker({ ...wp, status: `handoff: ${mapped.error}` }); // stay in the form
           } else {
             void createHandoffWorkItem(commandCtx(), mapped.input)
@@ -1643,7 +1845,7 @@ function App() {
         key.stopPropagation?.();
         if (busy() && abortController) {
           abortController.abort();
-          setStatus("paused");
+          setStatus("stopping… waiting for active work to settle");
         } else if (input()) {
           setText("");
         } else if (transcriptSelected()) {
@@ -1669,7 +1871,7 @@ function App() {
         key.stopPropagation?.();
         if (busy() && abortController) {
           abortController.abort();
-          setStatus("paused");
+          setStatus("stopping… waiting for active work to settle");
         } else if (input()) {
           setText("");
         } else if (transcriptSelected()) {
@@ -1720,13 +1922,23 @@ function App() {
         return;
       }
 
-      // Slash-completion (no menu, but a lone "/foo" prefix).
+      // Slash-completion (no menu, but a lone "/foo" prefix). While a turn
+      // runs, Tab otherwise queues the draft as the next task.
       if (key.name === "tab") {
         const m = slashMatches();
         if (m.length) {
           key.preventDefault?.();
           key.stopPropagation?.();
           setText(`/${m[0].name} `);
+        } else if (busy() && input().trim() && !input().trim().startsWith("/")) {
+          key.preventDefault?.();
+          key.stopPropagation?.();
+          const text = input().trim();
+          setTranscriptSelected(false);
+          setText("");
+          history.push(text);
+          histIndex = history.length;
+          queueDraft(text);
         }
         return;
       }
@@ -1773,22 +1985,43 @@ function App() {
     // Restore the saved sound preference (off by default); loads the kit if on.
     void initSounds();
     onCleanup(() => disposeSounds());
-    // Restore durable preferences (~/.siftable/prefs.json): Explorer settings
-    // synchronously, then the saved brain model quietly (codex is skipped — it's
-    // the default and signs in interactively).
+    // Load remembered credentials before applying either saved model selection.
+    autoloadProviderKeysFromKeychain();
     const prefs = loadPrefs();
     if (prefs.explorer) {
-      const applied = applyExplorerSettings(prefs.explorer as ExplorerSettings);
+      const applied = applyExplorerSettings(prefs.explorer as ExplorerSettings, {allowUnavailableModel: true});
       if (applied.ok) setExplorerSettings(prefs.explorer as ExplorerSettings);
+      if (!applied.ok || applied.message.startsWith("Explorer:")) push({role: "system", text: applied.message});
     }
     void restoreSavedModel(commandCtx()).then(() => void refreshState());
     void refreshState();
+    void workRunController.recoverWorkRuns()
+      .then((recovery) => {
+        if (recovery.recovered.length || recovery.failed.length) {
+          push({
+            role: "system",
+            text: `work runs: ${recovery.recovered.length} recovered · ${recovery.failed.length} failed`,
+          });
+        }
+      })
+      .catch((error) => {
+        push({role: "system", text: `work-run recovery: ${error instanceof Error ? error.message : String(error)}`});
+      });
+    onCleanup(() => void workRunController.shutdown({preserveRuns: true}).catch((error) => {
+      push({role: "system", text: `work-run shutdown: ${error instanceof Error ? error.message : String(error)}`});
+    }));
     // Route brain write/edit approval requests into the confirm overlay.
     setConfirmListener((req) => {
       playSound("notify"); // a decision is waiting on you
       setConfirm(req);
     });
-    onCleanup(() => setConfirmListener(null));
+    setConfirmCancellationListener((id) => {
+      setConfirm((current) => current?.id === id ? null : current);
+    });
+    onCleanup(() => {
+      setConfirmListener(null);
+      setConfirmCancellationListener(null);
+    });
     const timer = setInterval(() => void refreshState(), 2000);
     onCleanup(() => clearInterval(timer));
   });
@@ -1798,7 +2031,7 @@ function App() {
       ? `${agents().length} agent(s): ${agents()
           .map((a) => `${a.assignedAlias ?? a.agentType}·${a.state}`)
           .join("  ")}`
-      : "no local agents";
+      : "";
 
   // Child-session segment — distinct from the backend agent label above.
   const childBarLabel = () => formatChildBarLine(childBar());
@@ -1876,10 +2109,12 @@ function App() {
           <text fg={theme.signal} selectable={false}>◇ </text>
           <text fg={theme.accentStrong} selectable={false}>siftable</text>
         </box>
+        <Show when={agents().length > 0}>
         <box flexDirection="row" alignItems="center">
           <text fg={busy() ? theme.warn : theme.ok} selectable={false}>{busy() ? spinner() + " " : "● "}</text>
           <text fg={theme.muted} selectable={false}>{agentLabel()}</text>
         </box>
+        </Show>
         <Show when={childBar().length}>
           <box flexDirection="row" alignItems="center">
             <text fg={theme.signal} selectable={false}>⌥ </text>
@@ -1954,20 +2189,12 @@ function App() {
                   <text fg={theme.text}>{m.text}</text>
                 </Match>
                 <Match when={m.role === "assistant"}>
-                  <text fg={theme.accentStrong}>siftable</text>
-                  <Show
-                    when={!m.streaming}
-                    fallback={<text fg={theme.text}>{m.text || "…"}</text>}
-                  >
-                    <markdown
-                      content={m.text || "…"}
-                      streaming={false}
-                      syntaxStyle={syntaxStyle()}
-                      internalBlockMode="top-level"
-                      fg={theme.text}
-                      bg={theme.bg}
-                    />
-                  </Show>
+                  <AssistantReply
+                    text={m.text}
+                    streaming={!!m.streaming}
+                    syntaxStyle={syntaxStyle()}
+                    theme={theme}
+                  />
                 </Match>
               </Switch>
               </box>
@@ -2014,7 +2241,7 @@ function App() {
 
       <Show when={picker()}>
         {(p) => {
-          const choice = () => INTERACTIVE_MODEL_CHOICES[p().modelIdx];
+          const choice = () => modelChoices()[p().modelIdx];
           const efforts = () => choice().reasoningEfforts ?? [];
           return (
             <box
@@ -2028,22 +2255,22 @@ function App() {
             >
               <text fg={theme.accentStrong} selectable={false}>
                 {p().stage === "model"
-                  ? "Select model    ↑/↓ navigate · Enter → reasoning · Esc cancel"
+                  ? "Select model    ↑/↓ navigate · f/* favorite · Enter select · Esc cancel"
                   : "Reasoning effort    ←/→ adjust · Enter confirm · Esc back"}
               </text>
-              <For each={INTERACTIVE_MODEL_CHOICES}>
-                {(c, i) => (
+              <Show when={modelFavoriteError()}><text fg={theme.muted}>{modelFavoriteError()}</text></Show>
+              <text fg={theme.muted} selectable={false}>{`${p().modelIdx + 1}/${modelChoices().length} models · ★ favorites first`}</text>
+              <For each={modelPickerWindow(modelChoices(), p().modelIdx, terminal().height)}>
+                {({ choice: c, index }) => (
                   <box
                     width="100%"
                     height={1}
-                    backgroundColor={i() === p().modelIdx ? theme.border : theme.bgMuted}
+                    backgroundColor={index === p().modelIdx ? theme.border : theme.bgMuted}
                     flexDirection="row"
                   >
-                    <text fg={i() === p().modelIdx ? theme.accentStrong : theme.muted} selectable={false}>
-                      {(i() === p().modelIdx ? "› " : "  ") +
-                        c.label.padEnd(26) +
-                        c.description +
-                        (c.model === model() || c.id === model() ? "  · current" : "")}
+                    <text fg={index === p().modelIdx ? theme.accentStrong : theme.muted} selectable={false}>
+                      {modelPickerRow(c, modelChoices(), terminal().width - 4, index === p().modelIdx,
+                        modelFavorites().includes(c.id), c.model === model() || c.id === model())}
                     </text>
                   </box>
                 )}
@@ -2414,9 +2641,11 @@ function App() {
           const sel = () => { const s = wp().state; return s.stage === "board" ? s.rowIdx : 0; };
           const detailOpen = () => { const s = wp().state; return s.stage === "board" && s.detailOpen; };
           const draft = () => { const s = wp().state; return s.stage === "handoffForm" ? s.draft : null; };
+          const preview = () => { const s = wp().state; return s.stage === "handoffPreview" ? s.draft : null; };
           const countOf = (status: string) => items().filter((it) => it.status === status).length;
           const header = () => {
-            if (draft()) return "Hand off work    type · ↑/↓ fields · Enter next/create · Esc back";
+            if (preview()) return "Preview Work Contract    Enter confirm · Esc edit";
+            if (draft()) return "Hand off work    guided contract · ↑/↓ fields · Enter next/preview · Esc back";
             const agents = data().agents.map((a) => `${a.alias}·${a.status}`).join("  ");
             return `Work    ${items().length} item(s) · ${countOf("running") + countOf("claimed")} running · ${countOf("needs_review")} needs-review · ${countOf("queued")} queued${agents ? `    (${agents})` : ""}`;
           };
@@ -2432,7 +2661,7 @@ function App() {
             >
               <text fg={theme.accentStrong} selectable={false}>{header()}</text>
 
-              <Show when={!draft()}>
+              <Show when={!draft() && !preview()}>
                 <Show when={items().length === 0}>
                   <text fg={theme.muted} selectable={false}>No work items — press h to hand one off. Esc to close.</text>
                 </Show>
@@ -2442,18 +2671,8 @@ function App() {
                     const mark =
                       it.status === "needs_review" ? "◆" : it.status === "running" || it.status === "claimed" ? "▶" : it.status === "blocked" ? "⧖" : "·";
                     const sid = it.id ? it.id.slice(0, 6) : "??????";
-                    const owner = it.owner ? `  ${it.owner}` : "";
-                    const blocked = it.blockers.length ? `  ⚠ ${it.blockers.length} blocker(s)` : "";
-                    const head = `${selected() ? "› " : "  "}${mark} #${sid}  ${it.title}    ${it.status}  [${it.agent}]${owner}${blocked}`;
-                    const detailLines = () => {
-                      const lines: string[] = [];
-                      if (it.prompt) lines.push(`prompt: ${it.prompt.replace(/\s+/g, " ").slice(0, 160)}`);
-                      if (it.writeScope.length) lines.push(`scope: ${it.writeScope.join(", ")}`);
-                      if (it.acceptance.length) lines.push(`acceptance: ${it.acceptance.join("; ")}`);
-                      if (it.verification.length) lines.push(`verify: ${it.verification.join(" · ")}`);
-                      it.blockers.forEach((b) => lines.push(`blocked: ${b}`));
-                      return lines;
-                    };
+                    const head = `${selected() ? "› " : "  "}${mark} #${sid}  ${formatWorkRow(it)}`;
+                    const detailLines = () => workDetailLines(it);
                     return (
                       <box flexDirection="column" width="100%" backgroundColor={selected() ? theme.border : theme.bgMuted}>
                         <text fg={selected() ? theme.accentStrong : theme.muted} selectable={false}>{head}</text>
@@ -2475,17 +2694,18 @@ function App() {
                     </box>
                   )}
                 </Show>
-                <text fg={theme.muted} selectable={false}>↑/↓ select · ↵ detail · v proof · h handoff · p plan · f focus · r recap · s ship · esc close</text>
+                <text fg={theme.muted} selectable={false}>↑/↓ select · ↵ detail · x prepare · v proof · h handoff · p plan · f focus · r recap · s ship · esc close</text>
               </Show>
 
               <Show when={draft()}>
                 {(d) => {
                   const fields = () => [
                     {label: "Title", value: d().title || "(type a title)"},
-                    {label: "Agent", value: d().agent || "codex"},
-                    {label: "Files", value: d().files || "(comma/space globs, optional)"},
-                    {label: "Accept", value: d().acceptance || "(semicolon-separated, optional)"},
-                    {label: "Create", value: "↵ to create the work item"},
+                    {label: "Agent", value: `${d().agent || "codex"} · ${d().profile ?? "coding"} (←/→ profile)`},
+                    {label: "Files", value: (d().profile ?? "coding") === "read_only" ? "(none for read-only)" : d().files || "(required write scope)"},
+                    {label: "Exclude", value: (d().profile ?? "coding") === "read_only" ? "(none for read-only)" : d().excludeFiles || "(optional excluded scope)"},
+                    {label: "Outcome", value: d().acceptance || "(semicolon-separated criteria)"},
+                    {label: "Proof", value: d().verify || ((d().profile ?? "coding") === "coding" ? "(required commands; Enter previews)" : "(optional; Enter previews)")},
                   ];
                   return (
                     <For each={fields()}>
@@ -2499,6 +2719,17 @@ function App() {
                     </For>
                   );
                 }}
+              </Show>
+
+              <Show when={preview()}>
+                {(d) => (
+                  <box flexDirection="column" width="100%">
+                    <For each={handoffPreviewLines(d())}>
+                      {(line) => <text fg={theme.muted} selectable={false}>{line}</text>}
+                    </For>
+                    <text fg={theme.accentStrong} selectable={false}>Enter creates this bounded work item · Esc returns to editing</text>
+                  </box>
+                )}
               </Show>
 
               <Show when={wp().status}>
@@ -2656,6 +2887,9 @@ function App() {
         <Show when={model()}>
           <text fg={theme.dim} selectable={false}>{"   ·   "}</text>
           <text fg={theme.muted} selectable={false}>{model()}</text>
+        </Show>
+        <Show when={providerUsage()}>
+          <text fg={theme.dim} selectable={false}>{`   ·   last request: ${providerUsage()}`}</text>
         </Show>
         <Show when={effort()}>
           <text fg={theme.dim} selectable={false}>{"   ·   "}</text>

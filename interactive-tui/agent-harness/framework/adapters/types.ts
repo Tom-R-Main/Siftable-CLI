@@ -1,0 +1,367 @@
+/**
+ * Siftable Agent Harness — AI Adapter Interface
+ *
+ * Every AI provider implements this interface. The chat loop is shared —
+ * only the API call format differs between providers.
+ */
+
+import type { ToolRegistry } from "../registry.js";
+
+/** Text or multimodal content in a conversation message. */
+export type TextContentPart = { type: "text"; text: string };
+export type ImageContentPart = {
+  type: "image";
+  /** MIME type such as image/png or image/jpeg. */
+  mime: string;
+  /** Base64 data URL. Prefer this at provider boundaries. */
+  dataUrl?: string;
+  /** Optional local path, for UI/protocol layers that encode at send time. */
+  path?: string;
+  /** Optional provider detail hint. */
+  detail?: "auto" | "low" | "high";
+};
+export type ContentPart = TextContentPart | ImageContentPart;
+export type ChatContent = string | ContentPart[];
+
+/**
+ * Reasoning effort levels, normalized across providers.
+ *
+ * - OpenAI / OpenRouter / Codex map these straight to their `effort` field.
+ * - Claude (Fable 5.1, Opus 5.5, Sonnet 5.5) maps these to
+ *   `output_config.effort`; legacy none/minimal selections normalize to low
+ *   so adaptive thinking remains enabled. An omitted effort uses the model
+ *   default: medium on Opus 5.5, high on the others.
+ */
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+/** A single tool/function call requested by the model. */
+export interface ToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+}
+
+/** Exact provider-native output items retained for stateless replay. */
+export interface AdapterReplayPayload {
+  /** Stable adapter protocol key, such as `openai.responses`. */
+  key: string;
+  /** JSON-safe provider output items, preserved in original order. */
+  outputItems: unknown[];
+}
+
+/** Evidence that a missing provider continuation was recovered by exact replay. */
+export interface AdapterContinuationRecovery {
+  reason: "missing_or_expired";
+  failedContinuationId: string;
+}
+
+export interface ProviderUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+  totalTokens?: number;
+}
+
+/** Provider evidence contains identifiers and counters, never credentials or request bodies. */
+export const PROVIDER_TERMINAL_ERROR_CODES = [
+  "gateway_attempt_limit", "gateway_spend_limit", "gateway_ledger_limit",
+  "gateway_ledger_unavailable", "gateway_deadline", "gateway_revoked",
+] as const;
+export type ProviderErrorCode = typeof PROVIDER_TERMINAL_ERROR_CODES[number];
+
+export interface ProviderReceipt {
+  requestId: string;
+  provider: string;
+  requestedModel: string;
+  servedModel?: string;
+  providerRequestId?: string;
+  responseId?: string;
+  attempts: number;
+  mode: "streaming" | "buffered";
+  outcome: "completed" | "failed" | "cancelled";
+  status?: number;
+  usage?: ProviderUsage;
+  error?: { code: ProviderErrorCode; retryable: false };
+}
+
+export type AdapterEvent =
+  | { type: "provider.attempt"; requestId: string; attempt: number; provider: string; requestedModel: string; oneShot: boolean; mode: "streaming" | "buffered" }
+  | { type: "provider.retry"; requestId: string; attempt: number; status: number; delayMs: number }
+  | { type: "provider.text.delta"; requestId: string; delta: string }
+  | { type: "provider.response"; receipt: ProviderReceipt };
+
+export interface AdapterRetryPolicy {
+  /** Total HTTP attempts, including the first. Default 3; bounded to 1–5. */
+  maxAttempts?: number;
+  baseDelayMs?: number;
+  /** Retry-After above this bound terminates the call instead of retrying early. */
+  maxDelayMs?: number;
+}
+
+/** Stall detection. A stall is never retried: the generation outcome is unknown. */
+export interface AdapterTimeoutPolicy {
+  /** Max wait from dispatch to response headers. Default 120_000; bounded to 600_000; 0 disables. */
+  headersMs?: number;
+  /** Max gap between body chunks, streaming or buffered. Default 60_000; bounded to 600_000; 0 disables. */
+  idleMs?: number;
+}
+
+/** Explicit, JSON-safe continuation state owned by the session journal. */
+export interface AdapterSessionState {
+  /** Stable adapter protocol key, such as `openai.responses`. */
+  key: string;
+  /** Opaque provider continuation identifier. */
+  continuationId: string;
+  /** Non-secret hash of the provider protocol, model, and endpoint. */
+  fingerprint: string;
+  /** Hash of instructions that established providers whose chains retain them. */
+  instructionsSha256?: string;
+}
+
+/** A message in the conversation */
+export interface ChatMessage {
+  role: "user" | "assistant" | "tool";
+  content: ChatContent;
+  toolCallId?: string;
+  toolName?: string;
+  /**
+   * Multiple tool calls emitted in ONE assistant turn (parallel tool calling).
+   * Set instead of the single `toolCallId`/`toolName` pair when a turn fanned
+   * out. Adapters that support parallel calls reconstruct the provider-native
+   * shape from this; the matching `tool` results follow as consecutive
+   * `role:"tool"` messages (one per call id).
+   */
+  toolCalls?: ToolCall[];
+  /**
+   * Provider-native reasoning blocks emitted on the SAME assistant turn that
+   * produced a tool call, stored verbatim so they can be replayed on the next
+   * request. Anthropic extended thinking REQUIRES the original thinking block
+   * (with its signature) to lead the assistant message that contains the
+   * tool_use; dropping it 400s the follow-up turn. Opaque to everyone but the
+   * adapter that produced it.
+   */
+  thinkingBlocks?: unknown[];
+  /** Exact provider output associated with this assistant message. */
+  providerReplay?: AdapterReplayPayload;
+}
+
+/** What the adapter returns after calling the AI */
+export interface AdapterResponse {
+  providerReceipts?: ProviderReceipt[];
+  /** Text response from the AI (if any) */
+  text?: string;
+
+  /** Single tool call the AI wants to make (if any). */
+  toolCall?: ToolCall;
+
+  /**
+   * Multiple tool calls from one turn (parallel tool calling). Adapters set
+   * this only when the model returned more than one call; a lone call still
+   * comes back as `toolCall` so the single-call path is unchanged.
+   */
+  toolCalls?: ToolCall[];
+
+  /**
+   * Provider-native reasoning blocks (e.g. Anthropic thinking/redacted_thinking)
+   * accompanying a tool call. The agent loop stores these on the assistant
+   * history message so the adapter can replay them on the next request. Opaque.
+   */
+  thinking?: unknown[];
+
+  /** Continuation state produced by this response, if the adapter is stateful. */
+  sessionState?: AdapterSessionState;
+
+  /** Exact provider-native output to retain with the assistant history item. */
+  providerReplay?: AdapterReplayPayload;
+
+  /** Present when an expired/missing continuation was recovered transparently. */
+  continuationRecovery?: AdapterContinuationRecovery;
+}
+
+/**
+ * Validate and normalize the tool-call set returned by an adapter before any
+ * handler starts. Adapters are runtime trust boundaries even when their static
+ * TypeScript type is correct.
+ */
+export function validatedAdapterToolCalls(response: AdapterResponse): ToolCall[] {
+  if (!isPlainRecord(response)) throw new Error("Adapter response must be an object");
+  const toolCall = response.toolCall;
+  const toolCalls = response.toolCalls;
+  if (toolCall !== undefined && toolCalls !== undefined) {
+    throw new Error("Adapter response cannot contain both toolCall and toolCalls");
+  }
+  if (toolCalls !== undefined && !Array.isArray(toolCalls)) {
+    throw new Error("Adapter response toolCalls must be an array");
+  }
+  const calls: unknown[] = toolCalls !== undefined
+    ? toolCalls as unknown[]
+    : toolCall === undefined
+      ? []
+      : [toolCall];
+  if (toolCalls !== undefined && calls.length === 0) {
+    throw new Error("Adapter response toolCalls must be a non-empty array");
+  }
+
+  const ids = new Set<string>();
+  calls.forEach((call, index) => {
+    if (!isPlainRecord(call)) {
+      throw new Error(`Adapter tool call ${index} must be an object`);
+    }
+    if (typeof call.id !== "string" || call.id.trim() === "") {
+      throw new Error(`Adapter tool call ${index} id must be a non-empty string`);
+    }
+    if (typeof call.name !== "string" || call.name.trim() === "") {
+      throw new Error(`Adapter tool call ${call.id} name must be a non-empty string`);
+    }
+    if (ids.has(call.id)) {
+      throw new Error(`Adapter response contains duplicate tool call id ${call.id}`);
+    }
+    ids.add(call.id);
+    if (!isPlainRecord(call.args)) {
+      throw new Error(`Adapter tool call ${call.id} args must be a JSON object`);
+    }
+    assertJsonSafe(call.args, `Adapter tool call ${call.id} args`, new Set<object>());
+  });
+  return calls as ToolCall[];
+}
+
+function assertJsonSafe(value: unknown, label: string, ancestors: Set<object>): void {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error(`${label} contains a non-finite number`);
+    return;
+  }
+  if (typeof value !== "object") {
+    throw new Error(`${label} contains a non-JSON value`);
+  }
+  if (ancestors.has(value)) throw new Error(`${label} contains a cycle`);
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index += 1) {
+        if (!(index in value)) throw new Error(`${label} contains a sparse array`);
+        assertJsonSafe(value[index], `${label}[${index}]`, ancestors);
+      }
+      return;
+    }
+    if (!isPlainRecord(value)) throw new Error(`${label} contains a non-plain object`);
+    if (Object.getOwnPropertySymbols(value).length > 0) {
+      throw new Error(`${label} contains symbol keys`);
+    }
+    for (const key of Object.keys(value)) {
+      assertJsonSafe(value[key], `${label}.${key}`, ancestors);
+    }
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+/** Configuration for an adapter */
+export interface AdapterConfig {
+  /** Compatible API root, e.g. https://api.meta.ai/v1 (never include credentials). */
+  baseUrl?: string;
+  /** Explicit output budget; omit to retain provider defaults. Integer 1–131072. */
+  maxOutputTokens?: number;
+  retry?: AdapterRetryPolicy;
+  timeouts?: AdapterTimeoutPolicy;
+  /** Uniform [0, 1) source for retry jitter; injectable for deterministic tests. */
+  randomImpl?: () => number;
+  /** Default observer, including auxiliary calls. A per-call observer overrides it. */
+  onEvent?: (event: AdapterEvent) => void;
+  /** Display name (e.g. "Gemini", "OpenAI") */
+  name: string;
+
+  /** Model to use */
+  model: string;
+
+  /** API key */
+  apiKey: string;
+
+  /** Custom system prompt (overrides the default) */
+  systemPrompt?: string;
+
+  /**
+   * Reasoning effort for models that support it. Adapters translate this to
+   * their provider-native control (OpenAI/OpenRouter `reasoning.effort`,
+   * Anthropic `output_config.effort`). Ignored by models that
+   * don't expose reasoning.
+   */
+  reasoningEffort?: ReasoningEffort;
+
+  /**
+   * HTTP transport seam. Defaults to the global `fetch`. Tests inject a
+   * cassette-backed fetch to replay recorded provider responses deterministically
+   * (see test/helpers/http-cassette.ts) instead of hitting the live API.
+   */
+  fetchImpl?: typeof fetch;
+}
+
+/** Options for controlling AI behavior on a per-call basis */
+export interface ChatOptions {
+  onEvent?: (event: AdapterEvent) => void;
+  /** Stream when supported. Defaults to true when an event observer is supplied. */
+  stream?: boolean;
+  /** Abort the provider request when supported by its transport. */
+  signal?: AbortSignal;
+
+  /** Control tool calling: "auto" (default), "required" (must call a tool), or specific tool name */
+  toolChoice?: "auto" | "required" | { name: string };
+  /** Override the system prompt for this specific call (used by agents) */
+  systemPrompt?: string;
+  /**
+   * Treat this call as independent — adapters that maintain stateful
+   * session context (OpenAI/xAI Responses API previousResponseId) will
+   * neither read nor write their session state for this call. Used by
+   * forceStructuredOutput so a one-shot extraction does not pollute or
+   * get polluted by the surrounding conversation on the same adapter.
+   */
+  oneShot?: boolean;
+  /**
+   * Ignore supplied continuation state for this call and start a fresh
+   * provider chain. The returned response can include replacement
+   * `sessionState` for the owning session journal to persist. Different
+   * from oneShot, which neither reads nor returns continuation state.
+   */
+  resetSession?: boolean;
+
+  /** Explicit continuation state projected from the owning session journal. */
+  sessionState?: AdapterSessionState;
+}
+
+/** An AI provider adapter */
+export interface AIAdapter {
+  /** Provider name for display */
+  readonly name: string;
+
+  /** Model being used */
+  readonly model: string;
+
+  /** Stable key used by the owning session to read/write continuation state. */
+  readonly sessionStateKey?: string;
+
+  /**
+   * The output-token cap this adapter actually sends, when it sets one itself
+   * (for example a provider default that depends on reasoning effort).
+   * Compaction reserves room for it.
+   */
+  readonly maxOutputTokens?: number;
+
+  /**
+   * Send a conversation to the AI with tools available.
+   * Returns either a text response or a tool call request.
+   */
+  chat(
+    messages: ChatMessage[],
+    registry: ToolRegistry,
+    options?: ChatOptions,
+  ): Promise<AdapterResponse>;
+}
+
+/** Factory function type for creating adapters */
+export type AdapterFactory = (config?: Partial<AdapterConfig>) => AIAdapter;

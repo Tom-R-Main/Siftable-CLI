@@ -3,13 +3,282 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {mockFetch, runCommand, restoreFetch} from '../helpers/mock-api';
 import {inferFieldType} from '../../src/lib/dataset-files';
+import DatasetsList from '../../src/commands/datasets/list';
 
 afterAll(() => {
   restoreFetch();
 });
 
 describe('dataset commands', () => {
+  describe('datasets quality', () => {
+    const qualityResult = {
+      contractVersion: 1,
+      datasetId: 'ds-1',
+      title: 'Sources',
+      totalRows: 3,
+      fieldCount: 1,
+      summary: {issueCount: 0, warningCount: 0, observationCount: 1},
+      fields: [{
+        field: 'Author',
+        fieldType: 'text',
+        totalRows: 3,
+        missingCount: 0,
+        missingRate: 0,
+        nonMissingCount: 3,
+        distinctCount: 2,
+        findings: [{
+          code: 'frequent_repeated_values',
+          classification: 'observation',
+          severity: 'note',
+          message: '1 frequently repeated value sampled; repetition may be valid and is not treated as a uniqueness violation',
+          metrics: {reportedValueCount: 1, repeatThreshold: 2, reportLimit: 5},
+          examples: [{value: 'Ada', occurrences: 2}],
+        }],
+      }],
+      generatedAt: '2026-08-25T00:00:00.000Z',
+    };
+
+    it('returns the versioned backend contract unchanged in JSON mode', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/datasets/ds-1/quality-check')
+        .body(body => JSON.stringify(body) === JSON.stringify({
+          fields: ['Author'],
+          repeatThreshold: 2,
+          duplicateThreshold: 2,
+        }))
+        .reply(200, qualityResult)
+        .install();
+
+      const result = await runCommand([
+        'datasets', 'quality', 'ds-1', '--fields', 'Author', '--repeat-threshold', '2',
+        '--json', '--token', 'exf_pat_test',
+      ]);
+
+      expect(JSON.parse(result.stdout)).toEqual(qualityResult);
+    });
+
+    it('omits deprecated backend aliases from the JSON contract', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/datasets/ds-1/quality-check')
+        .reply(200, {
+          ...qualityResult,
+          fields: qualityResult.fields.map(field => ({
+            ...field,
+            nullCount: field.missingCount,
+            nullRate: field.missingRate,
+            issues: field.findings,
+          })),
+        })
+        .install();
+
+      const result = await runCommand([
+        'datasets', 'quality', 'ds-1', '--json', '--token', 'exf_pat_test',
+      ]);
+
+      expect(JSON.parse(result.stdout).fields[0]).not.toHaveProperty('nullCount');
+      expect(JSON.parse(result.stdout).fields[0]).not.toHaveProperty('nullRate');
+      expect(JSON.parse(result.stdout).fields[0]).not.toHaveProperty('issues');
+    });
+
+    it('normalizes legacy backend aliases in JSON mode', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/datasets/ds-1/quality-check')
+        .reply(200, {
+          datasetId: 'ds-1',
+          title: 'Sources',
+          totalRows: 4,
+          fields: [{
+            field: 'Author',
+            fieldType: 'text',
+            totalRows: 4,
+            nullCount: 1,
+            nullRate: 0.25,
+            distinctCount: 2,
+            issues: [
+              {
+                severity: 'warn',
+                message: 'Unique field has duplicate values (2 distinct out of 3 non-missing)',
+              },
+              {
+                severity: 'warn',
+                message: '1 duplicate group found',
+                examples: ['"Ada" (2x)'],
+              },
+            ],
+          }],
+        })
+        .install();
+
+      const result = await runCommand([
+        'datasets', 'quality', 'ds-1', '--json', '--token', 'exf_pat_test',
+      ]);
+      const parsed = JSON.parse(result.stdout);
+
+      expect(parsed).toEqual(expect.objectContaining({
+        contractVersion: 1,
+        datasetId: 'ds-1',
+        fieldCount: 1,
+        summary: {issueCount: 1, warningCount: 1, observationCount: 1},
+      }));
+      expect(parsed.fields[0]).toEqual(expect.objectContaining({
+        missingCount: 1,
+        missingRate: 0.25,
+        nonMissingCount: 3,
+        findings: [
+          expect.objectContaining({code: 'non_unique_values', classification: 'issue'}),
+          expect.objectContaining({
+            code: 'frequent_repeated_values',
+            classification: 'observation',
+            severity: 'note',
+            examples: [{value: 'Ada', occurrences: 2}],
+          }),
+        ],
+      }));
+      expect(parsed.fields[0]).not.toHaveProperty('nullCount');
+      expect(parsed.fields[0]).not.toHaveProperty('nullRate');
+      expect(parsed.fields[0]).not.toHaveProperty('issues');
+    });
+
+    it('falls back to current compatibility issues and derives bounded output', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/datasets/ds-1/quality-check')
+        .reply(200, {
+          datasetId: 'ds-1',
+          summary: {issueCount: 9, warningCount: 9, observationCount: 0},
+          fields: [{
+            field: 'Author',
+            fieldType: 'text',
+            totalRows: 6,
+            findings: [],
+            issues: [
+              {
+                severity: 'warn',
+                message: 'Unique field has repeated values (5 distinct out of 6 non-missing)',
+              },
+              {
+                severity: 'note',
+                message: '6 frequently repeated values sampled; repetition may be valid and is not treated as a uniqueness violation',
+                examples: [
+                  '"Ada" (6x)',
+                  '"Grace" (5x)',
+                  '"Katherine" (4x)',
+                  '"Margaret" (3x)',
+                  '"Dorothy" (2x)',
+                  '"Mary" (2x)',
+                ],
+              },
+            ],
+          }],
+        })
+        .install();
+
+      const result = await runCommand([
+        'datasets', 'quality', 'ds-1', '--json', '--token', 'exf_pat_test',
+      ]);
+      const parsed = JSON.parse(result.stdout);
+
+      expect(parsed.summary).toEqual({issueCount: 1, warningCount: 1, observationCount: 1});
+      expect(parsed.fields[0].findings).toEqual([
+        expect.objectContaining({code: 'non_unique_values', classification: 'issue'}),
+        expect.objectContaining({
+          code: 'frequent_repeated_values',
+          classification: 'observation',
+          examples: [
+            {value: 'Ada', occurrences: 6},
+            {value: 'Grace', occurrences: 5},
+            {value: 'Katherine', occurrences: 4},
+            {value: 'Margaret', occurrences: 3},
+            {value: 'Dorothy', occurrences: 2},
+          ],
+        }),
+      ]);
+    });
+
+    it('renders legacy repeated values as observations in human output', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/datasets/ds-1/quality-check')
+        .reply(200, {
+          datasetId: 'ds-1',
+          title: 'Sources',
+          totalRows: 2,
+          fields: [{
+            field: 'Author',
+            fieldType: 'text',
+            totalRows: 2,
+            nullCount: 0,
+            nullRate: 0,
+            distinctCount: 1,
+            issues: [{
+              severity: 'warn',
+              message: '1 duplicate group found',
+              examples: ['"Ada" (2x)'],
+            }],
+          }],
+        })
+        .install();
+
+      const result = await runCommand([
+        'datasets', 'quality', 'ds-1', '--token', 'exf_pat_test',
+      ]);
+
+      expect(result.stdout).toContain('[OBSERVATION] Author');
+      expect(result.stdout).toContain('repetition may be valid');
+      expect(result.stdout).not.toContain('duplicate group');
+    });
+
+    it('labels common repeated values as observations in human output', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/datasets/ds-1/quality-check')
+        .reply(200, qualityResult)
+        .install();
+
+      const result = await runCommand([
+        'datasets', 'quality', 'ds-1', '--repeat-threshold', '2', '--token', 'exf_pat_test',
+      ]);
+
+      expect(result.stdout).toContain('[OBSERVATION] Author');
+      expect(result.stdout).toContain('repetition may be valid');
+      expect(result.stdout).not.toContain('duplicate group');
+    });
+
+    it('sanitizes dataset-controlled text in human output', async () => {
+      mockFetch()
+        .on('POST', '/api/v1/datasets/ds-1/quality-check')
+        .reply(200, {
+          ...qualityResult,
+          fields: [{
+            ...qualityResult.fields[0],
+            field: '\u001B[31mAuthor\u001B[0m\nInjected field',
+            findings: [{
+              ...qualityResult.fields[0].findings[0],
+              message: '\u001B[31mspoofed\u001B[0m\r\nmessage',
+              examples: [{value: '\u202Etxt.exe\nInjected example', occurrences: 2}],
+            }],
+          }],
+        })
+        .install();
+
+      const result = await runCommand([
+        'datasets', 'quality', 'ds-1', '--token', 'exf_pat_test',
+      ]);
+
+      expect(result.stdout).toContain('[OBSERVATION] Author Injected field: spoofed message');
+      expect(result.stdout).toContain('"txt.exe Injected example" (2x)');
+      expect(result.stdout).not.toContain('\u001B');
+      expect(result.stdout).not.toContain('\u202E');
+      expect(result.stdout).not.toContain('\nInjected');
+    });
+  });
+
   describe('datasets list', () => {
+    it('matches the backend collection limit', () => {
+      expect(DatasetsList.flags.limit).toEqual(expect.objectContaining({
+        default: 50,
+        min: 1,
+        max: 200,
+      }));
+    });
+
     it('returns a stable object shape in JSON mode', async () => {
       mockFetch()
         .on('GET', '/api/v1/datasets')
@@ -24,7 +293,46 @@ describe('dataset commands', () => {
       expect(parsed).toEqual({
         ok: true,
         datasets: [{id: 'ds-1', title: 'Sources', rowCount: 2}],
+        page: {
+          returned: 1,
+          nextCursor: null,
+          total: null,
+          complete: true,
+          snapshotId: null,
+        },
+        omissions: ['totalCount'],
+        warnings: [],
       });
+    });
+
+    it('does not claim completeness when the backend result reaches the limit', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/datasets')
+        .query({limit: '1'})
+        .reply(200, {datasets: [{id: 'ds-1', title: 'Sources'}]})
+        .install();
+
+      const result = await runCommand([
+        'datasets',
+        'list',
+        '--limit',
+        '1',
+        '--json',
+        '--token',
+        'exf_pat_test',
+      ]);
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.page).toEqual({
+        returned: 1,
+        nextCursor: null,
+        total: null,
+        complete: false,
+        snapshotId: null,
+      });
+      expect(parsed.omissions).toEqual(['totalCount', 'continuationCursor']);
+      expect(parsed.warnings).toEqual([
+        'The collection may contain more results, but no safe continuation cursor is available. Narrow filters or raise the limit.',
+      ]);
     });
   });
 
@@ -56,12 +364,112 @@ describe('dataset commands', () => {
         'run-1',
         '--ttl',
         '7d',
+        '--idempotency-key',
+        'dataset-create-lifecycle-1',
         '--json',
         '--token',
         'exf_pat_test',
       ]);
       const parsed = JSON.parse(result.stdout);
       expect(parsed.dataset.id).toBe('ds-1');
+    });
+  });
+
+  describe('dataset mutation idempotency', () => {
+    const mutationCases = [
+      {
+        name: 'create',
+        method: 'POST',
+        path: '/api/v1/datasets',
+        argv: ['datasets', 'create', '--title', 'Fixture'],
+        response: {dataset: {id: 'ds-created', title: 'Fixture'}, fields: []},
+      },
+      {
+        name: 'add',
+        method: 'POST',
+        path: '/api/v1/datasets/ds-1/records',
+        argv: ['datasets', 'add', 'ds-1', '--records', '[{"name":"row"}]'],
+        response: {records: [{id: 'row-created'}]},
+      },
+      {
+        name: 'update-record',
+        method: 'PATCH',
+        path: '/api/v1/datasets/ds-1/records/row-1',
+        argv: ['datasets', 'update-record', 'ds-1', 'row-1', '--fields', '{"status":"done"}'],
+        response: {id: 'row-1', fields: {status: 'done'}},
+      },
+      {
+        name: 'delete-record',
+        method: 'DELETE',
+        path: '/api/v1/datasets/ds-1/records/row-1',
+        argv: ['datasets', 'delete-record', 'ds-1', 'row-1', '--yes'],
+        response: {},
+      },
+      {
+        name: 'schema',
+        method: 'POST',
+        path: '/api/v1/datasets/ds-1/schema',
+        argv: [
+          'datasets',
+          'schema',
+          'ds-1',
+          '--operation',
+          'add_field',
+          '--field',
+          '{"name":"status","fieldType":"text"}',
+        ],
+        response: {field: {id: 'field-1', name: 'status'}},
+      },
+      {
+        name: 'materialize',
+        method: 'POST',
+        path: '/api/v1/datasets/derived/materialize',
+        argv: [
+          'datasets',
+          'materialize',
+          '--title',
+          'Derived',
+          '--source-result',
+          '{"columns":[],"rows":[]}',
+        ],
+        response: {materializedDatasetId: 'ds-derived', title: 'Derived'},
+      },
+    ] as const;
+
+    it.each(mutationCases)('passes a caller-owned key through datasets $name', async (fixture) => {
+      mockFetch()
+        .on(fixture.method, fixture.path)
+        .reply(fixture.name === 'delete-record' ? 204 : 200, fixture.response)
+        .install();
+
+      const idempotencyKey = `dataset-${fixture.name}-stable-1`;
+      const result = await runCommand([
+        ...fixture.argv,
+        '--idempotency-key',
+        idempotencyKey,
+        '--json',
+        '--token',
+        'exf_pat_test',
+      ]);
+
+      expect(result.error).toBeUndefined();
+      const request = (global.fetch as jest.Mock).mock.calls[0][1] as RequestInit;
+      expect((request.headers as Record<string, string>)['Idempotency-Key']).toBe(idempotencyKey);
+    });
+
+    it('requires a caller-owned key before creating a dataset', async () => {
+      mockFetch().install();
+      const result = await runCommand([
+        'datasets',
+        'create',
+        '--title',
+        'Fixture',
+        '--token',
+        'exf_pat_test',
+      ]);
+
+      expect(result.error).toBeDefined();
+      expect((global.fetch as jest.Mock)).not.toHaveBeenCalled();
     });
   });
 

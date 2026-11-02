@@ -1,4 +1,7 @@
 import {runCommand} from '../helpers/mock-api';
+import {installIsolatedConfigDirHooks} from '../helpers/config-env';
+
+installIsolatedConfigDirHooks('sift-self-awareness-');
 
 describe('self-awareness commands', () => {
   it('reports doctor status as stable JSON without requiring auth', async () => {
@@ -6,9 +9,11 @@ describe('self-awareness commands', () => {
     const parsed = JSON.parse(result.stdout);
 
     expect(parsed.cli.package).toBe('@siftable/cli');
-    expect(typeof parsed.authenticated).toBe('boolean');
+    expect(parsed.authenticated).toBe(false);
+    expect(parsed.ok).toBe(false);
     expect(parsed.checks.some((check: any) => check.name === 'auth')).toBe(true);
     expect(parsed.next.length).toBeGreaterThan(0);
+    expect(result.exitCode).toBe(1);
   });
 
   it('reports workspace service-token env setup without printing secret values', async () => {
@@ -60,6 +65,13 @@ describe('self-awareness commands', () => {
 
     expect(parsed.ok).toBe(true);
     expect(parsed.topics.some((topic: any) => topic.topic === 'datasets')).toBe(true);
+    expect(parsed.topics).toEqual(expect.arrayContaining([
+      expect.objectContaining({topic: 'vault', description: expect.stringMatching(/materialization/i)}),
+      expect.objectContaining({topic: 'env', description: expect.stringMatching(/Vault bundle/i)}),
+    ]));
+    expect(parsed.next).toEqual(expect.arrayContaining([
+      expect.stringMatching(/sift env --help.*sift vault materialize run/i),
+    ]));
     expect(parsed.recipeIds).toContain('research-source-ingest');
   });
 });

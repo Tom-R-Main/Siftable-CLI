@@ -24,6 +24,18 @@ describe('Vault capability CLI surface', () => {
     (list as any).log = vi.fn();
     const listed = await list.run();
     expect(listApi.mock.calls[0][1]).toContain('surface=cli');
+    expect(listed).toEqual({
+      ok: true,
+      capabilities: [{
+        id: 'capability-1',
+        adapterId: 'google_ai_studio',
+        allowedOperations: ['generate_content'],
+        revokedAt: null,
+      }],
+      page: {returned: 1, nextCursor: null, total: 1, complete: true, snapshotId: null},
+      omissions: [],
+      warnings: [],
+    });
 
     const describeCommand = command(CapabilitiesDescribe);
     const describeApi = vi.fn().mockResolvedValue({
@@ -59,7 +71,7 @@ describe('Vault capability CLI surface', () => {
       flags: {
         handle: 'vcap_opaque',
         operation: 'generate_content',
-        input: '{"model":"gemini-3.5-flash","prompt":"hello"}',
+        input: '{"model":"gemini-3.8-flash","prompt":"hello"}',
         approval: 'approval-1',
         'idempotency-key': 'stable-request-1',
       },
@@ -77,7 +89,7 @@ describe('Vault capability CLI surface', () => {
           surface: 'cli',
           handle: 'vcap_opaque',
           operation: 'generate_content',
-          input: {model: 'gemini-3.5-flash', prompt: 'hello'},
+          input: {model: 'gemini-3.8-flash', prompt: 'hello'},
           approvalId: 'approval-1',
           idempotencyKey: 'stable-request-1',
         },

@@ -1,5 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {datasetIdempotencyKeyFlag} from '../../lib/dataset-idempotency.js';
 
 export default class DatasetsUpdateRecord extends BaseCommand {
   static description = 'Update a record in a dataset';
@@ -11,6 +12,7 @@ export default class DatasetsUpdateRecord extends BaseCommand {
 
   static flags = {
     ...BaseCommand.baseFlags,
+    'idempotency-key': datasetIdempotencyKeyFlag,
     fields: Flags.string({
       description: 'Field updates as JSON object, e.g. \'{"status":"done"}\'',
       required: true,
@@ -32,7 +34,7 @@ export default class DatasetsUpdateRecord extends BaseCommand {
       operation: 'update',
       recordId: args['record-id'],
       fields,
-    });
+    }, flags['idempotency-key']);
     this.handleApiError(response);
 
     if (!this.jsonEnabled()) {

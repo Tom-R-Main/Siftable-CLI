@@ -10,8 +10,8 @@
           "anthropic-version": "2023-06-01"
         },
         "body": {
-          "model": "claude-sonnet-4-6",
-          "max_tokens": 14336,
+          "model": "claude-opus-5",
+          "max_tokens": 16000,
           "system": "You are a helpful assistant with access to tools. Use tools when they're relevant.",
           "messages": [
             {"role": "user", "content": "What's the weather in Paris?"}
@@ -27,7 +27,8 @@
               }
             }
           ],
-          "thinking": {"type": "enabled", "budget_tokens": 6144},
+          "thinking": {"type": "adaptive"},
+          "output_config": {"effort": "medium"},
           "tool_choice": {"type": "auto", "disable_parallel_tool_use": true}
         }
       },
@@ -37,7 +38,7 @@
           "id": "msg_01XfReplayToolUse",
           "type": "message",
           "role": "assistant",
-          "model": "claude-sonnet-4-6",
+          "model": "claude-opus-5",
           "content": [
             {
               "type": "thinking",

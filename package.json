@@ -1,6 +1,6 @@
 {
   "name": "@siftable/cli",
-  "version": "0.5.35",
+  "version": "0.9.0",
   "description": "Siftable CLI — human planning tasks, executable agent work queues, knowledge, and automation tools",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -10,20 +10,81 @@
     "exf": "bin/run.js"
   },
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
-    "manifest": "oclif manifest",
-    "interactive:dev": "npm run build && npm run manifest && (cd interactive-tui && bun run native:build) && node ./bin/run.js interactive",
+    "prebuild": "npm run build --workspace @siftable/mcp-server && npm run build --workspace @siftable/tabular-import && npm run build --workspace @siftable/taster",
+    "build": "node scripts/clean-dist.mjs && tsc && node -e \"const fs=require('node:fs');fs.mkdirSync('dist/lib/vendor',{recursive:true});for(const name of ['datasetQueryContract','leadDiscovery','leadDiscoveryCommandContract','agentWorkSecrets'])fs.copyFileSync('../shared/dist/types/'+name+'.js','dist/lib/vendor/'+name+'.js')\" && npm run build:taster-vendor",
+    "build:taster-vendor": "tsc -p src/lib/review/tsconfig.vendor.json && node -e \"const fs=require('node:fs');const v='dist/lib/vendor/taster';fs.cpSync('../taster/policy/default',v+'/policy/default',{recursive:true});fs.mkdirSync(v+'/trusted/scripts/ci',{recursive:true});for(const name of ['ratchetGrowth.mjs','ratchetGrowthRead.mjs'])fs.copyFileSync('../../scripts/ci/'+name,v+'/trusted/scripts/ci/'+name)\"",
+    "typecheck": "tsc --noEmit && npm run typecheck:tui",
+    "lint": "node ../../scripts/lint/run.mjs project @siftable/cli",
+    "typecheck:tui": "tsc --noEmit -p interactive-tui/tsconfig.json",
+    "manifest": "npm run build && node scripts/write-manifest.mjs",
+    "interactive:dev": "npm run manifest && (cd interactive-tui && bun run native:build) && SIFT_INTERACTIVE_RUNTIME=source node ./bin/run.js interactive",
     "interactive:help": "npm run build && npm run manifest && node ./bin/run.js interactive --help",
+    "package:interactive": "npm run build --workspace @siftable/cli && bun install --cwd interactive-tui --frozen-lockfile && npm run native:release --workspace @siftable/cli && bun run interactive-tui/scripts/build-packaged-runtime.mjs",
     "interactive:image-fixtures": "node scripts/create-interactive-image-fixtures.mjs",
     "bench:tui-actions": "tsx scripts/bench-tui-actions.ts",
     "explorer:eval": "tsx scripts/eval-repo-explorer.ts",
     "test": "jest",
+    "test:harness": "cd interactive-tui && bun run pretest && bun test test/agentHarnessBoundary.test.ts test/agentHarnessWorkTools.test.ts test/compaction.test.ts test/modelLimits.test.ts test/toolAuthorization.test.ts test/toolRegistration.test.ts test/steering.test.ts test/commandPolicy.test.ts test/packagedRuntime.test.ts test/headless.test.ts test/sessionServer.test.ts test/sessionMode.test.ts test/providerTransport.test.ts test/providerJournal.test.ts test/providerReceiptSchema.test.ts test/requestInspection.test.ts test/candidateVerification.test.ts test/completionVerification.test.ts test/verification.integration.test.ts test/sessionOutput.test.ts test/toolResultProjection.test.ts test/searchToolResult.test.ts test/repetition.test.ts test/settlement.test.ts test/requestBudget.test.ts && bun test test/agent-persistence.test.ts && bun test test/compact.test.ts && bun test test/rollout.test.ts",
+    "test:jest": "jest",
+    "test:tui": "cd interactive-tui && bun run pretest && bun test",
     "test:vitest": "vitest run --config vitest.config.ts",
+    "test-coverage": "npm run test:jest -- --coverage && npm run test:vitest -- --coverage.enabled",
+    "native:build": "cd interactive-tui && bash scripts/build-native.sh",
     "native:release": "cd interactive-tui && bash scripts/build-native-release.sh",
-    "verify:package": "node scripts/verify-package-imports.mjs",
+    "verify:test-typecheck-boundaries": "node scripts/verify-test-typecheck-boundaries.mjs",
+    "verify:harness": "npm run typecheck:tui && vitest run test/commands/interactive.chat-agent.test.ts --config vitest.config.ts && npm run test:harness",
+    "verify:package": "npm run package:interactive && npm run verify:harness && node scripts/verify-package-imports.mjs && npm run test:packaged",
+    "test:packaged": "node --test scripts/verify-packaged-runtime.test.mjs && node scripts/verify-packaged-runtime.mjs",
     "prepublishOnly": "npm run build",
-    "prepack": "npm run build && npx oclif manifest && npm run native:release && npm run verify:package"
+    "prepack": "npm run manifest && npm run verify:package"
+  },
+  "nx": {
+    "implicitDependencies": ["@siftable/taster", "@siftable/taster-runner"],
+    "targets": {
+      "build": {
+        "inputs": [
+          "production",
+          "^production",
+          "buildEnvironment",
+          "{workspaceRoot}/scripts/ci/ratchetGrowth.mjs",
+          "{workspaceRoot}/scripts/ci/ratchetGrowthRead.mjs"
+        ]
+      },
+      "lint": {
+        "inputs": [
+          "default",
+          "^default",
+          "{workspaceRoot}/eslint.config.mjs",
+          "{workspaceRoot}/eslint-suppressions.json",
+          "{workspaceRoot}/scripts/lint/**/*"
+        ]
+      },
+      "typecheck": {
+        "dependsOn": ["build"]
+      },
+      "test": {
+        "dependsOn": ["test:vitest", "test:harness"]
+      },
+      "test:vitest": {
+        "dependsOn": ["build"]
+      },
+      "test:harness": {
+        "dependsOn": ["build"]
+      },
+      "test-coverage": {
+        "dependsOn": ["build"]
+      },
+      "test:packaged": {
+        "cache": false
+      },
+      "verify:package": {
+        "cache": false
+      },
+      "verify:test-typecheck-boundaries": {
+        "dependsOn": ["build"],
+        "cache": false
+      }
+    }
   },
   "oclif": {
     "bin": "sift",
@@ -43,6 +104,12 @@
       "auth": {
         "description": "Authentication commands"
       },
+      "machine": {
+        "description": "Enroll this Linux machine as a contained supervisor"
+      },
+      "setup": {
+        "description": "First-run setup plans: prepare, check and change them; run them on the plan page"
+      },
       "tasks": {
         "description": "Human planning tasks"
       },
@@ -61,8 +128,62 @@
       "organizations": {
         "description": "Organizations and companies"
       },
-      "codebase": {
-        "description": "Code indexing and search"
+      "lead-discovery": {
+        "description": "Governed external company discovery and review"
+      },
+      "lead-discovery:companies": {
+        "description": "Prepare and run bounded company discovery"
+      },
+      "lead-discovery:runs": {
+        "description": "Recover durable discovery runs"
+      },
+      "lead-discovery:candidates": {
+        "description": "List and review source-backed discovery candidates"
+      },
+      "lead-discovery:import-plan": {
+        "description": "Create and recover review-gated discovery import plans"
+      },
+      "lead-discovery:origin": {
+        "description": "Inspect persisted discovery origin evidence"
+      },
+      "crm": {
+        "description": "Customer relationship records"
+      },
+      "crm:organizations": {
+        "description": "CRM organizations, excluding collaborative workspaces"
+      },
+      "crm:import": {
+        "description": "Durable, review-gated CRM import plans"
+      },
+      "context": {
+        "description": "Current principal, owner, project, and checkout context"
+      },
+      "workspaces": {
+        "description": "Collaborative workspace discovery and local selection"
+      },
+      "relationships": {
+        "description": "Headless relationship actions and collaboration"
+      },
+      "relationships:actions": {
+        "description": "Discover and run canonical relationship actions"
+      },
+      "relationships:meetings": {
+        "description": "Cited meeting briefs, evidence, and review-gated relationship changes"
+      },
+      "relationships:meetings:brief": {
+        "description": "Compose and inspect cited relationship meeting briefs"
+      },
+      "relationships:meetings:evidence": {
+        "description": "Capture and inspect consent-aware meeting evidence"
+      },
+      "relationships:meetings:proposals": {
+        "description": "Create, review, and atomically apply meeting-derived relationship proposals"
+      },
+      "relationships:queues": {
+        "description": "Workspace relationship team queues"
+      },
+      "relationships:handoffs": {
+        "description": "Source-linked outcome handoff receipts"
       },
       "code": {
         "description": "Code tools"
@@ -70,15 +191,24 @@
       "code:memory": {
         "description": "Code memory and facts"
       },
-    "vault": {
-      "description": "Secrets vault"
-    },
-    "capabilities": {
-      "description": "Server-brokered Vault capabilities"
-    },
-    "grants": {
-      "description": "Ephemeral provider credentials for reviewed local execution"
-    },
+      "vault": {
+        "description": "Vault metadata and governed destination-bound materialization"
+      },
+      "vault:materialize": {
+        "description": "Materialize approved Vault fields or environment bundles to exact local destinations"
+      },
+      "env": {
+        "description": "Declarative environment contracts and governed Vault bundle materialization"
+      },
+      "env:push": {
+        "description": "Review and atomically push an explicit local-authoritative dotenv source into Vault"
+      },
+      "capabilities": {
+        "description": "Server-brokered Vault capabilities"
+      },
+      "grants": {
+        "description": "Ephemeral provider credentials for reviewed local execution"
+      },
       "datasets": {
         "description": "Structured datasets"
       },
@@ -99,6 +229,12 @@
       },
       "work": {
         "description": "Executable agent work queue"
+      },
+      "compute": {
+        "description": "Task-bound managed compute grants (human-approved worker launches)"
+      },
+      "work:collaboration": {
+        "description": "Durable participant mailboxes and event cursors for agent work"
       },
       "worker": {
         "description": "Local executable work runners"
@@ -130,30 +266,24 @@
     }
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.104.1",
     "@modelcontextprotocol/sdk": "^1.12.1",
-    "@morphllm/morphsdk": "^0.2.177",
     "@oclif/core": "^4",
     "@oclif/plugin-help": "^6",
-    "@opentui/core": "^0.3.1",
-    "@opentui/keymap": "^0.3.1",
-    "@opentui/solid": "^0.3.1",
-    "@siftable/tabular-import": "*",
-    "@siftable/mcp-server": "^1.2.17",
-    "pg": "^8.20.0",
-    "sharp": "^0.34.4",
-    "solid-js": "^1.9.10"
+    "@siftable/tabular-import": "^0.2.0",
+    "@siftable/mcp-server": "^1.5.1",
+    "typescript": "npm:@typescript/typescript6@6.0.2",
+    "yaml": "^2.8.2"
   },
   "devDependencies": {
+    "@cfworker/json-schema": "^4.1.1",
+    "@morphllm/morphsdk": "^0.2.177",
     "@types/jest": "^29.5.0",
     "@types/node": "^20.0.0",
-    "@types/pg": "^8.20.0",
     "jest": "^29.7.0",
     "nock": "^13.5.0",
     "oclif": "^4",
-    "ts-jest": "^29.1.0",
-    "tsx": "^4.19.0",
-    "typescript": "~5.9.3",
-    "vitest": "^4.1.5"
+    "sharp": "^0.35.4"
   },
   "engines": {
     "node": ">=18.0.0"
@@ -182,22 +312,7 @@
     "bin",
     "LICENSE",
     "oclif.manifest.json",
-    "interactive-tui/*.ts",
-    "interactive-tui/*.tsx",
-    "interactive-tui/*.toml",
-    "interactive-tui/build.zig",
-    "interactive-tui/native/*.ts",
-    "interactive-tui/native/*.zig",
-    "interactive-tui/native/lib*.dylib",
-    "interactive-tui/native/lib*.so",
-    "interactive-tui/native/lib*.dll",
-    "interactive-tui/native/cell-render",
-    "interactive-tui/scripts/build-native.sh",
-    "interactive-tui/scripts/build-native-release.sh",
-    "interactive-tui/planning/**/*",
-    "interactive-tui/assets/**/*",
-    "interactive-tui/skills/**/*",
-    "interactive-tui/openfunction/**/*"
+    "interactive-tui/runtime/**/*"
   ],
   "publishConfig": {
     "access": "public"

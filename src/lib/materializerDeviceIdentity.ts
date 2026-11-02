@@ -10,7 +10,7 @@ import {
   type KeyObject,
 } from 'node:crypto';
 import {spawn} from 'node:child_process';
-import {constants as fsConstants} from 'node:fs';
+import {constants as fsConstants, type Stats} from 'node:fs';
 import {chmod, lstat, mkdir, open, readFile, rename, rm} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import path from 'node:path';
@@ -40,6 +40,20 @@ export interface MaterializerDeviceIdentity {
 export interface MaterializerIdentityStore {
   read(account: string): Promise<Buffer | null>;
   write(account: string, value: Buffer): Promise<void>;
+  remove(account: string): Promise<void>;
+}
+
+/**
+ * Identifies the generated endpoint credential, not the surrounding hardware.
+ * Re-exporting through SPKI makes equivalent PEM encodings hash identically
+ * while preserving fingerprints already produced from Sift-generated keys.
+ */
+export function fingerprintMaterializerPublicKey(publicKeyPem: string): string {
+  const canonicalPublicKeyPem = createPublicKey(publicKeyPem)
+    .export({type: 'spki', format: 'pem'})
+    .toString()
+    .trim();
+  return createHash('sha256').update(canonicalPublicKeyPem).digest('hex');
 }
 
 export function buildMacOsKeychainWriteCommand(
@@ -148,6 +162,24 @@ export const macOsKeychainIdentityStore: MaterializerIdentityStore = {
       throw new Error('Unable to verify the Vault materializer identity in macOS Keychain');
     }
   },
+
+  async remove(account: string): Promise<void> {
+    if (process.platform !== 'darwin') {
+      throw new Error(
+        'Timed Vault materialization sessions require a supported OS credential store (macOS Keychain is currently supported)',
+      );
+    }
+    const result = await runSecurity([
+      'delete-generic-password',
+      '-a',
+      account,
+      '-s',
+      KEYCHAIN_SERVICE,
+    ]);
+    if (result.exitCode !== 0 && !result.stderr.includes('could not be found')) {
+      throw new Error('Unable to remove the Vault materializer identity from macOS Keychain');
+    }
+  },
 };
 
 function accountFor(apiUrl: string): string {
@@ -228,12 +260,128 @@ function decryptPrivateKey(state: StoredIdentity, wrappingKey: Buffer): Buffer {
     'aes-256-gcm',
     wrappingKey,
     Buffer.from(state.iv, 'base64url'),
+    {authTagLength: 16},
   );
   decipher.setAuthTag(Buffer.from(state.authTag, 'base64url'));
   return Buffer.concat([
     decipher.update(Buffer.from(state.ciphertext, 'base64url')),
     decipher.final(),
   ]);
+}
+
+async function removePathIfSameFile(filePath: string, expected: Stats): Promise<void> {
+  try {
+    const current = await lstat(filePath);
+    if (current.dev === expected.dev && current.ino === expected.ino) {
+      await rm(filePath);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
+
+async function tryAcquireLinuxLock(lockPath: string): Promise<(() => Promise<void>) | null> {
+  const lockHandle = await open(
+    lockPath,
+    fsConstants.O_CREAT | fsConstants.O_RDWR | (fsConstants.O_NOFOLLOW ?? 0),
+    0o600,
+  );
+  let child;
+  try {
+    await lockHandle.chmod(0o600);
+    const openedStat = await lockHandle.stat();
+    const current = await lstat(lockPath);
+    if (current.dev !== openedStat.dev || current.ino !== openedStat.ino) {
+      throw new Error('Vault materializer identity lock ownership changed before acquisition');
+    }
+    child = spawn(
+      '/bin/sh',
+      [
+        '-c',
+        'flock -n -E 75 3 || exit $?; printf "sift-lock-ready\\n"; IFS= read -r _ || true',
+      ],
+      {
+        stdio: ['pipe', 'pipe', 'pipe', lockHandle.fd],
+        env: {PATH: '/usr/bin:/bin'},
+      },
+    );
+  } catch (error) {
+    await lockHandle.close();
+    throw error;
+  }
+  const childStdin = child.stdin;
+  const childStdout = child.stdout;
+  const childStderr = child.stderr;
+  if (!childStdin || !childStdout || !childStderr) {
+    child.kill('SIGTERM');
+    await lockHandle.close();
+    throw new Error('Vault materializer identity lock helper did not expose required pipes');
+  }
+  let output = '';
+  let stderr = '';
+  let spawnError: Error | null = null;
+  let stdinError: Error | null = null;
+  childStderr.on('data', chunk => {
+    stderr = `${stderr}${chunk.toString()}`.slice(-512);
+  });
+  childStdin.on('error', error => {
+    stdinError = error;
+  });
+  const ready = new Promise<'ready' | 'closed'>(resolve => {
+    childStdout.on('data', chunk => {
+      output += chunk.toString();
+      if (output.includes('sift-lock-ready\n')) resolve('ready');
+    });
+    child.once('error', error => {
+      spawnError = error;
+      resolve('closed');
+    });
+    child.once('close', () => resolve('closed'));
+  });
+  const closed = new Promise<{code: number | null; signal: NodeJS.Signals | null}>(resolve => {
+    child.once('close', (code, signal) => resolve({code, signal}));
+  });
+  // A contending helper may exit while the parent's descriptor close yields.
+  // Subscribe first so its exit (and any spawn error) cannot be lost.
+  try {
+    await lockHandle.close();
+  } catch (error) {
+    child.kill('SIGTERM');
+    childStdin.end();
+    await closed;
+    throw error;
+  }
+  const outcome = await Promise.race([
+    ready,
+    delay(LOCK_WAIT_MILLISECONDS).then(() => 'timeout' as const),
+  ]);
+  if (outcome === 'timeout') {
+    child.kill('SIGTERM');
+    childStdin.end();
+    await closed;
+    throw new Error('Vault materializer identity lock helper did not become ready');
+  }
+  if (outcome === 'closed') {
+    const result = await closed;
+    if (spawnError) {
+      throw new Error('Vault materializer identity on Linux requires the util-linux flock command');
+    }
+    if (result.code === 75) return null;
+    const detail = stderr.trim() ? `: ${stderr.trim()}` : '';
+    throw new Error(
+      `Vault materializer identity lock helper exited with ${result.signal ?? `code ${result.code ?? 'unknown'}`}${detail}`,
+    );
+  }
+  return async () => {
+    childStdin.end();
+    const result = await closed;
+    if (result.code !== 0 || stdinError) {
+      const detail = stderr.trim() ? `: ${stderr.trim()}` : '';
+      throw new Error(
+        `Vault materializer identity lock helper exited with ${result.signal ?? `code ${result.code ?? 'unknown'}`}${detail}`,
+      );
+    }
+  };
 }
 
 async function acquireLock(lockPath: string): Promise<() => Promise<void>> {
@@ -263,16 +411,36 @@ async function acquireLock(lockPath: string): Promise<() => Promise<void>> {
       await delay(100);
       continue;
     }
+    if (process.platform === 'linux') {
+      const release = await tryAcquireLinuxLock(lockPath);
+      if (release) return release;
+      if (Date.now() - startedAt >= LOCK_WAIT_MILLISECONDS) {
+        throw new Error('Another Siftable process is preparing the Vault materializer identity');
+      }
+      await delay(100);
+      continue;
+    }
+
     try {
       const handle = await open(
         lockPath,
         fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY,
         0o600,
       );
-      await handle.writeFile(String(process.pid));
-      await handle.close();
+      let ownedStat: Stats;
+      try {
+        await handle.writeFile(String(process.pid));
+        await handle.sync();
+        ownedStat = await handle.stat();
+        const current = await lstat(lockPath);
+        if (current.dev !== ownedStat.dev || current.ino !== ownedStat.ino) {
+          throw new Error('Vault materializer identity lock ownership changed during acquisition');
+        }
+      } finally {
+        await handle.close();
+      }
       return async () => {
-        await rm(lockPath, {force: true});
+        await removePathIfSameFile(lockPath, ownedStat);
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
@@ -323,8 +491,8 @@ async function writeStoredIdentity(
   } finally {
     await handle.close();
   }
+  await chmod(tempPath, 0o600);
   await rename(tempPath, filePath);
-  await chmod(filePath, 0o600);
 }
 
 function materializeIdentity(
@@ -343,7 +511,7 @@ function materializeIdentity(
     return {
       publicKeyPem,
       privateKey,
-      fingerprint: createHash('sha256').update(publicKeyPem.trim()).digest('hex'),
+      fingerprint: fingerprintMaterializerPublicKey(publicKeyPem),
     };
   } finally {
     privateKeyPem.fill(0);
@@ -372,9 +540,11 @@ export async function loadOrCreateMaterializerDeviceIdentity(input: {
     }
     if (!state && existingWrappingKey) {
       existingWrappingKey.fill(0);
-      throw new Error(
-        'Vault materializer OS credential-store key exists but its encrypted state is missing',
-      );
+      // A process can terminate after committing the wrapping key but before
+      // atomically renaming the encrypted state into place. The missing state
+      // cannot be recovered, so remove the orphan while holding the origin
+      // lock and restart enrollment with a fresh identity.
+      await store.remove(account);
     }
     if (state && existingWrappingKey) {
       try {
@@ -392,19 +562,33 @@ export async function loadOrCreateMaterializerDeviceIdentity(input: {
     );
     const wrappingKey = randomBytes(32);
     try {
-      await store.write(account, wrappingKey);
-      const encrypted = encryptPrivateKey(privateKeyPem, wrappingKey);
-      await writeStoredIdentity(filePath, {
-        version: IDENTITY_VERSION,
-        algorithm: 'aes-256-gcm',
-        ...encrypted,
-        publicKeyPem,
-        createdAt: new Date().toISOString(),
-      });
+      try {
+        await store.write(account, wrappingKey);
+        const encrypted = encryptPrivateKey(privateKeyPem, wrappingKey);
+        await writeStoredIdentity(filePath, {
+          version: IDENTITY_VERSION,
+          algorithm: 'aes-256-gcm',
+          ...encrypted,
+          publicKeyPem,
+          createdAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        try {
+          await store.remove(account);
+        } catch (rollbackError) {
+          throw new Error(
+            `Vault materializer identity persistence failed and credential rollback failed: ${
+              rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+            }`,
+            {cause: error},
+          );
+        }
+        throw error;
+      }
       return {
         publicKeyPem,
         privateKey: pair.privateKey,
-        fingerprint: createHash('sha256').update(publicKeyPem.trim()).digest('hex'),
+        fingerprint: fingerprintMaterializerPublicKey(publicKeyPem),
       };
     } finally {
       privateKeyPem.fill(0);

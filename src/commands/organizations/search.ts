@@ -36,6 +36,10 @@ export default class OrganizationsSearch extends BaseCommand {
     const organizations = this.unwrapList(response, 'organizations');
 
     if (!this.jsonEnabled()) {
+      this.warn('`sift organizations` is a legacy mixed surface. Use `sift crm organizations list` for CRM-only rows or `sift workspaces list` for collaborative tenants.');
+    }
+
+    if (!this.jsonEnabled()) {
       renderTable(organizations, [
         {key: 'id', header: 'ID'},
         {key: 'name', header: 'Name'},

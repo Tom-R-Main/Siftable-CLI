@@ -10,10 +10,10 @@ import {buildCommandContext} from "../helpers/interactive-command-context";
 import type {MergePacket} from "../../interactive-tui/mergeGate";
 import type {ParentMergeView} from "../../interactive-tui/mergeView";
 
-function run(ctx: InteractiveCommandContext, name: string, args: string[] = []): void {
+function run(ctx: InteractiveCommandContext, name: string, args: string[] = []): void | Promise<void> {
   const cmd = interactiveCommands.find((c) => c.name === name || c.aliases?.includes(name));
   if (!cmd) throw new Error(`command not found: ${name}`);
-  void cmd.run(ctx, args);
+  return cmd.run(ctx, args);
 }
 
 function packet(over: Partial<MergePacket> = {}): MergePacket {
@@ -41,8 +41,8 @@ function packet(over: Partial<MergePacket> = {}): MergePacket {
 function view(over: Partial<ParentMergeView> = {}): ParentMergeView {
   return {
     rows: [
-      {sessionId: 2, branch: "sift/a", baseBranch: "main", status: "running", verdict: "ready_to_merge", files: 1, additions: 3, deletions: 1, behindBy: 0, blockers: []},
-      {sessionId: 3, branch: "sift/b", baseBranch: "main", status: "merge_blocked", verdict: "merge_blocked", files: 1, additions: 0, deletions: 0, behindBy: 2, blockers: ["conflicts with main in: x.ts"]},
+      {sessionId: 2, branch: "sift/a", baseBranch: "main", status: "running", verdict: "ready_to_merge", files: 1, additions: 3, deletions: 1, behindBy: 0, blockers: [], mergeEligibility: true, proofCode: "ready_proof_pass"},
+      {sessionId: 3, branch: "sift/b", baseBranch: "main", status: "merge_blocked", verdict: "merge_blocked", files: 1, additions: 0, deletions: 0, behindBy: 2, blockers: ["conflicts with main in: x.ts"], mergeEligibility: false, proofCode: "proof_receipt_missing"},
     ],
     readyCount: 1,
     blockedCount: 1,
@@ -78,20 +78,22 @@ describe("/merge", () => {
     expect(merge).not.toHaveBeenCalled();
     expect(lastText(messages)).toContain("Branches (");
     expect(lastText(messages)).toContain("1 ready · 1 blocked");
+    expect(lastText(messages)).toContain("proof: ready_proof_pass · merge eligible: yes");
+    expect(lastText(messages)).toContain("proof: proof_receipt_missing · merge eligible: no");
   });
 
-  it("lands a child and reports the new base + cleanup", () => {
+  it("lands a child and reports the new base + cleanup", async () => {
     const merge = jest.fn(() => ({ok: true as const, merged: true, packet: packet(), baseCommit: "abcdef1234567", cleaned: true}));
     const {ctx, messages} = buildCommandContext({
       sessions: {list: jest.fn(() => []), activeChildId: jest.fn(() => null), spawn: jest.fn(), enter: jest.fn(), leave: jest.fn(), review: jest.fn(), mergeView: jest.fn(), merge, rebase: jest.fn(), sendBack: jest.fn(), reject: jest.fn()},
     });
-    run(ctx, "merge", ["2"]);
+    await run(ctx, "merge", ["2"]);
     expect(merge).toHaveBeenCalledWith(2, {keep: false, message: undefined});
     expect(lastText(messages)).toContain("merged #2 → main (abcdef1)");
     expect(lastText(messages)).toContain("worktree + branch removed");
   });
 
-  it("surfaces blockers and the packet when the land is refused", () => {
+  it("surfaces blockers and the packet when the land is refused", async () => {
     const merge = jest.fn(() => ({
       ok: false as const,
       reason: "merge blocked: conflicts with main in: x.ts",
@@ -100,27 +102,27 @@ describe("/merge", () => {
     const {ctx, messages} = buildCommandContext({
       sessions: {list: jest.fn(() => []), activeChildId: jest.fn(() => null), spawn: jest.fn(), enter: jest.fn(), leave: jest.fn(), review: jest.fn(), mergeView: jest.fn(), merge, rebase: jest.fn(), sendBack: jest.fn(), reject: jest.fn()},
     });
-    run(ctx, "merge", ["2"]);
+    await run(ctx, "merge", ["2"]);
     expect(lastText(messages)).toContain("merge blocked");
     expect(lastText(messages)).toContain("conflicts with main");
   });
 
-  it("passes --keep and -m through", () => {
+  it("passes --keep and -m through", async () => {
     const merge = jest.fn(() => ({ok: true as const, merged: true, packet: packet(), baseCommit: "0000000aaaa", cleaned: false}));
     const {ctx, messages} = buildCommandContext({
       sessions: {list: jest.fn(() => []), activeChildId: jest.fn(() => null), spawn: jest.fn(), enter: jest.fn(), leave: jest.fn(), review: jest.fn(), mergeView: jest.fn(), merge, rebase: jest.fn(), sendBack: jest.fn(), reject: jest.fn()},
     });
-    run(ctx, "merge", ["2", "--keep", "-m", "ship it"]);
+    await run(ctx, "merge", ["2", "--keep", "-m", "ship it"]);
     expect(merge).toHaveBeenCalledWith(2, {keep: true, message: "ship it"});
     expect(lastText(messages)).toContain("worktree + branch kept");
   });
 
-  it("rejects a bad id without calling merge", () => {
+  it("rejects a bad id without calling merge", async () => {
     const merge = jest.fn();
     const {ctx, messages} = buildCommandContext({
       sessions: {list: jest.fn(() => []), activeChildId: jest.fn(() => null), spawn: jest.fn(), enter: jest.fn(), leave: jest.fn(), review: jest.fn(), mergeView: jest.fn(), merge, rebase: jest.fn(), sendBack: jest.fn(), reject: jest.fn()},
     });
-    run(ctx, "merge", ["nope"]);
+    await run(ctx, "merge", ["nope"]);
     expect(merge).not.toHaveBeenCalled();
     expect(lastText(messages)).toContain("not a session id");
   });

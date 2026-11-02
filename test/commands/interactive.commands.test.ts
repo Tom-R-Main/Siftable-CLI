@@ -1,3 +1,5 @@
+jest.mock('../../interactive-tui/prefs', () => ({loadPrefs: jest.fn(() => ({})), savePrefs: jest.fn(() => true)}));
+
 import {
   applyModelChoice,
   applyExplorerSettings,
@@ -7,6 +9,7 @@ import {
   ensureExplorerProviderKey,
   interactiveCommands,
   findModelChoice,
+  resolveModelChoiceEffort,
   runInteractiveCommand,
   commandSuggestions,
   type CommandMessage,
@@ -15,13 +18,23 @@ import {
 import {collectDailyReviewContext} from '../../src/lib/daily-review-context';
 import {rejectAllConfirms, resetBypass, setConfirmListener} from '../../interactive-tui/confirmGate';
 import {buildCommandContext as buildContext} from '../helpers/interactive-command-context';
-import {mkdtempSync, readFileSync, rmSync} from 'node:fs';
+import {existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
+import {rolloutPathForKey} from '../../interactive-tui/threadEngine';
 
 function restoreEnv(key: string, value: string | undefined): void {
   if (value === undefined) delete process.env[key];
   else process.env[key] = value;
+}
+
+async function withTemporaryHome(run: (temporaryHome: string) => Promise<void>): Promise<void> {
+  const temporaryHome = mkdtempSync(path.join(tmpdir(), 'sift-commands-home-'));
+  try {
+    await run(temporaryHome);
+  } finally {
+    rmSync(temporaryHome, {recursive: true, force: true});
+  }
 }
 
 describe('interactive command registry', () => {
@@ -29,6 +42,27 @@ describe('interactive command registry', () => {
     rejectAllConfirms();
     setConfirmListener(null);
     resetBypass();
+  });
+
+  it('routes DeepSeek aliases to V4 Flash 0731 only', () => {
+    expect(findModelChoice('deepseek')?.model).toBe('deepseek/deepseek-v4-flash-0731');
+    expect(findModelChoice('deepseek-v4-pro')?.model).toBe('deepseek/deepseek-v4-flash-0731');
+  });
+
+  it('routes GLM aliases to 5.3 Flash and exposes Normal/Fast at Max by default', () => {
+    const normal = findModelChoice('glm');
+    const fast = findModelChoice('glm-fast');
+    expect(normal).toMatchObject({
+      model: 'z-ai/glm-5.3-flash',
+      defaultEffort: 'max',
+    });
+    expect(fast).toMatchObject({
+      model: 'z-ai/glm-5.3-flash:nitro',
+      defaultEffort: 'max',
+    });
+    expect(resolveModelChoiceEffort(normal!)).toBe('max');
+    expect(resolveModelChoiceEffort(fast!, 'low')).toBe('low');
+    expect(findModelChoice('glm-5.2')?.model).toBe('z-ai/glm-5.2');
   });
 
   it('exposes command suggestions from registry metadata (visible commands only)', () => {
@@ -53,6 +87,8 @@ describe('interactive command registry', () => {
   });
 
   it('applies explorer settings to runtime environment without touching the main model', () => {
+    const previousApiKey = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
     const previousExplorer = process.env.SIFT_EXPLORER;
     const previousScout = process.env.SIFT_EXPLORER_SCOUT;
     const previousFanout = process.env.SIFT_EXPLORER_FANOUT;
@@ -83,6 +119,7 @@ describe('interactive command registry', () => {
       expect(process.env.SIFT_EXPLORER_BUDGET).toBe('cheap');
       expect(process.env.SIFT_EXPLORER_THOROUGHNESS).toBe('quick');
     } finally {
+      restoreEnv('OPENROUTER_API_KEY', previousApiKey);
       restoreEnv('SIFT_EXPLORER', previousExplorer);
       restoreEnv('SIFT_EXPLORER_SCOUT', previousScout);
       restoreEnv('SIFT_EXPLORER_FANOUT', previousFanout);
@@ -96,9 +133,10 @@ describe('interactive command registry', () => {
   });
 
   it('toggles warp-grep mode via SIFT_EXPLORER_WARPGREP and resets it for other modes', () => {
-    const keys = ['SIFT_EXPLORER', 'SIFT_EXPLORER_SCOUT', 'SIFT_EXPLORER_FANOUT', 'SIFT_EXPLORER_WARPGREP'];
+    const keys = ['OPENROUTER_API_KEY', 'SIFT_EXPLORER', 'SIFT_EXPLORER_SCOUT', 'SIFT_EXPLORER_FANOUT', 'SIFT_EXPLORER_WARPGREP'];
     const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
     try {
+      process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
       const warp = applyExplorerSettings({
         mode: 'warpgrep',
         modelId: DEFAULT_EXPLORER_SETTINGS.modelId,
@@ -162,7 +200,7 @@ describe('interactive command registry', () => {
     const {ctx, messages} = buildContext();
 
     await runInteractiveCommand(ctx, '/status');
-    expect(messages.at(-1)?.text).toContain('google/gemini-3.5-flash');
+    expect(messages.at(-1)?.text).toContain('google/gemini-3.8-flash');
     expect(messages.at(-1)?.text).toContain('queued:  2');
 
     await runInteractiveCommand(ctx, '/copy all');
@@ -193,7 +231,7 @@ describe('interactive command registry', () => {
 
   it('runs /compact and renders the savings report', async () => {
     const compactThread = jest.fn(async () => ({
-      engine: 'openfunction' as const,
+      engine: 'agent-harness' as const,
       ran: true,
       beforeTokens: 12000,
       afterTokens: 3000,
@@ -223,6 +261,121 @@ describe('interactive command registry', () => {
     await runInteractiveCommand(ctx, '/compact');
     expect(messages.at(-1)?.text).toContain('Nothing to compact');
     expect(messages.at(-1)?.text).toContain('server-side');
+  });
+
+  it('reports durable journal state even when context compaction is disabled', async () => {
+    const previous = process.env.SIFT_CONTEXT_COMPACTION;
+    const inspectThread = jest.fn(async () => ({
+      sessionId: 'stable-session-id',
+      eventCount: 17,
+      messageCount: 4,
+    }));
+    try {
+      process.env.SIFT_CONTEXT_COMPACTION = '0';
+      const {ctx, messages} = buildContext({inspectThread});
+
+      await runInteractiveCommand(ctx, '/threads');
+
+      expect(inspectThread).toHaveBeenCalledTimes(1);
+      expect(messages.at(-1)?.text).toContain('4 model-history message(s), 17 journal event(s)');
+      expect(messages.at(-1)?.text).toContain('session stable-session-id');
+      expect(messages.at(-1)?.text).not.toContain('Thread persistence is off');
+    } finally {
+      restoreEnv('SIFT_CONTEXT_COMPACTION', previous);
+    }
+  });
+
+  it('makes /clear reset model history before replacing the visible transcript', async () => {
+    const resetThread = jest.fn(async () => true);
+    const {ctx, messages} = buildContext({resetThread});
+
+    await runInteractiveCommand(ctx, '/clear');
+
+    expect(resetThread).toHaveBeenCalledTimes(1);
+    expect(messages).toEqual([{role: 'system', text: 'cleared.'}]);
+  });
+
+  it('leaves the visible transcript intact when /clear cannot reset the journal', async () => {
+    const {ctx, messages} = buildContext({resetThread: async () => false});
+    messages.push({role: 'assistant', text: 'keep this'});
+
+    await runInteractiveCommand(ctx, '/clear');
+
+    expect(messages).toContainEqual({role: 'assistant', text: 'keep this'});
+    expect(messages.at(-1)?.text).toContain('does not expose durable thread reset');
+  });
+
+  it('clears the active journal before deleting the matching legacy rollout', async () => {
+    await withTemporaryHome(async (temporaryHome) => {
+      const previous = process.env.SIFT_CONTEXT_COMPACTION;
+      const key = `commands-thread-clear-${process.pid}-${Date.now()}`;
+      const rolloutPath = rolloutPathForKey(temporaryHome, key);
+      const resetThread = jest.fn(async () => true);
+      try {
+        process.env.SIFT_CONTEXT_COMPACTION = '1';
+        mkdirSync(path.dirname(rolloutPath), {recursive: true});
+        writeFileSync(rolloutPath, '{"r":0,"t":"old question"}\n', {mode: 0o600});
+        const {ctx, messages} = buildContext({
+          conversationKey: () => key,
+          homeDir: () => temporaryHome,
+          resetThread,
+        });
+
+        await runInteractiveCommand(ctx, '/threads clear');
+
+        expect(resetThread).toHaveBeenCalledTimes(1);
+        expect(existsSync(rolloutPath)).toBe(false);
+        expect(messages.at(-1)?.text).toContain(`Cleared persisted thread for ${key}`);
+      } finally {
+        restoreEnv('SIFT_CONTEXT_COMPACTION', previous);
+      }
+    });
+  });
+
+  it('preserves the legacy rollout when the active journal cannot be reset', async () => {
+    await withTemporaryHome(async (temporaryHome) => {
+      const previous = process.env.SIFT_CONTEXT_COMPACTION;
+      const key = `commands-thread-reset-failure-${process.pid}-${Date.now()}`;
+      const rolloutPath = rolloutPathForKey(temporaryHome, key);
+      try {
+        process.env.SIFT_CONTEXT_COMPACTION = '1';
+        mkdirSync(path.dirname(rolloutPath), {recursive: true});
+        writeFileSync(rolloutPath, '{"r":0,"t":"keep me"}\n', {mode: 0o600});
+        const {ctx, messages} = buildContext({
+          conversationKey: () => key,
+          homeDir: () => temporaryHome,
+          resetThread: async () => {
+            throw new Error('journal unavailable');
+          },
+        });
+
+        await runInteractiveCommand(ctx, '/threads clear');
+
+        expect(existsSync(rolloutPath)).toBe(true);
+        expect(messages.at(-1)?.text).toContain('journal unavailable');
+      } finally {
+        restoreEnv('SIFT_CONTEXT_COMPACTION', previous);
+      }
+    });
+  });
+
+  it('fails closed when the active harness declines durable reset', async () => {
+    await withTemporaryHome(async (temporaryHome) => {
+      const key = `commands-thread-reset-unsupported-${process.pid}-${Date.now()}`;
+      const rolloutPath = rolloutPathForKey(temporaryHome, key);
+      mkdirSync(path.dirname(rolloutPath), {recursive: true});
+      writeFileSync(rolloutPath, '{"r":0,"t":"keep me"}\n', {mode: 0o600});
+      const {ctx, messages} = buildContext({
+        conversationKey: () => key,
+        homeDir: () => temporaryHome,
+        resetThread: async () => false,
+      });
+
+      await runInteractiveCommand(ctx, '/threads clear');
+
+      expect(existsSync(rolloutPath)).toBe(true);
+      expect(messages.at(-1)?.text).toContain('does not expose durable thread reset');
+    });
   });
 
   it('routes /copy targets to the right source (copy stays explicit via the command)', async () => {
@@ -332,6 +485,55 @@ describe('interactive command registry', () => {
     expect(messages.at(-1)?.text).toContain('Review proof');
   });
 
+  it('renders /work contract and proof summaries from one list read', async () => {
+    const {ctx, messages, apiClient} = buildContext();
+    (apiClient.listWorkItems as jest.Mock).mockResolvedValue({
+      statusCode: 200,
+      data: {workItems: [{
+        id: 'work-1',
+        title: 'Bounded row',
+        status: 'queued',
+        assignedAlias: {alias: 'codex'},
+        contractSummary: {
+          classification: 'bounded',
+          profile: 'coding',
+          verificationCommandCount: 2,
+          enabledActions: ['read', 'write', 'test'],
+        },
+        verificationState: 'unverified',
+        verificationResults: [{command: 'npm test', exitCode: 0}],
+      }]},
+    });
+
+    await runInteractiveCommand(ctx, '/work');
+
+    expect(apiClient.listWorkItems).toHaveBeenCalledTimes(1);
+    expect(messages.at(-1)?.text).toContain('bounded:coding · 1/2 proof · unverified');
+  });
+
+  it('falls back to zero for malformed contract-summary counts', async () => {
+    const {ctx, messages, apiClient} = buildContext();
+    (apiClient.listWorkItems as jest.Mock).mockResolvedValue({
+      statusCode: 200,
+      data: {workItems: [{
+        id: 'work-1',
+        title: 'Malformed counts',
+        status: 'queued',
+        contractSummary: {
+          classification: 'bounded',
+          profile: 'coding',
+          acceptanceCriteriaCount: 'unknown',
+          verificationCommandCount: 'unknown',
+        },
+      }]},
+    });
+
+    await runInteractiveCommand(ctx, '/work');
+
+    expect(messages.at(-1)?.text).toContain('bounded:coding · 0/0 proof');
+    expect(messages.at(-1)?.text).not.toContain('NaN');
+  });
+
   it('creates handoff work items from transcript, cwd, and explicit args', async () => {
     const {ctx, messages, createdWork} = buildContext();
 
@@ -345,10 +547,24 @@ describe('interactive command registry', () => {
         cwd: '/repo',
         files: ['packages/exf-cli/interactive-tui/index.tsx'],
       },
-      acceptanceCriteria: [{text: 'wraps', met: false}, {text: 'tests-pass', met: false}],
-      verificationCommands: ['npm-test'],
+      contract: {
+        version: 1,
+        profile: 'coding',
+        outcome: {acceptanceCriteria: [{text: 'wraps', met: false}, {text: 'tests-pass', met: false}]},
+        boundary: {writeScope: {include: ['packages/exf-cli/interactive-tui/index.tsx'], exclude: []}},
+        proof: {verificationCommands: ['npm-test']},
+      },
     });
     expect(messages.at(-1)?.text).toContain('Work item created: work-new');
+  });
+
+  it('surfaces invalid /handoff contracts without rejecting the command', async () => {
+    const {ctx, messages, createdWork} = buildContext();
+
+    await expect(runInteractiveCommand(ctx, '/handoff Missing proof --files=src/** --acceptance=works')).resolves.toBeUndefined();
+
+    expect(createdWork).toHaveLength(0);
+    expect(messages.at(-1)?.text).toContain('/handoff: Invalid Work Contract V1');
   });
 
   it('builds focus output from the reusable daily context collector', async () => {
@@ -369,10 +585,13 @@ describe('interactive command registry', () => {
     expect(apiClient.storeCodeMemory).not.toHaveBeenCalled();
 
     await runInteractiveCommand(ctx, '/remember This repo uses explicit work leases --category architecture');
-    expect(apiClient.storeCodeMemory).toHaveBeenCalledWith({
-      fact: 'This repo uses explicit work leases',
-      category: 'architecture',
-    });
+    expect(apiClient.storeCodeMemory).toHaveBeenCalledWith(
+      {
+        fact: 'This repo uses explicit work leases',
+        category: 'architecture',
+      },
+      expect.stringMatching(/^[0-9a-f-]{36}$/),
+    );
     expect(messages.at(-1)?.text).toContain('Remembered');
   });
 });
@@ -392,12 +611,39 @@ describe('daily review context library', () => {
       'workItems',
       'tasksInProgress',
       'tasksOpenPhase',
-      'codeRepositories',
+      'repositoryIdentities',
       'codeMemories',
       'calendar',
       'vaultMetadata',
     ]);
     expect(context.localGit.skipped).toBe(true);
     expect((context.sources.workItems as any).workItems).toHaveLength(2);
+  });
+});
+
+
+describe('Explorer credential restoration', () => {
+  const keys = ['OPENROUTER_API_KEY', 'SIFT_EXPLORER', 'SIFT_EXPLORER_SCOUT', 'SIFT_EXPLORER_FANOUT', 'SIFT_EXPLORER_WARPGREP', 'SIFT_EXPLORER_PROVIDER', 'SIFT_EXPLORER_MODEL', 'SIFT_EXPLORER_SCOUT_PROVIDER', 'SIFT_EXPLORER_SCOUT_MODEL', 'SIFT_EXPLORER_BUDGET', 'SIFT_EXPLORER_THOROUGHNESS'];
+  let prior: Array<string | undefined>;
+  beforeEach(() => { prior = keys.map((key) => process.env[key]); delete process.env.OPENROUTER_API_KEY; });
+  afterEach(() => keys.forEach((key, index) => restoreEnv(key, prior[index])));
+
+  it.each(['off', 'auto', 'deterministic', 'warpgrep'] as const)('does not require the inactive scout credential for %s', (mode) => {
+    expect(applyExplorerSettings({...DEFAULT_EXPLORER_SETTINGS, mode}).ok).toBe(true);
+    expect(process.env.SIFT_EXPLORER_FANOUT).toBe('0');
+  });
+
+  it('retains intended restored fanout settings and reports unavailable credentials', () => {
+    const settings = {...DEFAULT_EXPLORER_SETTINGS, mode: 'fanout' as const};
+    expect(applyExplorerSettings(settings).ok).toBe(false);
+    const restored = applyExplorerSettings(settings, {allowUnavailableModel: true});
+    expect(restored.ok).toBe(true);
+    expect(restored.message).toContain('active model');
+    expect(process.env.SIFT_EXPLORER_FANOUT).toBe('1');
+    expect(process.env.SIFT_EXPLORER_PROVIDER).toBe('openrouter');
+  });
+
+  it('excludes the apply-only Morph model from scout selection', () => {
+    expect(explorerModelChoices().some((choice) => choice.model === 'morph/morph-v3-large')).toBe(false);
   });
 });

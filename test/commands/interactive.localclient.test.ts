@@ -6,7 +6,7 @@ import {setBrainModel, type BrainEvent, type BrainAskResult} from '../../interac
 import {doneFallbackText, type SseEvent} from '../../interactive-tui/controlClient';
 import {rejectAllConfirms, resetBypass, resolveApproval, setConfirmListener} from '../../interactive-tui/confirmGate';
 
-/** Build a fake openfunctionAsk that replays a scripted event stream. */
+/** Build a fake agentHarnessAsk that replays a scripted event stream. */
 function fakeAsk(
   events: BrainEvent[],
   result: BrainAskResult = {text: ''},
@@ -24,13 +24,29 @@ describe('LocalControlClient (in-process transport)', () => {
     resetBypass();
   });
 
+  describe('steering', () => {
+    it('reports steering the turn did not settle so the UI can say where it went', async () => {
+      const client = new LocalControlClient({ask: fakeAsk([], {text: 'ok', status: 'completed', steeringCarried: 2})});
+      const received: SseEvent[] = [];
+      await client.send('hi', (e) => received.push(e));
+      expect(received).toContainEqual({type: 'status', status: 'steering_carried', count: 2});
+    });
+
+    it('passes steering through to the brain and returns its outcome unchanged', async () => {
+      const steer = jest.fn(() => ({accepted: false as const, reason: 'no turn is running'}));
+      const client = new LocalControlClient({steer});
+      await expect(client.steer('change course')).resolves.toEqual({accepted: false, reason: 'no turn is running'});
+      expect(steer).toHaveBeenCalledWith('change course');
+    });
+  });
+
   describe('send() event translation', () => {
     it('forwards token / tool_call / tool_result / done events unchanged to the TUI', async () => {
       const stream: BrainEvent[] = [
         {type: 'token', content: 'Hello '},
         {type: 'token', content: 'world'},
-        {type: 'tool_call', toolCall: {name: 'list_dir'}},
-        {type: 'tool_result', toolResult: {name: 'list_dir', success: true}},
+        {type: 'tool_call', toolCall: {name: 'list_dir', callId: 'c1'}},
+        {type: 'tool_result', toolResult: {name: 'list_dir', success: true, callId: 'c1'}},
         {type: 'done', message: {content: 'Hello world'}},
       ];
       const client = new LocalControlClient({ask: fakeAsk(stream)});
@@ -47,20 +63,22 @@ describe('LocalControlClient (in-process transport)', () => {
       ]);
       expect(received[0].content).toBe('Hello ');
       expect(received[2].toolCall?.name).toBe('list_dir');
+      expect(received[2].toolCall?.callId).toBe('c1');
       expect(received[3].toolResult?.success).toBe(true);
+      expect(received[3].toolResult?.callId).toBe('c1');
     });
 
     it('emits a trailing error event when the brain returns {error} (degraded path)', async () => {
       const client = new LocalControlClient({
-        ask: fakeAsk([], {text: '', error: 'OpenFunction brain unavailable: no key'}),
+        ask: fakeAsk([], {text: '', error: 'Siftable agent harness unavailable: no key'}),
       });
 
       const received: SseEvent[] = [];
-      await client.send('hi', (e) => received.push(e));
+      await expect(client.send('hi', (e) => received.push(e))).rejects.toThrow('agent harness unavailable');
 
       expect(received).toHaveLength(1);
       expect(received[0].type).toBe('error');
-      expect(received[0].error).toContain('brain unavailable');
+      expect(received[0].error).toContain('agent harness unavailable');
     });
 
     it('recovers final text from done.result.text when no deltas streamed', () => {
@@ -77,6 +95,28 @@ describe('LocalControlClient (in-process transport)', () => {
       ).rejects.toMatchObject({name: 'AbortError'});
     });
 
+    it('drains cancellation and preserves uncertain effects on both event and rejection', async () => {
+      let release!: () => void;
+      const settling = new Promise<void>((resolve) => { release = resolve; });
+      const controller = new AbortController();
+      const run = { status: 'cancelled', toolEffects: { state: 'partial', certainty: 'unknown', receipts: [], verificationRequired: 'inspect file state' } } as any;
+      const client = new LocalControlClient({ ask: async (_input, emit) => {
+        await settling;
+        emit({type: 'tool_result', toolResult: {name: 'write_file', success: false, executionOutcome: 'unknown'}});
+        return {text: '', status: 'interrupted', error: 'interrupted with effects', run};
+      } });
+      const events: SseEvent[] = [];
+      let settled = false;
+      const send = client.send('change a file', (event) => events.push(event), controller.signal).finally(() => { settled = true; });
+      controller.abort();
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      release();
+      await expect(send).rejects.toMatchObject({name: 'AbortError', run});
+      expect(events.map((event) => event.type)).toEqual(['status', 'tool_result', 'interrupted', 'error']);
+      expect(events.at(-1)?.error).toContain('Inspect the recorded results');
+    });
+
     it('lets the brain change the persistent session workdir and resolve later paths from it', async () => {
       const root = await mkdtemp(join(tmpdir(), 'sift-localclient-cwd-'));
       const previousCwd = process.env.SIFT_USER_CWD;
@@ -85,7 +125,7 @@ describe('LocalControlClient (in-process transport)', () => {
       await mkdir(join(root, 'nested'), {recursive: true});
       await writeFile(join(root, 'nested', 'target.txt'), 'dynamic cwd works\n', 'utf8');
       let readResult: any;
-      (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+      (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
         createChatAgent: async (config: Record<string, any>) => ({
           chat: async function* () {
             const changeDirectory = config.tools.find((tool: any) => tool.name === 'change_directory');
@@ -122,7 +162,7 @@ describe('LocalControlClient (in-process transport)', () => {
         else process.env.SIFT_USER_CWD = previousCwd;
         if (previousRoot === undefined) delete process.env.SIFT_WORKSPACE_ROOT;
         else process.env.SIFT_WORKSPACE_ROOT = previousRoot;
-        delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+        delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
         await rm(root, {recursive: true, force: true});
       }
     });
@@ -130,13 +170,14 @@ describe('LocalControlClient (in-process transport)', () => {
     it('runs terminal commands only after approval', async () => {
       const root = await mkdtemp(join(tmpdir(), 'sift-localclient-command-'));
       const previousCwd = process.env.SIFT_USER_CWD;
+      const previousShell = process.env.SHELL;
       let commandResult: any;
       let approvedCommand = '';
       setConfirmListener((req) => {
         approvedCommand = req.path;
         resolveApproval(req.id, 'allow');
       });
-      (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+      (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
         createChatAgent: async (config: Record<string, any>) => ({
           chat: async function* () {
             const runCommand = config.tools.find((tool: any) => tool.name === 'run_terminal_command');
@@ -151,6 +192,7 @@ describe('LocalControlClient (in-process transport)', () => {
         err: (error: string) => ({success: false, error}),
       };
       process.env.SIFT_USER_CWD = root;
+      delete process.env.SHELL;
       setBrainModel({provider: 'openrouter', model: 'command-smoke'});
 
       try {
@@ -163,7 +205,9 @@ describe('LocalControlClient (in-process transport)', () => {
       } finally {
         if (previousCwd === undefined) delete process.env.SIFT_USER_CWD;
         else process.env.SIFT_USER_CWD = previousCwd;
-        delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+        if (previousShell === undefined) delete process.env.SHELL;
+        else process.env.SHELL = previousShell;
+        delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
         await rm(root, {recursive: true, force: true});
       }
     });
@@ -175,13 +219,14 @@ describe('LocalControlClient (in-process transport)', () => {
       const previousExplorer = process.env.SIFT_EXPLORER;
       const previousScout = process.env.SIFT_EXPLORER_SCOUT;
       const previousFanout = process.env.SIFT_EXPLORER_FANOUT;
+      const previousOpenRouterKey = process.env.OPENROUTER_API_KEY;
       await mkdir(join(root, 'src'), {recursive: true});
       await writeFile(join(root, 'package.json'), '{"name":"headless-explorer-fixture"}\n', 'utf8');
       await writeFile(join(root, 'src', 'fsEngine.ts'), 'export const marker = "local search";\n', 'utf8');
       await writeFile(join(root, 'src', 'brain.ts'), 'export const route = "local search routing";\n', 'utf8');
       await writeFile(join(root, 'src', 'scoutTarget.ts'), 'export const scoutMarker = "local search scout";\n', 'utf8');
       await writeFile(join(root, 'src', 'fanoutTarget.ts'), 'export const fanoutMarker = "local search fanout";\n', 'utf8');
-      (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__ = {
+      (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__ = {
         createChatAgent: async (config: Record<string, unknown>) => ({
           chat: async function* (message: unknown) {
             const name = String(config.name || '');
@@ -232,6 +277,9 @@ describe('LocalControlClient (in-process transport)', () => {
       };
       process.env.SIFT_USER_CWD = root;
       process.env.SIFT_EXPLORER_SCOUT = '1';
+      // The injected harness never dispatches HTTP, but the real routing seam
+      // still requires a credential before starting a scout.
+      process.env.OPENROUTER_API_KEY = 'local-transport-test-placeholder';
       delete process.env.SIFT_EXPLORER_FANOUT;
       setBrainModel({provider: 'openrouter', model: 'headless-smoke'});
 
@@ -288,30 +336,39 @@ describe('LocalControlClient (in-process transport)', () => {
         else process.env.SIFT_EXPLORER_SCOUT = previousScout;
         if (previousFanout === undefined) delete process.env.SIFT_EXPLORER_FANOUT;
         else process.env.SIFT_EXPLORER_FANOUT = previousFanout;
-        delete (globalThis as Record<string, unknown>).__EXECUTERM_OPENFUNCTION__;
+        if (previousOpenRouterKey === undefined) delete process.env.OPENROUTER_API_KEY;
+        else process.env.OPENROUTER_API_KEY = previousOpenRouterKey;
+        delete (globalThis as Record<string, unknown>).__SIFT_AGENT_HARNESS__;
         await rm(root, {recursive: true, force: true});
       }
     });
   });
 
   describe('state()', () => {
-    it('reports authenticated when a token is present', async () => {
+    it('reports authenticated when the selected provider credential is present', async () => {
       const client = new LocalControlClient({
-        getToken: () => 'sift_pat_x',
-        getModel: () => ({provider: 'openrouter', model: 'google/gemini-3.5-flash'}),
+        getToken: () => undefined,
+        hasProviderCredential: () => true,
+        getModel: () => ({provider: 'openrouter', model: 'google/gemini-3.8-flash'}),
       });
       const s = await client.state();
       expect(s.available).toBe(true);
       expect(s.authStatus).toBe('authenticated');
-      expect(s.model?.model).toBe('google/gemini-3.5-flash');
+      expect(s.model?.model).toBe('google/gemini-3.8-flash');
       expect(s.context?.surface).toBe('local');
     });
 
     it('reports unauthenticated when no token is present (degraded)', async () => {
-      const client = new LocalControlClient({getToken: () => undefined});
+      const client = new LocalControlClient({getToken: () => undefined, hasProviderCredential: () => false});
       const s = await client.state();
       expect(s.available).toBe(false);
       expect(s.authStatus).toBe('unauthenticated');
+    });
+
+    it('does not treat a hosted PAT as authentication for the local model provider', async () => {
+      const client = new LocalControlClient({ getToken: () => 'hosted-only', hasProviderCredential: () => false,
+        getModel: () => ({provider: 'meta', model: 'fixture'}) });
+      expect(await client.state()).toMatchObject({available: false, authStatus: 'unauthenticated'});
     });
   });
 
@@ -334,7 +391,7 @@ describe('LocalControlClient (in-process transport)', () => {
 
   describe('compact()', () => {
     it('delegates to the brain compaction and returns its report', async () => {
-      const report = {engine: 'openfunction' as const, ran: true, beforeTokens: 100, afterTokens: 40, prunedMessages: 0, summarized: true};
+      const report = {engine: 'agent-harness' as const, ran: true, beforeTokens: 100, afterTokens: 40, prunedMessages: 0, summarized: true};
       const compact = jest.fn(async () => report);
       const client = new LocalControlClient({compact});
       const result = await client.compact();

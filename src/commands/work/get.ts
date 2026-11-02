@@ -27,6 +27,7 @@ export default class WorkGet extends BaseCommand {
     if (!this.jsonEnabled()) {
       this.log(`${workItem.title}`);
       this.log(`Status: ${workItem.status}`);
+      this.log(`Revision: ${workItem.revision}`);
       if (workItem.taskId) this.log(`Parent task: ${workItem.taskId}`);
       if (workItem.assignedAlias) this.log(`Agent: ${(workItem.assignedAlias as any).alias}`);
       if (workItem.claimOwner) this.log(`Claim owner: ${workItem.claimOwner}`);

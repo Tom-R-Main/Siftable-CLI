@@ -6,6 +6,7 @@ import {
   isBypassing,
   resetBypass,
   rejectAllConfirms,
+  setConfirmCancellationListener,
   setConfirmListener,
   pendingConfirmCount,
   type ConfirmRequest,
@@ -14,6 +15,7 @@ import {
 describe('sift interactive — write/edit confirm gate', () => {
   afterEach(() => {
     rejectAllConfirms();
+    setConfirmCancellationListener(null);
     setConfirmListener(null);
     resetBypass();
   });
@@ -50,6 +52,44 @@ describe('sift interactive — write/edit confirm gate', () => {
     expect(() => resolveConfirm('does-not-exist', true)).not.toThrow();
   });
 
+  it('aborts a pending approval as deny and ignores a stale bypass answer', async () => {
+    let captured: ConfirmRequest | null = null;
+    const cancelled: string[] = [];
+    setConfirmListener((req) => { captured = req; });
+    setConfirmCancellationListener((id) => cancelled.push(id));
+    const controller = new AbortController();
+    const approval = requestApproval(
+      {kind: 'command', path: 'echo stale', detail: 'generation A'},
+      controller.signal,
+    );
+    expect(pendingConfirmCount()).toBe(1);
+
+    controller.abort();
+    await expect(approval).resolves.toBe('deny');
+    expect(pendingConfirmCount()).toBe(0);
+    expect(cancelled).toEqual([captured!.id]);
+    resolveApproval(captured!.id, 'bypass');
+    expect(isBypassing()).toBe(false);
+  });
+
+  it('fails closed when the UI listener throws and ignores its stale request id', async () => {
+    let captured: ConfirmRequest | null = null;
+    const cancelled: string[] = [];
+    setConfirmCancellationListener((id) => cancelled.push(id));
+    setConfirmListener((req) => {
+      captured = req;
+      throw new Error('renderer failed');
+    });
+
+    await expect(requestApproval({kind: 'command', path: 'echo stale', detail: ''}))
+      .resolves.toBe('deny');
+    expect(pendingConfirmCount()).toBe(0);
+    expect(cancelled).toEqual([captured!.id]);
+
+    resolveApproval(captured!.id, 'bypass');
+    expect(isBypassing()).toBe(false);
+  });
+
   it('rejectAllConfirms denies every pending request', async () => {
     setConfirmListener(() => {});
     const a = requestConfirm({kind: 'write', path: '/repo/a', detail: 'a'});
@@ -60,11 +100,24 @@ describe('sift interactive — write/edit confirm gate', () => {
     await expect(b).resolves.toBe(false);
     expect(pendingConfirmCount()).toBe(0);
   });
+
+  it('revokes every id before cancellation callbacks can answer stale requests', async () => {
+    setConfirmListener(() => {});
+    setConfirmCancellationListener((id) => resolveApproval(id, 'bypass'));
+    const approval = requestApproval({kind: 'command', path: 'echo stale', detail: ''});
+
+    rejectAllConfirms();
+
+    await expect(approval).resolves.toBe('deny');
+    expect(pendingConfirmCount()).toBe(0);
+    expect(isBypassing()).toBe(false);
+  });
 });
 
 describe('sift interactive — 4-way approval gate', () => {
   afterEach(() => {
     rejectAllConfirms();
+    setConfirmCancellationListener(null);
     setConfirmListener(null);
     resetBypass();
   });

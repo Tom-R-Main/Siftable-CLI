@@ -1,12 +1,16 @@
 import {randomUUID} from "node:crypto";
+import {formatSessionInspection, type SessionInspection} from "./requestInspection";
 import {homedir} from "node:os";
 import {existsSync, readFileSync, rmSync} from "node:fs";
 import {isAbsolute, join} from "node:path";
 import {rolloutPathForKey} from "./threadEngine";
 import {SiftClient} from "@siftable/mcp-server/dist/exfClient.js";
+import { normalizeMetaModel } from './metaModels';
 import {doneFallbackText, eventTextDelta, type CompactionReport, type ControlTransport, type RunningAgent} from "./controlClient";
 import {collectDailyReviewContext, collectGitRecapSummary, collectLocalGitSummary, type DailyReviewContext} from "../dist/lib/daily-review-context.js";
 import {loadPrefs, savePrefs} from "./prefs";
+import {retireBrainAgents} from "./brain";
+import {forgetProviderKey, recallProviderKey, rememberProviderKey} from "./providerKeychain";
 import {listCollabSessions, type CollabBranchSnapshot, type CollabSessionSnapshot} from "./collabEngine";
 import {runSiftCrew} from "./crewAdapter";
 import {
@@ -44,7 +48,10 @@ import type {
 } from "./childSessionController";
 import type {MergePacket} from "./mergeGate";
 import type {ParentMergeView} from "./mergeView";
-import type {WorkBoardItem, WorkBoardData} from "./workHubOverlay";
+import {formatReadyPacket, formatReadyProofDecision, type ReadyPacket} from "./workProof";
+import {formatWorkRow, type WorkBoardItem, type WorkBoardData, type WorkContractDisplay} from "./workHubOverlay";
+import {requireBuiltWorkContract} from "../src/lib/work-contract.js";
+import type {WorkContractV1} from "@siftable/mcp-server/dist/exfClient.js";
 
 export type CommandMessage = { role: "you" | "assistant" | "system" | "shell" | "tool"; text: string };
 
@@ -62,13 +69,13 @@ export interface ChildSessionActions {
   enter: (sessionId: number) => {ok: boolean; reason?: string; session?: ChildSessionRecord};
   leave: () => {ok: boolean; reason?: string};
   /** Run the lane-D ready-to-merge gate on a child (sets its status). */
-  review: (sessionId: number, opts?: ReviewChildOptions) => ReviewChildResult;
+  review: (sessionId: number, opts?: ReviewChildOptions) => ReviewChildResult | Promise<ReviewChildResult>;
   /** Read-only dashboard of every child's mergeability (lane E). */
   mergeView: () => ParentMergeView;
   /** Land a ready child onto the base via squash-merge (lane E). */
-  merge: (sessionId: number, opts?: MergeChildOptions) => MergeChildResult;
+  merge: (sessionId: number, opts?: MergeChildOptions) => MergeChildResult | Promise<MergeChildResult>;
   /** Replay a child onto the moved base; re-gate on success (lane F). */
-  rebase: (sessionId: number) => RebaseChildResult;
+  rebase: (sessionId: number) => RebaseChildResult | Promise<RebaseChildResult>;
   /** Resume a reviewed child, posting instructions into its thread (lane F). */
   sendBack: (sessionId: number, instruction: string) => SendBackChildResult;
   /** Reject a reviewed child (terminal, worktree + branch kept) (lane F). */
@@ -88,6 +95,10 @@ export interface InteractiveCommandContext {
   setCwd: (path: string) => void;
   /** Writable root for write/edit tools (repo root); empty if writes are off. */
   workspaceRoot: () => string;
+  /** Durable identity for the active parent or child conversation. */
+  conversationKey?: () => string;
+  /** Home directory used for legacy rollout files. Defaults to os.homedir(). */
+  homeDir?: () => string;
   push: (message: CommandMessage) => void;
   setMessages: (messages: CommandMessage[]) => void;
   /** Start an agent turn (queues if the agent is busy). `displayText` is what the
@@ -105,6 +116,17 @@ export interface InteractiveCommandContext {
   setAwaitingLogin: (value: boolean) => void;
   /** Force a context compaction on the active session's agent (/compact). */
   compactThread: () => Promise<CompactionReport>;
+  /** Reset the active live model-history journal. */
+  resetThread?: () => Promise<boolean>;
+  /** Inspect the active durable journal rather than the retired rollout mirror. */
+  readToolOutput?: (reference: number, offset?: number) => Promise<{seq: number; text: string; nextOffset: number; more: boolean; bytes: number}>;
+  verifyCandidate?: (argv: string[], files: string[]) => Promise<void>;
+  inspectThread?: () => Promise<{
+    sessionId: string;
+    eventCount: number;
+    messageCount: number;
+    inspection?: SessionInspection;
+  }>;
   /** mergeMaster child-session control (/spawn · /children · /enter · /leave). */
   sessions: ChildSessionActions;
 }
@@ -162,12 +184,14 @@ export interface ExplorerBudgetChoice {
 }
 
 // GPT-5.6 Codex models add `max`; older gpt-5.x OpenRouter models expose
-// low/med/high/xhigh. Anthropic and Gemini expose low/med/high (mapped to
-// thinking budgets on the Anthropic path).
+// low/med/high/xhigh. Claude Fable 5.1, Opus 5.5, and Sonnet 5.5
+// expose the full adaptive-effort ladder; thinking cannot be disabled.
 const GPT56_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const GPT5_EFFORTS = ["low", "medium", "high", "xhigh"];
-const CLAUDE_EFFORTS = ["low", "medium", "high"];
+const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const GEMINI_EFFORTS = ["low", "medium", "high"];
 const GLM_EFFORTS = ["high", "xhigh"];
+const GLM_53_FLASH_EFFORTS = ["low", "high", "max"];
 
 // Ordered by tier, not by when each was added: flagship brains first (best for
 // the main chat loop), then fast/scout models (Explorer defaults live here),
@@ -176,15 +200,26 @@ const GLM_EFFORTS = ["high", "xhigh"];
 export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
   // ── Flagship brains (reasoning-first) ──
   {
-    id: "codex/gpt-5.6-sol",
+    id: "codex/gpt-6.1-sol",
     provider: "codex",
-    model: "gpt-5.6-sol",
-    label: "GPT-5.6 Sol",
+    model: "gpt-6.1-sol",
+    label: "GPT-6.1 Sol",
     description: "ChatGPT/Codex account · flagship for complex work",
-    aliases: ["gpt-5.6", "sol", "gpt-5.6-sol", "codex", "gpt", "chatgpt"],
+    aliases: ["gpt-6.1", "sol", "gpt-6.1-sol", "gpt-6-sol", "gpt-5.6", "gpt-5.6-sol", "codex/gpt-6-sol", "codex/gpt-5.6-sol", "codex", "gpt", "chatgpt"],
     auth: "codex",
     reasoningEfforts: GPT56_EFFORTS,
     defaultEffort: "medium",
+  },
+  {
+    id: "codex/gpt-6-astra",
+    provider: "codex",
+    model: "gpt-6-astra",
+    label: "GPT-6 Astra",
+    description: "ChatGPT/Codex account · complex agentic work",
+    aliases: ["astra", "gpt-6", "gpt-6-astra"],
+    auth: "codex",
+    reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    defaultEffort: "low",
   },
   {
     id: "codex/gpt-5.6-terra",
@@ -195,6 +230,17 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     aliases: ["terra", "gpt-5.6-terra"],
     auth: "codex",
     reasoningEfforts: GPT56_EFFORTS,
+    defaultEffort: "medium",
+  },
+  {
+    id: "codex/gpt-6-luna",
+    provider: "codex",
+    model: "gpt-6-luna",
+    label: "GPT-6 Luna",
+    description: "ChatGPT/Codex account · fast, low-cost work",
+    aliases: ["luna-6", "gpt-6-luna"],
+    auth: "codex",
+    reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
     defaultEffort: "medium",
   },
   {
@@ -209,26 +255,79 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     defaultEffort: "medium",
   },
   {
-    // Door A: Opus via OpenRouter — rides the OpenRouter `reasoning` wiring.
-    id: "openrouter/anthropic/claude-opus-4.8",
+    // Door A: Opus 5.5 via OpenRouter, riding the OpenRouter `reasoning` wiring.
+    // Opus 5 is retired. The family aliases, OpenRouter slugs, and saved
+    // OpenRouter catalog ids resolve here; first-party ids and saved direct
+    // ids resolve to Door B, so a saved selection keeps its provider.
+    // Opus 5.5 defaults to medium effort.
+    id: "openrouter/anthropic/claude-opus-5.5",
     provider: "openrouter",
-    model: "anthropic/claude-opus-4.8",
-    label: "Claude Opus 4.8",
+    model: "anthropic/claude-opus-5.5",
+    label: "Claude Opus 5.5",
     description: "OpenRouter · 💸 premium",
-    aliases: ["opus", "claude-opus", "claude-opus-4.8"],
+    aliases: [
+      "opus",
+      "claude",
+      "claude-opus",
+      "opus-5.5",
+      "claude-opus-5.5",
+      "openrouter/anthropic/claude-opus-5",
+      "openrouter/anthropic/claude-opus-4.8",
+      "claude-opus-4.8",
+      "claude-opus-4.7",
+    ],
+    auth: "api-key",
+    reasoningEfforts: CLAUDE_EFFORTS,
+    defaultEffort: "medium",
+  },
+  {
+    // Door B: Opus 5.5 via the direct Anthropic API (adaptive thinking, no
+    // OpenRouter margin). Requires ANTHROPIC_API_KEY. Retired direct catalog
+    // ids and first-party model ids stay as aliases so saved direct
+    // selections resolve to this door rather than switching to OpenRouter.
+    id: "anthropic/claude-opus-5-5",
+    provider: "anthropic",
+    model: "claude-opus-5-5",
+    label: "Claude Opus 5.5 (Anthropic)",
+    description: "direct Anthropic API · adaptive thinking · 💸💸",
+    aliases: [
+      "opus-direct",
+      "claude-api",
+      "anthropic-opus",
+      "opus-5.5-direct",
+      "anthropic-opus-5.5",
+      "anthropic/claude-opus-5",
+      "anthropic/claude-opus-4-8",
+      "claude-opus-5",
+      "claude-opus-4-8",
+      "claude-opus-4-7",
+    ],
+    auth: "anthropic",
+    requiredEnv: "ANTHROPIC_API_KEY",
+    keyHint: "/key anthropic <key>",
+    reasoningEfforts: CLAUDE_EFFORTS,
+    defaultEffort: "medium",
+  },
+  {
+    // Claude Fable 5.1: Anthropic's most capable model. Thinking is always
+    // on; forced tool choice and sampling parameters are rejected.
+    id: "openrouter/anthropic/claude-fable-5.1",
+    provider: "openrouter",
+    model: "anthropic/claude-fable-5.1",
+    label: "Claude Fable 5.1",
+    description: "OpenRouter · most capable Claude · 💸💸💸",
+    aliases: ["fable", "claude-fable", "claude-fable-5.1"],
     auth: "api-key",
     reasoningEfforts: CLAUDE_EFFORTS,
     defaultEffort: "high",
   },
   {
-    // Door B: Opus via the direct Anthropic API (extended thinking, no
-    // OpenRouter margin). Requires ANTHROPIC_API_KEY.
-    id: "anthropic/claude-opus-4-8",
+    id: "anthropic/claude-fable-5-1",
     provider: "anthropic",
-    model: "claude-opus-4-8",
-    label: "Claude Opus 4.8 (Anthropic)",
-    description: "direct Anthropic API · thinking · 💸💸",
-    aliases: ["opus-direct", "claude-api", "anthropic-opus"],
+    model: "claude-fable-5-1",
+    label: "Claude Fable 5.1 (Anthropic)",
+    description: "direct Anthropic API · adaptive thinking · 30-day retention required · 💸💸💸",
+    aliases: ["fable-direct", "anthropic-fable"],
     auth: "anthropic",
     requiredEnv: "ANTHROPIC_API_KEY",
     keyHint: "/key anthropic <key>",
@@ -236,24 +335,93 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     defaultEffort: "high",
   },
   {
-    id: "openrouter/anthropic/claude-sonnet-4.6",
+    // Claude Sonnet 5.5 is the current Sonnet. Retired Sonnet aliases (5,
+    // 4.6, 4.5, 4) continue to select it: OpenRouter slugs and saved
+    // OpenRouter ids here, first-party ids on the direct door below.
+    id: "openrouter/anthropic/claude-sonnet-5.5",
     provider: "openrouter",
-    model: "anthropic/claude-sonnet-4.6",
-    label: "Claude Sonnet 4.6",
-    description: "OpenRouter",
-    aliases: ["claude", "sonnet", "claude-sonnet-4.6"],
+    model: "anthropic/claude-sonnet-5.5",
+    label: "Claude Sonnet 5.5",
+    description: "OpenRouter · everyday coding and agent work",
+    aliases: [
+      "sonnet",
+      "claude-sonnet",
+      "claude-sonnet-5.5",
+      "claude-sonnet-4.6",
+      "claude-sonnet-4.5",
+      "anthropic/claude-sonnet-5",
+      "anthropic/claude-sonnet-4.6",
+      "anthropic/claude-sonnet-4.5",
+      "anthropic/claude-sonnet-4",
+      "openrouter/anthropic/claude-sonnet-5",
+      "openrouter/anthropic/claude-sonnet-4.6",
+      "openrouter/anthropic/claude-sonnet-4.5",
+      "openrouter/anthropic/claude-sonnet-4",
+    ],
     auth: "api-key",
     reasoningEfforts: CLAUDE_EFFORTS,
-    defaultEffort: "medium",
+    defaultEffort: "high",
   },
   {
-    id: "openrouter/x-ai/grok-4.5",
+    id: "anthropic/claude-sonnet-5-5",
+    provider: "anthropic",
+    model: "claude-sonnet-5-5",
+    label: "Claude Sonnet 5.5 (Anthropic)",
+    description: "direct Anthropic API · adaptive thinking · 💸",
+    aliases: [
+      "sonnet-direct",
+      "anthropic-sonnet",
+      "claude-sonnet-5",
+      "claude-sonnet-4-6",
+      "claude-sonnet-4-5",
+      "claude-sonnet-4",
+    ],
+    auth: "anthropic",
+    requiredEnv: "ANTHROPIC_API_KEY",
+    keyHint: "/key anthropic <key>",
+    reasoningEfforts: CLAUDE_EFFORTS,
+    defaultEffort: "high",
+  },
+  {
+    id: "meta/muse-wonder-1.0",
+    provider: "meta",
+    model: "muse-wonder-1.0",
+    label: "Muse Wonder 1.0",
+    description: "direct Meta API · 1M context",
+    aliases: ["muse", "meta", "wonder", "muse-wonder", "muse-wonder-1.0"],
+    auth: "api-key",
+    requiredEnv: "META_API_KEY",
+    keyHint: "/key meta <key>",
+    reasoningEfforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
+  },
+  {
+    id: "meta/muse-spark-1.3",
+    provider: "meta",
+    model: "muse-spark-1.3",
+    label: "Muse Spark 1.3",
+    description: "direct Meta API · standard tier",
+    aliases: ["spark", "muse-spark", "muse-spark-1.3"],
+    auth: "api-key",
+    requiredEnv: "META_API_KEY",
+    keyHint: "/key meta <key>",
+    reasoningEfforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
+  },
+  {
+    id: "openrouter/x-ai/grok-4.6",
     provider: "openrouter",
-    model: "x-ai/grok-4.5",
-    label: "Grok 4.5",
-    description: "OpenRouter · balanced agentic coding",
+    model: "x-ai/grok-4.6",
+    label: "Grok 4.6",
+    description: "OpenRouter · xAI flagship for code and agentic work",
     aliases: [
       "grok",
+      "grok-4.6",
+      "grok-4-6",
+      "grok-46",
+      "x-ai/grok-4.6",
+      "x-ai/grok-4-6",
+      "openrouter:x-ai/grok-4.6",
+      "openrouter:x-ai/grok-4-6",
+      // Retired Grok 4.5 aliases continue to select the current model.
       "grok-4.5",
       "grok-4-5",
       "grok-45",
@@ -302,27 +470,97 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     auth: "api-key",
   },
   {
+    id: "openrouter/z-ai/glm-5.3-flash",
+    provider: "openrouter",
+    model: "z-ai/glm-5.3-flash",
+    label: "GLM 5.3 Flash · Normal",
+    description: "OpenRouter · lowest eligible price · 1× ceiling",
+    aliases: [
+      "glm",
+      "glm-5.3",
+      "glm-5.3-flash",
+      "glm-5-3-flash",
+      "z-ai/glm-5.3-flash",
+      "openrouter:z-ai/glm-5.3-flash",
+    ],
+    auth: "api-key",
+    reasoningEfforts: GLM_53_FLASH_EFFORTS,
+    defaultEffort: "max",
+  },
+  {
+    id: "openrouter/z-ai/glm-5.3-flash:nitro",
+    provider: "openrouter",
+    model: "z-ai/glm-5.3-flash:nitro",
+    label: "GLM 5.3 Flash · Fast",
+    description: "OpenRouter · throughput-first · ≤2× ceiling",
+    aliases: [
+      "glm-fast",
+      "glm-nitro",
+      "glm-5.3-flash:nitro",
+      "z-ai/glm-5.3-flash:nitro",
+      "openrouter:z-ai/glm-5.3-flash:nitro",
+    ],
+    auth: "api-key",
+    reasoningEfforts: GLM_53_FLASH_EFFORTS,
+    defaultEffort: "max",
+  },
+  {
     id: "openrouter/z-ai/glm-5.2",
     provider: "openrouter",
     model: "z-ai/glm-5.2",
     label: "GLM 5.2",
     description: "OpenRouter · 1M-context coding/reasoning",
-    aliases: ["glm", "glm-5.2", "glm-5", "glm-5.1", "glm-5-turbo", "z-ai/glm-5.2"],
+    aliases: ["glm-5.2", "glm-5", "glm-5.1", "glm-5-turbo", "z-ai/glm-5.2"],
     auth: "api-key",
     reasoningEfforts: GLM_EFFORTS,
     defaultEffort: "high",
   },
   // ── Fast / scout models (cheap, low-latency; Explorer defaults live here) ──
   {
-    id: "openrouter/google/gemini-3.5-flash",
+    id: "openrouter/google/gemini-3.8-flash",
     provider: "openrouter",
-    model: "google/gemini-3.5-flash",
-    label: "Gemini 3.5 Flash",
+    model: "google/gemini-3.8-flash",
+    label: "Gemini 3.8 Flash",
     description: "OpenRouter default",
-    aliases: ["gemini", "gemini-3.5-flash", "google/gemini-3.5-flash"],
+    aliases: [
+      "gemini",
+      "gemini-3.8-flash",
+      "google/gemini-3.8-flash",
+      "openrouter:google/gemini-3.8-flash",
+      // Retired Gemini Flash aliases and persisted ids select the current model.
+      "gemini-3.7-flash",
+      "google/gemini-3.7-flash",
+      "openrouter/google/gemini-3.7-flash",
+      "openrouter:google/gemini-3.7-flash",
+      "gemini-3.6-flash",
+      "google/gemini-3.6-flash",
+      "openrouter/google/gemini-3.6-flash",
+      "openrouter:google/gemini-3.6-flash",
+      "gemini-3.5-flash",
+      "google/gemini-3.5-flash",
+    ],
     auth: "api-key",
-    reasoningEfforts: CLAUDE_EFFORTS,
+    reasoningEfforts: GEMINI_EFFORTS,
     defaultEffort: "medium",
+  },
+  {
+    id: "openrouter/deepseek/deepseek-v4-flash-0731",
+    provider: "openrouter",
+    model: "deepseek/deepseek-v4-flash-0731",
+    label: "DeepSeek V4 Flash 0731",
+    description: "OpenRouter · 1M context · fast reasoning",
+    aliases: [
+      "deepseek",
+      "deepseek-v4-flash",
+      "deepseek-v4-flash-0731",
+      "deepseek-v4-pro",
+      "deepseek/deepseek-v4-flash",
+      "deepseek/deepseek-v4-flash-0731",
+      "deepseek/deepseek-v4-pro",
+    ],
+    auth: "api-key",
+    reasoningEfforts: ["none", "high", "max"],
+    defaultEffort: "high",
   },
   {
     id: "openrouter/google/gemini-3.1-flash-lite",
@@ -332,7 +570,7 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     description: "OpenRouter · cheap scout",
     aliases: ["flash-lite", "gemini-lite", "gemini-3.1-flash-lite", "google/gemini-3.1-flash-lite"],
     auth: "api-key",
-    reasoningEfforts: CLAUDE_EFFORTS,
+    reasoningEfforts: GEMINI_EFFORTS,
     defaultEffort: "low",
   },
   {
@@ -345,7 +583,7 @@ export const INTERACTIVE_MODEL_CHOICES: InteractiveModelChoice[] = [
     auth: "api-key",
     requiredEnv: "GEMINI_API_KEY",
     keyHint: "/key gemini <key>",
-    reasoningEfforts: CLAUDE_EFFORTS,
+    reasoningEfforts: GEMINI_EFFORTS,
     defaultEffort: "low",
   },
   {
@@ -456,7 +694,49 @@ export const DEFAULT_EXPLORER_SETTINGS: ExplorerSettings = {
 };
 
 export function explorerModelChoices(): InteractiveModelChoice[] {
-  return INTERACTIVE_MODEL_CHOICES.filter((choice) => choice.provider !== "codex");
+  return INTERACTIVE_MODEL_CHOICES.filter((choice) => choice.provider !== "codex" && choice.model !== "morph/morph-v3-large");
+}
+
+/**
+ * Catalog ids the user starred in the model picker (persisted prefs). Stored
+ * ids resolve through the same aliases as a saved model selection, so a star
+ * on a retired catalog id (e.g. `openrouter/anthropic/claude-opus-5`) follows
+ * the entry that replaced it. Ids that no longer resolve are kept verbatim.
+ */
+export function favoriteModelIds(): string[] {
+  const raw = loadPrefs().favorites;
+  if (!Array.isArray(raw)) return [];
+  const ids = raw
+    .filter((id): id is string => typeof id === "string")
+    .map((id) => resolveModelChoice(id)?.id ?? id);
+  return [...new Set(ids)];
+}
+
+/** Toggle a catalog id in favorites; returns the new list and what happened. */
+export function toggleFavoriteModel(id: string): { favorites: string[]; added: boolean; saved: boolean } {
+  const current = favoriteModelIds();
+  const added = !current.includes(id);
+  const favorites = added ? [...current, id] : current.filter((entry) => entry !== id);
+  const saved = savePrefs({ favorites });
+  return { favorites: saved ? favorites : current, added, saved };
+}
+
+/**
+ * Picker order: starred models first (catalog order), then everything else.
+ * The picker indexes into this array, so every model-stage lookup must use
+ * it instead of INTERACTIVE_MODEL_CHOICES directly.
+ */
+export function pickerModelChoices(): InteractiveModelChoice[] {
+  const favorites = new Set(favoriteModelIds());
+  const starred = INTERACTIVE_MODEL_CHOICES.filter((choice) => favorites.has(choice.id));
+  if (starred.length === 0) return INTERACTIVE_MODEL_CHOICES;
+  const rest = INTERACTIVE_MODEL_CHOICES.filter((choice) => !favorites.has(choice.id));
+  return [...starred, ...rest];
+}
+
+/** Label column width for picker rows: longest label plus breathing room. */
+export function pickerLabelWidth(): number {
+  return Math.max(...INTERACTIVE_MODEL_CHOICES.map((choice) => choice.label.length)) + 4;
 }
 
 export function explorerSettingsSummary(settings: ExplorerSettings): string {
@@ -558,8 +838,9 @@ function modelChoiceText(choice: InteractiveModelChoice): string {
 }
 
 function resolveModelChoice(raw: string): InteractiveModelChoice | null {
-  const id = raw.trim().toLowerCase();
-  if (!id) return null;
+  const rawId = raw.trim().toLowerCase();
+  if (!rawId) return null;
+  const id = normalizeMetaModel(rawId);
   return INTERACTIVE_MODEL_CHOICES.find((choice) => {
     const keys = [choice.id, choice.model, choice.label, choice.provider, ...(choice.aliases ?? [])];
     return keys.some((key) => key.toLowerCase() === id);
@@ -594,6 +875,38 @@ function providerKeyEnv(provider: string): string {
 function choiceKeyEnv(choice: InteractiveModelChoice): string | null {
   if (choice.provider === "codex") return null;
   return choice.requiredEnv ?? providerKeyEnv(choice.provider);
+}
+
+/**
+ * Fill unset provider key env vars from the system keychain. Silent and
+ * best-effort: runs at startup and before model selection so a remembered
+ * `/key` survives restarts with no repaste and no prompts. Never throws,
+ * never surfaces values.
+ */
+export function autoloadProviderKeysFromKeychain(): string[] {
+  const loaded: string[] = [];
+  const envVars = new Set<string>(["MORPH_API_KEY"]);
+  for (const choice of INTERACTIVE_MODEL_CHOICES) {
+    const envVar = choiceKeyEnv(choice);
+    if (envVar) envVars.add(envVar);
+  }
+  for (const envVar of envVars) {
+    if (process.env[envVar]) continue;
+    // Aggregate startup budget: a locked or crawling keychain hangs every
+    // recall, so stop at the first slow call instead of stalling startup.
+    const started = Date.now();
+    try {
+      const secret = recallProviderKey(envVar);
+      if (secret) {
+        process.env[envVar] = secret;
+        loaded.push(envVar);
+      }
+    } catch {
+      /* locked keychain, missing backend — stay session-scoped */
+    }
+    if (Date.now() - started >= 1500) break;
+  }
+  return loaded;
 }
 
 /**
@@ -636,11 +949,16 @@ export async function ensureExplorerProviderKey(ctx: InteractiveCommandContext):
   return null;
 }
 
-export function applyExplorerSettings(settings: ExplorerSettings): {ok: boolean; message: string} {
+export function applyExplorerSettings(
+  settings: ExplorerSettings,
+  options: {allowUnavailableModel?: boolean} = {},
+): {ok: boolean; message: string} {
   const model = explorerModelChoices().find((choice) => choice.id === settings.modelId);
   if (!model) return {ok: false, message: `Explorer model not found: ${settings.modelId}`};
-  const keyMessage = missingKeyMessage(model);
-  if (keyMessage) return {ok: false, message: keyMessage};
+  const keyMessage = modeUsesScoutModel(settings.mode)
+    ? missingKeyMessage({...model, requiredEnv: choiceKeyEnv(model) ?? undefined})
+    : null;
+  if (keyMessage && !options.allowUnavailableModel) return {ok: false, message: keyMessage};
 
   process.env.SIFT_EXPLORER_BUDGET = settings.budget;
   process.env.SIFT_EXPLORER_THOROUGHNESS = settings.budget === "cheap" ? "quick" : settings.budget === "deep" ? "deep" : "medium";
@@ -678,8 +996,10 @@ export function applyExplorerSettings(settings: ExplorerSettings): {ok: boolean;
     process.env.SIFT_EXPLORER_FANOUT = "0";
   }
 
-  savePrefs({explorer: {mode: settings.mode, modelId: settings.modelId, budget: settings.budget}});
-  return {ok: true, message: `Explorer -> ${explorerSettingsSummary(settings)}`};
+  if (!options.allowUnavailableModel) savePrefs({explorer: {mode: settings.mode, modelId: settings.modelId, budget: settings.budget}});
+  return {ok: true, message: keyMessage
+    ? `Explorer: ${keyMessage} Scouts will use the active model when its provider is available.`
+    : `Explorer -> ${explorerSettingsSummary(settings)}`};
 }
 
 /** Persist the selected brain model so it survives a restart. */
@@ -731,8 +1051,9 @@ async function selectCodexModel(ctx: InteractiveCommandContext, choice: Interact
 
 /**
  * Apply a resolved model choice (+ optional reasoning effort). Routes Codex
- * through its sign-in flow and direct-Anthropic through the API-key gate; both
- * the `/model <id>` command and the interactive picker funnel through here.
+ * through its sign-in flow and direct providers through their API-key gates.
+ * Both the slash command and picker use this path, which clears inherited
+ * reasoning effort when the new choice supplies none.
  */
 export async function applyModelChoice(
   ctx: InteractiveCommandContext,
@@ -748,6 +1069,10 @@ export async function applyModelChoice(
   // First-party providers need their own key in-env. Gate selection with a
   // clear hint instead of letting the first turn fail with a raw adapter error.
   const envVar = choiceKeyEnv(choice);
+  if (envVar && !process.env[envVar]) {
+    // A key remembered via `/key` on a previous launch unlocks silently here.
+    autoloadProviderKeysFromKeychain();
+  }
   if (envVar && !process.env[envVar]) {
     const hydrated = await hydrateProviderKeyFromVault(ctx, choice.provider, envVar);
     if (hydrated.ok) {
@@ -765,13 +1090,28 @@ export async function applyModelChoice(
   }
 
   try {
-    const result = await ctx.client.config({provider: choice.provider, model: choice.model, ...(effort ? {effort} : {})});
+    const selectedEffort = resolveModelChoiceEffort(choice, effort);
+    const result = await ctx.client.config({
+      provider: choice.provider,
+      model: choice.model,
+      // Empty effort resets the previous model's setting to the provider default.
+      effort: selectedEffort ?? '',
+    });
     ctx.setModel(result.model);
-    persistModelChoice(choice, effort);
-    if (!opts.quiet) ctx.push({role: "system", text: `model -> ${result.provider}/${result.model}${effortSuffix(effort)}`});
+    persistModelChoice(choice, selectedEffort);
+    if (!opts.quiet) {
+      ctx.push({role: "system", text: `model -> ${result.provider}/${result.model}${effortSuffix(selectedEffort)}`});
+    }
   } catch (err) {
     ctx.push({role: "system", text: `/model failed: ${err instanceof Error ? err.message : String(err)}`});
   }
+}
+
+export function resolveModelChoiceEffort(
+  choice: InteractiveModelChoice,
+  effort?: string,
+): string | undefined {
+  return effort ?? choice.defaultEffort;
 }
 
 /**
@@ -780,7 +1120,8 @@ export async function applyModelChoice(
  * message. This restores the *selection* only — it sets the brain to the saved
  * model/effort directly (including Codex) without triggering Codex sign-in or
  * vault key prompts at launch. Missing auth/keys surface in the status line and
- * on first use, exactly as they would for the default model.
+ * on first use, exactly as they would for the default model. An absent saved
+ * effort clears any setting inherited from the startup model.
  */
 export async function restoreSavedModel(ctx: InteractiveCommandContext): Promise<void> {
   const saved = loadPrefs().model;
@@ -791,7 +1132,7 @@ export async function restoreSavedModel(ctx: InteractiveCommandContext): Promise
     const result = await ctx.client.config({
       provider: choice.provider,
       model: choice.model,
-      ...(saved.effort ? {effort: saved.effort} : {}),
+      effort: saved.effort ?? '',
     });
     ctx.setModel(result.model);
   } catch {
@@ -818,6 +1159,11 @@ async function selectModel(ctx: InteractiveCommandContext, raw: string, effort?:
 
 function normalizeAdHocOpenRouterModel(model: string): string {
   const lower = model.trim().toLowerCase();
+  if (lower.includes("glm-5.3-flash") || lower.includes("glm-5-3-flash")) {
+    return lower.endsWith(":nitro")
+      ? "z-ai/glm-5.3-flash:nitro"
+      : "z-ai/glm-5.3-flash";
+  }
   const glmLike =
     lower === "glm"
     || /^glm[-_.]/.test(lower)
@@ -831,9 +1177,11 @@ function normalizeAdHocOpenRouterModel(model: string): string {
   return model;
 }
 
+/** Parse uncatalogued model IDs, retaining explicit direct-provider routes. */
 function parseAdHocModel(raw: string): {provider?: string; model: string} {
   const id = raw.trim();
   if (id.startsWith("openrouter/")) return {provider: "openrouter", model: normalizeAdHocOpenRouterModel(id.slice("openrouter/".length))};
+  if (id.startsWith("meta/")) return {provider: "meta", model: id.slice("meta/".length)};
   if (id.startsWith("openai/")) return {provider: "openai", model: id.slice("openai/".length)};
   if (id.startsWith("gemini/")) return {provider: "gemini", model: id.slice("gemini/".length)};
   if (id.startsWith("anthropic/") && !id.includes(".")) return {provider: "anthropic", model: id.slice("anthropic/".length)};
@@ -915,11 +1263,70 @@ function scopeGlobs(value: unknown): string[] {
   return [];
 }
 
+function excludedScopeGlobs(value: unknown): string[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  return stringList((value as Record<string, unknown>).exclude);
+}
+
+function contractDisplay(row: Record<string, unknown>): WorkContractDisplay {
+  const raw = row.contractSummary ?? row.contract_summary;
+  const summary = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+  const classification = summary.classification === "bounded"
+    || summary.classification === "invalid"
+    || summary.classification === "legacy"
+    ? summary.classification
+    : "legacy";
+  const messages = [summary.violations, summary.warnings]
+    .flatMap((value) => Array.isArray(value) ? value : [])
+    .map((value) => value && typeof value === "object" ? (value as Record<string, unknown>).message : value)
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean);
+  const explanation = classification === "legacy"
+    ? messages[0] ?? "Legacy item: use h to author a bounded replacement before running it."
+    : classification === "invalid"
+      ? `${messages[0] ?? "The declared Work Contract is invalid."} Repair the contract before running it.`
+      : null;
+  const count = (value: unknown): number => {
+    const parsed = Number(value ?? 0);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  };
+  const verificationState = String(row.verificationState ?? row.verification_state ?? "unverified");
+  const verificationCommandCount = count(summary.verificationCommandCount ?? summary.verification_command_count);
+  const verifiedResults = Array.isArray(row.verificationResults ?? row.verification_results)
+    ? (row.verificationResults ?? row.verification_results) as unknown[]
+    : [];
+  const successfulCommands = new Set(verifiedResults.flatMap((result) => {
+    if (!result || typeof result !== "object" || Array.isArray(result)) return [];
+    const record = result as Record<string, unknown>;
+    return record.exitCode === 0 && typeof record.command === "string" ? [record.command] : [];
+  })).size;
+  return {
+    classification,
+    profile: typeof summary.profile === "string" ? summary.profile : null,
+    enabledActions: stringList(summary.enabledActions ?? summary.enabled_actions),
+    acceptanceCriteriaCount: count(summary.acceptanceCriteriaCount ?? summary.acceptance_criteria_count),
+    verificationCommandCount,
+    verifiedCommandCount: verificationState === "commands_passed" || verificationState === "verified"
+      ? verificationCommandCount
+      : Math.min(verificationCommandCount, successfulCommands),
+    verificationState,
+    explanation,
+  };
+}
+
 /** Normalize one API work-item row into the board's display shape. */
 function normalizeWorkItem(row: Record<string, unknown>): WorkBoardItem {
   const blockers = stringList(row.blockers);
   const blockedReason = row.blockedReason ?? row.blocked_reason;
   if (!blockers.length && typeof blockedReason === "string" && blockedReason.trim()) blockers.push(blockedReason.trim());
+  const excludedScope = excludedScopeGlobs(row.writeScope ?? row.write_scope);
+  const rawClaimability = row.claimability ?? row.claimability_state;
+  const claimability = rawClaimability && typeof rawClaimability === "object" && !Array.isArray(rawClaimability)
+    ? String((rawClaimability as Record<string, unknown>).state ?? "unknown")
+    : typeof rawClaimability === "string" ? rawClaimability : undefined;
+  const hasContractSummary = row.contractSummary !== undefined || row.contract_summary !== undefined;
   return {
     id: String(row.id ?? ""),
     title: String(row.title ?? "(untitled)"),
@@ -928,9 +1335,12 @@ function normalizeWorkItem(row: Record<string, unknown>): WorkBoardItem {
     owner: row.claimOwner ? String(row.claimOwner) : row.claim_owner ? String(row.claim_owner) : null,
     prompt: (row.prompt ?? null) as string | null,
     writeScope: scopeGlobs(row.writeScope ?? row.write_scope),
+    ...(excludedScope.length ? {excludedScope} : {}),
     verification: stringList(row.verificationCommands ?? row.verification_commands),
     acceptance: stringList(row.acceptanceCriteria ?? row.acceptance_criteria),
     blockers,
+    ...(claimability ? {claimability} : {}),
+    ...(hasContractSummary ? {contract: contractDisplay(row)} : {}),
   };
 }
 
@@ -1012,10 +1422,13 @@ export async function workItemEvidence(ctx: InteractiveCommandContext, item: Wor
 /** Structured input for a handoff work item — shared by /handoff and the /work hub. */
 export interface HandoffWorkItemInput {
   title: string;
+  profile?: "coding" | "read_only";
   agent: string;
   files: string[];
+  excludeFiles?: string[];
   acceptance: string[];
   verify?: string[];
+  contract?: WorkContractV1;
 }
 
 /**
@@ -1026,6 +1439,13 @@ export interface HandoffWorkItemInput {
  * user-facing confirmation line.
  */
 export async function createHandoffWorkItem(ctx: InteractiveCommandContext, input: HandoffWorkItemInput): Promise<string> {
+  const profile = input.profile ?? "coding";
+  const contract = input.contract ?? requireBuiltWorkContract({
+    profile,
+    acceptanceCriteria: input.acceptance.map((text) => ({text, met: false})),
+    writeScope: {include: input.files, exclude: input.excludeFiles ?? []},
+    verificationCommands: input.verify ?? [],
+  });
   const payload = {
     title: input.title,
     prompt: `Handoff from sift interactive.\n\n${ctx.conversationText().slice(-4000)}`,
@@ -1036,8 +1456,14 @@ export async function createHandoffWorkItem(ctx: InteractiveCommandContext, inpu
       gitStatus: collectLocalGitSummary({cwd: ctx.cwd()}).status,
       transcriptTail: ctx.conversationText().slice(-4000),
     },
-    acceptanceCriteria: input.acceptance.map((text) => ({text, met: false})),
-    verificationCommands: input.verify ?? [],
+    contract,
+    // Exact projections preserve compatibility for older embedded clients;
+    // the contract remains authoritative and the server rejects divergence.
+    acceptanceCriteria: contract.outcome.acceptanceCriteria,
+    allowedActions: contract.authority.allowedActions,
+    writeScope: contract.boundary.writeScope,
+    verificationCommands: contract.proof.verificationCommands,
+    captureApplicability: 'conversational_capture_required' as const,
   };
   const response = await ctx.apiClient.createWorkItem(payload, `interactive-${Date.now()}-${randomUUID()}`);
   const workItem = getData(response).workItem as Record<string, unknown> | undefined;
@@ -1374,7 +1800,7 @@ const MERMAID_HEADER_RE =
 
 /**
  * Wrap a natural-language request as a diagram-generation instruction. Works on
- * any engine (codex or the OpenFunction brain) because the guidance travels in
+ * any engine (Codex or the agent harness) because the guidance travels in
  * the prompt — the reply's ```mermaid block is auto-rendered by the TUI.
  */
 function mermaidRequestPrompt(request: string): string {
@@ -1588,7 +2014,7 @@ function spawnCommand(ctx: InteractiveCommandContext, args: string[]): void {
     accessMode: parsed.accessMode,
     writeScope: parsed.writeScope,
   });
-  if (!res.ok) {
+  if (res.ok === false) {
     const extra = res.blockedBy ? ` (blocked by child #${res.blockedBy})` : "";
     ctx.push({role: "system", text: `/spawn blocked: ${res.reason}${extra}`});
     return;
@@ -1659,6 +2085,17 @@ function formatPacket(p: MergePacket): string {
   return lines.join("\n");
 }
 
+function formatProofSnapshotBinding(proofPacket: ReadyPacket, current: MergePacket): string | undefined {
+  const headStale = proofPacket.merge.headCommit !== current.headCommit;
+  const baseStale = proofPacket.merge.baseTip !== current.baseTip;
+  if (!headStale && !baseStale) return undefined;
+  const differences = [
+    headStale ? `head ${proofPacket.merge.headCommit} → ${current.headCommit}` : undefined,
+    baseStale ? `base ${proofPacket.merge.baseTip} → ${current.baseTip}` : undefined,
+  ].filter((value): value is string => Boolean(value));
+  return `proof snapshot: stale (${differences.join(" · ")})`;
+}
+
 function resolveTargetChild(ctx: InteractiveCommandContext, raw: string | undefined): {id: number} | {error: string} {
   if (raw) {
     const id = Number(raw);
@@ -1670,7 +2107,7 @@ function resolveTargetChild(ctx: InteractiveCommandContext, raw: string | undefi
   return {id: active};
 }
 
-function readyCommand(ctx: InteractiveCommandContext, args: string[]): void {
+async function readyCommand(ctx: InteractiveCommandContext, args: string[]): Promise<void> {
   const autoCommit = args.includes("--commit");
   const idArg = args.find((a) => !a.startsWith("--"));
   const target = resolveTargetChild(ctx, idArg);
@@ -1678,12 +2115,18 @@ function readyCommand(ctx: InteractiveCommandContext, args: string[]): void {
     ctx.push({role: "system", text: `/ready: ${target.error}\n${READY_USAGE}`});
     return;
   }
-  const res = ctx.sessions.review(target.id, {autoCommit});
-  if (!res.ok) {
+  const res = await ctx.sessions.review(target.id, {autoCommit});
+  if (res.ok === false) {
     ctx.push({role: "system", text: `/ready: ${res.reason}`});
     return;
   }
   let text = formatPacket(res.packet);
+  if (res.proofPacket && res.proofDecision?.policy === "warn") {
+    text += `\n  proof evidence snapshot:\n${formatReadyPacket(res.proofPacket)}`;
+    const binding = formatProofSnapshotBinding(res.proofPacket, res.packet);
+    if (binding) text += `\n  ${binding}`;
+  }
+  if (res.proofDecision) text += `\n  ${formatReadyProofDecision(res.proofDecision)}`;
   if (res.committed) text = `committed working changes first.\n${text}`;
   // If blocked solely because the tree is dirty, point at the one-step fix.
   if (res.packet.verdict === "merge_blocked" && res.packet.dirty && !autoCommit) {
@@ -1730,14 +2173,18 @@ function formatMergeView(view: ParentMergeView): string {
     const stat = r.verdict ? `${r.files} file(s), +${r.additions} −${r.deletions}` : r.status;
     const drift = r.behindBy > 0 ? `, base +${r.behindBy}` : "";
     const head = `${mark} #${r.sessionId} ${r.branch} → ${r.baseBranch}: ${stat}${drift}`;
-    return r.blockers.length ? [head, ...r.blockers.map((b) => `    • ${b}`)].join("\n") : head;
+    const proof = r.proofCode
+      ? `    proof: ${r.proofCode} · merge eligible: ${r.mergeEligibility === true ? "yes" : "no"}`
+      : undefined;
+    const details = [proof, ...r.blockers.map((b) => `    • ${b}`)].filter((value): value is string => Boolean(value));
+    return details.length > 0 ? [head, ...details].join("\n") : head;
   });
   const footer = `${view.readyCount} ready · ${view.blockedCount} blocked` +
     (view.readyCount > 0 ? `  (+${view.totalAdditions} −${view.totalDeletions} if all land)` : "");
   return ["Branches (/branches to open · /merge <id> to land · --keep to retain):", ...rows, footer].join("\n");
 }
 
-function mergeCommand(ctx: InteractiveCommandContext, args: string[]): void {
+async function mergeCommand(ctx: InteractiveCommandContext, args: string[]): Promise<void> {
   const parsed = parseMergeArgs(args);
   if (parsed.error) {
     ctx.push({role: "system", text: `/merge: ${parsed.error}\n${MERGE_USAGE}`});
@@ -1748,8 +2195,8 @@ function mergeCommand(ctx: InteractiveCommandContext, args: string[]): void {
     ctx.push({role: "system", text: formatMergeView(ctx.sessions.mergeView())});
     return;
   }
-  const res = ctx.sessions.merge(parsed.id, {keep: parsed.keep, message: parsed.message});
-  if (!res.ok) {
+  const res = await ctx.sessions.merge(parsed.id, {keep: parsed.keep, message: parsed.message});
+  if (res.ok === false) {
     let text = `/merge: ${res.reason}`;
     if (res.packet) text = `${formatPacket(res.packet)}\n  → ${res.reason}`;
     ctx.push({role: "system", text});
@@ -1767,14 +2214,14 @@ const REBASE_USAGE = "/rebase [<session-id>]";
 const SENDBACK_USAGE = '/sendback [<session-id>] <instructions>';
 const REJECT_USAGE = "/reject [<session-id>] [reason]";
 
-function rebaseCommand(ctx: InteractiveCommandContext, args: string[]): void {
+async function rebaseCommand(ctx: InteractiveCommandContext, args: string[]): Promise<void> {
   const target = resolveTargetChild(ctx, args.find((a) => !a.startsWith("-")));
   if ("error" in target) {
     ctx.push({role: "system", text: `/rebase: ${target.error}\n${REBASE_USAGE}`});
     return;
   }
-  const res = ctx.sessions.rebase(target.id);
-  if (!res.ok) {
+  const res = await ctx.sessions.rebase(target.id);
+  if (res.ok === false) {
     let text = `/rebase: ${res.reason}`;
     if (res.conflicts?.length) text += `\n  conflicts: ${res.conflicts.join(", ")}\n  → /sendback ${target.id} <how to resolve>`;
     ctx.push({role: "system", text});
@@ -1809,11 +2256,13 @@ function sendBackCommand(ctx: InteractiveCommandContext, args: string[]): void {
     return;
   }
   const res = ctx.sessions.sendBack(target.id, instruction);
-  if (!res.ok) {
+  if (res.ok === false) {
     ctx.push({role: "system", text: `/sendback: ${res.reason}`});
     return;
   }
-  const posted = res.posted ? "instructions posted to its thread" : "instructions not persisted (thread off)";
+  const posted = res.durability === "durable"
+    ? "instructions durably posted to its thread"
+    : "instructions published, but crash durability is indeterminate; verify delivery before retrying";
   ctx.push({role: "system", text: `sent #${target.id} back to work (running) · ${posted}`});
 }
 
@@ -1974,21 +2423,63 @@ export const interactiveCommands: InteractiveCommand[] = [
     usage: "[<session-id>] [reason]",
     run: (ctx, args) => rejectCommand(ctx, args),
   },
-  {name: "clear", description: "clear the conversation", run: (ctx) => ctx.setMessages([{role: "system", text: "cleared."}])},
+  {
+    name: "clear",
+    description: "clear the conversation",
+    run: async (ctx) => {
+      try {
+        const reset = await ctx.resetThread?.();
+        if (reset !== true) throw new Error("the active harness does not expose durable thread reset");
+        ctx.setMessages([{role: "system", text: "cleared."}]);
+      } catch (error) {
+        ctx.push({
+          role: "system",
+          text: `Could not clear the conversation: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    },
+  },
   {
     name: "threads",
     description: "show or clear the persisted conversation for this workspace",
     usage: "/threads [clear]",
-    run: (ctx, args) => {
-      if (process.env.SIFT_CONTEXT_COMPACTION === "0") {
-        ctx.push({role: "system", text: "Thread persistence is off. Set SIFT_CONTEXT_COMPACTION=1 to enable resume."});
-        return;
-      }
-      const key = ctx.workspaceRoot() || ctx.cwd();
-      const path = rolloutPathForKey(homedir(), key);
+    run: async (ctx, args) => {
+      const key = ctx.conversationKey?.() || ctx.workspaceRoot() || ctx.cwd();
+      const path = rolloutPathForKey(ctx.homeDir?.() ?? homedir(), key);
       if (args[0] === "clear") {
+        try {
+          const reset = await ctx.resetThread?.();
+          if (reset !== true) {
+            throw new Error("the active harness does not expose durable thread reset");
+          }
+        } catch (error) {
+          ctx.push({
+            role: "system",
+            text: `Could not clear the persisted thread: ${error instanceof Error ? error.message : String(error)}`,
+          });
+          return;
+        }
         if (existsSync(path)) rmSync(path);
         ctx.push({role: "system", text: `Cleared persisted thread for ${key}.`});
+        return;
+      }
+      if (ctx.inspectThread) {
+        try {
+          const status = await ctx.inspectThread();
+          ctx.push({
+            role: "system",
+            text:
+              `Durable thread for ${key}\n` +
+              `  ${status.messageCount} model-history message(s), ${status.eventCount} journal event(s)\n` +
+              `  session ${status.sessionId}\n` +
+              "  (resumes automatically next session · /threads clear to reset)",
+          });
+        } catch (error) {
+          ctx.push({
+            role: "system",
+            text: `Could not inspect the persisted thread: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
         return;
       }
       if (!existsSync(path)) {
@@ -2001,6 +2492,50 @@ export const interactiveCommands: InteractiveCommand[] = [
         role: "system",
         text: `Persisted thread for ${key}\n  ${turns} turn(s), ${lines.length} message(s)\n  ${path}\n  (resumes automatically next session · /threads clear to reset)`,
       });
+    },
+  },
+  {
+    name: "verify",
+    description: "run a check against explicit candidate files",
+    usage: "--files file1,file2 -- command [args]",
+    run: async (ctx, args) => {
+      const separator = args.indexOf("--");
+      if (args[0] !== "--files" || separator !== 2 || args.length < 4 || !args[1]) {
+        ctx.push({role: "system", text: "usage: /verify --files src/file.ts,test/file.test.ts -- npm test"});
+        return;
+      }
+      if (!ctx.verifyCandidate) { ctx.push({role: "system", text: "Verification is unavailable for the active harness."}); return; }
+      await ctx.verifyCandidate(args.slice(separator + 1), args[1].split(",").filter(Boolean));
+    },
+  },
+  {
+    name: "context",
+    description: "inspect the recorded model request, compaction, and journal events",
+    usage: "[request|events|output <sequence> [byte-offset]]",
+    run: async (ctx, args) => {
+      if (args[0] === 'output') {
+        const seq = Number(args[1]);
+        const offset = args[2] === undefined ? 0 : Number(args[2]);
+        if (!ctx.readToolOutput || args.length > 3 || !Number.isSafeInteger(seq) || seq < 1 || !Number.isSafeInteger(offset) || offset < 0) { ctx.push({role: 'system', text: 'usage: /context output <sequence> [byte-offset]'}); return; }
+        try {
+          const page = await ctx.readToolOutput(seq, offset);
+          ctx.push({role: 'system', text: `Output #${page.seq} · ${page.bytes} bytes\n${page.text}${page.more ? `\n[more: /context output ${seq} ${page.nextOffset}]` : ''}`});
+        } catch (error) { ctx.push({role: 'system', text: `Output unavailable: ${error instanceof Error ? error.message : String(error)}`}); }
+        return;
+      }
+      const part = args[0] ?? "summary";
+      if (args.length > 1 || !["summary", "request", "events"].includes(part)) {
+        ctx.push({role: "system", text: "usage: /context [request|events]"});
+        return;
+      }
+      try {
+        const status = await ctx.inspectThread?.();
+        ctx.push({role: "system", text: status?.inspection
+          ? formatSessionInspection(status.inspection, part as "summary" | "request" | "events")
+          : "Request inspection is unavailable for the active harness."});
+      } catch (error) {
+        ctx.push({role: "system", text: `Could not inspect session context: ${error instanceof Error ? error.message : String(error)}`});
+      }
     },
   },
   {
@@ -2046,7 +2581,7 @@ export const interactiveCommands: InteractiveCommand[] = [
     usage: "[id] [effort]",
     run: async (ctx, args) => {
       // Allow a trailing effort token: `/model gpt-5.4-mini high`.
-      const KNOWN_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+      const KNOWN_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
       let effort: string | undefined;
       let parts = [...args];
       if (parts.length >= 2 && KNOWN_EFFORTS.has(parts[parts.length - 1].toLowerCase())) {
@@ -2063,6 +2598,14 @@ export const interactiveCommands: InteractiveCommand[] = [
             `Known models:\n${lines.join("\n")}\n` +
             `Or type one directly: /model <id> [effort].`,
         });
+        return;
+      }
+      const choice = resolveModelChoice(id);
+      if (effort && choice && !choice.reasoningEfforts?.includes(effort)) {
+        const supported = choice.reasoningEfforts?.length
+          ? `Supported efforts: ${choice.reasoningEfforts.join(", ")}.`
+          : "This model does not offer configurable reasoning effort.";
+        ctx.push({ role: "system", text: `${choice.label} does not support reasoning effort "${effort}". ${supported}` });
         return;
       }
       await selectModel(ctx, id, effort);
@@ -2101,8 +2644,8 @@ export const interactiveCommands: InteractiveCommand[] = [
   },
   {
     name: "key",
-    description: "add a model provider key",
-    usage: "<provider> <key>",
+    description: "add a model provider key (remembered in the system keychain)",
+    usage: "<provider> <key> | forget <provider> | vault <provider>",
     run: async (ctx, args) => {
       if (args[0] === "vault") {
         const provider = args[1];
@@ -2118,18 +2661,57 @@ export const interactiveCommands: InteractiveCommand[] = [
         ctx.push({role: "system", text: "usage: /key <provider> <key>  (e.g. /key openrouter sk-...)"});
         return;
       }
+      if (args[0] === "forget") {
+        const provider = args[1];
+        if (!provider) {
+          ctx.push({role: "system", text: "usage: /key forget <provider>"});
+          return;
+        }
+        const envVar = providerKeyEnv(provider);
+        delete process.env[envVar];
+        try {
+          forgetProviderKey(envVar);
+        } catch (err) {
+          // A refused deletion leaves the key stored (and autoload would
+          // restore it), so report failure instead of a false success.
+          ctx.push({role: "system", text: `/key forget failed: ${err instanceof Error ? err.message : String(err)}`});
+          return;
+        }
+        // Retire cached agents so no live session keeps using the old key;
+        // the next turn rebuilds against the environment and fails closed.
+        if (isBrainProvider(provider)) retireBrainAgents();
+        ctx.push({role: "system", text: `forgot ${provider} key for this session and the system keychain.`});
+        return;
+      }
       try {
         const provider = args[0];
         const secret = args.slice(1).join(" ");
+        const envVar = providerKeyEnv(provider);
         if (isBrainProvider(provider)) {
+          // Configure first: only persist a key the brain accepted, so a
+          // rejected key never lingers in the keychain after a failure.
           await ctx.client.config({provider, apiKey: secret});
-          ctx.push({role: "system", text: `stored ${provider} API key for the model brain.`});
+          let rememberedSuffix = "";
+          try {
+            rememberProviderKey(envVar, secret);
+            rememberedSuffix = " Remembered in the system keychain for next time.";
+          } catch {
+            /* keychain unavailable — session-only, same as before */
+          }
+          ctx.push({role: "system", text: `stored ${provider} API key for this session. Model selection unchanged.${rememberedSuffix}`});
         } else {
           // Search-only providers (e.g. morph for warp-grep) aren't served by the
           // brain — set the env var directly instead of switching the brain to an
           // unknown provider.
-          process.env[providerKeyEnv(provider)] = secret;
-          ctx.push({role: "system", text: `stored ${provider} key as ${providerKeyEnv(provider)} for this session.`});
+          process.env[envVar] = secret;
+          let rememberedSuffix = "";
+          try {
+            rememberProviderKey(envVar, secret);
+            rememberedSuffix = " Remembered in the system keychain for next time.";
+          } catch {
+            /* keychain unavailable — session-only, same as before */
+          }
+          ctx.push({role: "system", text: `stored ${provider} key as ${envVar} for this session.${rememberedSuffix}`});
         }
       } catch (err) {
         ctx.push({role: "system", text: `/key failed: ${err instanceof Error ? err.message : String(err)}`});
@@ -2177,7 +2759,7 @@ export const interactiveCommands: InteractiveCommand[] = [
       }
 
       if (sub === "on" || sub === "use") {
-        await selectModel(ctx, "codex/gpt-5.6-sol");
+        await selectModel(ctx, "codex/gpt-6.1-sol");
         return;
       }
 
@@ -2212,7 +2794,7 @@ export const interactiveCommands: InteractiveCommand[] = [
         text:
           `Codex (ChatGPT engine)\n` +
           `account: ${acct}\n` +
-          `engine:  ${status.active ? `active · ${status.model}` : "not selected — run /model codex/gpt-5.6-sol"}`,
+          `engine:  ${status.active ? `active · ${status.model}` : "not selected — run /model codex/gpt-6.1-sol"}`,
       });
     },
   },
@@ -2257,6 +2839,8 @@ export const interactiveCommands: InteractiveCommand[] = [
         queueRank: (row.queueRank ?? row.queue_rank ?? null) as number | null,
         writeScope: (row.writeScope ?? row.write_scope ?? null) as Record<string, unknown> | null,
         verificationCommands: (row.verificationCommands ?? row.verification_commands ?? null) as string[] | null,
+        verificationState: (row.verificationState ?? row.verification_state ?? null) as string | null,
+        contractSummary: (row.contractSummary ?? row.contract_summary ?? null) as RawWorkItem["contractSummary"],
         dependencies: (row.dependencies ?? null) as RawWorkItem["dependencies"],
         claimability: (row.claimability ?? null) as RawWorkItem["claimability"],
       }));
@@ -2336,7 +2920,7 @@ export const interactiveCommands: InteractiveCommand[] = [
   {
     name: "work",
     aliases: ["w"],
-    description: "the agent work-queue hub — board, plan, focus, proof, handoff",
+    description: "the Work Contract control plane — board, run, plan, proof, handoff",
     run: async (ctx) => {
       // Text fallback. The TUI intercepts bare /work (index.tsx) to open the
       // arrow-navigable hub overlay; this body serves non-overlay contexts
@@ -2353,7 +2937,7 @@ export const interactiveCommands: InteractiveCommand[] = [
         const group = items.filter((item) => item.status === status);
         if (!group.length) continue;
         any = true;
-        lines.push(status, ...group.map((item) => `  - ${item.title} [${item.agent}]${item.owner ? ` · ${item.owner}` : ""}`));
+        lines.push(status, ...group.map((item) => `  - ${formatWorkRow(item)}`));
       }
       if (!any) lines.push("No queued or active work items.");
       ctx.push({role: "system", text: lines.join("\n")});
@@ -2386,21 +2970,29 @@ export const interactiveCommands: InteractiveCommand[] = [
   {
     name: "handoff",
     description: "create a Sift work item from current context",
-    usage: "<title> [--agent codex] [--files a,b] [--acceptance a;b]",
+    usage: "<title> [--profile coding|read-only] [--agent codex] --files a,b [--exclude a,b] --acceptance a;b --verify cmd;cmd",
     run: async (ctx, args) => {
       const title = positionalArgs(args).join(" ").trim();
       if (!title) {
-        ctx.push({role: "system", text: "usage: /handoff <title> [--agent codex] [--files a,b] [--acceptance a;b]"});
+        ctx.push({role: "system", text: "usage: /handoff <title> [--profile coding|read-only] [--agent codex] --files a,b [--exclude a,b] --acceptance a;b --verify cmd;cmd"});
         return;
       }
-      const msg = await createHandoffWorkItem(ctx, {
-        title,
-        agent: flagValue(args, "--agent") ?? "codex",
-        files: splitList(flagValue(args, "--files") ?? ""),
-        acceptance: (flagValue(args, "--acceptance") ?? "").split(";").map((text) => text.trim()).filter(Boolean),
-        verify: splitList(flagValue(args, "--verify") ?? ""),
-      });
-      ctx.push({role: "system", text: msg});
+      const profileFlag = (flagValue(args, "--profile") ?? "coding").toLowerCase();
+      const profile = profileFlag === "read-only" || profileFlag === "read_only" ? "read_only" : "coding";
+      try {
+        const msg = await createHandoffWorkItem(ctx, {
+          title,
+          profile,
+          agent: flagValue(args, "--agent") ?? "codex",
+          files: splitList(flagValue(args, "--files") ?? ""),
+          excludeFiles: splitList(flagValue(args, "--exclude") ?? ""),
+          acceptance: (flagValue(args, "--acceptance") ?? "").split(";").map((text) => text.trim()).filter(Boolean),
+          verify: (flagValue(args, "--verify") ?? "").split(";").map((text) => text.trim()).filter(Boolean),
+        });
+        ctx.push({role: "system", text: msg});
+      } catch (error) {
+        ctx.push({role: "system", text: `/handoff: ${error instanceof Error ? error.message : String(error)}`});
+      }
     },
   },
   {
@@ -2437,7 +3029,7 @@ export const interactiveCommands: InteractiveCommand[] = [
         ctx.push({role: "system", text: "usage: /remember <fact> --category architecture|integration|convention|entrypoint|gotcha|ownership"});
         return;
       }
-      const response = await ctx.apiClient.storeCodeMemory({fact, category});
+      const response = await ctx.apiClient.storeCodeMemory({fact, category}, randomUUID());
       const data = getData(response);
       ctx.push({role: "system", text: `Remembered: ${data.id ?? "stored"} (${category})`});
     },
@@ -2482,7 +3074,7 @@ export const interactiveCommands: InteractiveCommand[] = [
  * under "Other"), so nothing is hidden by omission.
  */
 const COMMAND_GROUPS: Array<{title: string; names: string[]}> = [
-  {title: "Session", names: ["help", "hotkeys", "status", "cwd", "copy", "clear", "compact", "threads", "quit"]},
+  {title: "Session", names: ["help", "hotkeys", "status", "cwd", "copy", "clear", "compact", "context", "threads", "quit"]},
   {title: "Model & Explorer", names: ["model", "codex", "explorer", "key", "login"]},
   {title: "Agents & branches", names: ["branches", "spawn", "merge", "rebase", "sendback", "reject", "queue", "handoff", "crew", "collab"]},
   {title: "Planning & work", names: ["plan", "focus", "proof", "remember", "ship", "recap"]},

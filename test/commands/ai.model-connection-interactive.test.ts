@@ -3,12 +3,19 @@ import {Config} from '@oclif/core';
 import {runInteractiveAiRequest} from '../../src/commands/interactive.js';
 import Interactive from '../../src/commands/interactive.js';
 import AiList from '../../src/commands/ai/list.js';
+import AiConnect from '../../src/commands/ai/connect.js';
 import AiStatus from '../../src/commands/ai/status.js';
 import AiInvoke from '../../src/commands/ai/invoke.js';
 import AiUsage from '../../src/commands/ai/usage.js';
 import {BaseCommand} from '../../src/lib/base-command.js';
 import {SiftClient} from '@siftable/mcp-server/dist/exfClient.js';
 import {mockFetch, restoreFetch, runCommand} from '../helpers/mock-api';
+
+class InteractiveParseProbe extends Interactive {
+  parseFlags() {
+    return this.parse(Interactive);
+  }
+}
 
 async function runCommandEntry(
   CommandClass: new (argv: string[], config: Config) => {run(): Promise<unknown>},
@@ -30,7 +37,8 @@ async function runCommandEntry(
     });
     const command = new CommandClass(argv, config);
     await command.run();
-    exitCode = process.exitCode ?? 0;
+    const commandExitCode = process.exitCode;
+    exitCode = typeof commandExitCode === 'number' ? commandExitCode : Number(commandExitCode ?? 0);
   } catch (caught) {
     error = caught as Error;
     exitCode = (caught as {oclif?: {exit?: number}}).oclif?.exit ?? 1;
@@ -43,18 +51,58 @@ async function runCommandEntry(
   return {stdout: lines.join('\n'), error, exitCode};
 }
 
+async function runCommandLifecycle(
+  CommandClass: typeof BaseCommand,
+  argv: string[],
+): Promise<{stdout: string; exitCode: number}> {
+  const originalLog = console.log;
+  const originalError = console.error;
+  const originalWarn = console.warn;
+  const originalExitCode = process.exitCode;
+  const lines: string[] = [];
+  console.log = (...args: unknown[]) => lines.push(args.map(String).join(' '));
+  console.error = () => {};
+  console.warn = () => {};
+  process.exitCode = undefined;
+  try {
+    await CommandClass.run(argv, {root: path.join(__dirname, '..', '..')});
+    const commandExitCode = process.exitCode;
+    return {
+      stdout: lines.join('\n'),
+      exitCode: typeof commandExitCode === 'number'
+        ? commandExitCode
+        : Number(commandExitCode ?? 0),
+    };
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+    console.warn = originalWarn;
+    process.exitCode = originalExitCode;
+  }
+}
+
 describe('model connection interactive CLI transport', () => {
   const model = {
     connectionId: 'connection-1',
     connectionName: 'Primary',
     provider: 'openrouter',
-    model: 'anthropic/claude-sonnet-4.6',
+    model: 'anthropic/claude-opus-5.5',
     status: 'available' as const,
   };
 
   afterEach(() => {
     jest.restoreAllMocks();
     restoreFetch();
+  });
+
+  it('parses a bare TUI launch without requiring model prompt flags', async () => {
+    const config = await Config.load({
+      root: path.join(__dirname, '..', '..'),
+    });
+
+    const {flags} = await new InteractiveParseProbe([], config).parseFlags();
+
+    expect(flags.stream).toBeUndefined();
   });
 
   it('lists, selects, and invokes through the same typed client without a credential field', async () => {
@@ -96,11 +144,18 @@ describe('model connection interactive CLI transport', () => {
     expect(JSON.stringify(result)).not.toContain('secretReference');
   });
 
-  it('exports the four stable named command contracts', () => {
+  it('exports the stable named command contracts', () => {
     expect(AiList.requiredScope).toBe('ai:models:read');
     expect(AiStatus.requiredScope).toBe('ai:connections:use');
     expect(AiInvoke.requiredScope).toBe('ai:invoke');
     expect(AiUsage.requiredScope).toBe('ai:usage:read');
+  });
+
+  it('keeps credential entry in the browser instead of accepting API keys in the CLI', async () => {
+    const result = await runCommandEntry(AiConnect, ['--json']);
+    expect(result.exitCode).toBe(0);
+    expect(result.error).toBeUndefined();
+    expect(result.stdout).not.toContain('sk-');
   });
 
   it('dispatches ai:list through the committed oclif manifest', async () => {
@@ -114,6 +169,16 @@ describe('model connection interactive CLI transport', () => {
     expect(result.exitCode).toBe(0);
     expect(result.error).toBeUndefined();
     expect(result.stdout).toContain(model.model);
+  });
+
+  it('dispatches ai:connect through the committed oclif manifest without accepting a key', async () => {
+    const result = await runCommand(['ai', 'connect']);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.error).toBeUndefined();
+    expect(result.stdout).toContain('https://siftable.io/settings/model-connections');
+    expect(result.stdout).toContain('never receives or stores');
+    expect(result.stdout).not.toContain('sk-');
   });
 
   it('binds CLI AI commands to the real MCP SiftClient transport', () => {
@@ -136,7 +201,7 @@ describe('model connection interactive CLI transport', () => {
       argv: ['--token', 'sift_pat_test'],
       method: 'listAiModels',
       response: {statusCode: 200, data: {models: [model]}},
-      expected: 'claude-sonnet-4.6',
+      expected: 'claude-opus-5.5',
     },
     {
       CommandClass: AiStatus,
@@ -268,8 +333,84 @@ describe('model connection interactive CLI transport', () => {
     ]);
     const surface = `${result.stdout}\n${result.error?.message ?? ''}`;
     expect(result.exitCode).toBe(403);
+    expect(result.error).toMatchObject({statusCode: 403});
     expect(surface).toContain('ai:invoke');
     expect(surface).not.toContain(canary);
+  });
+
+  it('attaches status and code to streamed AI failures', async () => {
+    const client = {
+      generateAiStream: jest.fn(async function* () {
+        yield {type: 'failed', code: 'ai_stream_truncated', statusCode: 503} as const;
+      }),
+    };
+    jest.spyOn(BaseCommand.prototype as never, 'client' as never)
+      .mockResolvedValueOnce(client as never);
+
+    const result = await runCommandLifecycle(AiInvoke, [
+      '--connection', model.connectionId,
+      '--model', model.model,
+      '--prompt', 'bounded prompt',
+      '--stream',
+      '--token', 'sift_pat_test',
+      '--json',
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      error: {
+        code: 'ai_stream_truncated',
+        exit: 1,
+        statusCode: 503,
+      },
+    });
+  });
+
+  it('rejects malformed streamed AI error metadata at the CLI boundary', async () => {
+    const canary = 'ai_gateway_failed\nterminal-canary';
+    const client = {
+      generateAiStream: jest.fn(async function* () {
+        yield {type: 'failed', code: canary, statusCode: 999} as never;
+      }),
+    };
+    jest.spyOn(BaseCommand.prototype as never, 'client' as never)
+      .mockResolvedValueOnce(client as never);
+
+    const result = await runCommandLifecycle(AiInvoke, [
+      '--connection', model.connectionId,
+      '--model', model.model,
+      '--prompt', 'bounded prompt',
+      '--stream',
+      '--token', 'sift_pat_test',
+      '--json',
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    const output = JSON.parse(result.stdout);
+    expect(output).toMatchObject({
+      error: {
+        exit: 1,
+        message: 'AI request failed (transport).',
+      },
+    });
+    expect(output.error).not.toHaveProperty('code');
+    expect(output.error).not.toHaveProperty('statusCode');
+    expect(result.stdout).not.toContain('terminal-canary');
+  });
+
+  it('surfaces a structured disabled-mode explanation instead of a generic 404', async () => {
+    const client = {
+      listAiModels: jest.fn().mockResolvedValue({
+        statusCode: 404,
+        error: JSON.stringify({type: 'ai_gateway_unavailable'}),
+      }),
+    };
+    jest.spyOn(BaseCommand.prototype as never, 'client' as never)
+      .mockResolvedValueOnce(client as never);
+
+    const result = await runCommandEntry(AiList, ['--token', 'sift_pat_test']);
+    expect(result.exitCode).toBe(404);
+    expect(result.error?.message).toContain('not enabled');
   });
 
   it('fails closed when selection is absent and never dispatches', async () => {

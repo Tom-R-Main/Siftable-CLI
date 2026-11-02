@@ -2,7 +2,7 @@ import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../../lib/base-command.js';
 
 export default class CodeMemoryDelete extends BaseCommand {
-  static description = 'Delete a stored codebase fact';
+  static description = 'Delete a stored curated code fact';
 
   static args = {
     id: Args.string({description: 'Memory ID', required: true}),

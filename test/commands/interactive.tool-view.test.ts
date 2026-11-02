@@ -7,6 +7,7 @@ import {
   toolArgPreview,
   toolCallLabel,
   clipOutput,
+  summarizeToolOutput,
   gutterIndent,
   OUTPUT_MAX_LINES,
 } from '../../interactive-tui/toolView';
@@ -174,5 +175,104 @@ describe('toolView — output clipping', () => {
 describe('toolView — gutter', () => {
   it('indents every line with a gutter', () => {
     expect(gutterIndent('a\nb')).toBe('  ▏ a\n  ▏ b');
+  });
+});
+
+
+describe('compact semantic tool output', () => {
+  const summarize = (name: string, value: unknown, args?: Record<string, unknown>) =>
+    summarizeToolOutput(name, JSON.stringify(value), {args, width: 100});
+
+  it('shows a loaded skill without its prompt or serialized envelope', () => {
+    const raw = JSON.stringify({success: true, data: {name: 'work'}, message: 'Sensitive long skill body'});
+    expect(summarizeToolOutput('skill', raw)).toBe('Loaded skill: work');
+    expect(JSON.parse(raw).message).toBe('Sensitive long skill body');
+  });
+
+  it('summarizes tasks by title and state while omitting unrelated fields', () => {
+    expect(summarize('exf_tasks_list', {success: true, data: {total: 9, tasks: [
+      {title: 'Fix model picker', status: 'running', userId: 'opaque-id', description: 'long description'},
+      {title: 'Improve summaries', status: 'queued'},
+    ]}})).toBe('2 of 9 tasks returned\nFix model picker · running\nImprove summaries · queued');
+  });
+
+  it('shows requested file ranges without file contents', () => {
+    expect(summarize('batch_read_files', {success: true, data: {files: [
+      {path: 'src/brain.ts', content: 'do not display the source body'},
+    ]}}, {files: [{path: 'src/brain.ts', startLine: 10, endLine: 20}]}))
+      .toBe('1 file read\nsrc/brain.ts:10-20');
+  });
+
+  it('keeps partial zero-result searches distinguishable from complete ones', () => {
+    const result = summarize('search_local_files', {success: true, data: {matches: [], stats: {
+      searchedFiles: 161, capped: true, scan: {status: 'partial', reasons: ['maxFiles']},
+    }}});
+    expect(result).toBe('0 matches in 161 files · partial search · capped · maxFiles');
+    expect(summarize('search_local_files', {data: {matches: [], stats: {searchedFiles: 9}}}))
+      .toBe('0 matches in 9 files');
+  });
+
+  it('prioritizes errors even for tools that usually get a success summary', () => {
+    expect(summarize('skill', {success: false, error: 'Skill not found'})).toBe('Failed: Skill not found');
+    expect(summarize('batch_read_files', {error: {message: 'Permission denied'}})).toBe('Failed: Permission denied');
+  });
+
+  it('surfaces file failures before the first successful file previews', () => {
+    const files = ['a', 'b', 'c'].map((path) => ({path, content: 'body'}));
+    const result = summarize('batch_read_files', {data: {files: [...files, {path: 'd', error: 'denied'}]}});
+    expect(result.split('\n')[0]).toBe('3 files read · 1 failed');
+    expect(result).toContain('d · Failed: denied');
+  });
+
+  it('retains bounded command JSON as text, even when it resembles an envelope', () => {
+    const raw = JSON.stringify({success: false, name: 'package-name'});
+    expect(summarizeToolOutput('shell', raw, {format: 'text'})).toBe(raw);
+    expect(summarizeToolOutput('shell', raw, {format: 'text', width: 24})).toContain('…');
+  });
+
+  it('keeps a failing shell exit and stderr before stdout', () => {
+    expect(summarize('shell', {data: {exit_code: 1, stdout: 'verbose\noutput', stderr: 'failed'}})
+      .split('\n').slice(0, 2)).toEqual(['Exit 1', 'failed']);
+  });
+
+  it('keeps truncated file and batch reads visible in the first row', () => {
+    expect(summarize('read_file', {data: {path: 'large.ts', content: 'partial', truncated: true}})
+      .split('\n')[0]).toBe('Partial read · truncated · 1 file read');
+    expect(summarize('batch_read_files', {data: {files: [
+      {path: 'a'}, {path: 'b'}, {path: 'c'}, {path: 'd', truncated: true},
+    ]}}).split('\n')[0]).toBe('Partial read · truncated · 4 files read');
+    expect(summarize('batch_read_files', {data: {files: [{path: 'a'}], truncated: true}})
+      .split('\n')[0]).toBe('Partial read · truncated · 1 file read');
+  });
+
+  it('does not fabricate zero matches for unrelated search response schemas', () => {
+    expect(summarize('web_search', {data: {results: [{title: 'Found result'}]}}))
+      .toBe('Structured result received');
+  });
+
+  it('does not dump unknown structured payloads or incomplete JSON', () => {
+    expect(summarize('custom', {data: {internalId: 'opaque', nested: {large: 'content'}}}))
+      .toBe('Structured result received');
+    expect(summarizeToolOutput('custom', '{"data":{"large":"truncated'))
+      .toBe('Structured output truncated (preview unavailable)');
+  });
+
+  it('preserves plain logs that start with JSON-like punctuation', () => {
+    for (const raw of ['{"status": starting', '[{"log"} failed']) {
+      expect(summarizeToolOutput('custom', raw)).toBe(raw);
+    }
+  });
+
+  it('bounds long logical lines by terminal columns and shows omitted lines', () => {
+    const output = summarizeToolOutput('shell', 'a'.repeat(5000) + '\nsecond\nthird\nfourth', {width: 24});
+    expect(output.split('\n')).toHaveLength(4);
+    expect(output).toContain('… +1 more lines');
+    expect(output.split('\n').every((line) => line.length <= 24)).toBe(true);
+    expect(output).not.toContain('fourth');
+  });
+
+  it('removes terminal control sequences and budgets wide characters', () => {
+    expect(summarizeToolOutput('shell', '\u001b[31mhello\u001b[0m')).toBe('hello');
+    expect(summarizeToolOutput('shell', '界'.repeat(100), {width: 10})).toBe('界界界界…');
   });
 });

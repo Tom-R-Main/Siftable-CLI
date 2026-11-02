@@ -117,18 +117,18 @@ pub export fn sift_should_chip_paste(ptr: [*]const u8, len: u32) u32 {
     const lines = countLines(input);
 
     if (chars >= FORCE_CHIP_CHAR_THRESHOLD or lines >= FORCE_CHIP_LINE_THRESHOLD) {
-        return @intFromEnum(Decision.force_chip);
+        return @backingInt(Decision.force_chip);
     }
 
     if (chars >= PASTE_CHIP_CHAR_THRESHOLD or lines >= PASTE_CHIP_LINE_THRESHOLD) {
-        return @intFromEnum(Decision.chip);
+        return @backingInt(Decision.chip);
     }
 
     if (chars >= STRUCTURED_CHAR_THRESHOLD and lines >= STRUCTURED_LINE_THRESHOLD and looksStructured(input)) {
-        return @intFromEnum(Decision.chip);
+        return @backingInt(Decision.chip);
     }
 
-    return @intFromEnum(Decision.inline_text);
+    return @backingInt(Decision.inline_text);
 }
 
 test "counts empty and single-line paste" {
@@ -145,11 +145,11 @@ test "normalizes CRLF line counts" {
 test "chips at locked thresholds" {
     var force_lines: [40]u8 = undefined;
     @memset(&force_lines, '\n');
-    try std.testing.expectEqual(@as(u32, @intFromEnum(Decision.force_chip)), sift_should_chip_paste(force_lines[0..].ptr, force_lines.len));
+    try std.testing.expectEqual(@as(u32, @backingInt(Decision.force_chip)), sift_should_chip_paste(force_lines[0..].ptr, force_lines.len));
 
     var chip_chars: [1500]u8 = undefined;
     @memset(&chip_chars, 'a');
-    try std.testing.expectEqual(@as(u32, @intFromEnum(Decision.chip)), sift_should_chip_paste(chip_chars[0..].ptr, chip_chars.len));
+    try std.testing.expectEqual(@as(u32, @backingInt(Decision.chip)), sift_should_chip_paste(chip_chars[0..].ptr, chip_chars.len));
 }
 
 test "chips obvious structured blocks earlier" {
@@ -175,5 +175,5 @@ test "chips obvious structured blocks earlier" {
     text[17] = ' ';
     text[18] = 'r';
     text[19] = '\n';
-    try std.testing.expectEqual(@as(u32, @intFromEnum(Decision.chip)), sift_should_chip_paste(text[0..].ptr, text.len));
+    try std.testing.expectEqual(@as(u32, @backingInt(Decision.chip)), sift_should_chip_paste(text[0..].ptr, text.len));
 }

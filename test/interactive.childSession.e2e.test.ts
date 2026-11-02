@@ -1,7 +1,7 @@
 /**
  * Lane C S7 — end-to-end-ish proof: spawn → enter → run a turn → leave, wiring
  * the real childSessionController + sessionContext to a FAKE engine (no codex
- * app-server, no live OpenFunction model — same posture as the codex-client
+ * app-server, no live agent-harness model — same posture as the codex-client
  * suite). The engine just records the cwd it ran in and writes to the active
  * transcript, exactly as a real turn would.
  *
@@ -115,6 +115,13 @@ describe('child session lifecycle — spawn → enter → run → leave', () => 
         accessMode: 'read_write',
         writeScope: ['src/a.ts'],
         cwd: repoRoot,
+        work: {
+          workItemId: 'work-interactive',
+          title: 'do the work',
+          contract: {classification: 'bounded', profile: 'coding', version: 1},
+          plan: {planId: 'plan-interactive', planVersion: 1, state: 'active'},
+          writeScope: {include: ['src/a.ts'], exclude: []},
+        },
       });
       expect(res.ok).toBe(true);
       if (!res.ok) return;
@@ -140,6 +147,7 @@ describe('child session lifecycle — spawn → enter → run → leave', () => 
       // Explicit cross-checks in both directions.
       expect(visible.some((l) => l.includes('child task'))).toBe(false);
       expect(childBuf.some((l) => l.includes('parent hello'))).toBe(false);
+      expect(controller.getChild(child.sessionId)?.work?.workItemId).toBe('work-interactive');
     } finally {
       await cleanup();
     }

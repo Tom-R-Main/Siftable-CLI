@@ -38,8 +38,15 @@ describe('vault commands', () => {
   describe('vault search', () => {
     it('searches vault entries', async () => {
       mockFetch()
-        .on('GET', '/api/v1/vault/entries')
-        .reply(200, {entries: [fixtures.vaultEntry()]})
+        .on('GET', '/api/v1/vault/materializations/sources')
+        .query({surface: 'cli', contextContractVersion: '1', search: 'test'})
+        .reply(200, {entries: [{
+          ...fixtures.vaultEntry(),
+          owner: 'personal',
+          qualifiedSlug: 'personal/test-secret',
+          credentialFields: [],
+          credentialFieldsResolved: false,
+        }]})
         .install();
 
       const result = await runCommand(['vault', 'search', 'test', '--token', 'exf_pat_test']);

@@ -16,6 +16,20 @@ describe('people commands', () => {
       expect(result.stdout).toContain('Test Person');
       expect(result.stdout).toContain('Jane Doe');
     });
+
+    it('passes owner context and relationship category filters', async () => {
+      mockFetch()
+        .on('GET', '/api/v1/people')
+        .query((url) => url.searchParams.get('context') === 'work'
+          && url.searchParams.get('relationshipCategory') === 'professional')
+        .reply(200, {people: [fixtures.person({contexts: ['work']})]})
+        .install();
+
+      const result = await runCommand([
+        'people', 'list', '--context', 'work', '--category', 'professional', '--json', '--token', 'exf_pat_test',
+      ]);
+      expect(JSON.parse(result.stdout)[0].contexts).toEqual(['work']);
+    });
   });
 
   describe('people search', () => {
@@ -90,16 +104,47 @@ describe('people commands', () => {
     expect(parsed.relationship.id).toBe('rel-1');
   });
 
-  it('shows a person-centered graph', async () => {
+  it('lists owner-relative context relationships separately from person graph edges', async () => {
     mockFetch()
-      .on('GET', '/api/v1/people-graph/focus/person-001')
-      .query((url) => url.searchParams.get('depth') === '2')
-      .reply(200, {focusPersonId: 'person-001', nodes: [{id: 'person-001', name: 'Test Person'}], edges: []})
+      .on('GET', '/api/v1/people/person-001/context-relationships')
+      .reply(200, {contexts: ['personal', 'work'], relationships: [
+        {id: 'owner-rel-1', context: 'personal', relationshipType: 'friend', isPrimary: true},
+        {id: 'owner-rel-2', context: 'work', relationshipType: 'client', isPrimary: true},
+      ]})
       .install();
 
-    const result = await runCommand(['people', 'graph', 'person-001', '--depth', '2', '--json', '--token', 'exf_pat_test']);
+    const result = await runCommand(['people', 'context', 'list', 'person-001', '--json', '--token', 'exf_pat_test']);
     const parsed = JSON.parse(result.stdout);
-    expect(parsed.focusPersonId).toBe('person-001');
+    expect(parsed.contexts).toEqual(['personal', 'work']);
+    expect(parsed.relationships).toHaveLength(2);
+  });
+
+  it('adds a Work relationship through the headless context API', async () => {
+    mockFetch()
+      .on('POST', '/api/v1/people/person-001/context-relationships')
+      .body((body) => (body as any).context === 'work' && (body as any).relationshipType === 'client')
+      .reply(201, {relationship: {id: 'owner-rel-2', context: 'work', relationshipType: 'client', isPrimary: true}})
+      .install();
+
+    const result = await runCommand([
+      'people', 'context', 'add', 'person-001', '--context', 'work', '--relationship', 'client',
+      '--json', '--token', 'exf_pat_test',
+    ]);
+    expect(JSON.parse(result.stdout).relationship.id).toBe('owner-rel-2');
+  });
+
+  it('server-validates a context removal dry run without mutating', async () => {
+    mockFetch()
+      .on('DELETE', '/api/v1/people/person-001/context-relationships/owner-rel-2')
+      .query((url) => url.searchParams.get('dryRun') === 'true')
+      .reply(200, {dryRun: true, wouldDelete: {id: 'owner-rel-2', context: 'work'}})
+      .install();
+
+    const result = await runCommand([
+      'people', 'context', 'remove', 'person-001', 'owner-rel-2', '--dry-run',
+      '--json', '--token', 'exf_pat_test',
+    ]);
+    expect(JSON.parse(result.stdout).wouldDelete.id).toBe('owner-rel-2');
   });
 
   it('lists timeline facts for a person', async () => {

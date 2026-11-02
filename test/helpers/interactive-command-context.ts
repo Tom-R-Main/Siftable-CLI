@@ -25,10 +25,13 @@ export function buildCommandContext(overrides: Partial<InteractiveCommandContext
         ? [{id: 'task-1', title: 'Ship interactive commands'}]
         : [{id: 'task-2', title: 'Plan recap'}],
     })),
-    listCodeRepositories: jest.fn(() => response({repositories: [{id: 'repo-1', rootPath: '/repo'}]})),
+    listRepositoryIdentities: jest.fn(() => response({repositories: [{id: 'repo-1', rootPath: '/repo'}]})),
     listCodeMemories: jest.fn(() => response({memories: [{id: 'mem-1', content: 'Use work queue'}]})),
     listCalendarEvents: jest.fn(() => response({events: [{id: 'event-1', title: 'Demo'}]})),
     listVaultEntries: jest.fn(() => response({entries: []})),
+    getWorkItem: jest.fn(() => response({workItem: null})),
+    getWorkVerificationPlan: jest.fn(() => response({plan: null})),
+    listWorkItemVerifierRuns: jest.fn(() => response({runs: []})),
     createWorkItem: jest.fn((payload: unknown) => {
       createdWork.push(payload);
       return response({workItem: {id: 'work-new', title: (payload as Record<string, unknown>).title}});
@@ -45,7 +48,7 @@ export function buildCommandContext(overrides: Partial<InteractiveCommandContext
     },
     apiClient: apiClient as any,
     baseUrl: 'in-process (test)',
-    model: () => 'google/gemini-3.5-flash',
+    model: () => 'google/gemini-3.8-flash',
     setModel: jest.fn(),
     agents: () => [{workspaceId: 'ws-1', workItemId: null, taskId: null, agentType: 'codex', state: 'idle', assignedAlias: 'codex'}],
     queuedCount: () => 2,
@@ -65,7 +68,7 @@ export function buildCommandContext(overrides: Partial<InteractiveCommandContext
     showDiagram: jest.fn(),
     viewLastDiagram: jest.fn(() => false),
     setAwaitingLogin: jest.fn(),
-    compactThread: jest.fn(async () => ({engine: 'openfunction' as const, ran: false, reason: 'test stub'})),
+    compactThread: jest.fn(async () => ({engine: 'agent-harness' as const, ran: false, reason: 'test stub'})),
     sessions: {
       list: jest.fn(() => []),
       activeChildId: jest.fn(() => null),

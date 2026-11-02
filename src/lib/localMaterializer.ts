@@ -4,6 +4,7 @@ import {
   generateKeyPairSync,
   randomBytes,
   sign,
+  timingSafeEqual,
   type KeyObject,
 } from 'node:crypto';
 import {execFile} from 'node:child_process';
@@ -25,7 +26,15 @@ import path from 'node:path';
 import {promisify} from 'node:util';
 import type {ExecutionGrantEnvelope} from './localExecutionRunner.js';
 import {decryptExecutionGrantEnvelope} from './localExecutionRunner.js';
-import {loadOrCreateMaterializerDeviceIdentity} from './materializerDeviceIdentity.js';
+import {
+  fingerprintMaterializerPublicKey,
+  loadOrCreateMaterializerDeviceIdentity,
+  type MaterializerIdentityStore,
+} from './materializerDeviceIdentity.js';
+import {
+  systemdCredentialStoreAvailable,
+  systemdManagedKeyringIdentityStore,
+} from './systemdKeyringIdentityStore.js';
 
 const execFileAsync = promisify(execFile);
 const SAFE_MODES = new Map([['0400', 0o400], ['0600', 0o600]]);
@@ -54,6 +63,31 @@ export interface MaterializationReceipt {
   mode: '0400' | '0600';
   writtenAt: string;
   cleanupSucceeded: boolean;
+}
+
+export async function systemdMaterializerIdentityStoreUsable(input: {
+  available?: () => Promise<boolean>;
+  store?: MaterializerIdentityStore;
+} = {}): Promise<boolean> {
+  const available = input.available ?? systemdCredentialStoreAvailable;
+  const store = input.store ?? systemdManagedKeyringIdentityStore;
+  if (!(await available())) return false;
+  const account = randomBytes(32).toString('hex');
+  const probe = randomBytes(32);
+  let restored: Buffer | null = null;
+  try {
+    await store.write(account, probe);
+    restored = await store.read(account);
+    return restored !== null
+      && restored.length === probe.length
+      && timingSafeEqual(restored, probe);
+  } catch {
+    return false;
+  } finally {
+    restored?.fill(0);
+    probe.fill(0);
+    await store.remove(account).catch(() => undefined);
+  }
 }
 
 function canonicalJson(value: Record<string, string>): string {
@@ -159,9 +193,14 @@ export async function inspectMaterializationDestination(input: {
 }): Promise<DestinationPrecondition> {
   await validateMaterializationPath(input);
   const gitPolicy = await gitPathPolicy(input.workspaceRoot, input.destinationPath);
-  if ((gitPolicy.tracked || gitPolicy.riskPolicyMatch)
-    && (!input.trackedFileException || !input.policyAllowsTrackedException)) {
-    throw new Error('Destination is tracked by Git or matches secret-risk policy');
+  const exceptionAllowed = input.trackedFileException && input.policyAllowsTrackedException;
+  if (gitPolicy.tracked && !exceptionAllowed) {
+    throw new Error('Destination is tracked by Git; choose an untracked runtime path');
+  }
+  if (gitPolicy.riskPolicyMatch && !exceptionAllowed) {
+    throw new Error(
+      'Destination path matches the protected secret-name policy; choose a dedicated untracked runtime path whose name does not imply durable secret storage',
+    );
   }
   try {
     const handle = await open(input.destinationPath, SAFE_READ_FLAGS);
@@ -193,29 +232,66 @@ export async function inspectMaterializationDestination(input: {
 export async function createMaterializerRunner(
   apiUrl: string,
 ): Promise<MaterializerRunner> {
+  const extension = path.extname(__filename);
+  const materializerFiles = [
+    __filename,
+    path.join(path.dirname(__filename), `environmentLease${extension}`),
+    path.join(path.dirname(__filename), `environmentLeaseApi${extension}`),
+    path.join(path.dirname(__filename), `environmentLeaseSupervisor${extension}`),
+    path.join(path.dirname(__filename), '..', 'commands', 'vault', 'use', `lease${extension}`),
+  ];
   const materializerDigest = createHash('sha256')
-    .update(readFileSync(__filename))
-    .update(process.version)
-    .digest('hex');
-  if (process.platform !== 'darwin') {
+    .update('sift.environment-lease-materializer.v1\0');
+  for (const file of materializerFiles) {
+    materializerDigest.update(path.relative(path.dirname(__filename), file)).update('\0');
+    materializerDigest.update(readFileSync(file)).update('\0');
+  }
+  const resolvedMaterializerDigest = materializerDigest.update(process.version).digest('hex');
+  const linuxStoreAvailable = process.platform === 'linux'
+    && await systemdMaterializerIdentityStoreUsable();
+  if (process.platform !== 'darwin' && !linuxStoreAvailable) {
     const pair = generateKeyPairSync('rsa', {modulusLength: 3072});
     const publicKeyPem = pair.publicKey.export({type: 'spki', format: 'pem'}).toString();
     return {
       publicKeyPem,
       privateKey: pair.privateKey,
-      fingerprint: createHash('sha256').update(publicKeyPem.trim()).digest('hex'),
-      materializerDigest,
+      fingerprint: fingerprintMaterializerPublicKey(publicKeyPem),
+      materializerDigest: resolvedMaterializerDigest,
       sessionEligible: false,
     };
   }
-  const identity = await loadOrCreateMaterializerDeviceIdentity({apiUrl});
+  const identity = await loadOrCreateMaterializerDeviceIdentity({
+    apiUrl,
+    ...(linuxStoreAvailable ? {store: systemdManagedKeyringIdentityStore} : {}),
+  });
   return {
     publicKeyPem: identity.publicKeyPem,
     privateKey: identity.privateKey,
     fingerprint: identity.fingerprint,
-    materializerDigest,
+    materializerDigest: resolvedMaterializerDigest,
     sessionEligible: true,
   };
+}
+
+export function createEnvironmentLeaseCleanupProofBinding(input: {
+  leaseId: string;
+  attemptId: string;
+  state: 'confirmed' | 'not_required' | 'failed' | 'unknowable';
+  reason: string;
+  runnerFingerprint: string;
+  materializerDigest: string;
+  proofTimestamp: string;
+}): string {
+  return canonicalJson({
+    proofContext: 'sift.vault.environment-lease.cleanup.v1',
+    leaseId: input.leaseId,
+    attemptId: input.attemptId,
+    state: input.state,
+    reason: input.reason,
+    runnerFingerprint: input.runnerFingerprint,
+    materializerDigest: input.materializerDigest,
+    proofTimestamp: input.proofTimestamp,
+  });
 }
 
 export function createMaterializationRunnerProofBinding(input: {
@@ -251,6 +327,54 @@ export function createMaterializationRunnerProofBinding(input: {
     runnerPublicKeyFingerprint: input.runnerPublicKeyFingerprint,
     materializerDigest: input.materializerDigest,
     runnerProofTimestamp: input.runnerProofTimestamp,
+  });
+}
+
+export function createMaterializationBundleRunnerProofBinding(input: {
+  bundleDigest: string;
+  destinationPath: string;
+  workspaceRoot: string;
+  requestedMode: '0400' | '0600';
+  expectedAbsence: boolean;
+  observedStateBinding?: string;
+  overwriteConsent: boolean;
+  purpose: string;
+  requestNonce: string;
+  runnerPublicKeyFingerprint: string;
+  materializerDigest: string;
+  runnerProofTimestamp: string;
+  vaultOwner: string;
+  deliveryClass?: 'durable_pull' | 'ephemeral_lease';
+  leaseId?: string;
+  leaseConsumer?: string;
+  leaseHolder?: string;
+  leaseTtlSeconds?: number;
+  leaseArtifactPathClass?: 'xdg_runtime' | 'tmpfs' | 'platform_runtime';
+}): string {
+  return canonicalJson({
+    bundleDigest: input.bundleDigest,
+    destinationPath: input.destinationPath,
+    workspaceRoot: input.workspaceRoot,
+    requestedMode: input.requestedMode,
+    expectedAbsence: String(input.expectedAbsence),
+    observedStateBinding: input.observedStateBinding ?? 'none',
+    overwriteConsent: String(input.overwriteConsent),
+    plaintextDisclosureAcknowledged: 'true',
+    proofContext: 'sift.vault.materialization.bundle.v1',
+    purposeDigest: createHash('sha256').update(input.purpose).digest('hex'),
+    requestNonce: input.requestNonce,
+    runnerPublicKeyFingerprint: input.runnerPublicKeyFingerprint,
+    materializerDigest: input.materializerDigest,
+    runnerProofTimestamp: input.runnerProofTimestamp,
+    vaultOwner: input.vaultOwner,
+    ...(input.deliveryClass === 'ephemeral_lease' ? {
+      deliveryClass: input.deliveryClass,
+      leaseId: input.leaseId ?? 'none',
+      leaseConsumer: input.leaseConsumer ?? 'none',
+      leaseHolder: input.leaseHolder ?? 'none',
+      leaseTtlSeconds: String(input.leaseTtlSeconds ?? 0),
+      leaseArtifactPathClass: input.leaseArtifactPathClass ?? 'none',
+    } : {}),
   });
 }
 
@@ -306,6 +430,58 @@ export function createMaterializationCredentialBinding(input: {
   });
 }
 
+export function createMaterializationBundleCredentialBinding(input: {
+  materializationId: string;
+  bundleDigest: string;
+  runnerFingerprint: string;
+  materializerDigest: string;
+  destinationPath: string;
+  workspaceRoot: string;
+  mode: '0400' | '0600';
+  expectedAbsence: boolean;
+  observedStateBinding?: string;
+  purpose: string;
+  nonce: string;
+  deliveryClass?: 'durable_pull' | 'ephemeral_lease';
+  leaseConsumer?: string;
+  leaseHolder?: string;
+  leaseExpiresAt?: string;
+  leaseArtifactPathClass?: 'xdg_runtime' | 'tmpfs' | 'platform_runtime';
+  endpointEnrollmentId?: string;
+  endpointClassification?: string;
+  endpointStorageTier?: string;
+  endpointDedicated?: boolean;
+  endpointPolicyEligible?: boolean;
+  endpointKillSwitchEnabled?: boolean;
+}): string {
+  return canonicalJson({
+    materializationId: input.materializationId,
+    bundleDigest: input.bundleDigest,
+    runnerFingerprint: input.runnerFingerprint,
+    materializerDigest: input.materializerDigest,
+    destinationPath: input.destinationPath,
+    workspaceRoot: input.workspaceRoot,
+    mode: input.mode,
+    expectedAbsence: String(input.expectedAbsence),
+    observedStateBinding: input.observedStateBinding ?? 'none',
+    purposeDigest: createHash('sha256').update(input.purpose).digest('hex'),
+    nonce: input.nonce,
+    ...(input.deliveryClass === 'ephemeral_lease' ? {
+      deliveryClass: input.deliveryClass,
+      leaseConsumer: input.leaseConsumer ?? 'none',
+      leaseHolder: input.leaseHolder ?? 'none',
+      leaseExpiresAt: input.leaseExpiresAt ?? 'none',
+      leaseArtifactPathClass: input.leaseArtifactPathClass ?? 'none',
+      endpointEnrollmentId: input.endpointEnrollmentId ?? 'none',
+      endpointClassification: input.endpointClassification ?? 'none',
+      endpointStorageTier: input.endpointStorageTier ?? 'none',
+      endpointDedicated: String(input.endpointDedicated ?? false),
+      endpointPolicyEligible: String(input.endpointPolicyEligible ?? false),
+      endpointKillSwitchEnabled: String(input.endpointKillSwitchEnabled ?? false),
+    } : {}),
+  });
+}
+
 export function decryptMaterializationEnvelope(
   envelope: ExecutionGrantEnvelope,
   privateKey: KeyObject,
@@ -320,6 +496,34 @@ export function decryptMaterializationEnvelope(
   const value = decrypted.fields[field];
   decrypted.fields[field] = '';
   return value;
+}
+
+export function decryptMaterializationBundleEnvelope(
+  envelope: ExecutionGrantEnvelope,
+  privateKey: KeyObject,
+  binding: string,
+  expectedNames: readonly string[],
+): Buffer[] {
+  const decrypted = decryptExecutionGrantEnvelope(envelope, privateKey, binding);
+  const names = Object.keys(decrypted.fields);
+  const values: Buffer[] = [];
+  try {
+    if (decrypted.kind !== 'vault_materialization_bundle_plaintext'
+      || JSON.stringify(names) !== JSON.stringify(expectedNames)) {
+      throw new Error('Materialization bundle envelope does not match the approved ordered member set');
+    }
+    for (const name of expectedNames) {
+      const value = decrypted.fields[name];
+      if (!value) throw new Error('Materialization bundle member is missing or malformed');
+      values.push(Buffer.from(value, 'utf8'));
+    }
+    return values;
+  } catch (error) {
+    for (const value of values) value.fill(0);
+    throw error;
+  } finally {
+    for (const name of names) decrypted.fields[name] = '';
+  }
 }
 
 async function verifyPrecondition(input: {
@@ -351,7 +555,7 @@ async function verifyPrecondition(input: {
 }
 
 export async function materializeApprovedPlaintext(input: {
-  plaintext: string;
+  plaintext: string | Buffer;
   destinationPath: string;
   workspaceRoot: string;
   mode: '0400' | '0600';
@@ -359,6 +563,7 @@ export async function materializeApprovedPlaintext(input: {
   expectedDestinationDigest?: string;
   trackedFileException: boolean;
   policyAllowsTrackedException: boolean;
+  riskPolicyAcknowledged?: boolean;
   beforeCommit?: () => Promise<void>;
   onCommitted?: () => void;
   onCleanup?: (succeeded: boolean) => void;
@@ -367,15 +572,20 @@ export async function materializeApprovedPlaintext(input: {
   if (!requestedMode) throw new Error('Unsupported materialization mode');
   await validateMaterializationPath(input);
   const policy = await gitPathPolicy(input.workspaceRoot, input.destinationPath);
-  if ((policy.tracked || policy.riskPolicyMatch)
-    && (!input.trackedFileException || !input.policyAllowsTrackedException)) {
-    throw new Error('Destination is tracked by Git or matches secret-risk policy');
+  const trackedExceptionAllowed = input.trackedFileException && input.policyAllowsTrackedException;
+  if (policy.tracked && !trackedExceptionAllowed) {
+    throw new Error('Destination is tracked by Git; choose an untracked runtime path');
+  }
+  if (policy.riskPolicyMatch && !input.riskPolicyAcknowledged && !trackedExceptionAllowed) {
+    throw new Error('Destination matches the secret-risk path policy without explicit acknowledgement');
   }
   await verifyPrecondition(input);
   const parent = path.dirname(input.destinationPath);
   const tempDir = await mkdtemp(path.join(parent, '.sift-materialize-'));
   const tempPath = path.join(tempDir, `payload-${randomBytes(8).toString('hex')}`);
-  const bytes = Buffer.from(input.plaintext, 'utf8');
+  const bytes = typeof input.plaintext === 'string'
+    ? Buffer.from(input.plaintext, 'utf8')
+    : Buffer.from(input.plaintext);
   let cleanupSucceeded = false;
   let receipt: Omit<MaterializationReceipt, 'cleanupSucceeded'> | undefined;
   try {

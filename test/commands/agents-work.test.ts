@@ -1,5 +1,10 @@
 import {installIsolatedConfigDirHooks} from '../helpers/config-env';
 import {fixtures, mockFetch, restoreFetch, runCommand} from '../helpers/mock-api';
+import {
+  runShellWithHeartbeats,
+  workerHeartbeatIntervalMs,
+  workerHeartbeatTimeoutMs,
+} from '../../src/commands/worker/run';
 
 installIsolatedConfigDirHooks('sift-cli-agents-work-test-');
 
@@ -77,7 +82,7 @@ describe('work commands', () => {
           && Array.isArray(input.verificationCommands)
           && input.verificationCommands[0] === 'npm run build'
           && input.dependsOn?.[0]?.workItemId === predecessorId
-          && input.dependsOn?.[0]?.requiredGate === 'verified';
+          && input.dependsOn?.[0]?.requiredGate === 'commands_passed';
       })
       .reply(201, {
         workItem: {
@@ -102,7 +107,7 @@ describe('work commands', () => {
       '--verify',
       'npm run build;npm test',
       '--depends-on',
-      `[{"workItemId":"${predecessorId}","requiredGate":"verified"}]`,
+      `[{"workItemId":"${predecessorId}","requiredGate":"commands_passed"}]`,
       '--token',
       'sift_pat_test',
       '--json',
@@ -126,7 +131,7 @@ describe('work commands', () => {
       'sift_pat_test',
       '--json',
     ]);
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(2);
     expect(result.stdout).toContain('workItemId must be a UUID');
     expect(global.fetch).not.toHaveBeenCalled();
   });
@@ -178,9 +183,15 @@ describe('work commands', () => {
 
     const result = await runCommand(['work', 'list', '--token', 'sift_pat_test', '--json']);
     const json = JSON.parse(result.stdout);
-    expect(json).toHaveLength(1);
-    expect(json[0].title).toBe('Run verification');
-    expect(json[0].claimToken).toBeUndefined();
+    expect(json).toEqual(expect.objectContaining({
+      ok: true,
+      page: expect.objectContaining({returned: 1, complete: true}),
+      omissions: ['totalCount'],
+      warnings: [],
+    }));
+    expect(json.workItems).toHaveLength(1);
+    expect(json.workItems[0].title).toBe('Run verification');
+    expect(json.workItems[0].claimToken).toBeUndefined();
     expect(result.stdout).not.toContain('should-not-render');
   });
 
@@ -246,6 +257,7 @@ describe('work commands', () => {
           title: 'Run verification',
           status: 'running',
           claimToken: 'should-not-render',
+          leaseDiagnostic: {state: 'expired', expiresAt: '2026-08-11T19:59:00.000Z'},
           dependencies: [{
             predecessorId: '11111111-1111-4111-8111-111111111111',
             requiredGate: 'commands_passed',
@@ -261,6 +273,7 @@ describe('work commands', () => {
     expect(json.claimToken).toBeUndefined();
     expect(json.dependencies[0].requiredGate).toBe('commands_passed');
     expect(json.claimability.state).toBe('waiting');
+    expect(json.leaseDiagnostic.state).toBe('expired');
     expect(result.stdout).not.toContain('should-not-render');
   });
 
@@ -272,7 +285,7 @@ describe('work commands', () => {
           id: '22222222-2222-4222-8222-222222222222',
           dependencies: [{
             predecessorId: '11111111-1111-4111-8111-111111111111',
-            requiredGate: 'verified',
+            requiredGate: 'commands_passed',
             satisfied: false,
           }],
           claimability: {state: 'waiting', blockedBy: []},
@@ -285,7 +298,7 @@ describe('work commands', () => {
     ]);
     const json = JSON.parse(result.stdout);
     expect(json.workItemId).toBe('22222222-2222-4222-8222-222222222222');
-    expect(json.dependencies[0].requiredGate).toBe('verified');
+    expect(json.dependencies[0].requiredGate).toBe('commands_passed');
     expect(json.claimability.state).toBe('waiting');
   });
 
@@ -311,8 +324,8 @@ describe('work commands', () => {
       .on('GET', `/api/v1/projects/${projectId}/work-dependency-policy`)
       .reply(200, {defaultRequiredGate: 'commands_passed'})
       .on('PUT', `/api/v1/projects/${projectId}/work-dependency-policy`)
-      .body((body) => (body as any).defaultRequiredGate === 'verified')
-      .reply(200, {defaultRequiredGate: 'verified'})
+      .body((body) => (body as any).defaultRequiredGate === 'done')
+      .reply(200, {defaultRequiredGate: 'done'})
       .install();
     const read = await runCommand([
       'work', 'dependency-policy', 'get', '--project', projectId,
@@ -320,10 +333,24 @@ describe('work commands', () => {
     ]);
     expect(JSON.parse(read.stdout).defaultRequiredGate).toBe('commands_passed');
     const update = await runCommand([
-      'work', 'dependency-policy', 'set', '--project', projectId, '--gate', 'verified',
+      'work', 'dependency-policy', 'set', '--project', projectId, '--gate', 'done',
       '--token', 'sift_pat_test', '--json',
     ]);
-    expect(JSON.parse(update.stdout).defaultRequiredGate).toBe('verified');
+    expect(JSON.parse(update.stdout).defaultRequiredGate).toBe('done');
+  });
+
+  it('rejects the retired verified project dependency policy before calling the API', async () => {
+    mockFetch().install();
+    const result = await runCommand([
+      'work', 'dependency-policy', 'set',
+      '--project', '33333333-3333-4333-8333-333333333333',
+      '--gate', 'verified',
+      '--token', 'sift_pat_test',
+      '--json',
+    ]);
+
+    expect(result.exitCode).toBe(2);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('claims work with an owner lease', async () => {
@@ -354,7 +381,12 @@ describe('work commands', () => {
     ]);
     const json = JSON.parse(result.stdout);
     expect(json.workItem.status).toBe('claimed');
-    expect(json.workItem.claimToken).toBe('claim-token');
+    expect(json.workItem.claimToken).toBeUndefined();
+    expect(json.leaseSession).toEqual(expect.objectContaining({
+      workItemId: 'work-001',
+      claimOwner: 'codex-test',
+      state: 'active',
+    }));
   });
 
   it('starts claimed work by positional ID', async () => {
@@ -424,6 +456,38 @@ describe('work commands', () => {
     expect(json.workItem.claimToken).toBeUndefined();
   });
 
+  it('allows the server to park an unclaimable review gate without lease credentials', async () => {
+    mockFetch()
+      .on('POST', '/api/v1/work-items/gate-001/review')
+      .body((body) => {
+        const input = body as any;
+        return input.claimOwner == null
+          && input.claimToken == null
+          && input.resultSummary === 'Awaiting operator approval';
+      })
+      .reply(200, {
+        workItem: {
+          id: 'gate-001',
+          title: 'Approval gate',
+          status: 'needs_review',
+        },
+      })
+      .install();
+
+    const result = await runCommand([
+      'work',
+      'review',
+      'gate-001',
+      '--summary',
+      'Awaiting operator approval',
+      '--token',
+      'sift_pat_test',
+      '--json',
+    ]);
+    const json = JSON.parse(result.stdout);
+    expect(json.workItem).toMatchObject({ id: 'gate-001', status: 'needs_review' });
+  });
+
   it('requires owner and token together before releasing active work', async () => {
     mockFetch().install();
     const result = await runCommand([
@@ -437,7 +501,7 @@ describe('work commands', () => {
       '--json',
     ]);
 
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(2);
     expect(result.stdout).toContain('release requires both --owner and --claim-token');
     expect(global.fetch).not.toHaveBeenCalled();
   });
@@ -490,6 +554,7 @@ describe('work commands', () => {
         return input.claimOwner === 'codex-test'
           && input.claimToken === 'claim-token'
           && input.resultSummary === 'Tests passed'
+          && input.durableMemory?.decision === 'skip'
           && Array.isArray(input.artifactRefs)
           && input.artifactRefs[0]?.path === 'packages/exf-cli/test/commands/agents-work.test.ts';
       })
@@ -515,6 +580,8 @@ describe('work commands', () => {
       'Tests passed',
       '--artifacts',
       '[{"path":"packages/exf-cli/test/commands/agents-work.test.ts"}]',
+      '--memory-decision',
+      '{"decision":"skip","rationale":"No durable fact from this CLI fixture"}',
       '--token',
       'sift_pat_test',
       '--json',
@@ -558,24 +625,8 @@ describe('work commands', () => {
     expect(json.workItem.verificationState).toBe('commands_passed');
   });
 
-  it('runs verification with an explicit hosted model override', async () => {
-    mockFetch()
-      .on('POST', '/api/v1/work-items/work-001/verify')
-      .body((body) => (body as any).repetitions === 2 && (body as any).model === 'provider/verifier-model')
-      .reply(200, {
-        run: {
-          id: 'run-001',
-          verdict: 'verified',
-          aggregateScore: 0.91,
-          verifierModel: 'provider/verifier-model',
-          repetitions: 2,
-          rationale: 'All criteria passed.',
-          criterionScores: [
-            {criterionText: 'Tests pass', score: 0.94, uncertainty: 0.01, passed: true},
-          ],
-        },
-      })
-      .install();
+  it('returns a deterministic retirement notice without invoking the API or a model', async () => {
+    mockFetch().install();
 
     const result = await runCommand([
       'work',
@@ -590,36 +641,13 @@ describe('work commands', () => {
       '--json',
     ]);
     const json = JSON.parse(result.stdout);
-    expect(json.verdict).toBe('verified');
-    expect(json.criterionScores[0].criterionText).toBe('Tests pass');
-  });
-
-  it('defers model selection to server policy when no override is provided', async () => {
-    mockFetch()
-      .on('POST', '/api/v1/work-items/work-001/verify')
-      .body((body) => !Object.prototype.hasOwnProperty.call(body, 'model'))
-      .reply(200, {
-        run: {
-          id: 'run-002',
-          verdict: 'needs_review',
-          aggregateScore: 0.65,
-          verifierModel: 'server-policy-model',
-          repetitions: 3,
-          criterionScores: [],
-        },
-      })
-      .install();
-
-    const result = await runCommand([
-      'work',
-      'verify',
-      'work-001',
-      '--token',
-      'sift_pat_test',
-      '--json',
-    ]);
-    const json = JSON.parse(result.stdout);
-    expect(json.verifierModel).toBe('server-policy-model');
+    expect(json).toMatchObject({
+      status: 'retired',
+      workItemId: 'work-001',
+      authoritativeGate: 'commands_passed',
+    });
+    expect(json.message).toContain('no model was invoked');
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('lists verifier run history for a work item', async () => {
@@ -663,7 +691,7 @@ describe('codex daily-review collect', () => {
       .on('GET', '/api/v1/work-items').query(true).reply(200, {workItems: []})
       .on('GET', '/api/v1/tasks').query(true).reply(200, {tasks: [fixtures.task()]})
       .on('GET', '/api/v1/tasks').query(true).reply(200, {tasks: []})
-      .on('GET', '/api/v1/code/repositories').reply(200, {repositories: [fixtures.repository()]})
+      .on('GET', '/api/v1/context/repositories').reply(200, {repositories: [fixtures.repository()]})
       .on('GET', '/api/v1/code/memories').query(true).reply(200, {memories: [fixtures.memory()], total: 1})
       .on('GET', '/api/v1/calendar/events').query(true).reply(200, {events: [fixtures.event()]})
       .on('GET', '/api/v1/vault/entries').query(true).reply(200, {entries: [fixtures.vaultEntry()]})
@@ -687,6 +715,60 @@ describe('codex daily-review collect', () => {
 });
 
 describe('worker run command', () => {
+  it('schedules renewal well before even the minimum lease expires', () => {
+    expect(workerHeartbeatIntervalMs(60)).toBe(20_000);
+    expect(workerHeartbeatIntervalMs(1800)).toBe(600_000);
+    expect(workerHeartbeatTimeoutMs(60)).toBe(10_000);
+    expect(workerHeartbeatTimeoutMs(1800)).toBe(300_000);
+  });
+
+  it('renews the lease while a worker command is still running', async () => {
+    let heartbeatCount = 0;
+    const result = await runShellWithHeartbeats({
+      shell: process.env.SHELL || 'sh',
+      command: 'sleep 0.2; printf worker-finished',
+      cwd: process.cwd(),
+      env: process.env,
+      leaseSeconds: 60,
+      heartbeatIntervalMs: 10,
+      heartbeat: async () => {
+        heartbeatCount += 1;
+      },
+    });
+
+    expect(result).toMatchObject({exitCode: 0, stdoutTail: 'worker-finished'});
+    expect(heartbeatCount).toBeGreaterThan(0);
+  });
+
+  it('terminates a worker command when lease renewal fails', async () => {
+    await expect(runShellWithHeartbeats({
+      shell: process.env.SHELL || 'sh',
+      command: 'sleep 5',
+      cwd: process.cwd(),
+      env: process.env,
+      leaseSeconds: 60,
+      heartbeatIntervalMs: 10,
+      heartbeat: async () => {
+        throw new Error('lease lost');
+      },
+    })).rejects.toThrow('Worker lease heartbeat failed: lease lost');
+  });
+
+  it('terminates a worker before lease expiry when renewal stalls', async () => {
+    const startedAt = Date.now();
+    await expect(runShellWithHeartbeats({
+      shell: process.env.SHELL || 'sh',
+      command: 'sleep 5',
+      cwd: process.cwd(),
+      env: process.env,
+      leaseSeconds: 60,
+      heartbeatIntervalMs: 10,
+      heartbeatTimeoutMs: 20,
+      heartbeat: async () => await new Promise<void>(() => {}),
+    })).rejects.toThrow('Worker lease heartbeat failed: heartbeat timed out after 20ms');
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+
   it('claims, starts, runs, heartbeats, and marks work as needing review', async () => {
     const transitions: string[] = [];
     mockFetch()

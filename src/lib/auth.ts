@@ -11,8 +11,8 @@ export function resolveToken(): string | undefined {
   return config?.token;
 }
 
-export function storeToken(token: string): void {
-  writeConfig({token});
+export function storeToken(token: string, principalType?: 'personal_pat' | 'workspace_service_pat'): void {
+  writeConfig({token, ...(principalType ? {principalType} : {})});
 }
 
 export function clearToken(): void {

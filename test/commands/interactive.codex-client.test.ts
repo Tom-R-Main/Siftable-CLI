@@ -12,11 +12,39 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {
   CodexClient,
+  codexAsk,
   ensureThread,
   shutdownCodex,
+  closeCodex,
+  getCodexAccount,
   __resetCodexThreadsForTests,
+  __setCodexClientForTests,
+  __setCodexSpawnForTests,
+  killCodexChildrenOnExit,
+  codexChildAlive,
+  __failedCodexClientCountForTests,
+  type CodexSpawnFn,
 } from '../../interactive-tui/codexEngine';
+import {closeBrain, setBrainModel, getBrainModel, agentHarnessAsk, __setExplorerReportBuilderForTests, __setPreTurnStopBoundForTests,
+  __resetBrainAgentsForTests, setAgentConversationKey, __setProcessJobsForTests} from '../../interactive-tui/brain';
+import {enqueueSessionInstruction, sessionJournalIdForConversation} from '../../interactive-tui/sessionMailbox';
+import * as bundledHarness from '../../interactive-tui/agent-harness';
+import {SessionServer, WireEventLog} from '../../interactive-tui/sessionServer';
+import {JsonlSessionEventStore} from '../../interactive-tui/agent-harness/framework/session';
+import * as confirmGateModule from '../../interactive-tui/confirmGate';
+import * as questionGateModule from '../../interactive-tui/questionGate';
 import {getSessionCwd, setSessionCwd} from '../../interactive-tui/navigation';
+import {
+  isBypassing,
+  pendingConfirmCount,
+  rejectAllConfirms,
+  requestApproval,
+  resetBypass,
+  resolveApproval,
+  setConfirmCancellationListener,
+  setConfirmListener,
+  type ConfirmRequest,
+} from '../../interactive-tui/confirmGate';
 import {
   FakeCodexProc,
   completeHandshake,
@@ -32,6 +60,67 @@ async function readyClient(): Promise<{ client: CodexClient; proc: FakeCodexProc
   await completeHandshake(proc);
   await ready;
   return { client, proc };
+}
+
+// The cancellation tests below never assert elapsed time. They hold the slow
+// work open (a stalled request, a child that ignores kill, or a promise the
+// test settles itself) and fake setTimeout, the only timer the stop bounds use,
+// so a bound fires exactly when the test advances fake time past it. Date,
+// setImmediate, streams and file I/O stay real.
+//
+// The waits below run on real time and expire only when an expected event never
+// arrives. They are set well under the 30 s test timeout, so that a missing
+// event still reports what was seen.
+const EVENT_WAIT_MS = 10_000;
+
+/** The stop bound every cancellation test configures. */
+const STOP_BOUND_MS = 60;
+
+// Captured before any test fakes timers.
+const realSetTimeout = globalThis.setTimeout;
+const realDelay = (ms: number) => new Promise<void>((resolve) => { realSetTimeout(resolve, ms); });
+
+/** Poll on real time until `condition` holds; fail only if it never does. */
+async function until(condition: () => boolean, what: () => string): Promise<void> {
+  const deadline = Date.now() + EVENT_WAIT_MS;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${what()}`);
+    await realDelay(5);
+  }
+}
+
+/**
+ * Let work settled after a cancel run its continuations. Only negative checks
+ * follow this wait, so a slow machine cannot make correct code fail them.
+ */
+const lateSettlement = () => realDelay(100);
+
+/** Fake only setTimeout and clearTimeout. Run it before the code under test starts any timer. */
+function fakeTimeouts(): void {
+  jest.useFakeTimers({doNotFake: ['Date', 'hrtime', 'nextTick', 'performance', 'queueMicrotask', 'requestAnimationFrame',
+    'cancelAnimationFrame', 'requestIdleCallback', 'cancelIdleCallback', 'setImmediate', 'clearImmediate', 'setInterval',
+    'clearInterval']});
+}
+
+/**
+ * Advance fake time by `ms`, firing every timer that falls due, then give what
+ * fired time to finish on the real event loop (stream reads, log flushes).
+ */
+async function advance(ms: number): Promise<void> {
+  await jest.advanceTimersByTimeAsync(ms);
+  await lateSettlement();
+}
+
+/**
+ * One real macrotask: every microtask queued so far has run. A bound that a
+ * cancel schedules through promise continuations alone is registered after this.
+ */
+const nextMacrotask = () => new Promise<void>((resolve) => { setImmediate(resolve); });
+
+/** The id of the first request written for `method`, polled on real time. */
+async function sentId(proc: FakeCodexProc, method: string): Promise<number> {
+  await until(() => proc.sent.some((m) => m.method === method), () => `"${method}" to be written to the child`);
+  return proc.sent.find((m) => m.method === method)!.id as number;
 }
 
 describe('CodexClient handshake', () => {
@@ -59,6 +148,35 @@ describe('CodexClient handshake', () => {
       throw new Error('spawn codex ENOENT');
     });
     await expect(client.ensureReady()).rejects.toThrow(/ENOENT/);
+  });
+
+  it('tears down a rejected initialize generation and reconnects cleanly', async () => {
+    const procs: FakeCodexProc[] = [];
+    const client = new CodexClient(() => {
+      const proc = new FakeCodexProc();
+      procs.push(proc);
+      return proc as unknown as ReturnType<CodexSpawnFn>;
+    });
+
+    let ready = client.ensureReady();
+    const rejectedInitId = await waitForSent(procs[0], 'initialize');
+    procs[0].replyError(rejectedInitId, 'initialize rejected');
+    await expect(ready).rejects.toThrow('initialize rejected');
+
+    expect(procs[0].killed).toBe(true);
+    expect(procs[0].killSignal).toBe('SIGTERM');
+    expect(procs[0].listenerCount('error')).toBe(0);
+    expect(procs[0].listenerCount('exit')).toBe(0);
+    expect(procs[0].stdout.listenerCount('data')).toBe(0);
+
+    ready = client.ensureReady();
+    await completeHandshake(procs[1]);
+    await ready;
+
+    const request = client.request('thread/start', {});
+    const requestId = await waitForSent(procs[1], 'thread/start');
+    procs[1].reply(requestId, { threadId: 'fresh-after-init-failure' });
+    await expect(request).resolves.toEqual({ threadId: 'fresh-after-init-failure' });
   });
 });
 
@@ -143,9 +261,983 @@ describe('CodexClient unexpected exit', () => {
     await expect(a).rejects.toThrow('codex app-server exited');
     await expect(b).rejects.toThrow('codex app-server exited');
   });
+
+  it('rejects a request made after exit before a replacement generation starts', async () => {
+    const procs: FakeCodexProc[] = [];
+    const client = new CodexClient(() => {
+      const proc = new FakeCodexProc();
+      procs.push(proc);
+      return proc as unknown as ReturnType<CodexSpawnFn>;
+    });
+
+    let ready = client.ensureReady();
+    await completeHandshake(procs[0]);
+    await ready;
+
+    procs[0].exit(1);
+    await expect(client.request('thread/start', {})).rejects.toThrow(
+      'codex app-server disconnected',
+    );
+    expect(procs).toHaveLength(1);
+    expect(procs[0].sent.filter((message) => message.method === 'thread/start')).toHaveLength(0);
+
+    ready = client.ensureReady();
+    await completeHandshake(procs[1]);
+    await ready;
+    const request = client.request('thread/start', {});
+    const requestId = await waitForSent(procs[1], 'thread/start');
+    procs[1].reply(requestId, { threadId: 'replacement-thread' });
+    await expect(request).resolves.toEqual({ threadId: 'replacement-thread' });
+  });
+});
+
+describe('codexAsk generation disconnects', () => {
+  const startCount = (proc: FakeCodexProc) =>
+    proc.sent.filter((m) => m.method === 'thread/start').length;
+
+  async function readyInjectedClient(): Promise<{
+    client: CodexClient;
+    procs: FakeCodexProc[];
+  }> {
+    const procs: FakeCodexProc[] = [];
+    const spawnFresh: CodexSpawnFn = () => {
+      const proc = new FakeCodexProc();
+      procs.push(proc);
+      return proc as unknown as ReturnType<CodexSpawnFn>;
+    };
+    const client = new CodexClient(spawnFresh);
+    const ready = client.ensureReady();
+    await completeHandshake(procs[0]);
+    await ready;
+    __setCodexClientForTests(client, { type: 'chatgpt', email: 'test@example.com' });
+    return { client, procs };
+  }
+
+  async function startAcknowledgedTurn(proc: FakeCodexProc): Promise<{
+    result: ReturnType<typeof codexAsk>;
+    events: Array<{ type: string }>;
+  }> {
+    const events: Array<{ type: string }> = [];
+    const result = codexAsk('continue', (event) => events.push(event));
+    const threadStartId = await waitForSent(proc, 'thread/start');
+    proc.reply(threadStartId, { thread: { id: 'thread-generation-1' } });
+    const turnStartId = await waitForSent(proc, 'turn/start');
+    proc.reply(turnStartId, { turn: { id: 'turn-generation-1' } });
+    proc.notify('item/agentMessage/delta', {
+      threadId: 'thread-generation-1',
+      turnId: 'turn-generation-1',
+      delta: 'partial reply',
+    });
+    return { result, events };
+  }
+
+  afterEach(() => {
+    shutdownCodex();
+    __setCodexClientForTests(null);
+  });
+
+  it('returns assembled text plus an error when the server exits after turn/start ACK', async () => {
+    const { client, procs } = await readyInjectedClient();
+    const { result, events } = await startAcknowledgedTurn(procs[0]);
+
+    procs[0].exit(1);
+
+    await expect(result).resolves.toEqual({
+      text: 'partial reply',
+      error: 'codex app-server exited',
+    });
+    expect(events).toContainEqual({ type: 'token', content: 'partial reply' });
+    expect(procs[0].stdout.listenerCount('data')).toBe(0);
+    expect(procs[0].listenerCount('error')).toBe(0);
+    expect(procs[0].listenerCount('exit')).toBe(0);
+
+    const ready = client.ensureReady();
+    await completeHandshake(procs[1]);
+    await ready;
+    procs[1].notify('item/agentMessage/delta', {
+      threadId: 'thread-generation-1',
+      turnId: 'turn-generation-1',
+      delta: 'late notification',
+    });
+    expect(events).toEqual([{ type: 'token', content: 'partial reply' }]);
+    const freshThread = ensureThread(client);
+    const freshThreadStartId = await waitForSent(procs[1], 'thread/start');
+    procs[1].reply(freshThreadStartId, { thread: { id: 'thread-generation-2' } });
+    await expect(freshThread).resolves.toBe('thread-generation-2');
+    expect(startCount(procs[1])).toBe(1);
+  });
+
+  it('terminates a runtime-error generation and ignores its late exit after respawn', async () => {
+    const { client, procs } = await readyInjectedClient();
+    const { result } = await startAcknowledgedTurn(procs[0]);
+
+    procs[0].fail(new Error('runtime transport failure'));
+
+    await expect(result).resolves.toEqual({
+      text: 'partial reply',
+      error: 'runtime transport failure',
+    });
+    expect(procs[0].killed).toBe(true);
+    expect(procs[0].killSignal).toBe('SIGTERM');
+    expect(procs[0].stdout.listenerCount('data')).toBe(0);
+    expect(procs[0].listenerCount('error')).toBe(0);
+    expect(procs[0].listenerCount('exit')).toBe(0);
+
+    const ready = client.ensureReady();
+    await completeHandshake(procs[1]);
+    await ready;
+    const freshThread = ensureThread(client);
+    const freshThreadStartId = await waitForSent(procs[1], 'thread/start');
+    procs[1].reply(freshThreadStartId, { thread: { id: 'thread-generation-2' } });
+    await expect(freshThread).resolves.toBe('thread-generation-2');
+
+    procs[0].exit(1);
+    await expect(ensureThread(client)).resolves.toBe('thread-generation-2');
+    expect(startCount(procs[1])).toBe(1);
+  });
+});
+
+describe('codexAsk cancellation (AGENT-RUNTIME-31)', () => {
+  async function injected(): Promise<FakeCodexProc> {
+    const proc = new FakeCodexProc();
+    const client = new CodexClient(proc.asSpawnFn());
+    const ready = client.ensureReady();
+    await completeHandshake(proc);
+    await ready;
+    __setCodexClientForTests(client, { type: 'chatgpt', email: 'test@example.com' });
+    return proc;
+  }
+  async function startTurn(proc: FakeCodexProc, signal: AbortSignal, stopTimeoutMs?: number) {
+    let settled = false;
+    const result = codexAsk('continue', () => {}, { signal, ...(stopTimeoutMs ? { stopTimeoutMs } : {}) });
+    void result.then(() => { settled = true; });
+    proc.reply(await waitForSent(proc, 'thread/start'), { thread: { id: 'thread-stop' } });
+    proc.reply(await waitForSent(proc, 'turn/start'), { turn: { id: 'turn-stop' } });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    return { result, isSettled: () => settled };
+  }
+
+  afterEach(() => {
+    shutdownCodex();
+    __setCodexClientForTests(null);
+  });
+
+  it('resolves only after app-server reports the interrupted turn completed', async () => {
+    const proc = await injected();
+    const controller = new AbortController();
+    const { result, isSettled } = await startTurn(proc, controller.signal);
+    controller.abort();
+    const interruptId = await waitForSent(proc, 'turn/interrupt');
+    expect(proc.sent.find((m) => m.id === interruptId)?.params).toEqual({ threadId: 'thread-stop', turnId: 'turn-stop' });
+    proc.reply(interruptId, {});
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The interrupt ACK alone does not prove the turn ended.
+    expect(isSettled()).toBe(false);
+    proc.notify('turn/completed', { threadId: 'thread-stop', turn: { id: 'turn-stop', status: 'interrupted' } });
+    await expect(result).resolves.toEqual({ text: '', status: 'interrupted', stopConfirmed: true });
+  });
+
+  it('sums per-response token usage notifications into engineUsage', async () => {
+    const proc = await injected();
+    const result = codexAsk('continue', () => {});
+    proc.reply(await waitForSent(proc, 'thread/start'), { thread: { id: 'thread-usage' } });
+    proc.reply(await waitForSent(proc, 'turn/start'), { turn: { id: 'turn-usage' } });
+    const breakdown = (input: number, output: number) => ({ totalTokens: input + output, inputTokens: input, cachedInputTokens: 1,
+      cacheWriteInputTokens: 0, outputTokens: output, reasoningOutputTokens: 0 });
+    for (const last of [breakdown(10, 2), breakdown(20, 3)]) {
+      proc.notify('thread/tokenUsage/updated', { threadId: 'thread-usage', turnId: 'turn-usage',
+        tokenUsage: { total: breakdown(99, 99), last, modelContextWindow: null } });
+    }
+    proc.notify('turn/completed', { threadId: 'thread-usage', turn: { id: 'turn-usage', status: 'completed' } });
+    await expect(result).resolves.toEqual({ text: '', status: 'completed',
+      engineUsage: { requests: 2, inputTokens: 30, outputTokens: 5, cachedInputTokens: 2, totalTokens: 35 } });
+  });
+
+  it('ignores a completion for another turn on the same thread while stopping', async () => {
+    const proc = await injected();
+    const controller = new AbortController();
+    const { result, isSettled } = await startTurn(proc, controller.signal);
+    controller.abort();
+    proc.reply(await waitForSent(proc, 'turn/interrupt'), {});
+    // A late completion of an earlier turn, and one with no turn id, prove nothing.
+    proc.notify('turn/completed', { threadId: 'thread-stop', turn: { id: 'turn-earlier', status: 'completed' } });
+    proc.notify('turn/completed', { threadId: 'thread-stop', turnId: 'turn-stop' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(isSettled()).toBe(false);
+    proc.notify('turn/completed', { threadId: 'thread-stop', turn: { id: 'turn-stop', status: 'interrupted' } });
+    await expect(result).resolves.toEqual({ text: '', status: 'interrupted', stopConfirmed: true });
+  });
+
+  it('holds completions that arrive before the turn/start ACK and settles only on a matching id', async () => {
+    const proc = await injected();
+    let settled = false;
+    const result = codexAsk('continue', () => {});
+    void result.then(() => { settled = true; });
+    proc.reply(await waitForSent(proc, 'thread/start'), { thread: { id: 'thread-early' } });
+    const turnStartId = await waitForSent(proc, 'turn/start');
+    // A late completion of an earlier turn arrives before our ACK.
+    proc.notify('turn/completed', { threadId: 'thread-early', turn: { id: 'turn-previous', status: 'completed' } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    proc.reply(turnStartId, { turn: { id: 'turn-new' } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+    // Our own completion racing ahead of the ACK is honoured once the ACK names it.
+    proc.notify('turn/completed', { threadId: 'thread-early', turn: { id: 'turn-new', status: 'completed' } });
+    await expect(result).resolves.toEqual({ text: '', status: 'completed' });
+  });
+
+  it('settles a completion that arrived before its ACK once the ACK names it', async () => {
+    const proc = await injected();
+    const result = codexAsk('continue', () => {});
+    proc.reply(await waitForSent(proc, 'thread/start'), { thread: { id: 'thread-race' } });
+    const turnStartId = await waitForSent(proc, 'turn/start');
+    proc.notify('turn/completed', { threadId: 'thread-race', turn: { id: 'turn-race', status: 'completed' } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    proc.reply(turnStartId, { turn: { id: 'turn-race' } });
+    await expect(result).resolves.toEqual({ text: '', status: 'completed' });
+  });
+
+  for (const [status, expected] of [
+    ['completed', { status: 'completed' }],
+    ['interrupted', { status: 'interrupted', error: 'Codex turn was interrupted' }],
+    ['failed', { status: 'failed', error: 'model overloaded' }],
+    ['inProgress', { status: 'failed', error: 'Codex reported turn/completed with status inProgress' }],
+  ] as const) {
+    it(`maps a ${status} turn/completed explicitly`, async () => {
+      const proc = await injected();
+      const result = codexAsk('continue', () => {});
+      proc.reply(await waitForSent(proc, 'thread/start'), { thread: { id: 'thread-status' } });
+      proc.reply(await waitForSent(proc, 'turn/start'), { turn: { id: 'turn-status' } });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      proc.notify('turn/completed', { threadId: 'thread-status', turn: { id: 'turn-status', status,
+        error: status === 'failed' ? { message: 'model overloaded' } : null } });
+      await expect(result).resolves.toEqual({ text: '', ...expected });
+    });
+  }
+
+  for (const status of ['inProgress', 'bogus', undefined]) {
+    it(`a matching completion with status ${String(status)} while stopping does not confirm the stop`, async () => {
+      const proc = await injected();
+      const controller = new AbortController();
+      const { result } = await startTurn(proc, controller.signal);
+      controller.abort();
+      proc.reply(await waitForSent(proc, 'turn/interrupt'), {});
+      proc.notify('turn/completed', { threadId: 'thread-stop', turn: { id: 'turn-stop', ...(status ? { status } : {}) } });
+      const outcome = await result;
+      expect(outcome).toMatchObject({ status: 'interrupted', stopConfirmed: false });
+      expect(outcome.error).toContain('while stopping');
+    });
+  }
+
+  it('counts only this turn\'s usage, including notifications held until the ACK', async () => {
+    const proc = await injected();
+    const result = codexAsk('continue', () => {});
+    proc.reply(await waitForSent(proc, 'thread/start'), { thread: { id: 'thread-u' } });
+    const turnStartId = await waitForSent(proc, 'turn/start');
+    const usage = (turnId: string | undefined, input: number) => ({ threadId: 'thread-u', ...(turnId ? { turnId } : {}),
+      tokenUsage: { total: { totalTokens: 0, inputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 },
+        last: { totalTokens: input, inputTokens: input, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 },
+        modelContextWindow: null } });
+    // Before the ACK: a late notification from the previous turn, and one for ours.
+    proc.notify('thread/tokenUsage/updated', usage('turn-previous', 1000));
+    proc.notify('thread/tokenUsage/updated', usage('turn-u', 5));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    proc.reply(turnStartId, { turn: { id: 'turn-u' } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // After the ACK: another turn's, one without a turn id, and ours.
+    proc.notify('thread/tokenUsage/updated', usage('turn-previous', 1000));
+    proc.notify('thread/tokenUsage/updated', usage(undefined, 1000));
+    proc.notify('thread/tokenUsage/updated', usage('turn-u', 7));
+    proc.notify('turn/completed', { threadId: 'thread-u', turn: { id: 'turn-u', status: 'completed' } });
+    await expect(result).resolves.toEqual({ text: '', status: 'completed',
+      engineUsage: { requests: 2, inputTokens: 12, outputTokens: 0, cachedInputTokens: 0, totalTokens: 12 } });
+  });
+
+  it('holds turn-scoped events until the ACK and replays only this turn\'s, in order', async () => {
+    const proc = await injected();
+    const events: Array<Record<string, unknown>> = [];
+    const result = codexAsk('continue', (event) => events.push(event));
+    proc.reply(await waitForSent(proc, 'thread/start'), { thread: { id: 'thread-ev' } });
+    const turnStartId = await waitForSent(proc, 'turn/start');
+    // Before the ACK: the previous turn's late delta and item, then this turn's own early delta.
+    proc.notify('item/agentMessage/delta', { threadId: 'thread-ev', turnId: 'turn-old', itemId: 'i0', delta: 'STALE ' });
+    proc.notify('item/started', { threadId: 'thread-ev', turnId: 'turn-old', item: { type: 'commandExecution', id: 'c0', command: 'rm -rf old' } });
+    proc.notify('item/agentMessage/delta', { threadId: 'thread-ev', turnId: 'turn-ev', itemId: 'i1', delta: 'Hello ' });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(events).toEqual([]);
+    proc.reply(turnStartId, { turn: { id: 'turn-ev' } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // After the ACK: another turn's delta is ignored; ours streams.
+    proc.notify('item/agentMessage/delta', { threadId: 'thread-ev', turnId: 'turn-old', itemId: 'i0', delta: 'LATE ' });
+    proc.notify('item/agentMessage/delta', { threadId: 'thread-ev', turnId: 'turn-ev', itemId: 'i1', delta: 'world' });
+    proc.notify('turn/completed', { threadId: 'thread-ev', turn: { id: 'turn-ev', status: 'completed' } });
+    await expect(result).resolves.toEqual({ text: 'Hello world', status: 'completed' });
+    expect(events.filter((event) => event.type === 'token').map((event) => event.content)).toEqual(['Hello ', 'world']);
+    expect(JSON.stringify(events)).not.toContain('rm -rf old');
+  });
+
+  it('reports an unconfirmed stop when app-server never confirms within the bound', async () => {
+    const proc = await injected();
+    const controller = new AbortController();
+    const { result } = await startTurn(proc, controller.signal, 30);
+    controller.abort();
+    await waitForSent(proc, 'turn/interrupt');
+    const outcome = await result;
+    expect(outcome).toMatchObject({ status: 'interrupted', stopConfirmed: false });
+    expect(outcome.error).toContain('did not confirm');
+  });
+});
+
+describe('codexAsk cancellation during app-server setup (AGENT-RUNTIME-31)', () => {
+  /** A fake whose kill() either ends the child (exit + close) or is ignored. */
+  function fakeProc(diesOnKill: boolean): FakeCodexProc {
+    const proc = new FakeCodexProc();
+    const kill = proc.kill.bind(proc);
+    proc.kill = (signal?: NodeJS.Signals | number) => {
+      kill(signal);
+      if (diesOnKill) setImmediate(() => { proc.emit('exit', null, 'SIGTERM'); proc.emit('close'); });
+      return true;
+    };
+    return proc;
+  }
+  async function install(proc: FakeCodexProc, stage: 'initialize' | 'thread/start'): Promise<void> {
+    const client = new CodexClient(proc.asSpawnFn());
+    __setCodexClientForTests(client, { type: 'chatgpt', email: 'test@example.com' });
+    if (stage === 'thread/start') {
+      const ready = client.ensureReady();
+      await completeHandshake(proc);
+      await ready;
+    }
+  }
+
+  afterEach(() => {
+    jest.useRealTimers();
+    shutdownCodex();
+    __setCodexClientForTests(null);
+  });
+
+  /** Answer the stalled request after the cancel: nothing more may reach the child. */
+  async function answerLate(proc: FakeCodexProc, stage: 'initialize' | 'thread/start', id: number): Promise<void> {
+    const sent = proc.sent.length;
+    proc.reply(id, stage === 'initialize' ? { capabilities: {} } : { thread: { id: 'thread-late' } });
+    await lateSettlement();
+    expect(proc.sent.slice(sent)).toEqual([]);
+    expect(proc.sent.some((m) => m.method === 'turn/start')).toBe(false);
+  }
+
+  /** Start a cancellable codexAsk under fake timeouts; `settled` reports whether it has returned. */
+  function askUnderFakeTime(stopTimeoutMs: number) {
+    fakeTimeouts();
+    const controller = new AbortController();
+    const events: unknown[] = [];
+    let settled = false;
+    const result = codexAsk('continue', (event) => events.push(event), { signal: controller.signal, stopTimeoutMs });
+    void result.then(() => { settled = true; });
+    return { controller, events, result, settled: () => settled };
+  }
+
+  for (const stage of ['initialize', 'thread/start'] as const) {
+    it(`a cancel while app-server stalls at ${stage} is bounded and confirmed once the child is gone`, async () => {
+      const proc = fakeProc(true);
+      await install(proc, stage);
+      const ask = askUnderFakeTime(STOP_BOUND_MS);
+      const stalledId = await sentId(proc, stage);
+      ask.controller.abort();
+      // No fake time passes, so the bound cannot fire: the drain alone
+      // confirms the stop, while the stalled request is still unanswered.
+      await until(ask.settled, () => 'the cancelled ask to return');
+      await expect(ask.result).resolves.toEqual({ text: '', status: 'interrupted', stopConfirmed: true });
+      expect(proc.killed).toBe(true);
+      expect(codexChildAlive()).toBe(false);
+      await answerLate(proc, stage, stalledId);
+      expect(ask.events).toEqual([]);
+    });
+
+    it(`a cancel while app-server stalls at ${stage} and ignores kill is unconfirmed within the bound`, async () => {
+      const proc = fakeProc(false);
+      await install(proc, stage);
+      const ask = askUnderFakeTime(STOP_BOUND_MS);
+      const stalledId = await sentId(proc, stage);
+      ask.controller.abort();
+      // The kill and the bound are scheduled in the same synchronous step.
+      await until(() => proc.killed, () => 'the drain to signal the child');
+      // The stop waits out the bound: not 1 ms early, and settled once it elapses.
+      await advance(STOP_BOUND_MS - 1);
+      expect(ask.settled()).toBe(false);
+      await advance(1);
+      await until(ask.settled, () => 'the cancelled ask to return at the bound');
+      const outcome = await ask.result;
+      expect(outcome).toMatchObject({ status: 'interrupted', stopConfirmed: false });
+      expect(outcome.error).toContain('Codex setup');
+      expect(outcome.error).toContain(`within ${STOP_BOUND_MS} ms`);
+      // The drain is still pending: the child has not exited.
+      expect(codexChildAlive()).toBe(true);
+      await answerLate(proc, stage, stalledId);
+      expect(ask.events).toEqual([]);
+    });
+  }
+
+  for (const diesOnKill of [true, false]) {
+    it(`a child whose initialize is rejected and that ignores SIGTERM is still drained at shutdown (${diesOnKill ? 'dies on SIGKILL' : 'never dies'})`, async () => {
+      const proc = new FakeCodexProc();
+      const signals: Array<string | number | undefined> = [];
+      proc.kill = (signal?: NodeJS.Signals | number) => {
+        signals.push(signal);
+        if (signal === 'SIGKILL' && diesOnKill) setImmediate(() => { proc.emit('exit', null, 'SIGKILL'); proc.emit('close'); });
+        return true;
+      };
+      __setCodexClientForTests(null);
+      __setCodexSpawnForTests(() => proc as unknown as ReturnType<CodexSpawnFn>);
+      try {
+        const account = getCodexAccount(true);
+        proc.replyError(await waitForSent(proc, 'initialize'), 'unsupported client');
+        await expect(account).resolves.toBeNull();
+        expect(signals).toEqual(['SIGTERM']);
+        // Shutdown must either kill the child or report failure; never succeed with it alive.
+        const closing = closeCodex();
+        if (diesOnKill) {
+          await expect(closing).resolves.toBeUndefined();
+          expect(signals).toContain('SIGKILL');
+        } else {
+          await expect(closing).rejects.toThrow(/did not close/);
+        }
+      } finally {
+        __setCodexSpawnForTests(null);
+      }
+    });
+  }
+
+  it('concurrent callers of a failing handshake all get the unavailable result, and the child is tracked once', async () => {
+    const procs: FakeCodexProc[] = [];
+    __setCodexClientForTests(null);
+    __setCodexSpawnForTests(() => {
+      const proc = new FakeCodexProc();
+      proc.kill = () => true; // ignores SIGTERM, stays alive
+      procs.push(proc);
+      return proc as unknown as ReturnType<CodexSpawnFn>;
+    });
+    try {
+      const first = getCodexAccount(true);
+      const second = getCodexAccount(true);
+      while (!procs[0]) await new Promise((resolve) => setTimeout(resolve, 2));
+      procs[0].replyError(await waitForSent(procs[0], 'initialize'), 'unsupported client');
+      await expect(first).resolves.toBeNull();
+      await expect(second).resolves.toBeNull();
+      expect(procs).toHaveLength(1);
+      expect(__failedCodexClientCountForTests()).toBe(1);
+    } finally {
+      __setCodexSpawnForTests(null);
+    }
+  });
+
+  it('the process exit handler SIGKILLs a failed-handshake child that ignored SIGTERM', async () => {
+    const proc = new FakeCodexProc();
+    const signals: Array<string | number | undefined> = [];
+    proc.kill = (signal?: NodeJS.Signals | number) => { signals.push(signal); return true; };
+    __setCodexClientForTests(null);
+    __setCodexSpawnForTests(() => proc as unknown as ReturnType<CodexSpawnFn>);
+    try {
+      const account = getCodexAccount(true);
+      proc.replyError(await waitForSent(proc, 'initialize'), 'unsupported client');
+      await expect(account).resolves.toBeNull();
+      expect(signals).toEqual(['SIGTERM']);
+      killCodexChildrenOnExit();
+      expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
+    } finally {
+      __setCodexSpawnForTests(null);
+    }
+  });
+
+  it('a cancelled setup never spawns a replacement app-server after the drain', async () => {
+    const spawned: FakeCodexProc[] = [];
+    __setCodexSpawnForTests(() => { const proc = new FakeCodexProc(); spawned.push(proc); return proc as unknown as ReturnType<CodexSpawnFn>; });
+    try {
+      // A client whose handshake completes only after the cancel and the drain.
+      let resolveReady!: () => void;
+      const ready = new Promise<void>(resolve => { resolveReady = resolve; });
+      const lateClient = {
+        ensureReady: () => ready,
+        close: async () => {},
+        shutdown: () => {},
+        hasLiveChild: () => false,
+        setApprover: () => {},
+        request: async () => ({}),
+        onNotification: () => () => {},
+        onDisconnect: () => () => {},
+      };
+      __setCodexClientForTests(lateClient as unknown as CodexClient, { type: 'chatgpt', email: 'test@example.com' });
+      const controller = new AbortController();
+      const result = codexAsk('continue', () => {}, { signal: controller.signal, stopTimeoutMs: 500 });
+      await new Promise(r => setTimeout(r, 10));
+      controller.abort();
+      setTimeout(resolveReady, 30);
+      const outcome = await result;
+      await new Promise(r => setTimeout(r, 100));
+      expect(spawned).toHaveLength(0);
+      expect(outcome).toMatchObject({ status: 'interrupted', stopConfirmed: true });
+    } finally {
+      __setCodexSpawnForTests(null);
+    }
+  });
+
+  it('session: cancel during a stalled initialize ends in exactly one terminal stop, and shutdown completes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sift-codex-setup-'));
+    try {
+      const proc = fakeProc(false);
+      await install(proc, 'initialize');
+      fakeTimeouts();
+      const lines: Array<Record<string, any>> = [];
+      const log = new WireEventLog({rootDir: root, session: 'codex-setup', leaseStore: dir => new JsonlSessionEventStore({rootDir: dir})});
+      const server = new SessionServer({session: 'codex-setup', provider: 'codex', model: 'gpt', cwd: root, deadlineMs: 60_000, log,
+        write: line => { lines.push(JSON.parse(line)); }, gates: {...confirmGateModule, ...questionGateModule},
+        engine: {kind: 'codex', ask: (input, onEvent, signal) => codexAsk(input, onEvent, {signal, stopTimeoutMs: STOP_BOUND_MS}), close: () => closeCodex()}});
+      await server.handleLine(JSON.stringify({id: 1, type: 'initialize', protocolVersion: 1}));
+      await server.handleLine(JSON.stringify({id: 2, type: 'prompt', input: 'hello'}));
+      const initializeId = await sentId(proc, 'initialize');
+      await server.handleLine(JSON.stringify({id: 3, type: 'cancel'}));
+      const terminals = () => lines.filter(line => String(line.type).startsWith('turn.') && line.type !== 'turn.started');
+      // The kill and the bound are scheduled in the same synchronous step.
+      await until(() => proc.killed, () => 'the drain to signal the child');
+      // The stop waits out the bound: no terminal 1 ms early, one once it elapses.
+      await advance(STOP_BOUND_MS - 1);
+      expect(terminals()).toEqual([]);
+      await advance(1);
+      await until(() => lines.some(line => String(line.type).startsWith('turn.stop')),
+        () => `a stop terminal; saw ${JSON.stringify(lines.map(line => line.type))}`);
+      expect(terminals()).toHaveLength(1);
+      expect(terminals()[0]).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false, reason: 'client'});
+      expect(terminals()[0].error).toContain(`within ${STOP_BOUND_MS} ms`);
+      // The stubborn child is still undrained: the cancel did not wait for the handshake or the drain.
+      expect(codexChildAlive()).toBe(true);
+      // A late initialize answer neither resumes the turn nor adds a terminal.
+      const seenLines = lines.length;
+      const seenSent = proc.sent.length;
+      proc.reply(initializeId, { capabilities: {} });
+      await lateSettlement();
+      expect(lines.slice(seenLines)).toEqual([]);
+      expect(proc.sent.slice(seenSent)).toEqual([]);
+      // Shutdown fails once closeCodex's grace runs out: SIGKILL after 1 s, failure after 2 s.
+      const exitCode = server.shutdown('client');
+      await advance(2_000);
+      expect(await exitCode).toBe(1);
+      expect(lines.at(-1)).toMatchObject({type: 'session.closed'});
+      expect(terminals()).toHaveLength(1);
+    } finally {
+      await rm(root, {recursive: true, force: true});
+    }
+  }, 15_000);
+});
+
+describe('cancellation during pre-turn explorer preparation (AGENT-RUNTIME-31)', () => {
+  const CODE_PROMPT = 'Where is handleLine implemented in interactive-tui/sessionServer.ts?';
+  let root = '';
+  let previous: ReturnType<typeof getBrainModel>;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'sift-preflight-'));
+    previous = getBrainModel();
+  });
+  afterEach(async () => {
+    jest.useRealTimers();
+    __setExplorerReportBuilderForTests(null);
+    __setPreTurnStopBoundForTests(null);
+    setBrainModel({provider: previous.provider, model: previous.model});
+    shutdownCodex();
+    __setCodexClientForTests(null);
+    await rm(root, {recursive: true, force: true});
+  });
+
+  function session(kind: 'codex' | 'harness', close: () => Promise<void> = async () => {}) {
+    const lines: Array<Record<string, any>> = [];
+    const log = new WireEventLog({rootDir: root, session: `preflight-${kind}`, leaseStore: dir => new JsonlSessionEventStore({rootDir: dir})});
+    const server = new SessionServer({session: `preflight-${kind}`, provider: kind === 'codex' ? 'codex' : 'meta', model: 'fixture', cwd: root,
+      deadlineMs: 60_000, log, write: line => { lines.push(JSON.parse(line)); }, gates: {...confirmGateModule, ...questionGateModule},
+      engine: {kind, ask: (input, onEvent, signal) => agentHarnessAsk(input, onEvent, signal), close}});
+    let next = 0;
+    const waitFor = async (predicate: (line: Record<string, any>) => boolean) => {
+      await until(() => lines.some(predicate), () => `a matching line; saw ${JSON.stringify(lines.map(line => line.type))}`);
+      return lines.find(predicate)!;
+    };
+    const send = async (command: Record<string, unknown>) => {
+      const id = ++next;
+      await server.handleLine(JSON.stringify({id, ...command}));
+      return waitFor(line => line.type === 'response' && line.id === id);
+    };
+    const terminals = () => lines.filter(line => String(line.type).startsWith('turn.') && line.type !== 'turn.started');
+    const isStop = (turnId: string) => (line: Record<string, any>) => line.turnId === turnId && String(line.type).startsWith('turn.stop');
+    /**
+     * After a cancel, under fake timeouts: no stop is reported while the work
+     * is held, even 1 ms short of the bound. A pre-turn cancel schedules its
+     * bound through promise continuations only, so one macrotask registers it.
+     */
+    const heldShortOfBound = async (turnId: string) => {
+      await nextMacrotask();
+      await advance(STOP_BOUND_MS - 1);
+      expect(lines.some(isStop(turnId))).toBe(false);
+    };
+    /** ...and exactly one stop is reported once the bound elapses. */
+    const stopAtBound = async (turnId: string) => {
+      await heldShortOfBound(turnId);
+      await advance(1);
+      const terminal = await waitFor(isStop(turnId));
+      expect(terminals().filter(line => line.turnId === turnId)).toHaveLength(1);
+      return terminal;
+    };
+    /** Settle held work after a turn's terminal: nothing more may appear for that turn. */
+    const releaseLate = async (turnId: string, release: () => void) => {
+      const seen = lines.length;
+      release();
+      await lateSettlement();
+      expect(lines.slice(seen).filter(line => line.turnId === turnId)).toEqual([]);
+    };
+    return {server, lines, send, waitFor, terminals, isStop, heldShortOfBound, stopAtBound, releaseLate};
+  }
+
+  /** An explorer that stalls until cancelled, then ends shortly after. */
+  const abortableExplorer = ((_input: unknown, options?: {signal?: AbortSignal}) => new Promise((_resolve, reject) => {
+    options?.signal?.addEventListener('abort', () => setTimeout(() => reject(new DOMException('Explorer cancelled', 'AbortError')), 20), {once: true});
+  })) as unknown as Parameters<typeof __setExplorerReportBuilderForTests>[0];
+  /**
+   * An explorer that runs until the test ends it, either as the cancel asked
+   * (an AbortError) or with a late report, and records whether the cancel
+   * reached it.
+   */
+  function heldExplorer() {
+    let aborted = false;
+    let end: (how: 'abort' | 'report') => void = () => { throw new Error('the explorer has not started'); };
+    const builder = ((_input: unknown, options?: {signal?: AbortSignal}) => new Promise((resolve, reject) => {
+      options?.signal?.addEventListener('abort', () => { aborted = true; }, {once: true});
+      end = how => (how === 'abort' ? reject(new DOMException('Explorer cancelled', 'AbortError')) : resolve({mode: 'skipped'}));
+    })) as unknown as Parameters<typeof __setExplorerReportBuilderForTests>[0];
+    return {builder, aborted: () => aborted, end: (how: 'abort' | 'report') => end(how)};
+  }
+
+  it('codex: a cancel during a stalled explorer is confirmed once it ends, and a follow-up prompt runs', async () => {
+    setBrainModel({provider: 'codex', model: 'gpt-5.6-sol'});
+    const explorer = heldExplorer();
+    __setExplorerReportBuilderForTests(explorer.builder);
+    __setPreTurnStopBoundForTests(STOP_BOUND_MS);
+    const proc = new FakeCodexProc();
+    const client = new CodexClient(proc.asSpawnFn());
+    const ready = client.ensureReady();
+    await completeHandshake(proc);
+    await ready;
+    __setCodexClientForTests(client, { type: 'chatgpt', email: 'test@example.com' });
+    fakeTimeouts();
+    const s = session('codex');
+    await s.send({type: 'initialize', protocolVersion: 1});
+    const turn = await s.send({type: 'prompt', input: CODE_PROMPT});
+    await s.waitFor(line => line.type === 'tool_call' && line.toolCall?.name === 'repo_explorer');
+    // The cancel is accepted while the explorer runs, but the stop is not
+    // confirmed until the explorer has ended.
+    expect(await s.send({type: 'cancel'})).toMatchObject({ok: true, status: 'stopping'});
+    expect(explorer.aborted()).toBe(true);
+    await s.heldShortOfBound(turn.turnId);
+    // Fake time stays short of the bound, so only the explorer ending can confirm the stop.
+    explorer.end('abort');
+    const terminal = await s.waitFor(line => line.turnId === turn.turnId && line.type === 'turn.stopped');
+    expect(terminal).toMatchObject({confirmed: true, reason: 'client'});
+    // The explorer ending after the cancel adds no second terminal and never
+    // starts a Codex turn for the cancelled prompt.
+    await lateSettlement();
+    expect(s.terminals()).toHaveLength(1);
+    expect(proc.sent.some(m => m.method === 'turn/start')).toBe(false);
+    // The stop was confirmed, so the session takes the next prompt, which reaches Codex.
+    const followUp = await s.send({type: 'prompt', input: 'say hello'});
+    expect(followUp).toMatchObject({ok: true});
+    proc.reply(await sentId(proc, 'thread/start'), { thread: { id: 'thread-follow' } });
+    proc.reply(await sentId(proc, 'turn/start'), { turn: { id: 'turn-follow' } });
+    await realDelay(5);
+    proc.notify('item/agentMessage/delta', { threadId: 'thread-follow', turnId: 'turn-follow', itemId: 'i', delta: 'hello' });
+    proc.notify('turn/completed', { threadId: 'thread-follow', turn: { id: 'turn-follow', status: 'completed' } });
+    expect(await s.waitFor(line => line.turnId === followUp.turnId && line.type === 'turn.completed')).toMatchObject({text: 'hello'});
+    await s.server.shutdown('client');
+  });
+
+  it('codex: an explorer that never stops is unconfirmed within the bound and blocks new prompts', async () => {
+    setBrainModel({provider: 'codex', model: 'gpt-5.6-sol'});
+    const explorer = heldExplorer();
+    __setExplorerReportBuilderForTests(explorer.builder);
+    __setPreTurnStopBoundForTests(STOP_BOUND_MS);
+    fakeTimeouts();
+    const s = session('codex');
+    await s.send({type: 'initialize', protocolVersion: 1});
+    const turn = await s.send({type: 'prompt', input: CODE_PROMPT});
+    await s.waitFor(line => line.type === 'tool_call' && line.toolCall?.name === 'repo_explorer');
+    await s.send({type: 'cancel'});
+    // The explorer is still running when the bound produces the one terminal.
+    const terminal = await s.stopAtBound(turn.turnId);
+    expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
+    expect(terminal.error).toContain(`explorer preparation; it did not stop within ${STOP_BOUND_MS} ms`);
+    expect(await s.send({type: 'prompt', input: 'say hello'})).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
+    // A report that arrives after the terminal does not resume the turn.
+    await s.releaseLate(turn.turnId, () => explorer.end('report'));
+    await s.server.shutdown('client');
+  });
+
+  it('harness: the same rule applies before the tool loop starts', async () => {
+    setBrainModel({provider: 'meta', model: 'fixture'});
+    __setExplorerReportBuilderForTests(abortableExplorer);
+    __setPreTurnStopBoundForTests(1_000);
+    const s = session('harness');
+    await s.send({type: 'initialize', protocolVersion: 1});
+    const turn = await s.send({type: 'prompt', input: CODE_PROMPT});
+    await s.waitFor(line => line.type === 'tool_call' && line.toolCall?.name === 'repo_explorer');
+    await s.send({type: 'cancel'});
+    expect(await s.waitFor(line => line.turnId === turn.turnId && String(line.type).startsWith('turn.stop')))
+      .toMatchObject({type: 'turn.stopped', confirmed: true, jobCleanup: 'confirmed'});
+    expect(s.terminals()).toHaveLength(1);
+    await s.server.shutdown('client');
+  });
+
+  describe('agent setup and the session mailbox drain', () => {
+    const saved: Record<string, string | undefined> = {};
+    let key = '';
+    beforeEach(() => {
+      for (const name of ['SIFT_SESSION_MAILBOX_ROOT', 'SIFT_SESSION_EVENT_ROOT']) saved[name] = process.env[name];
+      process.env.SIFT_SESSION_MAILBOX_ROOT = join(root, 'mailbox');
+      process.env.SIFT_SESSION_EVENT_ROOT = join(root, 'events');
+      key = `preturn-${Math.random().toString(36).slice(2)}`;
+      chatCalls = 0;
+      setAgentConversationKey(key);
+      setBrainModel({provider: 'meta', model: 'fixture'});
+      __setPreTurnStopBoundForTests(STOP_BOUND_MS);
+      fakeTimeouts();
+    });
+    afterEach(() => {
+      __setProcessJobsForTests(undefined);
+      delete (globalThis as any).__SIFT_AGENT_HARNESS__;
+      __resetBrainAgentsForTests();
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[name]; else process.env[name] = value;
+      }
+    });
+
+    /** The real tool helpers, with a scripted agent and no durable journal. */
+    function harnessWithoutJournal() {
+      const {JsonlSessionEventStore: _journal, ...rest} = bundledHarness as Record<string, unknown>;
+      return rest;
+    }
+    /** A minimal harness agent whose chat answers 'ok' at once. */
+    let chatCalls = 0;
+    function fakeAgent(ingest?: () => Promise<boolean>) {
+      return {
+        async *chat() { chatCalls += 1; yield {type: 'done', result: {text: 'ok', content: 'ok'}}; },
+        ...(ingest ? {ingestExternalMessage: ingest} : {}),
+        async close() {},
+      };
+    }
+    /** A promise the test settles explicitly, after the cancel. */
+    function later<T>() {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>(done => { resolve = done; });
+      return {promise, resolve};
+    }
+
+    /**
+     * Prompt, wait until setup stalls, cancel, and return the turn's single
+     * terminal. Either way, no terminal appears while setup is held, even 1 ms
+     * short of the bound. With `confirmBy`, the test then settles setup before
+     * the bound and the stop is confirmed. Without it, setup stays held and the
+     * terminal arrives once the bound elapses.
+     */
+    async function cancelDuringSetup(s: ReturnType<typeof session>, stalled: () => boolean, confirmBy?: () => void) {
+      await s.send({type: 'initialize', protocolVersion: 1});
+      const turn = await s.send({type: 'prompt', input: 'say hello'});
+      await until(stalled, () => 'agent setup to stall');
+      expect(await s.send({type: 'cancel'})).toMatchObject({ok: true, status: 'stopping'});
+      let terminal: Record<string, any>;
+      if (confirmBy) {
+        await s.heldShortOfBound(turn.turnId);
+        confirmBy();
+        terminal = await s.waitFor(s.isStop(turn.turnId));
+      } else {
+        terminal = await s.stopAtBound(turn.turnId);
+      }
+      // Let any late settlement run: one terminal, and the cancelled turn never reaches the model loop.
+      await lateSettlement();
+      expect(s.terminals()).toHaveLength(1);
+      expect(chatCalls).toBe(0);
+      return terminal;
+    }
+
+    /** Settle held setup after the terminal: nothing more for the turn, and no model loop. */
+    async function settleLate(s: ReturnType<typeof session>, terminal: Record<string, any>, release: () => void) {
+      await s.releaseLate(terminal.turnId, release);
+      expect(s.terminals()).toHaveLength(1);
+      expect(chatCalls).toBe(0);
+    }
+
+    it('a cancel during a stalled getAgent() is confirmed once construction settles; the next prompt runs', async () => {
+      const built = later<unknown>();
+      let constructing = false;
+      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: () => { constructing = true; return built.promise; }};
+      const s = session('harness');
+      expect(await cancelDuringSetup(s, () => constructing, () => built.resolve(fakeAgent())))
+        .toMatchObject({type: 'turn.stopped', confirmed: true});
+      const next = await s.send({type: 'prompt', input: 'say hello again'});
+      expect(await s.waitFor(line => line.turnId === next.turnId && line.type === 'turn.completed')).toMatchObject({text: 'ok'});
+      await s.server.shutdown('client');
+    });
+
+    it('a getAgent() that never settles is unconfirmed within the bound', async () => {
+      const built = later<unknown>();
+      let constructing = false;
+      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: () => { constructing = true; return built.promise; }};
+      const s = session('harness');
+      const terminal = await cancelDuringSetup(s, () => constructing);
+      expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
+      expect(terminal.error).toContain(`agent setup; it did not stop within ${STOP_BOUND_MS} ms`);
+      expect(await s.send({type: 'prompt', input: 'say hello'})).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
+      await settleLate(s, terminal, () => built.resolve(fakeAgent()));
+      await s.server.shutdown('client');
+    });
+
+    it('a cancel during a stalled mailbox drain is confirmed once the drain settles', async () => {
+      enqueueSessionInstruction(key, 'queued instruction');
+      const ingested = later<boolean>();
+      let draining = false;
+      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: async () => fakeAgent(() => { draining = true; return ingested.promise; })};
+      const s = session('harness');
+      expect(await cancelDuringSetup(s, () => draining, () => ingested.resolve(true)))
+        .toMatchObject({type: 'turn.stopped', confirmed: true});
+      await s.server.shutdown('client');
+    });
+
+    it('a process-job cleanup that never settles is unconfirmed within the bound, and shutdown completes', async () => {
+      let stopCalls = 0;
+      const cleanup = later<void>();
+      __setProcessJobsForTests({stopSession: () => { stopCalls += 1; return cleanup.promise; }, close: async () => {}} as never);
+      let inLoop = false;
+      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: async () => ({
+        async *chat(_input: unknown, options: {signal?: AbortSignal}) {
+          inLoop = true;
+          await new Promise(resolve => options.signal?.addEventListener('abort', resolve, {once: true}));
+          throw new DOMException('Turn cancelled', 'AbortError');
+        },
+        async close() {},
+      })};
+      const s = session('harness');
+      await s.send({type: 'initialize', protocolVersion: 1});
+      const turn = await s.send({type: 'prompt', input: 'say hello'});
+      await until(() => inLoop, () => 'the model loop to start');
+      await s.send({type: 'cancel'});
+      // Cleanup starts and its bound is scheduled in the same synchronous step.
+      await until(() => stopCalls === 1, () => 'process-job cleanup to start');
+      // Cleanup is still held when the bound produces the one terminal.
+      const terminal = await s.stopAtBound(turn.turnId);
+      expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false, jobCleanup: 'unknown'});
+      expect(terminal.error).toContain(`Process job cleanup did not finish within ${STOP_BOUND_MS} ms`);
+      expect(stopCalls).toBe(1);
+      expect(await s.send({type: 'prompt', input: 'say hello'})).toMatchObject({ok: false, error: {code: 'stop_unconfirmed'}});
+      // Cleanup finishing after the terminal adds nothing for the stopped turn.
+      await s.releaseLate(turn.turnId, () => cleanup.resolve());
+      expect(s.terminals()).toHaveLength(1);
+      expect(stopCalls).toBe(1);
+      expect(await s.server.shutdown('client')).toBe(0);
+      expect(s.lines.at(-1)).toMatchObject({type: 'session.closed'});
+    });
+
+    it('shutdown after an unconfirmed stop is bounded despite stalled agent setup and a hung job close', async () => {
+      const jobsClosed = later<void>();
+      __setProcessJobsForTests({stopSession: async () => {}, close: () => jobsClosed.promise} as never);
+      const built = later<unknown>();
+      let constructing = false;
+      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: () => { constructing = true; return built.promise; }};
+      const s = session('harness', () => closeBrain());
+      const terminal = await cancelDuringSetup(s, () => constructing);
+      expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed'});
+      // closeBrain schedules every close bound synchronously, before shutdown awaits them.
+      const bye = s.server.handleLine(JSON.stringify({id: 'bye', type: 'shutdown'}));
+      const answered = () => s.lines.some(line => line.type === 'response' && line.id === 'bye');
+      await nextMacrotask();
+      // Shutdown waits out the close bounds: no answer 1 ms early, one once they elapse.
+      await advance(STOP_BOUND_MS - 1);
+      expect(answered()).toBe(false);
+      await advance(1);
+      const response = await s.waitFor(line => line.type === 'response' && line.id === 'bye');
+      await bye;
+      expect(response).toMatchObject({ok: true, status: 'closed', exitCode: 1});
+      const closed = s.lines.filter(line => line.type === 'session.closed');
+      expect(closed).toHaveLength(1);
+      // Both closes were still held when shutdown answered; each was cut off by
+      // its own bound, not by the session's shutdown bound.
+      expect(closed[0].error).toContain(`Process jobs did not close within ${STOP_BOUND_MS} ms`);
+      expect(closed[0].error).toContain(`Agent session did not close within ${STOP_BOUND_MS} ms`);
+      expect(closed[0].error).not.toContain('the engine did not close within');
+      // Settling both after shutdown adds no terminal, no second close, and no model loop.
+      await settleLate(s, terminal, () => { jobsClosed.resolve(); built.resolve(fakeAgent()); });
+      expect(s.lines.filter(line => line.type === 'session.closed')).toHaveLength(1);
+    });
+
+    it('shutdown keeps the journal lease while a timed-out mailbox drain can still write', async () => {
+      enqueueSessionInstruction(key, 'queued instruction');
+      const ingested = later<boolean>();
+      let draining = false;
+      // Real journal store this time, so the lease is actually taken.
+      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...bundledHarness, createChatAgent: async () => fakeAgent(() => { draining = true; return ingested.promise; })};
+      const s = session('harness', () => closeBrain());
+      const terminal = await cancelDuringSetup(s, () => draining);
+      expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed'});
+      // Shutdown answers once the drain's close bound elapses.
+      const bye = s.server.handleLine(JSON.stringify({id: 'bye', type: 'shutdown'}));
+      await nextMacrotask();
+      await advance(STOP_BOUND_MS);
+      const response = await s.waitFor(line => line.type === 'response' && line.id === 'bye');
+      await bye;
+      expect(response).toMatchObject({exitCode: 1});
+      expect(s.lines.find(line => line.type === 'session.closed')?.error).toContain('session journal lease retained');
+      // Another process must not be able to take the journal the drain may still append to.
+      const store = new (bundledHarness as any).JsonlSessionEventStore({rootDir: process.env.SIFT_SESSION_EVENT_ROOT});
+      expect(() => store.acquireLease(sessionJournalIdForConversation(key))).toThrow();
+      // The drain settling after shutdown adds no terminal and no model loop.
+      await settleLate(s, terminal, () => ingested.resolve(true));
+      expect(s.lines.filter(line => line.type === 'session.closed')).toHaveLength(1);
+    });
+
+    it('a mailbox drain that never settles is unconfirmed within the bound', async () => {
+      enqueueSessionInstruction(key, 'queued instruction');
+      const ingested = later<boolean>();
+      let draining = false;
+      (globalThis as any).__SIFT_AGENT_HARNESS__ = {...harnessWithoutJournal(), createChatAgent: async () => fakeAgent(() => { draining = true; return ingested.promise; })};
+      const s = session('harness');
+      const terminal = await cancelDuringSetup(s, () => draining);
+      expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
+      expect(terminal.error).toContain(`agent setup; it did not stop within ${STOP_BOUND_MS} ms`);
+      await settleLate(s, terminal, () => ingested.resolve(true));
+      await s.server.shutdown('client');
+    });
+  });
+
+  it('harness: a stuck explorer cannot hold a cancel past the bound', async () => {
+    setBrainModel({provider: 'meta', model: 'fixture'});
+    const explorer = heldExplorer();
+    __setExplorerReportBuilderForTests(explorer.builder);
+    __setPreTurnStopBoundForTests(STOP_BOUND_MS);
+    fakeTimeouts();
+    const s = session('harness');
+    await s.send({type: 'initialize', protocolVersion: 1});
+    const turn = await s.send({type: 'prompt', input: CODE_PROMPT});
+    await s.waitFor(line => line.type === 'tool_call' && line.toolCall?.name === 'repo_explorer');
+    await s.send({type: 'cancel'});
+    // The explorer is still running when the bound produces the one terminal.
+    const terminal = await s.stopAtBound(turn.turnId);
+    expect(terminal).toMatchObject({type: 'turn.stop_unconfirmed', confirmed: false});
+    expect(terminal.error).toContain(`explorer preparation; it did not stop within ${STOP_BOUND_MS} ms`);
+    // A report that arrives after the terminal does not resume the turn.
+    await s.releaseLate(turn.turnId, () => explorer.end('report'));
+    expect(s.terminals()).toHaveLength(1);
+    await s.server.shutdown('client');
+  });
 });
 
 describe('CodexClient server→client approvals', () => {
+  afterEach(() => {
+    rejectAllConfirms();
+    setConfirmCancellationListener(null);
+    setConfirmListener(null);
+    resetBypass();
+  });
   it('routes an approval request through the approver and writes the mapped decision', async () => {
     const { client, proc } = await readyClient();
     const seen: string[] = [];
@@ -175,6 +1267,93 @@ describe('CodexClient server→client approvals', () => {
     proc.serverRequest('srv-3', 'totally/unknown', {});
     const resp = await waitForSentWhere(proc, (m) => m.id === 'srv-3');
     expect(resp.error).toMatchObject({ code: -32601 });
+  });
+
+  it('never writes a delayed approval response into a replacement generation', async () => {
+    const procs: FakeCodexProc[] = [];
+    const client = new CodexClient(() => {
+      const proc = new FakeCodexProc();
+      procs.push(proc);
+      return proc as unknown as ReturnType<CodexSpawnFn>;
+    });
+
+    let releaseFirst!: (decision: 'always') => void;
+    let firstApprovalStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      firstApprovalStarted = resolve;
+    });
+    const firstDecision = new Promise<'always'>((resolve) => {
+      releaseFirst = resolve;
+    });
+    client.setApprover(async (req) => {
+      if (req.target === 'generation-a') {
+        firstApprovalStarted();
+        return firstDecision;
+      }
+      return 'deny';
+    });
+
+    const firstReady = client.ensureReady();
+    await completeHandshake(procs[0]);
+    await firstReady;
+    procs[0].serverRequest('reused-id', 'item/commandExecution/requestApproval', {
+      command: 'generation-a',
+    });
+    await firstStarted;
+
+    procs[0].exit(1);
+    const secondReady = client.ensureReady();
+    await completeHandshake(procs[1]);
+    await secondReady;
+    procs[1].serverRequest('reused-id', 'item/commandExecution/requestApproval', {
+      command: 'generation-b',
+    });
+    const secondResponse = await waitForSentWhere(procs[1], (m) => m.id === 'reused-id');
+    expect(secondResponse.result).toEqual({ decision: 'decline' });
+
+    releaseFirst('always');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(procs[0].sent.filter((m) => m.id === 'reused-id')).toHaveLength(0);
+    expect(procs[1].sent.filter((m) => m.id === 'reused-id')).toEqual([secondResponse]);
+  });
+
+  it('cancels the real confirm gate on disconnect without enabling stale bypass', async () => {
+    const procs: FakeCodexProc[] = [];
+    const client = new CodexClient(() => {
+      const proc = new FakeCodexProc();
+      procs.push(proc);
+      return proc as unknown as ReturnType<CodexSpawnFn>;
+    });
+    let captured: ConfirmRequest | null = null;
+    const cancelled: string[] = [];
+    setConfirmListener((req) => { captured = req; });
+    setConfirmCancellationListener((id) => cancelled.push(id));
+    client.setApprover((req, signal) => requestApproval({
+      kind: req.kind === 'edit' ? 'edit' : 'command',
+      path: req.target,
+      detail: req.detail,
+    }, signal));
+
+    const firstReady = client.ensureReady();
+    await completeHandshake(procs[0]);
+    await firstReady;
+    procs[0].serverRequest('stale-approval', 'item/commandExecution/requestApproval', {
+      command: 'generation-a',
+    });
+    expect(captured).not.toBeNull();
+    expect(pendingConfirmCount()).toBe(1);
+
+    const staleId = captured!.id;
+    procs[0].exit(1);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(pendingConfirmCount()).toBe(0);
+    expect(cancelled).toEqual([staleId]);
+    expect(isBypassing()).toBe(false);
+
+    resolveApproval(staleId, 'bypass');
+    expect(isBypassing()).toBe(false);
+    client.shutdown();
   });
 });
 
@@ -299,5 +1478,203 @@ describe('ensureThread — per-session keyed threads', () => {
     const tid2 = await startMiss(client, proc, 't-2');
     expect(startCount(proc)).toBe(2); // had to restart — cache was cleared
     expect(tid2).not.toBe(tid1);
+  });
+
+  it('an app-server exit drops cached thread ids — a respawn cannot reuse a dead server thread', async () => {
+    const procs: FakeCodexProc[] = [];
+    const spawnFresh: CodexSpawnFn = () => {
+      const p = new FakeCodexProc();
+      procs.push(p);
+      return p as unknown as ReturnType<CodexSpawnFn>;
+    };
+    const client = new CodexClient(spawnFresh);
+    let ready = client.ensureReady();
+    await completeHandshake(procs[0]);
+    await ready;
+
+    setSessionCwd(dirs.parent);
+    const tid1 = await startMiss(client, procs[0], 't-gen1');
+    expect(startCount(procs[0])).toBe(1);
+
+    // The sidecar dies; its threads exist only in that process's memory.
+    procs[0].exit(1);
+
+    ready = client.ensureReady();
+    await completeHandshake(procs[1]);
+    await ready;
+
+    // Same context key, new process generation: ensureThread must start a
+    // NEW thread rather than replaying the dead server's id.
+    const tid2 = await startMiss(client, procs[1], 't-gen2');
+    expect(startCount(procs[1])).toBe(1);
+    expect(tid2).not.toBe(tid1);
+  });
+
+  it('a runtime error without exit tears down only the failed generation', async () => {
+    const procs: FakeCodexProc[] = [];
+    const spawnFresh: CodexSpawnFn = () => {
+      const p = new FakeCodexProc();
+      procs.push(p);
+      return p as unknown as ReturnType<CodexSpawnFn>;
+    };
+    const client = new CodexClient(spawnFresh);
+    let ready = client.ensureReady();
+    await completeHandshake(procs[0]);
+    await ready;
+
+    setSessionCwd(dirs.parent);
+    const tid1 = await startMiss(client, procs[0], 't-gen1');
+
+    // ChildProcess can emit error without a later exit. The failed generation
+    // must still be discarded so ensureReady can spawn a replacement.
+    procs[0].fail(new Error('runtime transport failure'));
+    expect(procs[0].killed).toBe(true);
+    expect(procs[0].killSignal).toBe('SIGTERM');
+
+    ready = client.ensureReady();
+    await completeHandshake(procs[1]);
+    await ready;
+    const tid2 = await startMiss(client, procs[1], 't-gen2');
+    expect(tid2).not.toBe(tid1);
+
+    // A late exit from generation 1 must not clear generation 2's cache.
+    procs[0].exit(1);
+    await expect(ensureThread(client)).resolves.toBe(tid2);
+    expect(startCount(procs[1])).toBe(1);
+  });
+
+  it('a mid-frame exit does not poison the next generation\'s handshake', async () => {
+    const procs: FakeCodexProc[] = [];
+    const spawnFresh: CodexSpawnFn = () => {
+      const p = new FakeCodexProc();
+      procs.push(p);
+      return p as unknown as ReturnType<CodexSpawnFn>;
+    };
+    const client = new CodexClient(spawnFresh);
+    let ready = client.ensureReady();
+    await completeHandshake(procs[0]);
+    await ready;
+
+    // The server dies half-way through writing a frame. Let the partial
+    // actually reach the client's framing buffer before the exit fires.
+    procs[0].writeRaw('{"jsonrpc":');
+    await new Promise((r) => setTimeout(r, 0));
+    procs[0].exit(1);
+
+    // Without clearing the buffer, the stale partial would concatenate with
+    // the fresh server's initialize response, JSON parsing would drop it,
+    // and this handshake would hang.
+    ready = client.ensureReady();
+    await completeHandshake(procs[1]);
+    await ready;
+
+    // The new generation frames follow-up traffic correctly too.
+    setSessionCwd(dirs.parent);
+    const tid = await startMiss(client, procs[1], 't-clean');
+    expect(tid).toBe('t-clean');
+  });
+});
+
+
+describe('owned Codex sidecar drain', () => {
+  it('permits a fresh Codex connection after successful drain', async () => {
+    __setCodexClientForTests(null);
+    await closeCodex();
+    const ready = jest.spyOn(CodexClient.prototype, 'ensureReady').mockResolvedValue(undefined);
+    const request = jest.spyOn(CodexClient.prototype, 'request').mockResolvedValue({account: {type: 'chatgpt'}});
+    try {
+      await expect(getCodexAccount(true)).resolves.toEqual({type: 'chatgpt'});
+      expect(ready).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledWith('account/read', {refreshToken: false});
+    } finally {
+      ready.mockRestore(); request.mockRestore(); __setCodexClientForTests(null);
+    }
+  });
+
+  it('blocks reconnection while draining and after a failed drain, until retry succeeds', async () => {
+    const owned = new CodexClient(() => { throw new Error('test must not spawn'); });
+    let fail!: (error: Error) => void;
+    const close = jest.spyOn(owned, 'close').mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { fail = reject; }));
+    __setCodexClientForTests(owned);
+    const ready = jest.spyOn(CodexClient.prototype, 'ensureReady').mockResolvedValue(undefined);
+    const request = jest.spyOn(CodexClient.prototype, 'request').mockResolvedValue({account: {type: 'chatgpt'}});
+    try {
+      const draining = closeCodex();
+      await expect(getCodexAccount(true)).resolves.toBeNull();
+      fail(new Error('fixture drain failure'));
+      await expect(draining).rejects.toThrow('fixture drain failure');
+      await expect(getCodexAccount(true)).resolves.toBeNull();
+      expect(ready).not.toHaveBeenCalled();
+      close.mockResolvedValueOnce(undefined);
+      await closeCodex();
+      await expect(getCodexAccount(true)).resolves.toEqual({type: 'chatgpt'});
+      expect(ready).toHaveBeenCalledTimes(1);
+    } finally {
+      close.mockRestore(); ready.mockRestore(); request.mockRestore(); __setCodexClientForTests(null);
+    }
+  });
+
+  it('waits for child stdio close rather than treating SIGTERM delivery as shutdown', async () => {
+    const {client, proc} = await readyClient();
+    let closed = false;
+    const closing = client.close().then(() => { closed = true; });
+    expect(proc.killSignal).toBe('SIGTERM');
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    proc.exit();
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    proc.emit('close', 0, null);
+    await closing;
+    expect(closed).toBe(true);
+    await expect(client.ensureReady()).rejects.toThrow('shut down');
+  });
+
+  for (const stop of ['shutdown', 'exit'] as const) {
+    it(`retains ownership after ${stop} until stdio closes`, async () => {
+      const {client, proc} = await readyClient();
+      if (stop === 'shutdown') client.shutdown();
+      else proc.exit();
+      let closed = false;
+      const closing = client.close().then(() => { closed = true; });
+      await Promise.resolve();
+      expect(closed).toBe(false);
+      expect(proc.killSignal).toBe('SIGTERM');
+      proc.emit('close', 0, null);
+      await closing;
+      expect(closed).toBe(true);
+    });
+  }
+
+  it('escalates only its owned child and rejects if closure cannot be confirmed', async () => {
+    const {client, proc} = await readyClient();
+    await expect(client.close(5)).rejects.toThrow('process ownership retained');
+    expect(proc.killSignal).toBe('SIGKILL');
+    const retry = client.close();
+    proc.emit('close', null, 'SIGKILL');
+    await expect(retry).resolves.toBeUndefined();
+  });
+
+  it('drains an existing Codex sidecar after the user switches to Meta', async () => {
+    const {client, proc} = await readyClient();
+    const prior = getBrainModel();
+    __setCodexClientForTests(client);
+    setBrainModel({provider: 'meta', model: 'muse-wonder-1.0'});
+    try {
+      let closed = false;
+      const closing = closeBrain().then(() => { closed = true; });
+      // closeBrain dynamically loads Codex; wait for shutdown dispatch.
+      for (let attempt = 0; !proc.killed && attempt < 100; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+      expect(proc.killSignal).toBe('SIGTERM');
+      expect(closed).toBe(false);
+      proc.emit('close', 0, null);
+      await closing;
+      expect(closed).toBe(true);
+    } finally {
+      __setCodexClientForTests(null);
+      setBrainModel({...prior, effort: prior.effort ?? ''});
+    }
   });
 });

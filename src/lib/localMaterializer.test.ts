@@ -22,6 +22,7 @@ import {promisify} from 'node:util';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {
   createMaterializerRunner,
+  createMaterializationBundleRunnerProofBinding,
   createMaterializationCredentialBinding,
   createMaterializationRunnerProofBinding,
   inspectMaterializationDestination,
@@ -226,6 +227,15 @@ describe('local Vault materializer', () => {
       trackedFileException: true,
       policyAllowsTrackedException: true,
     })).resolves.toEqual(expect.objectContaining({tracked: true}));
+
+    const secretNamedParent = path.join(root, '.supervise-secrets');
+    await mkdir(secretNamedParent);
+    await expect(inspectMaterializationDestination({
+      destinationPath: path.join(secretNamedParent, 'corpus-key'),
+      workspaceRoot: root,
+      trackedFileException: false,
+      policyAllowsTrackedException: false,
+    })).rejects.toThrow('protected secret-name policy');
   });
 
   it('binds wrong runner, path, mode, field-level purpose, and nonce changes', () => {
@@ -303,6 +313,37 @@ describe('local Vault materializer', () => {
       destinationPath: '/workspace/runtime/other',
     })).not.toBe(binding);
     expect(signature).not.toContain('BEGIN PRIVATE KEY');
+  });
+
+  it('uses the exact canonical bundle proof contract shared with the server', () => {
+    const binding = createMaterializationBundleRunnerProofBinding({
+      bundleDigest: 'c'.repeat(64),
+      destinationPath: '/workspace/.env.local',
+      workspaceRoot: '/workspace',
+      requestedMode: '0600',
+      expectedAbsence: true,
+      overwriteConsent: false,
+      purpose: 'Write the governed development environment',
+      requestNonce: 'n'.repeat(32),
+      runnerPublicKeyFingerprint: 'a'.repeat(64),
+      materializerDigest: 'b'.repeat(64),
+      runnerProofTimestamp: '2026-08-06T00:00:00.000Z',
+      vaultOwner: 'personal',
+    });
+
+    expect(binding).toBe(
+      '{"bundleDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",'
+      + '"destinationPath":"/workspace/.env.local","expectedAbsence":"true",'
+      + '"materializerDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",'
+      + '"observedStateBinding":"none","overwriteConsent":"false",'
+      + '"plaintextDisclosureAcknowledged":"true",'
+      + '"proofContext":"sift.vault.materialization.bundle.v1",'
+      + '"purposeDigest":"03c2901f52fa9f55accc29067f9dbc44417caf36b0990edda0d002459c11af81",'
+      + '"requestedMode":"0600","requestNonce":"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",'
+      + '"runnerProofTimestamp":"2026-08-06T00:00:00.000Z",'
+      + '"runnerPublicKeyFingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
+      + '"vaultOwner":"personal","workspaceRoot":"/workspace"}',
+    );
   });
 
   it('keeps approve-once materialization available without an OS-backed identity', async () => {

@@ -60,7 +60,7 @@ describe('work verification commands', () => {
     expect(JSON.parse(result.stdout)).toHaveLength(2);
   });
 
-  it('submits evidence addressed by plan, step, and attempt identity', async () => {
+  it('submits evidence with plan identity and optional workspace lease credentials', async () => {
     mockFetch()
       .on('POST', `/api/v1/work-items/${WORK_ID}/verification-evidence`)
       .body((body) => {
@@ -69,6 +69,8 @@ describe('work verification commands', () => {
           && input.stepId === STEP_ID
           && input.attemptId === 'ci-42'
           && input.outcome === 'passed'
+          && input.claimOwner === 'codex@worker-1'
+          && input.claimToken === 'opaque-lease-token'
           && input.environmentLabel === 'github-actions';
       })
       .reply(201, {
@@ -85,6 +87,8 @@ describe('work verification commands', () => {
       '--outcome', 'passed',
       '--exit-code', '0',
       '--environment', 'github-actions',
+      '--claim-owner', 'codex@worker-1',
+      '--claim-token', 'opaque-lease-token',
       '--token', 'sift_pat_test',
       '--json',
     ]);

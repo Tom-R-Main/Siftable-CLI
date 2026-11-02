@@ -1,0 +1,98 @@
+[
+  {
+    "case": "plain:starting",
+    "body": {
+      "runtimeId": "machine:33333333-3333-4333-8333-333333333333:66666666-6666-4666-8666-666666666666",
+      "leaseGeneration": 1,
+      "state": "starting",
+      "claimOwner": "mobile-runner:7a0c2a59-4f3e-4c1d-9b2e-5d6f7a8b9c0d",
+      "claimToken": "claim-secret",
+      "dispatchId": "66666666-6666-4666-8666-666666666666",
+      "workspace": {
+        "repositoryId": "repo-1",
+        "branch": "main",
+        "baseSha": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  {
+    "case": "plain:running",
+    "body": {
+      "runtimeId": "machine:33333333-3333-4333-8333-333333333333:66666666-6666-4666-8666-666666666666",
+      "leaseGeneration": 1,
+      "state": "running",
+      "claimOwner": "mobile-runner:7a0c2a59-4f3e-4c1d-9b2e-5d6f7a8b9c0d",
+      "claimToken": "claim-secret",
+      "dispatchId": "66666666-6666-4666-8666-666666666666",
+      "workspace": {
+        "repositoryId": "repo-1",
+        "branch": "main",
+        "baseSha": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  {
+    "case": "plain:ended",
+    "body": {
+      "runtimeId": "machine:33333333-3333-4333-8333-333333333333:66666666-6666-4666-8666-666666666666",
+      "leaseGeneration": 1,
+      "state": "ended",
+      "claimOwner": "mobile-runner:7a0c2a59-4f3e-4c1d-9b2e-5d6f7a8b9c0d",
+      "claimToken": "claim-secret",
+      "dispatchId": "66666666-6666-4666-8666-666666666666",
+      "workspace": {
+        "repositoryId": "repo-1",
+        "branch": "main",
+        "baseSha": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  {
+    "case": "checkout:starting",
+    "body": {
+      "runtimeId": "machine:33333333-3333-4333-8333-333333333333:66666666-6666-4666-8666-666666666666",
+      "leaseGeneration": 1,
+      "state": "starting",
+      "claimOwner": "mobile-runner:7a0c2a59-4f3e-4c1d-9b2e-5d6f7a8b9c0d",
+      "claimToken": "claim-secret",
+      "dispatchId": "66666666-6666-4666-8666-666666666666",
+      "workspace": {
+        "repositoryId": "repo-1",
+        "branch": "main",
+        "baseSha": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  {
+    "case": "checkout:running",
+    "body": {
+      "runtimeId": "machine:33333333-3333-4333-8333-333333333333:66666666-6666-4666-8666-666666666666",
+      "leaseGeneration": 1,
+      "state": "running",
+      "claimOwner": "mobile-runner:7a0c2a59-4f3e-4c1d-9b2e-5d6f7a8b9c0d",
+      "claimToken": "claim-secret",
+      "dispatchId": "66666666-6666-4666-8666-666666666666",
+      "workspace": {
+        "repositoryId": "repo-1",
+        "branch": "main",
+        "baseSha": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  {
+    "case": "checkout:ended",
+    "body": {
+      "runtimeId": "machine:33333333-3333-4333-8333-333333333333:66666666-6666-4666-8666-666666666666",
+      "leaseGeneration": 1,
+      "state": "ended",
+      "claimOwner": "mobile-runner:7a0c2a59-4f3e-4c1d-9b2e-5d6f7a8b9c0d",
+      "claimToken": "claim-secret",
+      "dispatchId": "66666666-6666-4666-8666-666666666666",
+      "workspace": {
+        "repositoryId": "repo-1",
+        "branch": "main",
+        "baseSha": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  }
+]

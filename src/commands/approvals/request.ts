@@ -18,6 +18,12 @@ function parseDestination(value: string): Record<string, string> {
   return Object.fromEntries(entries) as Record<string, string>;
 }
 
+function assertNotReservedVaultAction(action: string): void {
+  if (/^vault\.(?:materializ(?:e|ation)(?:\.|$)|export(?:\.|$)|local_grant(?:\.|$)|(?:[a-z0-9_.-]+\.)?redeem(?:\.|$))/i.test(action.trim())) {
+    throw new Error('Use sift vault materialize run --help for Vault materialization approvals.');
+  }
+}
+
 export default class ApprovalsRequest extends BaseCommand {
   static description = 'Request a governed action approval; this command cannot approve or consume it';
 
@@ -34,6 +40,7 @@ export default class ApprovalsRequest extends BaseCommand {
 
   async run(): Promise<unknown> {
     const {flags} = await this.parse(ApprovalsRequest);
+    assertNotReservedVaultAction(flags.action);
     const response = await this.apiRequest<{approval: Record<string, unknown>}>(
       flags,
       '/api/v1/governed-approvals',

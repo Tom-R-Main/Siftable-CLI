@@ -78,7 +78,7 @@ describe("draftToSpawnInput", () => {
   it("rejects a scoped writer with no globs", () => {
     const r = draftToSpawnInput({...emptySpawnDraft(), title: "feat", mode: "rw", scope: "   "});
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toMatch(/needs at least one path glob/);
+    if (r.ok === false) expect(r.error).toMatch(/needs at least one path glob/);
   });
 
   it("maps ro (no scope) and rw-any (unscoped writer)", () => {

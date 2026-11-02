@@ -7,15 +7,17 @@
  *
  * Run with: bun test   (from packages/exf-cli/interactive-tui)
  */
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, afterEach } from "bun:test";
 import {
   chunkTextNative,
   estimateTokens,
   estimateTokensFallback,
+  isUsableCompactionPlan,
   nativeChunkingAvailable,
   planCompaction,
   tokenEstimateSource,
   type CompactionConfig,
+  type CompactionPlan,
   type PlanMessage,
 } from "../threadEngine";
 import { chunkText as chunkTextTs } from "../../../../exf-app/src/services/chunkingService";
@@ -152,12 +154,17 @@ describe("planCompaction (Zig planner bridge)", () => {
   const A = "a".repeat(40); // 10 tokens
   const BIG = "a".repeat(4000); // 1000 tokens
 
+  const plan = (msgs: PlanMessage[], c: CompactionConfig = cfg): CompactionPlan => {
+    const outcome = planCompaction(msgs, c);
+    if (outcome.ok === false) throw new Error(`planner unavailable: ${outcome.reason}`);
+    return outcome.plan;
+  };
+
   it("reports no compaction under budget", () => {
-    const plan = planCompaction([{ role: "user", text: A }], cfg)!;
-    expect(plan).not.toBeNull();
-    expect(plan.needsCompaction).toBe(false);
-    expect(plan.estimatedTokens).toBe(10);
-    expect(plan.tailStartIndex).toBe(0);
+    const p = plan([{ role: "user", text: A }]);
+    expect(p.needsCompaction).toBe(false);
+    expect(p.estimatedTokens).toBe(10);
+    expect(p.tailStartIndex).toBe(0);
   });
 
   it("prunes an old tool output when that alone fits the budget", () => {
@@ -169,11 +176,11 @@ describe("planCompaction (Zig planner bridge)", () => {
       { role: "assistant", text: A },
       { role: "tool", text: A }, // recent, protected by window
     ];
-    const plan = planCompaction(msgs, cfg)!;
-    expect(plan.needsCompaction).toBe(true);
-    expect(plan.prune).toEqual([2]);
-    expect(plan.prunedTokens).toBe(1000);
-    expect(plan.summarizeRange).toEqual([0, 0]); // no summary needed
+    const p = plan(msgs);
+    expect(p.needsCompaction).toBe(true);
+    expect(p.prune).toEqual([2]);
+    expect(p.prunedTokens).toBe(1000);
+    expect(p.summarizeRange).toEqual([0, 0]); // no summary needed
   });
 
   it("summarizes a whole-turn prefix when pruning can't fit", () => {
@@ -186,11 +193,11 @@ describe("planCompaction (Zig planner bridge)", () => {
       { role: "user", text: A },
       { role: "assistant", text: A }, // turn 2
     ];
-    const plan = planCompaction(msgs, { ...cfg, contextWindow: 1500, tailTurns: 1 })!;
-    expect(plan.needsCompaction).toBe(true);
-    expect(plan.prune).toEqual([]); // no tool outputs to prune
-    expect(plan.tailStartIndex).toBe(4); // keep only turn 2 (a user boundary)
-    expect(plan.summarizeRange).toEqual([0, 4]);
+    const p = plan(msgs, { ...cfg, contextWindow: 1500, tailTurns: 1 });
+    expect(p.needsCompaction).toBe(true);
+    expect(p.prune).toEqual([]); // no tool outputs to prune
+    expect(p.tailStartIndex).toBe(4); // keep only turn 2 (a user boundary)
+    expect(p.summarizeRange).toEqual([0, 4]);
   });
 
   it("forces a within-budget thread to compact when force=true (manual /compact)", () => {
@@ -203,9 +210,9 @@ describe("planCompaction (Zig planner bridge)", () => {
       { role: "assistant", text: A }, // turn 2
     ];
     // Well under the 900-token usable budget: auto would no-op.
-    expect(planCompaction(msgs, cfg)!.needsCompaction).toBe(false);
+    expect(plan(msgs).needsCompaction).toBe(false);
     // force=1 summarizes the older turns, keeping tailTurns=1 verbatim.
-    const forced = planCompaction(msgs, { ...cfg, tailTurns: 1, force: true })!;
+    const forced = plan(msgs, { ...cfg, tailTurns: 1, force: true });
     expect(forced.needsCompaction).toBe(true);
     expect(forced.tailStartIndex).toBe(4);
     expect(forced.summarizeRange).toEqual([0, 4]);
@@ -220,8 +227,99 @@ describe("planCompaction (Zig planner bridge)", () => {
       { role: "assistant", text: A },
       { role: "tool", text: A },
     ];
-    const plan = planCompaction(msgs, cfg)!;
-    expect(plan.prunedTokens).toBe(0);
-    expect(plan.tailStartIndex).toBe(3); // forced to summarize instead
+    const p = plan(msgs);
+    expect(p.prunedTokens).toBe(0);
+    expect(p.tailStartIndex).toBe(3); // forced to summarize instead
+  });
+});
+
+describe("planCompaction outcome reporting", () => {
+  const cfg: CompactionConfig = {
+    contextWindow: 1000,
+    reserved: 100,
+    tailTurns: 2,
+    preserveRecentTokens: 1000,
+    pruneProtectTokens: 40,
+    pruneMinTokens: 20,
+  };
+  const prevNative = process.env.SIFT_NATIVE;
+  afterEach(() => {
+    if (prevNative === undefined) delete process.env.SIFT_NATIVE;
+    else process.env.SIFT_NATIVE = prevNative;
+  });
+
+  it("reports native-disabled when SIFT_NATIVE=0", () => {
+    process.env.SIFT_NATIVE = "0";
+    const outcome = planCompaction([{ role: "user", text: "hi" }], cfg);
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok === false) expect(outcome.reason).toBe("native-disabled");
+    // The kill-switch is scoped to native calls: the estimator still works via
+    // its TS fallback rather than throwing.
+    expect(estimateTokens("still works")).toBeGreaterThan(0);
+    expect(tokenEstimateSource()).toBe("ts");
+  });
+
+  it("honors the shared SIFT_NO_NATIVE=1 switch the other engines use", () => {
+    delete process.env.SIFT_NATIVE;
+    const prev = process.env.SIFT_NO_NATIVE;
+    process.env.SIFT_NO_NATIVE = "1";
+    try {
+      const outcome = planCompaction([{ role: "user", text: "hi" }], cfg);
+      expect(outcome).toMatchObject({ ok: false, reason: "native-disabled" });
+    } finally {
+      if (prev === undefined) delete process.env.SIFT_NO_NATIVE; else process.env.SIFT_NO_NATIVE = prev;
+    }
+  });
+
+  it("produces a plan again once the kill-switch is lifted", () => {
+    process.env.SIFT_NATIVE = "0";
+    expect(planCompaction([{ role: "user", text: "hi" }], cfg).ok).toBe(false);
+    delete process.env.SIFT_NATIVE;
+    const outcome = planCompaction([{ role: "user", text: "hi" }], cfg);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.plan.needsCompaction).toBe(false);
+  });
+});
+
+describe("isUsableCompactionPlan", () => {
+  const valid: CompactionPlan = {
+    needsCompaction: true,
+    estimatedTokens: 100,
+    usableTokens: 80,
+    prunedTokens: 20,
+    prune: [0, 2],
+    summarizeRange: [0, 2],
+    tailStartIndex: 3,
+  };
+  it("accepts a well-formed plan", () => {
+    expect(isUsableCompactionPlan(valid, 4)).toBe(true);
+    // Adjacent summary and tail share no messages.
+    expect(isUsableCompactionPlan({ ...valid, summarizeRange: [0, 3], tailStartIndex: 3 }, 4)).toBe(true);
+  });
+  it("rejects non-objects, wrong types, and out-of-range fields", () => {
+    for (const bad of [
+      null, undefined, "plan", 42, [],
+      { ...valid, needsCompaction: "yes" },
+      { ...valid, estimatedTokens: 1.5 },
+      { ...valid, usableTokens: -1 },
+      { ...valid, prunedTokens: Number.MAX_SAFE_INTEGER + 1 },
+      { ...valid, prune: "0" },
+      { ...valid, prune: [1.5] },
+      { ...valid, prune: [-1] },
+      { ...valid, prune: [4] },
+      { ...valid, summarizeRange: [0] },
+      { ...valid, summarizeRange: [2, 1] },
+      { ...valid, summarizeRange: [0, 5] },
+      { ...valid, summarizeRange: [0.5, 2] },
+      // Overlapping summary and tail: indices 2..3 would land in both.
+      { ...valid, summarizeRange: [0, 4], tailStartIndex: 2 },
+      { ...valid, summarizeRange: [1, 3], tailStartIndex: 2 },
+      { ...valid, tailStartIndex: -1 },
+      { ...valid, tailStartIndex: 5 },
+      { ...valid, tailStartIndex: 2.5 },
+      Object.fromEntries(Object.entries(valid).filter(([key]) => key !== "needsCompaction")),
+    ]) {
+      expect(isUsableCompactionPlan(bad, 4), JSON.stringify(bad)).toBe(false);
+    }
   });
 });

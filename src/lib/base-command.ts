@@ -4,12 +4,32 @@ import {readFileSync} from 'node:fs';
 import {SiftClient} from '@siftable/mcp-server/dist/exfClient.js';
 import {resolveToken} from './auth.js';
 import {confirm} from './output.js';
+import {resolveWorkspaceTenantId} from './workspace-context.js';
+
+export interface ApiContextFlags {
+  token?: string;
+  'api-url'?: string;
+  workspace?: string | null;
+}
 
 function envValue(primary: string, legacy: string): string | undefined {
   return process.env[primary] || process.env[legacy];
 }
 
 export const DEFAULT_API_URL = 'https://siftable.io';
+
+type CliCommandError = Error & {
+  exitCode?: number;
+  oclif?: {exit?: number};
+};
+
+// API transport failures use statusCode 0 for diagnosis, but a failed CLI
+// command must never report shell success. Preserve that diagnostic status in
+// JSON while constraining process exits to the portable non-zero range.
+export function portableExitCode(err: CliCommandError): number {
+  const requested = err.oclif?.exit ?? err.exitCode ?? 1;
+  return Number.isInteger(requested) && requested >= 1 && requested <= 255 ? requested : 1;
+}
 
 export abstract class BaseCommand extends Command {
   static enableJsonFlag = true;
@@ -21,7 +41,7 @@ export abstract class BaseCommand extends Command {
     }),
     'api-url': Flags.string({
       description: 'API base URL',
-      default: DEFAULT_API_URL,
+      default: async () => envValue('SIFT_API_URL', 'EXF_API_URL') || DEFAULT_API_URL,
       helpGroup: 'GLOBAL',
     }),
     'no-input': Flags.boolean({
@@ -34,34 +54,54 @@ export abstract class BaseCommand extends Command {
     }),
   };
 
-  protected async client(flags: {token?: string; 'api-url'?: string; workspace?: string}): Promise<SiftClient> {
+  protected override async catch(err: CliCommandError): Promise<void> {
+    const exitCode = portableExitCode(err);
+    if (err.oclif) err.oclif.exit = exitCode;
+    else err.exitCode = exitCode;
+    process.exitCode = process.exitCode ?? exitCode;
+    await super.catch(err);
+  }
+
+  protected async client(flags: ApiContextFlags): Promise<SiftClient> {
     const token = flags.token || envValue('SIFT_TOKEN', 'EXF_TOKEN') || resolveToken();
     if (!token) {
       this.error('No authentication token found. Run `sift auth login` or set SIFT_TOKEN.');
     }
 
+    const workspaceId = this.workspaceId(flags.workspace);
     return new SiftClient({
       apiUrl: flags['api-url'] || envValue('SIFT_API_URL', 'EXF_API_URL') || DEFAULT_API_URL,
       pat: token,
-      workspaceId: flags.workspace || envValue('SIFT_WORKSPACE_ID', 'EXF_WORKSPACE_ID'),
+      workspaceId,
+      // The CLI runs on the caller's own machine, so reading a local path the
+      // user typed (`sift documents upload <file>`) is the user's own file
+      // access, not a server reading its filesystem on a remote caller's behalf.
+      allowLocalFiles: true,
     });
   }
 
   protected async apiRequest<T>(
-    flags: {token?: string; 'api-url'?: string; workspace?: string},
+    flags: ApiContextFlags,
     path: string,
-    options: {method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; body?: unknown} = {},
+    options: {
+      method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+      body?: unknown;
+      idempotencyKey?: string;
+      signal?: AbortSignal;
+    } = {},
   ): Promise<T> {
     const token = flags.token || envValue('SIFT_TOKEN', 'EXF_TOKEN') || resolveToken();
     if (!token) this.error('No authentication token found. Run `sift auth login` or set SIFT_TOKEN.');
     const apiUrl = flags['api-url'] || envValue('SIFT_API_URL', 'EXF_API_URL') || DEFAULT_API_URL;
+    const workspaceId = this.workspaceId(flags.workspace);
     const response = await fetch(`${apiUrl}${path}`, {
+      signal: options.signal,
       method: options.method ?? 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
-        'Idempotency-Key': this.idempotencyKey(),
-        ...(flags.workspace ? {'X-Workspace-Id': flags.workspace} : {}),
+        'Idempotency-Key': options.idempotencyKey ?? this.idempotencyKey(),
+        ...(workspaceId ? {'X-Workspace-Id': workspaceId} : {}),
       },
       body: options.body == null ? undefined : JSON.stringify(options.body),
     });
@@ -71,6 +111,14 @@ export abstract class BaseCommand extends Command {
     }
     if (response.status === 204) return undefined as T;
     return response.json() as Promise<T>;
+  }
+
+  protected workspaceId(flagValue?: string | null): string | undefined {
+    try {
+      return resolveWorkspaceTenantId(flagValue);
+    } catch (error) {
+      this.error(error instanceof Error ? error.message : String(error));
+    }
   }
 
   protected unwrapList(response: {data?: unknown}, key: string): Record<string, unknown>[] {
@@ -94,13 +142,26 @@ export abstract class BaseCommand extends Command {
 
     try {
       const payload = JSON.parse(error) as Record<string, unknown>;
+      const nestedError = payload.error !== null
+        && typeof payload.error === 'object'
+        && !Array.isArray(payload.error)
+        ? payload.error as Record<string, unknown>
+        : undefined;
+      const normalizedPayload = nestedError
+        ? {
+          ...payload,
+          ...nestedError,
+          type: typeof nestedError.code === 'string' ? nestedError.code : payload.type,
+        }
+        : payload;
       const title = typeof payload.title === 'string' ? payload.title : undefined;
       const detail = typeof payload.detail === 'string' ? payload.detail : undefined;
       const message = [title, detail].filter(Boolean).join(': ')
         || (typeof payload.message === 'string' ? payload.message : undefined)
+        || (typeof nestedError?.message === 'string' ? nestedError.message : undefined)
         || (typeof payload.error === 'string' ? payload.error : undefined)
         || error;
-      return {message, raw: error, payload};
+      return {message, raw: error, payload: normalizedPayload};
     } catch {
       return {message: error, raw: error};
     }
@@ -151,6 +212,12 @@ export abstract class BaseCommand extends Command {
     }
   }
 
+  private throwApiStatusError(statusCode: number, message: string): never {
+    const error = new Error(message) as Error & {statusCode?: number};
+    error.statusCode = statusCode;
+    this.error(error, {exit: statusCode > 0 ? statusCode : 1});
+  }
+
   protected override toErrorJson(err: Error & {
     oclif?: {exit?: number};
     code?: string;
@@ -164,7 +231,7 @@ export abstract class BaseCommand extends Command {
         code: err.code,
         statusCode: err.statusCode,
         api: err.api,
-        exit: err.oclif?.exit ?? 1,
+        exit: portableExitCode(err),
         suggestions: err.suggestions,
       },
     };
@@ -175,15 +242,21 @@ export abstract class BaseCommand extends Command {
       const parsed = this.parseApiError(response.error);
 
       if (response.statusCode === 401) {
-        this.error(`Authentication failed: ${parsed.message}\nRun \`sift auth login\` to authenticate.`);
+        this.throwApiStatusError(
+          response.statusCode,
+          `Authentication failed: ${parsed.message}\nRun \`sift auth login\` to authenticate.`,
+        );
       }
 
       if (response.statusCode === 404) {
-        this.error(`Not found: ${parsed.message}`);
+        this.throwApiStatusError(response.statusCode, `Not found: ${parsed.message}`);
       }
 
       if (response.statusCode === 429) {
-        this.error(`Rate limited: ${parsed.message}\nPlease try again shortly.`);
+        this.throwApiStatusError(
+          response.statusCode,
+          `Rate limited: ${parsed.message}\nPlease try again shortly.`,
+        );
       }
 
       if (parsed.payload) {
@@ -198,18 +271,18 @@ export abstract class BaseCommand extends Command {
         error.statusCode = response.statusCode;
         error.api = parsed.payload;
         error.suggestions = this.apiErrorSuggestions(parsed.payload);
-        this.error(error, {exit: response.statusCode});
+        this.error(error, {exit: response.statusCode > 0 ? response.statusCode : 1});
       }
 
       if (response.statusCode === 403) {
-        this.error(`Permission denied: ${parsed.message}`);
+        this.throwApiStatusError(response.statusCode, `Permission denied: ${parsed.message}`);
       }
 
       const error = new Error(`API error (${response.statusCode}): ${parsed.message}`) as Error & {
         statusCode?: number;
       };
       error.statusCode = response.statusCode;
-      this.error(error, {exit: response.statusCode});
+      this.error(error, {exit: response.statusCode > 0 ? response.statusCode : 1});
     }
   }
 
@@ -218,15 +291,37 @@ export abstract class BaseCommand extends Command {
     requiredScope: string,
   ): void {
     if (!response.error) return;
-    const status = Number.isInteger(response.statusCode) && response.statusCode > 0
+    const statusCode = Number.isInteger(response.statusCode)
+      && response.statusCode >= 400
+      && response.statusCode <= 599
       ? response.statusCode
-      : 1;
-    const message = response.statusCode === 401
+      : undefined;
+    const status = statusCode ?? 1;
+    let code = '';
+    try {
+      const payload = JSON.parse(response.error) as {type?: unknown; code?: unknown};
+      const candidate = payload.type ?? payload.code;
+      if (typeof candidate === 'string' && /^ai_[a-z0-9_]{1,60}$/.test(candidate)) {
+        code = candidate;
+      }
+    } catch {
+      // Transport text is intentionally not surfaced.
+    }
+    const message = statusCode === 401
       ? 'AI request was not authenticated (401). Run `sift auth login` to authenticate.'
-      : response.statusCode === 403
+      : statusCode === 403
         ? `AI request was denied (403). Required scope: ${requiredScope}.`
-        : `AI request failed (${response.statusCode || 'transport'}).`;
-    this.error(message, {exit: status});
+        : code === 'ai_gateway_unavailable'
+          ? 'Model Connections are not enabled on this Siftable deployment.'
+          : code === 'ai_provider_disabled'
+            ? 'The selected model provider is temporarily disabled.'
+            : code === 'ai_resource_limit_exceeded'
+              ? 'The connected-model request exceeded its configured resource limit.'
+              : `AI request failed (${statusCode ?? 'transport'}${code ? `, ${code}` : ''}).`;
+    const error = new Error(message) as Error & {code?: string; statusCode?: number};
+    if (code) error.code = code;
+    if (statusCode) error.statusCode = statusCode;
+    this.error(error, {exit: status});
   }
 
   protected surfaceApiWarnings(response: {warnings?: string[]}): void {

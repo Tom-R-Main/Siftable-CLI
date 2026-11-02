@@ -288,7 +288,7 @@ const PlanWriter = struct {
 
     fn appendFmt(self: *PlanWriter, comptime fmt: []const u8, args: anytype) void {
         var scratch: [64]u8 = undefined;
-        const rendered = std.fmt.bufPrint(&scratch, fmt, args) catch {
+        const rendered = std.mem.print(&scratch, fmt, args) catch {
             self.overflow = true;
             return;
         };
@@ -758,7 +758,7 @@ fn tRunPlanForce(buf: []const u8, cfg: [7]u32, out: []u8) TestPlan {
 test "plan: under budget needs no compaction" {
     var buf: [256]u8 = undefined;
     var off: usize = 0;
-    tWriteRecord(&buf, &off, ROLE_USER, 0, "a" ** 40); // 10 tokens
+    tWriteRecord(&buf, &off, ROLE_USER, 0, &@as([40]u8, @splat('a'))); // 10 tokens
     var out: [512]u8 = undefined;
     // context 1000, reserved 100 -> usable 900
     const r = tRunPlan(buf[0..off], .{ 1000, 100, 2, 1000, 40, 20 }, &out);
@@ -771,12 +771,12 @@ test "plan: under budget needs no compaction" {
 test "plan: force compacts a within-budget thread (manual /compact)" {
     var buf: [16384]u8 = undefined;
     var off: usize = 0;
-    tWriteRecord(&buf, &off, ROLE_USER, 0, "a" ** 40); // 10  turn0
-    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, "a" ** 40); // 10
-    tWriteRecord(&buf, &off, ROLE_USER, 0, "a" ** 40); // 10  turn1
-    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, "a" ** 40); // 10
-    tWriteRecord(&buf, &off, ROLE_USER, 0, "a" ** 40); // 10  turn2
-    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, "a" ** 40); // 10
+    tWriteRecord(&buf, &off, ROLE_USER, 0, &@as([40]u8, @splat('a'))); // 10  turn0
+    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, &@as([40]u8, @splat('a'))); // 10
+    tWriteRecord(&buf, &off, ROLE_USER, 0, &@as([40]u8, @splat('a'))); // 10  turn1
+    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, &@as([40]u8, @splat('a'))); // 10
+    tWriteRecord(&buf, &off, ROLE_USER, 0, &@as([40]u8, @splat('a'))); // 10  turn2
+    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, &@as([40]u8, @splat('a'))); // 10
     var out: [512]u8 = undefined;
     // total 60 << usable 900: auto would no-op. force=1 still summarizes the
     // older turns, keeping the most recent tail_turns=1 verbatim.
@@ -791,12 +791,12 @@ test "plan: force compacts a within-budget thread (manual /compact)" {
 test "plan: prune alone frees enough, no summarize" {
     var buf: [8192]u8 = undefined;
     var off: usize = 0;
-    tWriteRecord(&buf, &off, ROLE_USER, 0, "a" ** 40); // 10
-    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, "a" ** 40); // 10
-    tWriteRecord(&buf, &off, ROLE_TOOL, 0, "a" ** 4000); // 1000  <- old, prunable
-    tWriteRecord(&buf, &off, ROLE_USER, 0, "a" ** 40); // 10
-    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, "a" ** 40); // 10
-    tWriteRecord(&buf, &off, ROLE_TOOL, 0, "a" ** 40); // 10  <- recent, protected by window
+    tWriteRecord(&buf, &off, ROLE_USER, 0, &@as([40]u8, @splat('a'))); // 10
+    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, &@as([40]u8, @splat('a'))); // 10
+    tWriteRecord(&buf, &off, ROLE_TOOL, 0, &@as([4000]u8, @splat('a'))); // 1000  <- old, prunable
+    tWriteRecord(&buf, &off, ROLE_USER, 0, &@as([40]u8, @splat('a'))); // 10
+    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, &@as([40]u8, @splat('a'))); // 10
+    tWriteRecord(&buf, &off, ROLE_TOOL, 0, &@as([40]u8, @splat('a'))); // 10  <- recent, protected by window
     var out: [512]u8 = undefined;
     const r = tRunPlan(buf[0..off], .{ 1000, 100, 2, 1000, 40, 20 }, &out);
     try std.testing.expectEqual(STATUS_OK, r.status);
@@ -809,12 +809,12 @@ test "plan: prune alone frees enough, no summarize" {
 test "plan: summarizes a whole-turn prefix when prune is insufficient" {
     var buf: [16384]u8 = undefined;
     var off: usize = 0;
-    tWriteRecord(&buf, &off, ROLE_USER, 0, "a" ** 2000); // 500  turn0
-    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, "a" ** 2000); // 500
-    tWriteRecord(&buf, &off, ROLE_USER, 0, "a" ** 2000); // 500  turn1
-    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, "a" ** 2000); // 500
-    tWriteRecord(&buf, &off, ROLE_USER, 0, "a" ** 40); // 10   turn2
-    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, "a" ** 40); // 10
+    tWriteRecord(&buf, &off, ROLE_USER, 0, &@as([2000]u8, @splat('a'))); // 500  turn0
+    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, &@as([2000]u8, @splat('a'))); // 500
+    tWriteRecord(&buf, &off, ROLE_USER, 0, &@as([2000]u8, @splat('a'))); // 500  turn1
+    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, &@as([2000]u8, @splat('a'))); // 500
+    tWriteRecord(&buf, &off, ROLE_USER, 0, &@as([40]u8, @splat('a'))); // 10   turn2
+    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, &@as([40]u8, @splat('a'))); // 10
     var out: [512]u8 = undefined;
     // usable 1400; no tool messages so prune frees nothing -> must summarize.
     const r = tRunPlan(buf[0..off], .{ 1500, 100, 1, 1000, 40, 20 }, &out);
@@ -830,10 +830,10 @@ test "plan: summarizes a whole-turn prefix when prune is insufficient" {
 test "plan: tail bounded by preserve_recent_tokens keeps at least one turn" {
     var buf: [16384]u8 = undefined;
     var off: usize = 0;
-    tWriteRecord(&buf, &off, ROLE_USER, 0, "a" ** 2000); // 500 turn0
-    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, "a" ** 2000); // 500
-    tWriteRecord(&buf, &off, ROLE_USER, 0, "a" ** 40); // 10  turn1
-    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, "a" ** 40); // 10
+    tWriteRecord(&buf, &off, ROLE_USER, 0, &@as([2000]u8, @splat('a'))); // 500 turn0
+    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, &@as([2000]u8, @splat('a'))); // 500
+    tWriteRecord(&buf, &off, ROLE_USER, 0, &@as([40]u8, @splat('a'))); // 10  turn1
+    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, &@as([40]u8, @splat('a'))); // 10
     var out: [512]u8 = undefined;
     // tail_turns=5 but preserve_recent_tokens=15: turn1 (20 tok) is kept anyway
     // (always ≥1), turn0 (1000) would blow the budget -> summarized.
@@ -846,10 +846,10 @@ test "plan: tail bounded by preserve_recent_tokens keeps at least one turn" {
 test "plan: always summarizes at least one turn even if all turns are small" {
     var buf: [1024]u8 = undefined;
     var off: usize = 0;
-    tWriteRecord(&buf, &off, ROLE_USER, 0, "a" ** 40); // 10 turn0
-    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, "a" ** 40); // 10
-    tWriteRecord(&buf, &off, ROLE_USER, 0, "a" ** 40); // 10 turn1
-    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, "a" ** 40); // 10
+    tWriteRecord(&buf, &off, ROLE_USER, 0, &@as([40]u8, @splat('a'))); // 10 turn0
+    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, &@as([40]u8, @splat('a'))); // 10
+    tWriteRecord(&buf, &off, ROLE_USER, 0, &@as([40]u8, @splat('a'))); // 10 turn1
+    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, &@as([40]u8, @splat('a'))); // 10
     var out: [512]u8 = undefined;
     // usable 30 < total 40, both turns would fit the tail budget -> force keep turn1, summarize turn0.
     const r = tRunPlan(buf[0..off], .{ 30, 0, 5, 1000, 40, 20 }, &out);
@@ -860,12 +860,12 @@ test "plan: always summarizes at least one turn even if all turns are small" {
 test "plan: protected tool output is never pruned" {
     var buf: [8192]u8 = undefined;
     var off: usize = 0;
-    tWriteRecord(&buf, &off, ROLE_USER, 0, "a" ** 40); // 10
-    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, "a" ** 40); // 10
-    tWriteRecord(&buf, &off, ROLE_TOOL, FLAG_PROTECTED, "a" ** 4000); // 1000 protected
-    tWriteRecord(&buf, &off, ROLE_USER, 0, "a" ** 40); // 10
-    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, "a" ** 40); // 10
-    tWriteRecord(&buf, &off, ROLE_TOOL, 0, "a" ** 40); // 10
+    tWriteRecord(&buf, &off, ROLE_USER, 0, &@as([40]u8, @splat('a'))); // 10
+    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, &@as([40]u8, @splat('a'))); // 10
+    tWriteRecord(&buf, &off, ROLE_TOOL, FLAG_PROTECTED, &@as([4000]u8, @splat('a'))); // 1000 protected
+    tWriteRecord(&buf, &off, ROLE_USER, 0, &@as([40]u8, @splat('a'))); // 10
+    tWriteRecord(&buf, &off, ROLE_ASSISTANT, 0, &@as([40]u8, @splat('a'))); // 10
+    tWriteRecord(&buf, &off, ROLE_TOOL, 0, &@as([40]u8, @splat('a'))); // 10
     var out: [512]u8 = undefined;
     const r = tRunPlan(buf[0..off], .{ 1000, 100, 1, 1000, 40, 20 }, &out);
     try std.testing.expectEqual(STATUS_OK, r.status);
@@ -892,7 +892,7 @@ test "plan: empty history is valid and needs nothing" {
 test "plan: output-too-small negotiates needed size" {
     var buf: [256]u8 = undefined;
     var off: usize = 0;
-    tWriteRecord(&buf, &off, ROLE_USER, 0, "a" ** 40);
+    tWriteRecord(&buf, &off, ROLE_USER, 0, &@as([40]u8, @splat('a')));
     var tiny: [8]u8 = undefined;
     var written: u32 = 0;
     var needed: u32 = 0;

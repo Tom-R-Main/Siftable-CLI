@@ -161,7 +161,7 @@ const Writer = struct {
                         0x09 => self.append("\\t"),
                         else => {
                             var scratch: [8]u8 = undefined;
-                            const hex = std.fmt.bufPrint(&scratch, "\\u{x:0>4}", .{b}) catch "";
+                            const hex = std.mem.print(&scratch, "\\u{x:0>4}", .{b}) catch "";
                             self.append(hex);
                         },
                     }

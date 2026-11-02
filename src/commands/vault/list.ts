@@ -1,6 +1,12 @@
 import {Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
 import {renderTable} from '../../lib/output.js';
+import {
+  projectVaultEntries,
+  resolveVaultOwnerContext,
+  vaultApiFlags,
+  vaultOwnerFlag,
+} from '../../lib/vault-owner-context.js';
 
 export default class VaultList extends BaseCommand {
   static description = 'List vault entries (metadata only; requires vault:metadata:read)';
@@ -15,11 +21,13 @@ export default class VaultList extends BaseCommand {
     }),
     category: Flags.string({description: 'Filter by category'}),
     limit: Flags.integer({description: 'Maximum number of results'}),
+    owner: vaultOwnerFlag,
   };
 
   async run(): Promise<unknown> {
     const {flags} = await this.parse(VaultList);
-    const client = await this.client(flags);
+    const owner = resolveVaultOwnerContext(flags);
+    const client = await this.client(vaultApiFlags(flags, owner));
     const response = await client.listVaultEntries({
       entryType: flags.type,
       category: flags.category,
@@ -27,7 +35,7 @@ export default class VaultList extends BaseCommand {
     });
     this.handleApiError(response);
 
-    const entries = this.unwrapList(response, 'entries');
+    const entries = projectVaultEntries(this.unwrapList(response, 'entries'), owner);
 
     if (!this.jsonEnabled()) {
       renderTable(entries, [
@@ -35,6 +43,8 @@ export default class VaultList extends BaseCommand {
         {key: 'name', header: 'Name'},
         {key: 'entryType', header: 'Type'},
         {key: 'category', header: 'Category'},
+        {key: 'owner', header: 'Owner'},
+        {key: 'qualifiedSlug', header: 'Qualified slug'},
       ]);
     }
 

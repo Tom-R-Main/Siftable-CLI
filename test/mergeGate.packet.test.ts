@@ -9,6 +9,14 @@ import {assembleMergePacket, type MergeGateChild, type MergeGateInputs} from "..
 import {filesOutsideScope, pathMatchesScope} from "../interactive-tui/planning/scope";
 import type {DiffFile} from "../interactive-tui/worktreeService";
 
+const work = {
+  workItemId: "work-123",
+  title: "Contracted work",
+  contract: {classification: "bounded" as const, profile: "coding" as const, version: 1},
+  plan: {planId: "plan-123", planVersion: 2, state: "active" as const},
+  writeScope: {include: ["src/a.ts"], exclude: ["src/generated/**"]},
+};
+
 function child(over: Partial<MergeGateChild> = {}): MergeGateChild {
   return {
     sessionId: 2,
@@ -122,5 +130,11 @@ describe("assembleMergePacket — verdicts", () => {
     const p = assembleMergePacket(inputs({behindBy: 4}));
     expect(p.behindBy).toBe(4);
     expect(p.verdict).toBe("ready_to_merge"); // drift alone does not block; conflicts do
+  });
+
+  it("carries only the safe contracted-work identity into the packet", () => {
+    const p = assembleMergePacket(inputs({child: child({work})}));
+    expect(p.work).toEqual(work);
+    expect(p.work).not.toBe(work);
   });
 });

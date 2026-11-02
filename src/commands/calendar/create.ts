@@ -26,7 +26,7 @@ export default class CalendarCreate extends BaseCommand {
       endTime: flags.end,
       description: flags.description,
       location: flags.location,
-    });
+    }, this.idempotencyKey());
     this.handleApiError(response);
 
     const event = this.unwrapOne(response, 'event');

@@ -195,7 +195,7 @@ export async function normalizeImageForModel(
 
   const sharp = await loadSharp();
   if (!sharp) {
-    throw new Error("image paste: image too large and sharp is unavailable for downscaling");
+    throw new Error("image paste: image too large and sharp is unavailable for downscaling (install sharp next to the CLI to enable it)");
   }
 
   const pixelScale = maxPixels > 0 ? Math.min(1, Math.sqrt(maxPixels / Math.max(1, original.width * original.height))) : 1;
@@ -236,7 +236,7 @@ export async function renderImageAsAnsiForTui(
 ): Promise<TuiImageAnsiResult> {
   const image = await normalizeImageForModel(bytes, options);
   const sharp = await loadSharp();
-  if (!sharp) throw new Error("image render: sharp is unavailable for raw pixel extraction");
+  if (!sharp) throw new Error("image render: sharp is unavailable for raw pixel extraction (install sharp next to the CLI to enable it)");
 
   const decoded = await sharp(Buffer.from(image.data)).rotate().ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   const rawWidth = decoded.info.width;

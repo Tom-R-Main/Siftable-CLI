@@ -5,6 +5,43 @@ afterAll(() => {
 });
 
 describe('code commands', () => {
+  describe('codebase search compatibility', () => {
+    it('returns typed local-search recovery without requiring a legacy query', async () => {
+      const result = await runCommand([
+        'codebase', 'search', '--json', '--no-input',
+      ]);
+
+      expect(result.exitCode).toBe(2);
+      expect(result.error).toBeUndefined();
+      expect(JSON.parse(result.stdout).error).toMatchObject({
+        code: 'removed_capability',
+        api: expect.objectContaining({
+          type: 'removed_capability',
+          capability: 'codebase_search',
+        }),
+        exit: 2,
+      });
+    });
+
+    it('returns typed local-search recovery instead of a missing-command error', async () => {
+      const result = await runCommand([
+        'codebase', 'search', 'migration order V273b', '--json', '--no-input',
+      ]);
+
+      expect(result.exitCode).toBe(2);
+      expect(result.error).toBeUndefined();
+      expect(JSON.parse(result.stdout).error).toMatchObject({
+        code: 'removed_capability',
+        api: expect.objectContaining({
+          type: 'removed_capability',
+          capability: 'codebase_search',
+        }),
+        exit: 2,
+      });
+      expect(result.stdout).toContain('Use local `rg` or `git grep`');
+    });
+  });
+
   describe('code memory store', () => {
     it('stores a code memory', async () => {
       mockFetch()
@@ -83,21 +120,6 @@ describe('code commands', () => {
       expect(result.stdout).toContain('Test fact');
       expect(result.stdout).toContain('active-repo');
       expect(result.stdout).toContain('not_recorded');
-    });
-  });
-
-  describe('code history', () => {
-    it('shows commit history', async () => {
-      mockFetch()
-        .on('GET', '/api/v1/code/repositories/repo-001/commits')
-        .reply(200, {commits: [
-          {sha: 'abc12345def', authorName: 'Test Author', message: 'Initial commit', authorDate: '2026-01-01T00:00:00Z'},
-        ]})
-        .install();
-
-      const result = await runCommand(['code', 'history', 'repo-001', '--token', 'exf_pat_test']);
-      expect(result.stdout).toContain('abc12345');
-      expect(result.stdout).toContain('Test Author');
     });
   });
 });

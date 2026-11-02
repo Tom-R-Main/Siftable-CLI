@@ -76,7 +76,7 @@ describe("lane E E5 — two-child merge e2e", () => {
       const baseBeforeAnyMerge = fx.baseTip();
 
       // ── land child A ────────────────────────────────────────────────────────
-      const ra = controller.mergeChild(a.session.sessionId);
+      const ra = await controller.mergeChild(a.session.sessionId);
       expect(ra.ok).toBe(true);
       if (!ra.ok) return;
       expect(ra.merged).toBe(true);
@@ -97,7 +97,7 @@ describe("lane E E5 — two-child merge e2e", () => {
       const baseBeforeB = fx.baseTip();
       const sigBefore = graphSignature(fx.repoRoot);
 
-      const rb = controller.mergeChild(b.session.sessionId);
+      const rb = await controller.mergeChild(b.session.sessionId);
       expect(rb.ok).toBe(false);
       if (rb.ok) return;
       expect(getMergeMasterSession(b.session.sessionId)!.status).toBe("merge_blocked");

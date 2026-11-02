@@ -1,5 +1,6 @@
 import {Args, Flags} from '@oclif/core';
 import {BaseCommand} from '../../lib/base-command.js';
+import {parseDatasetFiltersFlag} from '../../lib/dataset-query.js';
 
 export default class DatasetsAnalyze extends BaseCommand {
   static description = 'Generate grounded natural-language insights for a dataset';
@@ -25,7 +26,7 @@ export default class DatasetsAnalyze extends BaseCommand {
     if (flags['focus-fields']) options.focusFields = flags['focus-fields'].split(',').map((s) => s.trim());
     if (flags.mode) options.analysisMode = flags.mode;
     if (flags['signal-limit']) options.signalLimit = flags['signal-limit'];
-    if (flags.filters) options.filters = JSON.parse(flags.filters);
+    if (flags.filters) options.filters = parseDatasetFiltersFlag(flags.filters);
 
     const response = await client.analyzeDataset(args.id, options as any);
     this.handleApiError(response);

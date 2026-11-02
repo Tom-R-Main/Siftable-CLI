@@ -23,7 +23,7 @@ export default class PeopleDelete extends BaseCommand {
     }
 
     const client = await this.client(flags);
-    const response = await client.deletePerson(args.id);
+    const response = await client.deletePerson(args.id, this.idempotencyKey());
     this.handleApiError(response);
 
     if (!this.jsonEnabled()) {

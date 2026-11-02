@@ -1,5 +1,6 @@
 import {spawnSync} from 'node:child_process';
 import {existsSync} from 'node:fs';
+import {constants} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {Flags} from '@oclif/core';
 import {BaseCommand, DEFAULT_API_URL} from '../lib/base-command.js';
@@ -119,16 +120,15 @@ export async function runInteractiveAiRequest(
  * auto-approve. We scrub any inherited EXECUTERM_AUTO_APPROVE so a stray value
  * can't grant silent writes if write tools are reintroduced in A1.
  *
- * The brain's OpenFunction `execufunction` provider reads SIFT_PAT / SIFT_API_URL
- * / SIFT_WORKSPACE_ID; SIFT_LOCAL_BRAIN tells index.tsx to use the in-process
- * LocalControlClient. EXECUTERM_OPENFUNCTION_PATH is an optional dev override;
- * published installs use the vendored runtime in interactive-tui/openfunction.
+ * The bundled Siftable agent harness reads SIFT_PAT / SIFT_API_URL /
+ * SIFT_WORKSPACE_ID; SIFT_LOCAL_BRAIN tells index.tsx to use the in-process
+ * LocalControlClient. The harness is part of the packaged TUI and cannot be
+ * replaced with an external runtime path.
  */
 export function buildChildEnv(opts: {
-  token: string;
+  token?: string;
   apiUrl: string;
   workspaceId?: string;
-  openfunctionPath?: string;
   userCwd?: string;
   /** Writable root for A1 write/edit tools. Defaults to the repo root above userCwd. */
   workspaceRoot?: string;
@@ -142,9 +142,14 @@ export function buildChildEnv(opts: {
 
   // Safety scrub — do this FIRST so nothing below can be undone.
   delete env.EXECUTERM_AUTO_APPROVE;
+  // Retired runtime injection seam: the packaged Siftable harness is authoritative.
+  delete env.EXECUTERM_OPENFUNCTION_PATH;
 
   env.SIFT_LOCAL_BRAIN = '1';
-  env.SIFT_PAT = opts.token;
+  // Only the token resolved by the launcher may enable hosted tools.
+  delete env.SIFT_PAT;
+  delete env.EXF_PAT;
+  if (opts.token) env.SIFT_PAT = opts.token;
   env.SIFT_API_URL = opts.apiUrl;
   if (opts.tuiDir) env.SIFT_INTERACTIVE_TUI_DIR = opts.tuiDir;
   if (opts.workspaceId) env.SIFT_WORKSPACE_ID = opts.workspaceId;
@@ -156,12 +161,6 @@ export function buildChildEnv(opts: {
   // the boundary /status reports and the Zig write path enforces.
   const workspaceRoot = opts.workspaceRoot ?? (opts.userCwd ? resolveWorkspaceRoot(opts.userCwd) : undefined);
   if (workspaceRoot) env.SIFT_WORKSPACE_ROOT = workspaceRoot;
-
-  if (opts.openfunctionPath) {
-    env.EXECUTERM_OPENFUNCTION_PATH = opts.openfunctionPath;
-  } else {
-    delete env.EXECUTERM_OPENFUNCTION_PATH;
-  }
 
   if (opts.model) env.EXECUTERM_MODEL = opts.model;
   if (opts.provider) env.EXECUTERM_MODEL_PROVIDER = opts.provider;
@@ -200,15 +199,37 @@ export function findBun(): string | null {
   return existsSync(fallback) ? fallback : null;
 }
 
+export type InteractiveTuiRuntime = {
+  cwd: string;
+  entry: string;
+};
+
+export type InteractiveTuiRuntimePreference = 'packaged' | 'source';
+
 /** Walk up from the compiled command to the package root, then to the TUI entry. */
-export function resolveTuiDir(startDir: string): string | null {
+export function resolveTuiRuntime(
+  startDir: string,
+  preference: InteractiveTuiRuntimePreference = 'packaged',
+): InteractiveTuiRuntime | null {
   let dir = startDir;
   for (let i = 0; i < 8; i++) {
-    const candidate = join(dir, 'interactive-tui', 'index.tsx');
-    if (existsSync(candidate)) return join(dir, 'interactive-tui');
+    const tuiDir = join(dir, 'interactive-tui');
+    const packagedEntry = join(tuiDir, 'runtime', 'index.js');
+    if (preference === 'packaged' && existsSync(packagedEntry)) {
+      return {cwd: join(tuiDir, 'runtime'), entry: packagedEntry};
+    }
+    const sourceEntry = join(tuiDir, 'index.tsx');
+    if (preference === 'source' && existsSync(sourceEntry)) {
+      return {cwd: tuiDir, entry: sourceEntry};
+    }
     dir = join(dir, '..');
   }
   return null;
+}
+
+/** Backward-compatible helper retained for tests and callers that only need the directory. */
+export function resolveTuiDir(startDir: string): string | null {
+  return resolveTuiRuntime(startDir, 'source')?.cwd ?? null;
 }
 
 export default class Interactive extends BaseCommand {
@@ -241,12 +262,11 @@ export default class Interactive extends BaseCommand {
     }),
     stream: Flags.boolean({
       description: 'Consume selected connected-model output incrementally',
-      default: false,
       dependsOn: ['prompt'],
     }),
   };
 
-  async run(): Promise<void> {
+  async run(): Promise<unknown> {
     const {flags} = await this.parse(Interactive);
 
     if (flags['connected-models'] || flags.model) {
@@ -261,14 +281,12 @@ export default class Interactive extends BaseCommand {
           model: model.model,
           status: model.status,
         }));
-        if (this.jsonEnabled()) {
-          this.log(JSON.stringify(models));
-        } else {
+        if (!this.jsonEnabled()) {
           for (const model of models) {
             this.log(`${model.connectionId}\t${model.provider}\t${model.model}\t${model.connectionName}`);
           }
         }
-        return;
+        return models;
       }
       const result = await runInteractiveAiRequest(client, {
         connectionId: flags.connection,
@@ -277,22 +295,27 @@ export default class Interactive extends BaseCommand {
         maxOutputTokens: flags['max-output-tokens'],
         stream: flags.stream,
         onDelta: flags.stream && !this.jsonEnabled()
-          ? (delta: string) => this.log(delta)
+          ? (delta: string) => { process.stdout.write(delta); }
           : undefined,
       });
-      if (result.response) {
-        if (this.jsonEnabled()) this.log(JSON.stringify(result));
-        else if (!flags.stream) this.log(result.response.text);
-      } else {
-        this.log(`selected ${result.selected.connectionId} ${result.selected.model}`);
+      if (!this.jsonEnabled()) {
+        if (result.response) {
+          if (!flags.stream) this.log(result.response.text);
+        } else {
+          this.log(`selected ${result.selected.connectionId} ${result.selected.model}`);
+        }
       }
-      return;
+      return result;
     }
 
-    const token = flags.token || envValue('SIFT_TOKEN', 'EXF_TOKEN') || resolveToken();
-    if (!token) {
-      this.error('No authentication token found. Run `sift auth login` or set SIFT_TOKEN.');
+    if (flags['no-input'] || this.jsonEnabled()) {
+      this.error('The interactive TUI requires interactive input and human-readable output. Use --connected-models or --model with --prompt for a hosted request.', {exit: 2});
     }
+
+    // The local TUI can open before either provider or hosted credentials exist.
+    // /key configures the active provider; hosted gateway branches above still
+    // authenticate through BaseCommand.client.
+    const token = flags.token || envValue('SIFT_TOKEN', 'EXF_TOKEN') || resolveToken();
 
     const bun = findBun();
     if (!bun) {
@@ -302,31 +325,39 @@ export default class Interactive extends BaseCommand {
       );
     }
 
-    const tuiDir = resolveTuiDir(__dirname);
-    if (!tuiDir) {
-      this.error('Could not locate the interactive TUI (interactive-tui/index.tsx).');
+    const runtimePreference = process.env.SIFT_INTERACTIVE_RUNTIME === 'source' ? 'source' : 'packaged';
+    const tuiRuntime = resolveTuiRuntime(__dirname, runtimePreference);
+    if (!tuiRuntime) {
+      this.error('Could not locate the packaged interactive TUI runtime.');
     }
 
     const env = buildChildEnv({
       token,
       apiUrl: flags['api-url'] || envValue('SIFT_API_URL', 'EXF_API_URL') || DEFAULT_API_URL,
-      workspaceId: flags.workspace || envValue('SIFT_WORKSPACE_ID', 'EXF_WORKSPACE_ID'),
+      workspaceId: this.workspaceId(flags.workspace),
       userCwd: process.cwd(),
-      tuiDir,
+      tuiDir: tuiRuntime.cwd,
       baseEnv: process.env,
     });
 
-    // Run bun FROM the TUI dir so it finds bunfig.toml (the @opentui/solid
-    // preload) and node_modules. The user's working directory is preserved in
-    // SIFT_USER_CWD for tools/shell that should act where the user invoked us.
-    const result = spawnSync(bun, ['index.tsx'], {
-      cwd: tuiDir,
+    // Run Bun from the selected runtime directory. Published packages select
+    // the bundled runtime, whose bunfig disables auto-install; author checkouts
+    // retain the source entry and its Solid transform preload.
+    const result = spawnSync(bun, [tuiRuntime.entry], {
+      cwd: tuiRuntime.cwd,
       env,
       stdio: 'inherit',
     });
 
     if (result.error) {
       this.error(`Failed to launch the copilot: ${result.error.message}`);
+    }
+    if (result.signal) {
+      const signalNumber = constants.signals[result.signal];
+      this.error(`Copilot terminated by ${result.signal}.`, {exit: signalNumber ? 128 + signalNumber : 1});
+    }
+    if (result.status === null) {
+      this.error('Copilot exited without a terminal status.');
     }
     if (typeof result.status === 'number' && result.status !== 0) {
       this.exit(result.status);

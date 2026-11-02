@@ -106,6 +106,7 @@ const SearchSkippedByReason = struct {
 };
 
 const SearchDiagnostics = struct {
+    preview_clipped: bool = false,
     bytes_scanned: u64 = 0,
     cap_reason: ?SearchCapReason = null,
     skipped_by_reason: SearchSkippedByReason = .{},
@@ -167,7 +168,7 @@ const Writer = struct {
 
     fn appendFmt(self: *Writer, comptime fmt: []const u8, args: anytype) void {
         var scratch: [1024]u8 = undefined;
-        const rendered = std.fmt.bufPrint(&scratch, fmt, args) catch {
+        const rendered = std.mem.print(&scratch, fmt, args) catch {
             self.overflow = true;
             self.needed += scratch.len;
             return;
@@ -300,9 +301,8 @@ fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
     return count;
 }
 
-/// Atomic full-file write: write to an unnamed temp via createFileAtomic, then
-/// rename over the target. A partial/failed write never leaves a half-written
-/// file in place (the gap in opencode/codex/t3 — all of which write directly).
+/// Stage the full file, then rename over the target. This does not provide
+/// cross-process exclusion or a durable exactly-once receipt across crashes.
 fn atomicWriteFile(path: []const u8, content: []const u8, perms: File.Permissions, make_path: bool) u32 {
     var af = Dir.cwd().createFileAtomic(io(), path, .{
         .permissions = perms,
@@ -555,7 +555,7 @@ fn capReasonString(reason: ?SearchCapReason) []const u8 {
 fn writeSearchStats(w: *Writer, stats: *const SearchStats, diagnostics: *const SearchDiagnostics) void {
     const skipped = diagnostics.skipped_by_reason;
     w.appendFmt(
-        "],\"stats\":{{\"searchedFiles\":{},\"skippedFiles\":{},\"matchedFiles\":{},\"matches\":{},\"truncated\":{},\"capped\":{},\"capReason\":{s},\"bytesScanned\":{},\"skippedByReason\":{{\"hidden\":{},\"vendor\":{},\"buildOutput\":{},\"binary\":{},\"tooLarge\":{},\"invalidUtf8\":{},\"ioError\":{},\"gitignore\":{},\"depth\":{},\"nonFile\":{},\"other\":{}}}}}}}",
+        "],\"stats\":{{\"searchedFiles\":{},\"skippedFiles\":{},\"matchedFiles\":{},\"matches\":{},\"truncated\":{},\"capped\":{},\"capReason\":{s},\"bytesScanned\":{},\"previewClipped\":{},\"skippedByReason\":{{\"hidden\":{},\"vendor\":{},\"buildOutput\":{},\"binary\":{},\"tooLarge\":{},\"invalidUtf8\":{},\"ioError\":{},\"gitignore\":{},\"depth\":{},\"nonFile\":{},\"other\":{}}}}}}}",
         .{
             stats.searched_files,
             stats.skipped_files,
@@ -565,6 +565,7 @@ fn writeSearchStats(w: *Writer, stats: *const SearchStats, diagnostics: *const S
             diagnostics.cap_reason != null,
             capReasonString(diagnostics.cap_reason),
             diagnostics.bytes_scanned,
+            diagnostics.preview_clipped,
             skipped.hidden,
             skipped.vendor,
             skipped.build_output,
@@ -757,6 +758,7 @@ pub export fn sift_fs_search_literal(
                     ""
                 else blk: {
                     const bounds = previewBounds(file_data, start, end, preview_bytes);
+                    diagnostics.preview_clipped = diagnostics.preview_clipped or bounds.start > 0 or bounds.end < file_data.len;
                     break :blk file_data[bounds.start..bounds.end];
                 };
                 writeMatch(&w, &first, entry.path, preview, line_cursor.line, line_cursor.columnFor(start), start, end);
@@ -804,6 +806,12 @@ pub export fn sift_repo_scan_manifest(
 /// Atomic full-file write. Enforces the writable root, optionally refuses to
 /// clobber an existing file (create-only), preserves the existing file's mode
 /// on overwrite, and reports whether the file was newly created.
+/// Version 1 guarantees OUTPUT_TOO_SMALL is returned before any filesystem
+/// mutation, including parent-directory creation. Other failures may have effects.
+pub export fn sift_fs_mutation_abi_version() u32 {
+    return 1;
+}
+
 pub export fn sift_fs_write_text(
     root_ptr: [*]const u8,
     root_len: u32,
@@ -817,6 +825,8 @@ pub export fn sift_fs_write_text(
     written_out: *u32,
     needed_out: *u32,
 ) u32 {
+    written_out.* = 0;
+    needed_out.* = 0;
     const root = inputSlice(root_ptr, root_len);
     const path = inputSlice(path_ptr, path_len);
     const content = inputSlice(content_ptr, content_len);
@@ -834,13 +844,14 @@ pub export fn sift_fs_write_text(
     if (create_only and !created) return STATUS_ALREADY_EXISTS;
     const perms = if (existing) |st| st.permissions else File.Permissions.default_file;
 
-    const status = atomicWriteFile(path, content, perms, make_path);
-    if (status != STATUS_OK) return status;
-
     var w: Writer = .{ .buf = outputSlice(out_ptr, out_cap) };
     w.append("{\"path\":");
     w.appendJsonString(path);
     w.appendFmt(",\"bytesWritten\":{},\"created\":{}}}", .{ content.len, created });
+    if (w.overflow) return finish(&w, written_out, needed_out);
+
+    const status = atomicWriteFile(path, content, perms, make_path);
+    if (status != STATUS_OK) return status;
     return finish(&w, written_out, needed_out);
 }
 
@@ -872,6 +883,8 @@ pub export fn sift_fs_edit_text(
     written_out: *u32,
     needed_out: *u32,
 ) u32 {
+    written_out.* = 0;
+    needed_out.* = 0;
     const params = params_ptr.*;
     const root = inputSlice(root_ptr, root_len);
     const path = inputSlice(path_ptr, path_len);
@@ -918,14 +931,90 @@ pub export fn sift_fs_edit_text(
         else => return statusFromFileError(err),
     };
     const perms = if (existing) |st| st.permissions else File.Permissions.default_file;
-    const status = atomicWriteFile(path, out_buf[0..wi], perms, false);
-    if (status != STATUS_OK) return status;
-
     var w: Writer = .{ .buf = outputSlice(out_ptr, out_cap) };
     w.append("{\"path\":");
     w.appendJsonString(path);
     w.appendFmt(",\"bytesWritten\":{},\"replacements\":{},\"newHash\":{}}}", .{ wi, occ, fnv1a32(out_buf[0..wi]) });
+    if (w.overflow) return finish(&w, written_out, needed_out);
+
+    const status = atomicWriteFile(path, out_buf[0..wi], perms, false);
+    if (status != STATUS_OK) return status;
     return finish(&w, written_out, needed_out);
+}
+
+test "mutation receipt sizing precedes edit and commits once (real IO)" {
+    const dir = ".zig-cache/sift-fs-mutation-edit";
+    Dir.cwd().deleteTree(io(), dir) catch {};
+    defer Dir.cwd().deleteTree(io(), dir) catch {};
+    const path = dir ++ "/file.txt";
+    const root = "";
+    var out: [1024]u8 = undefined;
+    var written: u32 = 0;
+    var needed: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 1), sift_fs_mutation_abi_version());
+    try std.testing.expectEqual(STATUS_OK, sift_fs_write_text(root.ptr, 0, path.ptr, path.len, "foo".ptr, 3, WRITE_FLAG_MAKE_PATH, &out, out.len, &written, &needed));
+    const params: EditParams = .{ .old_len = 3, .new_len = 6, .expected_hash = fnv1a32("foo"), .flags = EDIT_FLAG_REQUIRE_UNIQUE | EDIT_FLAG_CHECK_FRESHNESS };
+    try std.testing.expectEqual(STATUS_OUTPUT_TOO_SMALL, sift_fs_edit_text(root.ptr, 0, path.ptr, path.len, "foo".ptr, "foobar".ptr, &params, &out, 1, &written, &needed));
+    try std.testing.expect(needed > 1);
+    const before = try Dir.cwd().readFileAlloc(io(), path, std.testing.allocator, .limited(1024));
+    defer std.testing.allocator.free(before);
+    try std.testing.expectEqualStrings("foo", before);
+    // Use the exact advertised size; the stale check would fail if sizing wrote.
+    try std.testing.expectEqual(STATUS_OK, sift_fs_edit_text(root.ptr, 0, path.ptr, path.len, "foo".ptr, "foobar".ptr, &params, &out, needed, &written, &needed));
+    const after = try Dir.cwd().readFileAlloc(io(), path, std.testing.allocator, .limited(1024));
+    defer std.testing.allocator.free(after);
+    try std.testing.expectEqualStrings("foobar", after);
+    const receipt = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out[0..written], .{});
+    defer receipt.deinit();
+    try std.testing.expectEqual(@as(i64, 1), receipt.value.object.get("replacements").?.integer);
+    try std.testing.expectEqual(@as(i64, fnv1a32("foobar")), receipt.value.object.get("newHash").?.integer);
+}
+
+test "mutation small write receipt cannot create directories or consume createOnly (real IO)" {
+    const dir = ".zig-cache/sift-fs-mutation-write";
+    Dir.cwd().deleteTree(io(), dir) catch {};
+    defer Dir.cwd().deleteTree(io(), dir) catch {};
+    const path = dir ++ "/nested/file.txt";
+    const root = "";
+    var out: [1024]u8 = undefined;
+    var written: u32 = 0;
+    var needed: u32 = 0;
+    const flags = WRITE_FLAG_MAKE_PATH | WRITE_FLAG_CREATE_ONLY;
+    try std.testing.expectEqual(STATUS_OUTPUT_TOO_SMALL, sift_fs_write_text(root.ptr, 0, path.ptr, path.len, "foo".ptr, 3, flags, &out, 1, &written, &needed));
+    try std.testing.expectError(error.FileNotFound, Dir.cwd().statFile(io(), dir, .{}));
+    try std.testing.expectEqual(STATUS_OK, sift_fs_write_text(root.ptr, 0, path.ptr, path.len, "foo".ptr, 3, flags, &out, needed, &written, &needed));
+    const receipt = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out[0..written], .{});
+    defer receipt.deinit();
+    try std.testing.expect(receipt.value.object.get("created").?.bool);
+    try std.testing.expectEqual(STATUS_ALREADY_EXISTS, sift_fs_write_text(root.ptr, 0, path.ptr, path.len, "bad".ptr, 3, flags, &out, out.len, &written, &needed));
+    try std.testing.expectEqual(@as(u32, 0), written);
+    const data = try Dir.cwd().readFileAlloc(io(), path, std.testing.allocator, .limited(1024));
+    defer std.testing.allocator.free(data);
+    try std.testing.expectEqualStrings("foo", data);
+    // Overwrite sizing must also preserve the existing file.
+    try std.testing.expectEqual(STATUS_OUTPUT_TOO_SMALL, sift_fs_write_text(root.ptr, 0, path.ptr, path.len, "new".ptr, 3, 0, &out, 1, &written, &needed));
+    const unchanged = try Dir.cwd().readFileAlloc(io(), path, std.testing.allocator, .limited(1024));
+    defer std.testing.allocator.free(unchanged);
+    try std.testing.expectEqualStrings("foo", unchanged);
+}
+
+test "mutation commit failure does not publish a success receipt (real IO)" {
+    const dir = ".zig-cache/sift-fs-mutation-failure";
+    Dir.cwd().deleteTree(io(), dir) catch {};
+    defer Dir.cwd().deleteTree(io(), dir) catch {};
+    try Dir.cwd().createDirPath(io(), dir);
+    const root = "";
+    var out: [1024]u8 = undefined;
+    var written: u32 = 777;
+    var needed: u32 = 777;
+    // A directory can be statted and its receipt prepared, but cannot be
+    // replaced by the staged file. Failure must leave no advertised receipt.
+    const status = sift_fs_write_text(root.ptr, 0, dir.ptr, dir.len, "foo".ptr, 3, 0, &out, out.len, &written, &needed);
+    try std.testing.expect(status != STATUS_OK and status != STATUS_OUTPUT_TOO_SMALL);
+    try std.testing.expectEqual(@as(u32, 0), written);
+    try std.testing.expectEqual(@as(u32, 0), needed);
+    var still_dir = try Dir.cwd().openDir(io(), dir, .{});
+    still_dir.close(io());
 }
 
 test "native write then edit roundtrip (real IO)" {
@@ -1313,6 +1402,7 @@ test "search detail levels reduce result metadata" {
     var json = out[0..written];
     try std.testing.expect(std.mem.indexOf(u8, json, "\"line\":0") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"preview\":\"\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"previewClipped\":false") != null);
 
     stats = .{ .searched_files = 0, .skipped_files = 0, .matched_files = 0, .matches = 0, .truncated = 0 };
     caps.flags = SEARCH_DETAIL_LOCATIONS;
@@ -1323,6 +1413,7 @@ test "search detail levels reduce result metadata" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"line\":2") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"column\":5") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"preview\":\"\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"previewClipped\":false") != null);
 
     stats = .{ .searched_files = 0, .skipped_files = 0, .matched_files = 0, .matches = 0, .truncated = 0 };
     caps.flags = 0;
@@ -1331,6 +1422,15 @@ test "search detail levels reduce result metadata" {
     json = out[0..written];
     try std.testing.expect(std.mem.indexOf(u8, json, "\"preview\":\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "pin pin") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"previewClipped\":false") != null);
+
+    caps.preview_bytes = 4;
+    status = sift_fs_search_literal(search_root.ptr, @intCast(search_root.len), query.ptr, @intCast(query.len), &caps, &out, out.len, &written, &needed, &stats);
+    try std.testing.expectEqual(STATUS_OK, status);
+    json = out[0..written];
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"previewClipped\":true") != null);
+    // Display clipping is independent of scan completeness.
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"capped\":false") != null);
 }
 
 test "line and column mapping" {

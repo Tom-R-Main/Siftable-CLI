@@ -30,7 +30,7 @@ pub const ClaimOut = extern struct {
 };
 
 const SmallText = struct {
-    bytes: [MAX_TEXT_BYTES]u8 = [_]u8{0} ** MAX_TEXT_BYTES,
+    bytes: [MAX_TEXT_BYTES]u8 = @splat(0),
     len: usize = 0,
 
     fn set(self: *SmallText, value: []const u8) void {
@@ -44,7 +44,7 @@ const SmallText = struct {
 };
 
 const PathText = struct {
-    bytes: [MAX_PATH_BYTES]u8 = [_]u8{0} ** MAX_PATH_BYTES,
+    bytes: [MAX_PATH_BYTES]u8 = @splat(0),
     len: usize = 0,
 
     fn set(self: *PathText, value: []const u8) void {
@@ -58,7 +58,7 @@ const PathText = struct {
 };
 
 const PayloadText = struct {
-    bytes: [MAX_PAYLOAD_BYTES]u8 = [_]u8{0} ** MAX_PAYLOAD_BYTES,
+    bytes: [MAX_PAYLOAD_BYTES]u8 = @splat(0),
     len: usize = 0,
 
     fn set(self: *PayloadText, value: []const u8) void {
@@ -135,7 +135,7 @@ const Writer = struct {
 
     fn appendFmt(self: *Writer, comptime fmt: []const u8, args: anytype) void {
         var scratch: [256]u8 = undefined;
-        const rendered = std.fmt.bufPrint(&scratch, fmt, args) catch {
+        const rendered = std.mem.print(&scratch, fmt, args) catch {
             self.overflow = true;
             self.needed += scratch.len;
             return;
@@ -168,9 +168,9 @@ const Writer = struct {
     }
 };
 
-var sessions: [MAX_SESSIONS]Session = [_]Session{.{}} ** MAX_SESSIONS;
-var branches: [MAX_BRANCHES]Branch = [_]Branch{.{}} ** MAX_BRANCHES;
-var events: [MAX_EVENTS]Event = [_]Event{.{}} ** MAX_EVENTS;
+var sessions: [MAX_SESSIONS]Session = @splat(.{});
+var branches: [MAX_BRANCHES]Branch = @splat(.{});
+var events: [MAX_EVENTS]Event = @splat(.{});
 var next_session_id: u32 = 1;
 var next_branch_id: u32 = 1;
 var next_event_id: u32 = 1;
@@ -247,9 +247,9 @@ fn issueLease(branch: *Branch, worker: []const u8, now_ms: u64, lease_ms: u32, o
 }
 
 pub export fn sift_collab_reset() void {
-    sessions = [_]Session{.{}} ** MAX_SESSIONS;
-    branches = [_]Branch{.{}} ** MAX_BRANCHES;
-    events = [_]Event{.{}} ** MAX_EVENTS;
+    sessions = @splat(.{});
+    branches = @splat(.{});
+    events = @splat(.{});
     next_session_id = 1;
     next_branch_id = 1;
     next_event_id = 1;

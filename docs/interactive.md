@@ -12,7 +12,7 @@ This page documents the TUI exhaustively. For the non-interactive command surfac
 
 - **[Bun](https://bun.sh) is required.** `sift interactive` re-execs Bun on the TUI entrypoint. If Bun isn't found it prints an install hint: `curl -fsSL https://bun.sh/install | bash`. Detection checks `which bun` then `~/.bun/bin/bun`.
 - **Authentication is required.** It resolves a token from `--token` → `SIFT_TOKEN`/`EXF_TOKEN` → `sift auth login` credentials. Without one it tells you to log in.
-- **Runs the brain in-process.** The copilot launches the bundled OpenFunction agent locally (`SIFT_LOCAL_BRAIN=1`) and talks to the Siftable API directly — there's no separate daemon to start.
+- **Runs the brain in-process.** The copilot launches the bundled Siftable agent harness locally (`SIFT_LOCAL_BRAIN=1`) and talks to the Siftable API directly — there's no separate daemon to start.
 - **Workspace root.** Writes are scoped to the nearest ancestor of your launch directory that contains `.git` (or the launch directory if none). This is the boundary `/status` reports and the native write path enforces. Your launch directory is preserved for tools that need it.
 
 Flags accepted by the command: `--token`, `--api-url`, `--workspace` (the standard CLI base flags).
@@ -24,6 +24,7 @@ The composer is a full readline-capable text area.
 - **Enter** submits. **Shift+Enter**, **Ctrl+J**, or a literal line feed insert a newline.
 - Submitting **while the agent is busy** queues your message; it's sent when the turn finishes.
 - **`!command`** runs a shell command and drops its output into the transcript. A bare `!cd <path>` changes the session working directory; anything else runs via `bash -lc` (output clipped to ~4000 chars).
+- Local tool results appear beneath their matching call, including parallel calls with the same tool name. The transcript shows at most 8 lines / 2 KB; before model or journal storage, the harness separately caps serialized results at 2,000 lines / 50 KB and retains complete oversized results in the private session-event store described below.
 - **Paste handling** is automatic: large or structured pastes become a collapsed "chip" instead of flooding the composer; images (from the clipboard or a pasted file path) are validated and normalized, then attached as image chips.
 - **`?`** on an empty composer shows the hotkeys.
 
@@ -51,7 +52,7 @@ Type `/` to open the command menu (↑/↓ to choose, Enter/Tab to fill). Hidden
 |---------|---------|--------------|
 | `/model [id] [effort]` | `models` | Open the model picker, or select a model (and optional reasoning effort) directly |
 | `/codex [login\|on\|use\|off\|logout\|status]` | | Control the Codex (ChatGPT) engine; default subcommand is `status` |
-| `/key <provider> <key>` | | Store a provider API key for the current session; Vault plaintext hydration is retired |
+| `/key <provider> <key>` | | Store a provider API key for the session and remember it in the OS keychain so the next launch picks it up silently (`/key forget <provider>` removes it) |
 | `/login` | | Siftable device-code login from inside the TUI |
 | `/explorer` | `explore` | Open the repo Explorer picker (context-gathering backend) |
 
@@ -98,25 +99,39 @@ Git-native parent/child sessions, each in its own worktree.
 
 ## Models & engines
 
-The model picker (`/model`) is a two-stage overlay: choose a **model** (↑/↓), then a **reasoning effort** (←/→). Your choice persists to `~/.siftable/prefs.json` and is restored on the next launch.
+The model picker (`/model`) is a two-stage overlay: choose a **model** (↑/↓), then a **reasoning effort** (←/→). Press `f` or `*` on a model to star it as a favorite — starred models float to the top with a `★` marker. Rows adapt to terminal width and height, preserving a gap between model names and descriptions. Your choice and favorites persist to `~/.siftable/prefs.json` and are restored on the next launch. Older `model-favorites.json` favorites are restored only when shared preferences have no favorites list; the next save writes them into `prefs.json`.
+
+**Muse Wonder 1.0** and **Muse Spark 1.3** are available through the direct Meta adapter: `/model muse` (or `/model wonder`) selects Wonder; `/model spark` selects standard Spark. Retired Contributor selections resolve to standard Spark. It requires `META_API_KEY`; `/key meta <key>` sets the key and remembers it in the system keychain for the next launch. The selection is restored on the next launch.
+
+New installations start with **GPT-6.1 Sol through Codex**. A saved model selection takes precedence on subsequent launches, including a personal Muse selection. Older GPT-5.6 Sol and GPT-6 Sol selections resolve to GPT-6.1 Sol.
 
 The catalog includes:
 
-- **GPT-5.6 Sol, Terra, and Luna** — run through your ChatGPT plan via the Codex engine (see below). `/codex login` and `/codex on` select Sol by default. Efforts: low/medium/high/xhigh/max.
-- **Claude Opus 4.8** — two routes: **Door A** via OpenRouter (`openrouter/anthropic/claude-opus-4.8`), and **Door B** direct to the Anthropic API (`anthropic/claude-opus-4-8`, needs `ANTHROPIC_API_KEY`; alias `claude-api`). Efforts: low/medium/high.
-- **Claude Sonnet 4.6**, **Claude Haiku 4.5**, **Gemini 3.x Flash / Flash-Lite**, **GPT-5.4 mini / nano** — available via OpenRouter or first-party keys; the Flash/Haiku/mini/nano models are used as Explorer scouts.
+- **GPT-6.1 Sol, GPT-5.6 Terra, and GPT-5.6 Luna** — run through your ChatGPT plan via the Codex engine (see below). `/codex login` and `/codex on` select Sol by default. Efforts: low/medium/high/xhigh/max.
+- **GPT-6 Luna** — through the Codex engine (`codex/gpt-6-luna`; alias `luna-6`). Efforts: none/low/medium/high/xhigh/max. The `luna` alias retains GPT-5.6 Luna.
+- **Claude Opus 5.5** — two routes: **Door A** via OpenRouter (`openrouter/anthropic/claude-opus-5.5`), and **Door B** direct to the Anthropic API (`anthropic/claude-opus-5-5`, needs `ANTHROPIC_API_KEY`; alias `claude-api`). Adaptive-thinking efforts: low/medium/high/xhigh/max, default medium. Saved Claude Opus 5 selections and `claude-opus-5` aliases resolve here.
+- **Claude Fable 5.1** — via OpenRouter (`openrouter/anthropic/claude-fable-5.1`) or direct (`anthropic/claude-fable-5-1`). Efforts: low/medium/high/xhigh/max.
+- **Claude Sonnet 5.5** — via OpenRouter (`openrouter/anthropic/claude-sonnet-5.5`) or direct (`anthropic/claude-sonnet-5-5`); alias `sonnet`. Efforts: low/medium/high/xhigh/max. Older Sonnet selections resolve here.
+- **Muse Spark 1.3** — direct to the Meta API (`meta/muse-spark-1.3`, needs `META_API_KEY`; alias `spark`). Efforts: minimal/low/medium/high/xhigh/max.
+- **Muse Wonder 1.0** — direct Meta API (`meta/muse-wonder-1.0`, needs `META_API_KEY`; aliases `wonder`, `muse`, `meta`). Context: 1,048,576 tokens. Efforts: minimal/low/medium/high/xhigh/max.
+- **GPT-6 Astra** — through the Codex engine (`codex/gpt-6-astra`; alias `astra`). Efforts include ultra.
+- **Claude Haiku 4.5**, **Gemini 3.x Flash / Flash-Lite**, **GPT-5.4 mini / nano** — available via OpenRouter or first-party keys; the Flash/Haiku/mini/nano models are used as Explorer scouts.
 - **Morph v3 Large** — apply-only (fast edit application); not a conversational brain.
 
 **Engine routing:**
 
 - **Codex** (`provider = codex`) drives the OpenAI `codex app-server` sidecar over JSON-RPC on stdio. Siftable does **not** own the OAuth — Codex manages ChatGPT sign-in; `/codex login` runs a device-code flow. Turns run in a `workspace-write` sandbox confined to the repo root with on-request approvals routed through the confirmation gate. Override the binary with `CODEX_BIN`.
-- **All other providers** (OpenRouter, Anthropic, Gemini, OpenAI) route through the bundled OpenFunction agent, which reads `<PROVIDER>_API_KEY` from the environment. `/key <provider> <key>` sets it for the session. Vault plaintext hydration is retired; capability-broker execution replaces that workflow.
+- **All other providers** (OpenRouter, Anthropic, Gemini, OpenAI, Meta) route through the bundled Siftable agent harness, which reads `<PROVIDER>_API_KEY` from the environment. `/key <provider> <key>` sets it for the session and remembers it in the OS keychain (macOS Keychain, Linux Secret Service); startup and model selection autoload remembered keys silently. Vault plaintext hydration is retired; capability-broker execution replaces that workflow.
 
-First-party provider keys: `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, or `<PROVIDER>_API_KEY` generically.
+First-party provider keys: `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `META_API_KEY`, or `<PROVIDER>_API_KEY` generically.
 
 ## Repo Explorer
 
 `/explorer` configures how the copilot gathers repository context before a turn. Modes: `auto`, `off`, `deterministic`, `scout`, `fanout`, `warpgrep`. You can pick a scout model and a budget (`cheap`/`normal`/`deep`). `warpgrep` uses Morph and currently needs `MORPH_API_KEY` in the process environment; Vault plaintext hydration is retired. Settings persist to `prefs.json` and are exported to the brain as `SIFT_EXPLORER_*` environment variables.
+
+Scouts have a separate saved model. If that provider's key is missing, they use the authenticated active model for that turn and report the fallback; the saved choice stays unchanged. If neither provider is available, Explorer reports the missing credential without launching failing branches. Remembered keys load before settings restore. `off`, `auto`, and `deterministic` do not require a scout key.
+
+Parallel scouts use low reasoning and bounded reports. Each branch has a complete read-and-report deadline of 8 seconds (`cheap`), 20 seconds (`normal`), or 60 seconds (`deep`); branches run concurrently. Escape cancels them.
 
 ## Skills
 
@@ -157,12 +172,12 @@ Overlays capture the keyboard first, so bindings are mode-specific.
 Standard readline editing (`←/→`, `Ctrl+A/E`, `Home/End`, `Ctrl+U/K/W`, word motions) works in the composer.
 
 **Slash menu:** `↑/↓` choose · `Enter`/`Tab` fill.
-**Model picker:** model stage `↑/↓` + `Enter`; effort stage `←/→` + `Enter`; `Esc` back.
+**Model picker:** model stage `↑/↓` + `Enter`, `f` / `*` favorite; effort stage `←/→` + `Enter`; `Esc` back.
 **Theme picker:** `↑/←` `↓/→` preview · `Enter` save · `Esc` revert.
 **Diagram viewer:** arrows or `h/j/k/l` pan · `PgUp/PgDn` page · `Home/0` `End/$` jump · `Esc`/`q` close.
 **Approval gate:** `y`/`Enter` allow once · `a` always · `b` bypass-all · `n`/`Esc` deny.
 **Branches overlay:** `↑/↓` rows · `Enter` enter · `r` ready · `m` merge · `u` rebase · `x` reject · `a` then `y` abandon · `s` spawn form · `Esc` close.
-**Work hub:** `↑/↓` rows · `Enter` detail · `p` plan · `f` focus · `r` recap · `s` ship · `v` evidence · `h` handoff · `Esc` close.
+**Work hub:** `↑/↓` rows · `Enter` detail · `x` prepare (claim, create/adopt the worktree, and start heartbeats; it does not dispatch the prompt) · `p` plan · `f` focus · `r` recap · `s` ship · `v` evidence · `h` handoff · `Esc` close.
 
 ## Appearance & sound
 
@@ -191,10 +206,11 @@ All under `~/.siftable/` unless noted:
 
 | Path | Contents |
 |------|----------|
-| `~/.siftable/prefs.json` | Saved model + reasoning effort, Explorer settings |
+| `~/.siftable/prefs.json` | Saved model + reasoning effort, favorites, Explorer settings |
 | `~/.siftable/appearance.json` | Selected theme scheme |
 | `~/.siftable/sounds.json` | Sound on/off |
 | `~/.siftable/threads/<hash>.jsonl` | Per-workspace conversation rollout (when compaction is on) |
+| `~/.siftable/session-events/v1/` | Durable harness journals plus private full-output spill files for oversized tool results |
 | `<repo-root>/.siftable/plans/overlay.json` | Plan precedence edges from `/plan work --apply`/`--after` |
 
 ## Environment variables
@@ -205,6 +221,7 @@ All under `~/.siftable/` unless noted:
 | `SIFT_API_URL` / `EXF_API_URL` | API base URL (default `https://siftable.io`) |
 | `SIFT_WORKSPACE_ID` / `EXF_WORKSPACE_ID` | Workspace scope |
 | `SIFT_CONTEXT_COMPACTION` | `!=0` enables the context meter + thread persistence/resume |
+| `SIFT_SESSION_EVENT_ROOT` | Override the durable session journal and tool-output spill root |
 | `SIFT_NO_NATIVE` | `=1` disables Zig FFI, forces TypeScript fallbacks |
 | `SIFT_MERMAID_AUTORENDER` | `=0` disables auto-rendering of ```mermaid blocks |
 | `SIFT_SOUNDS` | `1/on` or `0/off` overrides the sound preference |
@@ -214,7 +231,6 @@ All under `~/.siftable/` unless noted:
 | `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `OPENAI_API_KEY` / `<PROVIDER>_API_KEY` | First-party provider keys |
 | `MORPH_API_KEY` | Enables the `warpgrep` Explorer mode |
 | `EXECUTERM_MODEL` / `EXECUTERM_MODEL_PROVIDER` / `EXECUTERM_MODEL_EFFORT` | Startup model/provider/effort override |
-| `EXECUTERM_OPENFUNCTION_PATH` | Dev override for the OpenFunction framework entry (published installs use the vendored copy) |
 
 ## Security model
 
@@ -222,4 +238,5 @@ All under `~/.siftable/` unless noted:
 - The approval gate is a single four-way control: **allow once** / **always allow** / **bypass-all** / **deny**. With no UI listening, requests **deny**.
 - `EXECUTERM_AUTO_APPROVE` is always scrubbed at launch — there is no way to pre-authorize everything via env.
 - `/status` reports the real read/write boundary, never a fictional one.
+- Oversized tool outputs may contain anything the tool read. Complete bytes are written under the common session-event spill root in a deterministic hashed per-session container, then a marked, module-owned `0700` child directory, as unique immutable `0600` files. File and directory entries are synced before the local journal records a reference, and model-facing previews never expose that local path. Per-session retention defaults to 100 MiB, 256 files, and seven days, with a five-minute crash-recovery grace period. An unref'ed expiry timer enforces age while the TUI is idle. Destroying a session removes only that session's marked, module-owned child directory (the now-empty hashed container may remain); startup collection removes unreferenced output after the crash-recovery grace period and retains journal-referenced output until its hard age expiry without touching another session's cleanup scope.
 - Raw Vault key reads are retired. Use the first-party web Vault until brokered capabilities and approved materialization ship.

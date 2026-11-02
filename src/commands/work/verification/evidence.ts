@@ -21,6 +21,9 @@ export default class WorkVerificationEvidence extends BaseCommand {
     environment: Flags.string({description: 'Execution environment label', required: true}),
     provenance: Flags.string({description: 'Evidence provenance JSON object'}),
     'ran-at': Flags.string({description: 'RFC3339 execution timestamp'}),
+    'execution-attempt': Flags.string({description: 'Execution attempt UUID this evidence verified (same work item)'}),
+    'claim-owner': Flags.string({description: 'Active lease owner for workspace-service evidence'}),
+    'claim-token': Flags.string({description: 'Opaque active lease token for workspace-service evidence'}),
   };
 
   async run(): Promise<unknown> {
@@ -33,6 +36,8 @@ export default class WorkVerificationEvidence extends BaseCommand {
     }>(flags, `/api/v1/work-items/${args.id}/verification-evidence`, {
       method: 'POST',
       body: {
+        claimOwner: flags['claim-owner'] || process.env.SIFT_WORK_OWNER,
+        claimToken: flags['claim-token'] || process.env.SIFT_WORK_CLAIM_TOKEN,
         planVersion: flags['plan-version'],
         stepId: flags.step,
         attemptId: flags.attempt,
@@ -43,6 +48,7 @@ export default class WorkVerificationEvidence extends BaseCommand {
         environmentLabel: flags.environment,
         provenance,
         ranAt: flags['ran-at'],
+        ...(flags['execution-attempt'] ? {executionAttemptId: flags['execution-attempt']} : {}),
       },
     });
     if (!this.jsonEnabled()) {

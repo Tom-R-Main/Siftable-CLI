@@ -299,6 +299,13 @@ describe('evidence commands', () => {
       'project-1',
       '--targets',
       'claims,events,relationships,contradictions',
+      '--context',
+      JSON.stringify({
+        workflow: 'unsafe_override',
+        noApply: false,
+        resourceScope: {mode: 'unbounded'},
+        customMarker: 'preserved',
+      }),
       '--dry-run',
       '--json',
     ]);
@@ -307,9 +314,24 @@ describe('evidence commands', () => {
     expect(parsed.ok).toBe(true);
     expect(parsed.dryRun).toBe(true);
     expect(parsed.workItem.inputContext.noApply).toBe(true);
-    expect(parsed.workItem.writeScope.noApply).toBe(true);
-    expect(parsed.workItem.writeScope.forbidden).toContain('apply_durable_assertions');
-    expect(parsed.workItem.verificationCommands.join(' ')).toContain('sift evidence verify');
+    expect(parsed.workItem.inputContext.workflow).toBe('evidence_graph');
+    expect(parsed.workItem.inputContext.customMarker).toBe('preserved');
+    expect(parsed.workItem.inputContext.resourceScope.noApply).toBe(true);
+    expect(parsed.workItem.inputContext.resourceScope.forbidden).toContain('apply_durable_assertions');
+    expect(parsed.workItem.contract).toMatchObject({
+      version: 1,
+      profile: 'coding',
+      authority: {allowedActions: {network: true}},
+      boundary: {
+        writeScope: {
+          include: expect.arrayContaining(['datasets/evidence_claims', 'evidence/diff-plans']),
+          exclude: expect.arrayContaining(['evidence/durable-assertions', 'evidence/accepted-claims']),
+        },
+      },
+    });
+    expect(parsed.workItem.contract.proof.verificationCommands.join(' ')).toContain('sift evidence verify');
+    expect(parsed.workItem).not.toHaveProperty('writeScope');
+    expect(parsed.workItem).not.toHaveProperty('acceptanceCriteria');
   });
 
   it('creates no-apply Evidence Graph extraction work after confirmation', async () => {
@@ -321,10 +343,14 @@ describe('evidence commands', () => {
           && input.projectId === 'project-1'
           && input.inputContext.workflow === 'evidence_graph'
           && input.inputContext.noApply === true
-          && input.writeScope.noApply === true
-          && input.writeScope.forbidden.includes('merge_identities')
-          && input.acceptanceCriteria.length > 0
-          && input.verificationCommands.some((command: string) => command.includes('sift evidence proof report'));
+          && input.inputContext.resourceScope.noApply === true
+          && input.inputContext.resourceScope.forbidden.includes('merge_identities')
+          && input.contract.profile === 'coding'
+          && input.contract.outcome.acceptanceCriteria.length > 0
+          && input.contract.proof.verificationCommands.some((command: string) => command.includes('sift evidence proof report'))
+          && input.acceptanceCriteria === undefined
+          && input.writeScope === undefined
+          && input.verificationCommands === undefined;
       })
       .reply(200, {
         workItem: {id: 'work-1', title: 'Extract Evidence Graph candidates: claims, events'},

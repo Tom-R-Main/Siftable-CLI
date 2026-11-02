@@ -1,0 +1,185 @@
+{
+  "recordedAt": "2026-10-04",
+  "what": "sift review against a fixture checkout with the real codex binary in native provider mode, using the operator's own Codex login, which codex read through a link in its per-call CODEX_HOME (GPT-6.1 Sol). Run 1 is the default budget; run 2 caps the review at one model call so validation cannot finish, to show an incomplete review printed as incomplete.",
+  "cli": {
+    "sourceCommit": "b613a8f5c9ca10712e347a8fae60bd781cbd0260",
+    "built": "npm run build (packages/exf-cli), run as node packages/exf-cli/bin/run.js"
+  },
+  "codex": "codex-cli 0.159.0",
+  "fixture": {
+    "commits": [
+      "dccdc18337c41fc0d2d1ffbf0cff1287cb57d619 Simplify page arithmetic",
+      "156fb198cdd672f91dd0715691b24a1fdff4c3de base"
+    ],
+    "diff": [
+      "diff --git a/src/pagination.js b/src/pagination.js",
+      "index b739e64..950cb1c 100644",
+      "--- a/src/pagination.js",
+      "+++ b/src/pagination.js",
+      "@@ -1,9 +1,9 @@",
+      " // Returns the rows of a 1-based page.",
+      " export function pageRows(rows, page, size) {",
+      "-  const start = (page - 1) * size;",
+      "+  const start = page * size;",
+      "   return rows.slice(start, start + size);",
+      " }",
+      " ",
+      " export function pageCount(rows, size) {",
+      "-  return Math.ceil(rows.length / size);",
+      "+  return Math.floor(rows.length / size);",
+      " }"
+    ]
+  },
+  "runs": [
+    {
+      "command": "sift review --receipt <scratch>/r1.json",
+      "exitCode": 0,
+      "stdout": [
+        "Findings (2):",
+        "",
+        "[P2] Restore the offset for 1-based page numbers",
+        "  src/pagination.js:3  (confidence 1.00, gpt-6.1-sol)",
+        "  For the documented 1-based pagination, pageRows([1, 2, 3, 4], 1, 2) now returns [3, 4] instead of [1, 2]. Computing the offset as page * size skips the first page and shifts every requested page forward, causing the final page to return no rows.",
+        "",
+        "[P2] Count the final partial page",
+        "  src/pagination.js:8  (confidence 1.00, gpt-6.1-sol)",
+        "  When the row count is not divisible by the page size, pageCount now omits the final partial page. For example, pageCount([1, 2, 3], 2) returns 1 instead of 2, and a nonempty collection smaller than the page size returns 0. Use ceiling division so all rows are represented in the page count.",
+        "",
+        "COMPLETE: findings reported",
+        "Blocking (P0-P1): 0  Advisory: 2",
+        "Coverage: 1/1 files reviewed, 0 skipped",
+        "",
+        "Receipt",
+        "  head dccdc18337c4  base main (156fb198cdd6)  merge base 156fb198cdd6",
+        "  policy default sha256:d0b7c7f56aa1a3da1fe11a3b2b470c3b0ad55c51588935025edc29055ed5008a",
+        "  model gpt-6.1-sol via codex with your own login, 2 finder passes",
+        "  completion complete  status findings",
+        "  digest sha256:f597a650e5378458b1de46d40615fe7526e98179a52d38f8b4210f4a5d8a2414",
+        "  written to <scratch>/r1.json"
+      ],
+      "receipt": {
+        "format": "taster.local-receipt/v1",
+        "mode": "local",
+        "status": "findings",
+        "completion": "complete",
+        "revision": {
+          "head": "dccdc18337c41fc0d2d1ffbf0cff1287cb57d619",
+          "base": "156fb198cdd672f91dd0715691b24a1fdff4c3de",
+          "mergeBase": "156fb198cdd672f91dd0715691b24a1fdff4c3de",
+          "baseRef": "main",
+          "worktreeDirty": false
+        },
+        "policy": {
+          "name": "default",
+          "revision": "sha256:d0b7c7f56aa1a3da1fe11a3b2b470c3b0ad55c51588935025edc29055ed5008a"
+        },
+        "model": {
+          "name": "gpt-6.1-sol",
+          "provider": "codex-native",
+          "finderPasses": 2
+        },
+        "verdict": {
+          "kind": "complete",
+          "reason": null,
+          "blocking": 0,
+          "advisory": 2,
+          "filesInScope": 1,
+          "filesReviewed": 1,
+          "filesSkipped": 0,
+          "stages": {
+            "prepass": "complete",
+            "finders": "complete",
+            "validation": "complete",
+            "priorReconciliation": "complete",
+            "ratchet": "complete"
+          }
+        },
+        "findings": [
+          {
+            "id": "tf-ee7fbeea34a4fed0",
+            "priority": 2,
+            "title": "[P2] Restore the offset for 1-based page numbers",
+            "path": "src/pagination.js",
+            "start": 3,
+            "end": 3,
+            "confidence": 1
+          },
+          {
+            "id": "tf-f6a28ea5ad8b01c7",
+            "priority": 2,
+            "title": "[P2] Count the final partial page",
+            "path": "src/pagination.js",
+            "start": 8,
+            "end": 8,
+            "confidence": 1
+          }
+        ],
+        "problems": [],
+        "startedAt": "2026-10-04T15:49:42.717Z",
+        "finishedAt": "2026-10-04T15:50:31.759Z",
+        "digest": "sha256:f597a650e5378458b1de46d40615fe7526e98179a52d38f8b4210f4a5d8a2414"
+      }
+    },
+    {
+      "command": "sift review --max-model-calls 1 --receipt <scratch>/r2.json",
+      "exitCode": 2,
+      "stdout": [
+        "INCOMPLETE: this is not a clean review",
+        "Reason: stage finders partial; stage validation failed; 2 candidate(s) unvalidated",
+        "Coverage: 1/1 files reviewed, 0 skipped",
+        "Stages not complete: finders=partial, validation=failed",
+        "",
+        "Receipt",
+        "  head dccdc18337c4  base main (156fb198cdd6)  merge base 156fb198cdd6",
+        "  policy default sha256:d0b7c7f56aa1a3da1fe11a3b2b470c3b0ad55c51588935025edc29055ed5008a",
+        "  model gpt-6.1-sol via codex with your own login, 2 finder passes",
+        "  completion incomplete  status incomplete",
+        "  digest sha256:ac2f194a6baf6c2f0e1346c695f1ea03eb55bc33ff2c5cd033fd9b3380901500",
+        "  written to <scratch>/r2.json"
+      ],
+      "receipt": {
+        "format": "taster.local-receipt/v1",
+        "mode": "local",
+        "status": "incomplete",
+        "completion": "incomplete",
+        "revision": {
+          "head": "dccdc18337c41fc0d2d1ffbf0cff1287cb57d619",
+          "base": "156fb198cdd672f91dd0715691b24a1fdff4c3de",
+          "mergeBase": "156fb198cdd672f91dd0715691b24a1fdff4c3de",
+          "baseRef": "main",
+          "worktreeDirty": false
+        },
+        "policy": {
+          "name": "default",
+          "revision": "sha256:d0b7c7f56aa1a3da1fe11a3b2b470c3b0ad55c51588935025edc29055ed5008a"
+        },
+        "model": {
+          "name": "gpt-6.1-sol",
+          "provider": "codex-native",
+          "finderPasses": 2
+        },
+        "verdict": {
+          "kind": "incomplete",
+          "reason": "stage finders partial; stage validation failed; 2 candidate(s) unvalidated",
+          "blocking": 0,
+          "advisory": 0,
+          "filesInScope": 1,
+          "filesReviewed": 1,
+          "filesSkipped": 0,
+          "stages": {
+            "prepass": "complete",
+            "finders": "partial",
+            "validation": "failed",
+            "priorReconciliation": "complete",
+            "ratchet": "complete"
+          }
+        },
+        "findings": [],
+        "problems": [],
+        "startedAt": "2026-10-04T15:50:31.851Z",
+        "finishedAt": "2026-10-04T15:51:06.699Z",
+        "digest": "sha256:ac2f194a6baf6c2f0e1346c695f1ea03eb55bc33ff2c5cd033fd9b3380901500"
+      }
+    }
+  ]
+}

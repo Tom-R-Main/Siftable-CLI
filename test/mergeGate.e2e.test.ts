@@ -85,8 +85,8 @@ describe("lane D D5 — two-child gate e2e", () => {
       expect([aCleanBefore, bCleanBefore, parentCleanBefore]).toEqual([true, true, true]);
 
       // ── run the gate on both children ──────────────────────────────────────
-      const ra = controller.reviewChild(a.session.sessionId);
-      const rb = controller.reviewChild(b.session.sessionId);
+      const ra = await controller.reviewChild(a.session.sessionId);
+      const rb = await controller.reviewChild(b.session.sessionId);
       expect(ra.ok && rb.ok).toBe(true);
       if (!ra.ok || !rb.ok) return;
 
