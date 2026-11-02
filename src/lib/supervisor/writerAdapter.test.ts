@@ -2,7 +2,7 @@ import {promises as fs} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
-import {PLACEHOLDER_KEY, runWriter, writerInvocation} from './writerAdapter.js';
+import {CONTEXT_HEADER, PLACEHOLDER_KEY, runWriter, writerInvocation} from './writerAdapter.js';
 
 const ANTHROPIC = 'http://sift-a-r1-relay:8787/sift/v1/model/anthropic';
 const OPENAI = 'http://sift-a-r1-relay:8787/sift/v1/model/openai/v1';
@@ -113,5 +113,16 @@ describe('writer adapter (U6 R4)', () => {
     expect(await fs.readlink(path.join(claude.env.HOME as string, '.claude', 'skills'))).toBe(skills);
     expect(await fs.readlink(path.join(codex.env.CODEX_HOME as string, 'skills'))).toBe(skills);
     await expect(fs.lstat(path.join(none.env.HOME as string, '.claude', 'skills'))).rejects.toThrow();
+  });
+
+  it('appends the task\'s context packet after the prompt, under a header that marks it as data, and nothing without one', () => {
+    const env = {ANTHROPIC_BASE_URL: ANTHROPIC};
+    const writer = {protocol: 'anthropic', model: 'claude-opus-5-5'};
+    const text = 'Project: Parser (active)\nMilestone: Beta, planned, target 2026-11-15';
+    const withPacket = writerInvocation({plan: {writer}, task: {prompt: PROMPT, inputContext: {contextPacket: {text}}}}, env, dir);
+    const without = writerInvocation({plan: {writer}, task: {prompt: PROMPT, inputContext: {}}}, env, dir);
+    if (typeof withPacket === 'string' || typeof without === 'string') throw new Error('no invocation');
+    expect(withPacket.args.at(-1)).toBe(`${PROMPT}\n\n${CONTEXT_HEADER}\n\n${text}`);
+    expect(without.args.at(-1)).toBe(PROMPT);
   });
 });

@@ -20,7 +20,7 @@ import {attemptSliceName, cgroupSetupProblem, isInsideAttemptSlice, parseCgroupV
 import {checkoutPlanProblem} from './attemptCheckout.js';
 import {type AttemptPlan, planSha256, WRITER_ENTRY, writerPlanProblem} from './attemptPlan.js';
 import {type ApiResult, conflictsOf, postSettlement, type Session} from './attemptReport.js';
-import {captureLog, type EvidenceOutcome, type FrozenArtifact, uploadAgentLog} from './attemptEvidence.js';
+import {captureLog, type EvidenceOutcome, type FrozenArtifact, freezeContextPacket, taskContextPacket, uploadAgentLog} from './attemptEvidence.js';
 import {reconcileUnclaimed, resumeEvidence, resumeVerification, saveInstallOutput} from './attemptRecovery.js';
 import {type BaseVerification, freezeVerifierLog, type RunRecord, VERIFIER_LOG_CONTENT_TYPE, verifyBase, VerifyFailed,
   verifyResult} from './attemptVerify.js';
@@ -122,6 +122,8 @@ export interface AttemptJournal {
   fs?: AttemptFsRecord;
   /** The write scope's patch, frozen beside the log for the evidence manifest. */
   patch?: FrozenArtifact;
+  /** The context packet the writer was given, declared with its log (V511). */
+  contextPacket?: FrozenArtifact;
   /** Set while the checkout is being prepared; a stop that could not wait for it to end leaves it set, and the workspace held. */
   preparing?: boolean;
   /**
@@ -712,7 +714,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
         fetch: deps.fetch, monoMs: () => deps.clock.monoMs(), deadlineMono: Math.min(cap, deps.clock.monoMs() + EVIDENCE_BUDGET_MS),
         route: `/api/v1/work-items/${workItem.id}/execution-attempts/${attemptId}/evidence-manifest`, claimToken, log: primary,
         ...(log ? {} : {logKind: 'verifier_log' as const, logContentType: VERIFIER_LOG_CONTENT_TYPE}),
-        also: [...(patch ? [patch] : []), ...(log && verifierLog ? [verifierLog] : [])], signal: deps.shutdown,
+        also: [...(patch ? [patch] : []), ...(log && verifierLog ? [verifierLog] : []), ...(log && journal.contextPacket ? [journal.contextPacket] : [])],
+        signal: deps.shutdown,
         signer: {state: deps.state, enrollmentId: machine.enrollmentId, attemptId, workItemId: journal.workItemId, orgId: workspaceId}}) : {acknowledged: false};
       // Shutdown arrived mid-upload: nothing is decided or posted; the next start finishes it under the recovered claim.
       if (evidence.cancelled) return keepUnsettled();
@@ -788,6 +791,11 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       deps.log(`The server did not return the attempt's input (HTTP ${accepted?.status ?? 'unknown'}).`);
       return await finish('start_failed');
     }
+    const context = taskContextPacket(input.task);
+    if (typeof context === 'string') {
+      deps.log(`The attempt's input was refused: ${context}.`);
+      return await finish('start_failed');
+    }
     await save({...journal, inputSha256: input.payloadSha256});
     const imageId = await guard(ensureImage(boundedDocker, plan.imageRef));
     // The reviewer image is pulled now, so a missing one refuses the start rather than the review.
@@ -799,6 +807,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     const inputFile = path.join(inputDir, 'input.json');
     await fs.writeFile(inputFile, JSON.stringify({version: 1, attemptId, workItemId: workItem.id,
       inputSha256: input.payloadSha256, task: input.task, plan, planSha256: journal.planSha256}), {mode: 0o444});
+    if (context) await save({...journal, contextPacket: await freezeContextPacket(inputDir, context)});
     const skillProblem = await prepareSkills(session, {workItemId: workItem.id, attemptId, claimToken, timeoutMs: within(30_000), signal: life.signal}, plan.skills, inputDir);
     if (skillProblem) { deps.log(`The plan's skills were refused: ${skillProblem}.`); return await finish('start_failed'); }
 
