@@ -3,8 +3,8 @@ import {promises as fs} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
-import {type EvidenceCall, type EvidenceSigner, evidenceStatement, evidenceStatementSignedPayload, PATCH_CONTENT_TYPE,
-  uploadAgentLog} from './attemptEvidence.js';
+import {CONTEXT_PACKET_FILE, type EvidenceCall, type EvidenceSigner, evidenceStatement, evidenceStatementSignedPayload,
+  freezeContextPacket, MAX_CONTEXT_PACKET_BYTES, PATCH_CONTENT_TYPE, taskContextPacket, uploadAgentLog} from './attemptEvidence.js';
 import {generateMachineKey} from './machineProtocol.js';
 import {ensureStateDirectory, writeKey} from './machineState.js';
 
@@ -129,5 +129,31 @@ describe('uploadAgentLog', () => {
     // 422: the server refused the evidence itself; another round would be refused the same way.
     await expect(upload(signer)).resolves.toEqual({acknowledged: false, manifestDigest: 'd'.repeat(64)});
     expect(sent).toEqual(['declare', 'ack']);
+  });
+});
+
+describe('context packet (context-packet-v1.md)', () => {
+  const text = 'Project: Parser (active)\nNote: é';
+  const packet = {text, sha256: createHash('sha256').update(text, 'utf8').digest('hex'), bytes: Buffer.byteLength(text, 'utf8')};
+  const task = (contextPacket: unknown) => ({prompt: 'Fix it', inputContext: {contextPacket}});
+
+  it('takes the packet only when its text matches the frozen digest and UTF-8 size', () => {
+    expect(taskContextPacket({prompt: 'Fix it', inputContext: {}})).toBeNull();
+    expect(taskContextPacket(task(packet))).toEqual(packet);
+    expect(taskContextPacket(task({...packet, text: `${text}!`}))).toBe('the context packet has the wrong size');
+    expect(taskContextPacket(task({...packet, text: text.replace('é', 'e'), bytes: packet.bytes - 1})))
+      .toBe('the context packet does not match its digest');
+    expect(taskContextPacket(task({...packet, bytes: text.length}))).toBe('the context packet has the wrong size');
+    const big = 'x'.repeat(MAX_CONTEXT_PACKET_BYTES + 1);
+    expect(taskContextPacket(task({text: big, bytes: big.length, sha256: createHash('sha256').update(big).digest('hex')})))
+      .toBe('the context packet has the wrong size');
+    expect(taskContextPacket(task(null))).toBe('the context packet is malformed');
+  });
+
+  it('freezes the exact bytes as a context_packet artifact', async () => {
+    const frozen = await freezeContextPacket(dir, packet);
+    expect(frozen).toEqual({path: path.join(dir, CONTEXT_PACKET_FILE), sha256: packet.sha256, bytes: packet.bytes,
+      kind: 'context_packet', contentType: 'text/markdown'});
+    expect(await fs.readFile(frozen.path, 'utf8')).toBe(text);
   });
 });

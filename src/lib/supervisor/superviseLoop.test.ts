@@ -56,6 +56,8 @@ const reviewReceipt = (kind: 'complete' | 'incomplete', blocking = 0) => buildRe
 const STEP_ID = (n: number) => `5e000000-0000-4000-8000-00000000000${n}`;
 
 interface Scenario {
+  /** The task the server returns for the attempt's input, in place of the default. */
+  inputTask?: Record<string, unknown>;
   dispatch?: object | null;
   /** The server's frozen plan for the work item (U6); absent answers 404. */
   serverPlan?: {plan: object; sha256: string};
@@ -243,7 +245,7 @@ function world(scenario: Scenario = {}) {
     if (route.endsWith('/input')) {
       events.push('input');
       if (scenario.inputStatus) return reply(scenario.inputStatus, {});
-      return reply(200, {payloadSha256: INPUT_SHA, task: {version: 2, title: 'From the server'}, replayed: false});
+      return reply(200, {payloadSha256: INPUT_SHA, task: scenario.inputTask ?? {version: 2, title: 'From the server'}, replayed: false});
     }
     if (route.endsWith('/evidence-manifest/acknowledge')) {
       const n = events.filter((e) => e === 'evidence-ack').length + 1;
@@ -1717,6 +1719,25 @@ describe('superviseOnce', () => {
           const log = JSON.parse(w.evidence.puts.find((put) => put.headers['Content-Type'] === 'application/json')!.body) as {outcome: string; runs: unknown[]};
           expect(log).toMatchObject({version: 1, outcome: 'passed'});
           expect(log.runs).toHaveLength(3);
+        });
+
+        const packetText = 'Project: Parser (active)';
+        const contextPacket = {text: packetText, sha256: createHash('sha256').update(packetText).digest('hex'), bytes: packetText.length};
+        const fixedRuns = {base: failing, selected: fixed, regression: fixed};
+
+        it('declares the task\'s context packet with the writer\'s log (V511)', async () => {
+          const {w, run} = await verifyWorld({verify: fixedRuns, inputTask: {version: 2, title: 'Fix', inputContext: {contextPacket}}});
+          expect(await run()).toMatchObject({kind: 'finished', reason: 'workload_exited', exitCode: 0, settled: true});
+          expect(declaredKinds(w)).toEqual(['agent_log', 'patch', 'verifier_log', 'context_packet']);
+          expect(w.evidence.declared.at(-1)).toContainEqual({kind: 'context_packet', sha256: contextPacket.sha256, bytes: packetText.length,
+            contentType: 'text/markdown'});
+        });
+
+        it('refuses a context packet that does not match its digest before any writer exists', async () => {
+          const {w, run} = await verifyWorld({verify: fixedRuns,
+            inputTask: {version: 2, title: 'Fix', inputContext: {contextPacket: {...contextPacket, text: 'Project: Other (active)'}}}});
+          expect(await run()).toMatchObject({kind: 'finished', reason: 'start_failed'});
+          expect(w.events).not.toContain('create:c-agent');
         });
 
         it('blocks a base whose test already passes: no writer, the verifier log is the evidence, then a failed start with its reason', async () => {
