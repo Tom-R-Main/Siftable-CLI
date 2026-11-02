@@ -25,6 +25,7 @@ import {reconcileUnclaimed, resumeEvidence, resumeVerification, saveInstallOutpu
 import {type BaseVerification, freezeVerifierLog, type RunRecord, VERIFIER_LOG_CONTENT_TYPE, verifyBase, VerifyFailed,
   verifyResult} from './attemptVerify.js';
 import {buildSubmissions, pinOf, sendSubmissions, stepResults, testPlanProblem, type VerificationJournal} from './attemptVerifyRecords.js';
+import {planSkillsProblem, prepareSkills, SKILLS_DIR, SKILLS_MOUNT} from './attemptSkills.js';
 import {reviewEnvelope, reviewImagePolicyProblem, type ReviewOutcome, type ReviewRecord, reviewPlanProblem, runReview} from './attemptReview.js';
 import type {AttemptFsRecord, AttemptFsSystem} from './attemptFilesystem.js';
 import {checkAttemptVolume, freezePatch, installDependencies, prepareWorkspace, releaseWorkspace, type WorkspaceContext, WorkspaceRefused,
@@ -237,7 +238,8 @@ function attemptSpecs(deps: SuperviseDeps, journal: AttemptJournal, attemptId: s
     name: `sift-a-${journal.runId}-agent`, imageRef: plan.imageRef, networkId, labels: labels('agent'),
     entrypoint: 'node', command: ['/sift/attemptLauncher.js', ...plan.command],
     mounts: [{source: deps.assets.launcher, target: '/sift/attemptLauncher.js'}, {source: inputFile, target: '/sift/input.json'},
-      ...(deps.assets.writer ? [{source: deps.assets.writer, target: WRITER_ENTRY}] : [])],
+      ...(deps.assets.writer ? [{source: deps.assets.writer, target: WRITER_ENTRY}] : []),
+      ...(plan.skills?.length ? [{source: path.join(path.dirname(inputFile), SKILLS_DIR), target: SKILLS_MOUNT}] : [])],
     // With a checkout, /workspace is the repository: read-only except the write scope. Without one, empty scratch.
     tmpfs: workspace ? ['/tmp'] : ['/tmp', '/workspace'], ...(workspace ? {volumes: workspace, workdir: '/workspace'} : {}),
     env: {
@@ -473,6 +475,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   // plan is pinned now, before the attach, so a plan without its three steps refuses with nothing run.
   if (plan.test !== undefined && (testPlanProblem(plan.test) || !checkout || !plan.install || !deps.assets.junitReport)) return refuseStart('plan_invalid');
   if (plan.review !== undefined && (reviewPlanProblem(plan.review) || !plan.test)) return refuseStart('plan_invalid');
+  if (planSkillsProblem(plan.skills)) return refuseStart('plan_invalid');
   const pin = plan.test ? pinOf(await session.call('GET', `/api/v1/work-items/${workItem.id}/verification-plan`, undefined,
     {timeoutMs: within(15_000)}).then((reply) => (reply.status === 200 ? reply.body : undefined), () => undefined)) : undefined;
   if (plan.test && !pin) return refuseStart('plan_invalid');
@@ -796,6 +799,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     const inputFile = path.join(inputDir, 'input.json');
     await fs.writeFile(inputFile, JSON.stringify({version: 1, attemptId, workItemId: workItem.id,
       inputSha256: input.payloadSha256, task: input.task, plan, planSha256: journal.planSha256}), {mode: 0o444});
+    const skillProblem = await prepareSkills(session, {workItemId: workItem.id, attemptId, claimToken, timeoutMs: within(30_000), signal: life.signal}, plan.skills, inputDir);
+    if (skillProblem) { deps.log(`The plan's skills were refused: ${skillProblem}.`); return await finish('start_failed'); }
 
     // The checkout comes first: the writer's mounts name its volumes. A refusal ends the start before any writer exists.
     // The writer's mounts. Not `workspace`: that name is the attach workspace every attempt report carries.

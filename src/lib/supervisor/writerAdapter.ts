@@ -15,10 +15,12 @@
  * The supervisor's attempt cap bounds the run.
  */
 import {spawn} from 'node:child_process';
-import {mkdirSync, mkdtempSync, readFileSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync} from 'node:fs';
 import path from 'node:path';
 
 export const WRITER_INPUT = '/sift/input.json';
+/** The pinned skills, checked by the supervisor and mounted read-only (skill-pin-v1.md); attemptSkills.ts SKILLS_MOUNT. */
+export const WRITER_SKILLS = '/sift/skills';
 /** What the CLIs send as a key; the relay authenticates the attempt, not this. */
 export const PLACEHOLDER_KEY = 'sift-relay-placeholder';
 const MODEL = /^[A-Za-z0-9._:/-]{1,200}$/;
@@ -44,7 +46,7 @@ function relayBase(value: string | undefined): string | undefined {
 }
 
 /** Builds the CLI invocation and writes its config into a fresh home under `tmpRoot`. Returns why not, as a string, when it cannot. */
-export function writerInvocation(input: unknown, env: NodeJS.ProcessEnv, tmpRoot = '/tmp'): WriterInvocation | string {
+export function writerInvocation(input: unknown, env: NodeJS.ProcessEnv, tmpRoot = '/tmp', skillsDir = WRITER_SKILLS): WriterInvocation | string {
   const record = input as {plan?: {writer?: {protocol?: unknown; model?: unknown}}; task?: {prompt?: unknown; title?: unknown}};
   const protocol = record?.plan?.writer?.protocol;
   const model = record?.plan?.writer?.model;
@@ -57,8 +59,15 @@ export function writerInvocation(input: unknown, env: NodeJS.ProcessEnv, tmpRoot
   if (!base) return 'the relay base URL is missing';
 
   const home = mkdtempSync(path.join(tmpRoot, 'sift-writer-home-'));
+  // Each CLI reads skills from its own home; both see exactly the pinned set, read-only.
+  const linkSkills = (dir: string) => {
+    if (!existsSync(skillsDir)) return;
+    mkdirSync(dir, {recursive: true, mode: 0o700});
+    symlinkSync(skillsDir, path.join(dir, 'skills'));
+  };
   const clean: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(env).filter(([key]) => !DROPPED_ENV.includes(key)));
   if (protocol === 'anthropic') {
+    linkSkills(path.join(home, '.claude'));
     const settings = path.join(home, 'sift-settings.json');
     writeFileSync(settings, JSON.stringify({apiKeyHelper: `printf %s ${PLACEHOLDER_KEY}`}), {mode: 0o600});
     return {
@@ -69,6 +78,7 @@ export function writerInvocation(input: unknown, env: NodeJS.ProcessEnv, tmpRoot
   }
   const codexHome = path.join(home, '.codex');
   mkdirSync(codexHome, {mode: 0o700});
+  linkSkills(codexHome);
   writeFileSync(path.join(codexHome, 'config.toml'), [
     `model = "${model}"`, 'model_provider = "sift"', 'approval_policy = "never"', 'sandbox_mode = "danger-full-access"', '',
     '[model_providers.sift]', 'name = "sift"', `base_url = "${base}"`, 'wire_api = "responses"', 'env_key = "SIFT_RELAY_KEY"', '',

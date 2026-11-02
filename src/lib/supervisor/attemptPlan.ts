@@ -27,6 +27,8 @@ export interface AttemptPlan {
   test?: TestPlan;
   /** Review (U3-2): the pinned reviewer image and the reviewer model; needs `test`. */
   review?: {imageRef: string; model: string; policyRevision?: string};
+  /** Skill versions the writer receives read-only at /sift/skills (skill-pin-v1.md). */
+  skills?: Array<{key: string; version: number; sha256: string}>;
   /** The writer adapter's CLI and model (U6); required when the command is the adapter. */
   writer?: {protocol: 'anthropic' | 'openai'; model: string};
 }
