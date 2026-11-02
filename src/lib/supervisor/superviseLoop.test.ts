@@ -1883,6 +1883,14 @@ describe('superviseOnce', () => {
             expect(w.events).not.toContain('review');
           });
 
+          it('refuses a start whose reviewer image declares another policy than the plan pins, before any writer (Release #18034)', async () => {
+            const {w, run} = await checkoutWorld({files}, {}, {}, {resolvePlan: async () => ({...CHECKOUT_PLAN, install: {manager: 'npm'}, test: TEST,
+              review: {...REVIEW, policyRevision: `sha256:${'9'.repeat(64)}`}}), assets: VERIFY_ASSETS});
+            expect(await run()).toMatchObject({kind: 'finished', reason: 'start_failed'});
+            expect(w.events).not.toContain('create:c-agent');
+            expect(w.events).not.toContain('start:c-verifier');
+          });
+
           it('refuses a review plan without a pinned image or without verification', async () => {
             const {run} = await checkoutWorld({files}, {}, {}, {resolvePlan: async () => ({...CHECKOUT_PLAN, install: {manager: 'npm'}, test: TEST,
               review: {imageRef: 'reviewer:latest', model: 'gpt-6.1-sol'}}), assets: VERIFY_ASSETS});

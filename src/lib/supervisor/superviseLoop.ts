@@ -25,7 +25,7 @@ import {reconcileUnclaimed, resumeEvidence, resumeVerification, saveInstallOutpu
 import {type BaseVerification, freezeVerifierLog, type RunRecord, VERIFIER_LOG_CONTENT_TYPE, verifyBase, VerifyFailed,
   verifyResult} from './attemptVerify.js';
 import {buildSubmissions, pinOf, sendSubmissions, stepResults, testPlanProblem, type VerificationJournal} from './attemptVerifyRecords.js';
-import {reviewEnvelope, type ReviewOutcome, type ReviewRecord, reviewPlanProblem, runReview} from './attemptReview.js';
+import {reviewEnvelope, reviewImagePolicyProblem, type ReviewOutcome, type ReviewRecord, reviewPlanProblem, runReview} from './attemptReview.js';
 import type {AttemptFsRecord, AttemptFsSystem} from './attemptFilesystem.js';
 import {checkAttemptVolume, freezePatch, installDependencies, prepareWorkspace, releaseWorkspace, type WorkspaceContext, WorkspaceRefused,
   writerVolumes} from './attemptWorkspace.js';
@@ -674,7 +674,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
             const selectedTree = runs.find((run) => run.role === 'selected')?.treeId;
             if (!failure && plan.review && reviewImageId && selectedTree) {
               review = await runReview({...verifying, signal: verifyLife.signal, record: fs0, reviewImageRef: plan.review.imageRef, reviewImageId,
-                model: plan.review.model, sidecarAsset: deps.assets.sidecar, fetch: deps.fetch, hostAddresses: deps.hostAddresses(),
+                model: plan.review.model, policyRevision: plan.review.policyRevision, sidecarAsset: deps.assets.sidecar, fetch: deps.fetch, hostAddresses: deps.hostAddresses(),
                 relay: {apiUrl: machine.apiUrl, token: session.token, workspaceId, workItemId: journal.workItemId, attemptId, claimToken},
                 nextCallId: async () => {
                   const seq = journal.callSeq + 1;
@@ -789,6 +789,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
     const imageId = await guard(ensureImage(boundedDocker, plan.imageRef));
     // The reviewer image is pulled now, so a missing one refuses the start rather than the review.
     if (plan.review) reviewImageId = await guard(ensureImage(boundedDocker, plan.review.imageRef));
+    const policyProblem = plan.review ? await guard(reviewImagePolicyProblem(boundedDocker, plan.review.imageRef, plan.review.policyRevision)) : undefined;
+    if (policyProblem) { deps.log(`The reviewer cannot review this plan: ${policyProblem}.`); return await finish('start_failed'); }
     const nonce = randomBytes(16).toString('hex');
     await fs.mkdir(inputDir, {recursive: true, mode: 0o755});
     const inputFile = path.join(inputDir, 'input.json');
