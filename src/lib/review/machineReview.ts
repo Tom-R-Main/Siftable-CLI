@@ -30,6 +30,8 @@ export interface MachineReviewRequest {
   /** The result head the supervisor committed; the review must be of exactly this commit. */
   head: string;
   model: string;
+  /** The policy revision the plan pins (skill-pin-v1.md, part A); the review refuses to run under any other. */
+  policyRevision?: string;
 }
 
 /** Every git call sees the verified tree and its own git directory, and takes no optional locks on the read-only mounts. */
@@ -111,6 +113,14 @@ export interface MachineReviewDeps {
 
 /** Reviews the verified result and returns the result line's object. Never throws for a review that ran. */
 export async function runMachineReview(request: MachineReviewRequest, deps: MachineReviewDeps): Promise<Record<string, unknown>> {
+  // Refused before any model call: an image bundling another policy than the plan pinned costs nothing.
+  if (request.policyRevision !== undefined) {
+    const bundled = deps.runtime.loadDefaultPolicyBundle().revisionId;
+    if (bundled !== request.policyRevision) {
+      return {version: REVIEW_RESULT_VERSION, ok: false, code: 'policy_mismatch',
+        detail: `the reviewer bundles policy ${bundled}, not the plan's ${request.policyRevision}`};
+    }
+  }
   const forwarder = await startForwarder(deps.relayResponsesUrl, deps.fetch);
   try {
     const git = verifiedTreeGit(deps.git);

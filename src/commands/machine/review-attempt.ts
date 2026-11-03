@@ -1,4 +1,4 @@
-import {Command} from '@oclif/core';
+import {Command, Flags} from '@oclif/core';
 import {tmpdir} from 'node:os';
 import {childPath, createGitExec, findOnPath} from '../../lib/review/localReview.js';
 import {type MachineReviewRequest, REVIEW_RESULT_VERSION, runMachineReview} from '../../lib/review/machineReview.js';
@@ -14,8 +14,17 @@ const SHA = /^[0-9a-f]{40}$/;
 export default class MachineReviewAttempt extends Command {
   static hidden = true;
   static description = 'Review an attempt\'s verified result inside the reviewer container (started by the supervisor)';
+  static flags = {
+    // Whoever pins the reviewer image reads the server's MACHINE_REVIEWER_POLICY_REVISION from here (skill-pin-v1.md).
+    'policy-revision': Flags.boolean({description: 'Print the revision of the policy pack this CLI bundles, and exit'}),
+  };
 
   async run(): Promise<void> {
+    const {flags} = await this.parse(MachineReviewAttempt);
+    if (flags['policy-revision']) {
+      process.stdout.write(`${loadTasterRuntime().loadDefaultPolicyBundle().revisionId}\n`);
+      return;
+    }
     const print = (result: Record<string, unknown>) => process.stdout.write(`${JSON.stringify(result)}\n`);
     let request: MachineReviewRequest;
     try {
@@ -24,7 +33,9 @@ export default class MachineReviewAttempt extends Command {
       request = {} as MachineReviewRequest;
     }
     const relay = process.env.SIFT_RELAY_URL ?? '';
-    if (!SHA.test(request.baseSha ?? '') || !SHA.test(request.head ?? '') || typeof request.model !== 'string' || !/^http:\/\/[a-z0-9.-]+:\d+\//.test(relay)) {
+    const policyOk = request.policyRevision === undefined || /^sha256:[0-9a-f]{64}$/.test(String(request.policyRevision));
+    if (!SHA.test(request.baseSha ?? '') || !SHA.test(request.head ?? '') || typeof request.model !== 'string' || !policyOk
+      || !/^http:\/\/[a-z0-9.-]+:\d+\//.test(relay)) {
       print({version: REVIEW_RESULT_VERSION, ok: false, code: 'review_request_invalid', detail: 'SIFT_REVIEW or SIFT_RELAY_URL is malformed'});
       process.exitCode = 2;
       return;

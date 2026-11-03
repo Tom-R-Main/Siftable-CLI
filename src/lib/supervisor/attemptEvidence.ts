@@ -33,8 +33,36 @@ export const PATCH_CONTENT_TYPE = 'text/x-diff';
 
 /** A frozen file beside the log, declared in the same manifest. */
 export interface FrozenArtifact extends FrozenLog {
-  kind: 'patch' | 'verifier_log';
+  kind: 'patch' | 'verifier_log' | 'context_packet';
   contentType: string;
+}
+
+export const CONTEXT_PACKET_FILE = 'context-packet.md';
+/** The server's cap on a context packet's text, in UTF-8 octets (V511). */
+export const MAX_CONTEXT_PACKET_BYTES = 32_768;
+
+/**
+ * The task's context packet (context-packet-v1.md): the project context the
+ * writer is given, checked against the digest and size the server froze at
+ * Run. Null when the task carries none; a string saying why when it does not
+ * match, so the attempt stops before the writer starts.
+ */
+export function taskContextPacket(task: unknown): {text: string; sha256: string; bytes: number} | null | string {
+  const packet = (task as {inputContext?: {contextPacket?: unknown}} | null)?.inputContext?.contextPacket;
+  if (packet === undefined) return null;
+  const {text, sha256, bytes} = (packet ?? {}) as {text?: unknown; sha256?: unknown; bytes?: unknown};
+  if (typeof text !== 'string' || typeof sha256 !== 'string' || typeof bytes !== 'number') return 'the context packet is malformed';
+  const octets = Buffer.from(text, 'utf8');
+  if (octets.length < 1 || octets.length > MAX_CONTEXT_PACKET_BYTES || octets.length !== bytes) return 'the context packet has the wrong size';
+  if (createHash('sha256').update(octets).digest('hex') !== sha256) return 'the context packet does not match its digest';
+  return {text, sha256, bytes};
+}
+
+/** Writes the packet's exact bytes beside the log, to be declared with the writer's evidence. */
+export async function freezeContextPacket(dir: string, packet: {text: string; sha256: string; bytes: number}): Promise<FrozenArtifact> {
+  const file = path.join(dir, CONTEXT_PACKET_FILE);
+  await fs.writeFile(file, packet.text, {encoding: 'utf8', mode: 0o600});
+  return {path: file, sha256: packet.sha256, bytes: packet.bytes, kind: 'context_packet', contentType: 'text/markdown'};
 }
 
 /**

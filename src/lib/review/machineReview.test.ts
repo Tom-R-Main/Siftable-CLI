@@ -142,4 +142,18 @@ describe('machine review (U3-2)', () => {
     });
     expect(failed).toMatchObject({version: REVIEW_RESULT_VERSION, ok: false, code: 'review_failed', detail: '--expected-head must match'});
   });
+
+  it('refuses a pinned policy its bundled pack does not match, before any review or model call', async () => {
+    const PIN = `sha256:${'9'.repeat(64)}`;
+    const runtime = (revisionId: string) => ({loadDefaultPolicyBundle: () => ({revisionId})}) as unknown as TasterRuntime;
+    const git: GitExec = async () => ({code: 0, stdout: Buffer.alloc(0), stderr: '', truncated: false});
+    let reviews = 0;
+    const deps = (revisionId: string) => ({runtime: runtime(revisionId), git, gitBin: '/usr/bin/git', codexBin: '/c', path: '/usr/bin',
+      relayResponsesUrl: RELAY, review: async () => { reviews += 1; return {receipt: {}, result: null} as never; }});
+    expect(await runMachineReview({baseSha: BASE, head: HEAD, model: 'm', policyRevision: PIN}, deps(`sha256:${'8'.repeat(64)}`)))
+      .toMatchObject({ok: false, code: 'policy_mismatch'});
+    expect(reviews).toBe(0);
+    expect(await runMachineReview({baseSha: BASE, head: HEAD, model: 'm', policyRevision: PIN}, deps(PIN))).toMatchObject({ok: true});
+    expect(reviews).toBe(1);
+  });
 });

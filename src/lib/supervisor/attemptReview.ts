@@ -21,6 +21,7 @@ import {attemptVolumeName, type AttemptFsRecord} from './attemptFilesystem.js';
 import {canonicalJson, type RunRecord} from './attemptVerify.js';
 import {checkAttemptVolume, gone, helperSpec, labels, runHelper, stopped, type WorkspaceContext, WorkspaceRefused} from './attemptWorkspace.js';
 import {evaluateNetworkInspect, evaluateSandboxInspect, networkCreateArgs, type SandboxContainerSpec, sandboxCreateArgs} from './containerSandbox.js';
+import type {Docker} from './machineQualify.js';
 import {attemptRelayHandler, type ModelRelayTarget} from './modelRelayHandler.js';
 import {MODEL_PATHS, SIDECAR_PORT} from './relaySidecar.js';
 import {serveSidecarFrames} from './sidecarBridge.js';
@@ -29,16 +30,42 @@ export const REVIEW_TIMEOUT_MS = 15 * 60_000;
 /** How long the phase waits, once it ends, for relay calls it aborted to finish recording. */
 const RELAY_DRAIN_MS = 10_000;
 
-/** The plan's review (U3-2): the pinned reviewer image and the model the relay bills to the reviewer, or why it is refused. */
+/**
+ * The plan's review (U3-2): the pinned reviewer image, the model the relay bills to the reviewer and, when the
+ * server pins it, the reviewer's policy revision (skill-pin-v1.md, part A); or why it is refused.
+ */
 export function reviewPlanProblem(review: unknown): string | undefined {
-  const value = review as {imageRef?: unknown; model?: unknown};
+  const value = review as {imageRef?: unknown; model?: unknown; policyRevision?: unknown};
   if (!value || typeof value !== 'object' || Array.isArray(value)) return 'review is not an object';
-  if (Object.keys(value).some((key) => key !== 'imageRef' && key !== 'model')) return 'review has an unknown field';
+  if (Object.keys(value).some((key) => key !== 'imageRef' && key !== 'model' && key !== 'policyRevision')) return 'review has an unknown field';
+  if (value.policyRevision !== undefined && (typeof value.policyRevision !== 'string' || !POLICY_REVISION.test(value.policyRevision))) {
+    return 'review.policyRevision must be sha256:<64 hex>';
+  }
   if (typeof value.imageRef !== 'string' || !/^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$/.test(value.imageRef)) return 'review.imageRef must be pinned by digest';
   if (typeof value.model !== 'string' || !/^[A-Za-z0-9._:/-]{1,200}$/.test(value.model)) return 'review.model must be a provider model id';
   return undefined;
 }
+/** The label Dockerfile.reviewer records its bundled policy revision in; the image digest covers it. */
+export const REVIEWER_POLICY_LABEL = 'io.siftable.reviewer.policy-revision';
+
+/**
+ * Release #18034: a plan that pins the reviewer's policy is checked against the reviewer image's label at start,
+ * before any writer runs, so a mispinned image spends nothing. The reviewer checks its bundled pack again itself.
+ */
+export async function reviewImagePolicyProblem(docker: Docker, imageRef: string, policyRevision: string | undefined): Promise<string | undefined> {
+  if (policyRevision === undefined) return undefined;
+  const shown = await docker(['image', 'inspect', imageRef]);
+  let label: unknown;
+  try {
+    label = (JSON.parse(shown.stdout) as Array<{Config?: {Labels?: Record<string, unknown> | null}}>)[0]?.Config?.Labels?.[REVIEWER_POLICY_LABEL];
+  } catch {
+    label = undefined;
+  }
+  return label === policyRevision ? undefined : `the reviewer image declares policy ${typeof label === 'string' && label ? label : 'none'}, not the plan's ${policyRevision}`;
+}
+
 const MAX_REVIEW_RESULT_BYTES = 8 * 1024 * 1024;
+const POLICY_REVISION = /^sha256:[0-9a-f]{64}$/;
 const SHA = /^[0-9a-f]{40}$/;
 
 export interface ReviewContext extends WorkspaceContext {
@@ -47,6 +74,8 @@ export interface ReviewContext extends WorkspaceContext {
   reviewImageRef: string;
   reviewImageId: string;
   model: string;
+  /** The reviewer policy revision the plan pins, if any; the reviewer and the judge both hold the review to it. */
+  policyRevision?: string;
   /** The relay sidecar program, bind-mounted read-only. */
   sidecarAsset: string;
   /** The attempt relay, as the reviewer role. */
@@ -89,7 +118,7 @@ export interface ReviewOutcome {
  * `completion` and `verdict.kind` must be complete, and the verdict must have no blocking (P0-P1) findings; advisory
  * findings still pass. Anything else fails, keeping the receipt.
  */
-export function judgeReview(head: string, line: string, baseSha?: string): ReviewOutcome {
+export function judgeReview(head: string, line: string, baseSha?: string, policyRevision?: string): ReviewOutcome {
   let result: {version?: unknown; ok?: unknown; code?: unknown; detail?: unknown; receipt?: unknown};
   try {
     result = JSON.parse(line) as typeof result;
@@ -110,6 +139,10 @@ export function judgeReview(head: string, line: string, baseSha?: string): Revie
   if (!verified) return {head, outcome: 'review_failed', detail: 'the receipt digest does not match its content', receipt: kept};
   if (receipt.revision.head !== head || (baseSha !== undefined && receipt.revision.base !== baseSha)) {
     return {head, outcome: 'review_head_mismatch', detail: `reviewed ${String(receipt.revision.head)} on ${String(receipt.revision.base)}`, receipt: kept};
+  }
+  // A pinned policy (skill-pin-v1.md, part A): a review under any other policy is not the review the plan approved.
+  if (policyRevision !== undefined && receipt.policy?.revision !== policyRevision) {
+    return {head, outcome: 'review_failed', detail: `the review ran under policy ${String(receipt.policy?.revision)}, not the plan's`, receipt: kept};
   }
   // skipped, incomplete and failed name the head without a review having happened (contract rev 2, R8).
   if (receipt.completion !== 'complete' || receipt.verdict.kind !== 'complete') {
@@ -179,7 +212,8 @@ export async function runReview(ctx: ReviewContext, input: {baseSha: string; tre
       volumes: [{volume, target: '/workspace', readonly: true, subpath: 'work'},
         {volume, target: '/verify', readonly: true, subpath: 'verify/selected'}],
       tmpfs: ['/tmp'], workdir: '/verify/src',
-      env: {HOME: '/tmp/h', SIFT_REVIEW: JSON.stringify({baseSha: input.baseSha, head, model: ctx.model}),
+      env: {HOME: '/tmp/h', SIFT_REVIEW: JSON.stringify({baseSha: input.baseSha, head, model: ctx.model,
+        ...(ctx.policyRevision ? {policyRevision: ctx.policyRevision} : {})}),
         SIFT_RELAY_URL: `http://${relayName}:${SIDECAR_PORT}${MODEL_PATHS.openai}`},
       limits: {cpus: 2, memoryMb: 4096, pidsLimit: 512}, cgroupParent: ctx.slice,
     };
@@ -249,7 +283,7 @@ export async function runReview(ctx: ReviewContext, input: {baseSha: string; tre
     open = false;
     if (exit === null) return {head, calls, outcome: 'review_timeout', detail: `the review ran past ${limit} ms`};
     if (exit === 'stopped') return {head, calls, outcome: 'review_interrupted', detail: 'the attempt stopped during the review'};
-    return {...judgeReview(head, out.trim().split('\n').at(-1) ?? '', input.baseSha), calls};
+    return {...judgeReview(head, out.trim().split('\n').at(-1) ?? '', input.baseSha, ctx.policyRevision), calls};
   } catch (error) {
     return {head, calls, outcome: error instanceof WorkspaceRefused && error.code === 'interrupted' ? 'review_interrupted' : 'review_failed',
       detail: (error as Error).message.slice(0, 500)};

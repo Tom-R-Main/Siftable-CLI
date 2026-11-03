@@ -5,7 +5,8 @@ import {PassThrough} from 'node:stream';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import type {AttemptFsRecord, AttemptFsSystem} from './attemptFilesystem.js';
 import {buildReceipt} from '../review/receipt.js';
-import {judgeReview, type ReviewContext, reviewEnvelope, type ReviewRecord, runReview} from './attemptReview.js';
+import {judgeReview, type ReviewContext, reviewEnvelope, reviewImagePolicyProblem, reviewPlanProblem, REVIEWER_POLICY_LABEL, type ReviewRecord,
+  runReview} from './attemptReview.js';
 import type {HelperRole} from './attemptWorkspace.js';
 import type {Attach} from './machineQualify.js';
 import {MODEL_PATHS, QUESTION_PATHS} from './relaySidecar.js';
@@ -27,6 +28,32 @@ const VERDICTS = {
 const receiptOf = (kind: keyof typeof VERDICTS, head = HEAD, base = BASE) => buildReceipt({head, base, mergeBase: base, baseRef: base,
   worktreeDirty: false, policy: {name: 'default', revision: 'p1'}, model: 'gpt-6.1-sol', provider: 'codex-proxy', finderPasses: 2, problems: [],
   startedAt: new Date(0), finishedAt: new Date(0)}, VERDICTS[kind](head) as never, []);
+
+describe('reviewer policy pin (skill-pin-v1.md, part A)', () => {
+  const PIN = `sha256:${'9'.repeat(64)}`;
+  it('passes a review only under the pinned policy, and keeps today\'s rule without a pin', () => {
+    expect(judgeReview(HEAD, line(receiptOf('complete')), BASE).outcome).toBe('passed');
+    expect(judgeReview(HEAD, line(receiptOf('complete')), BASE, 'p1').outcome).toBe('passed');
+    expect(judgeReview(HEAD, line(receiptOf('complete')), BASE, PIN)).toMatchObject({outcome: 'review_failed',
+      detail: expect.stringContaining('not the plan\'s'), receipt: {policy: {revision: 'p1'}}});
+  });
+
+  it('accepts a well-formed pin in the plan\'s review and refuses a malformed one', () => {
+    expect(reviewPlanProblem({imageRef: IMAGE, model: 'm', policyRevision: PIN})).toBeUndefined();
+    expect(reviewPlanProblem({imageRef: IMAGE, model: 'm', policyRevision: 'p1'})).toMatch(/policyRevision/);
+    expect(reviewPlanProblem({imageRef: IMAGE, model: 'm', other: 1})).toBe('review has an unknown field');
+  });
+
+  it('reads the reviewer image\'s label, and refuses an image that declares no policy or another', async () => {
+    const docker = (labels: Record<string, string> | null) => async () => ({code: 0, stderr: '',
+      stdout: JSON.stringify([{Id: IMAGE_ID, Config: {Labels: labels}}])});
+    expect(await reviewImagePolicyProblem(docker({[REVIEWER_POLICY_LABEL]: PIN}), IMAGE, PIN)).toBeUndefined();
+    expect(await reviewImagePolicyProblem(docker(null), IMAGE, undefined)).toBeUndefined();
+    expect(await reviewImagePolicyProblem(docker(null), IMAGE, PIN)).toMatch(/declares policy none/);
+    expect(await reviewImagePolicyProblem(docker({[REVIEWER_POLICY_LABEL]: ''}), IMAGE, PIN)).toMatch(/declares policy none/);
+    expect(await reviewImagePolicyProblem(docker({[REVIEWER_POLICY_LABEL]: `sha256:${'8'.repeat(64)}`}), IMAGE, PIN)).toMatch(/not the plan's/);
+  });
+});
 
 describe('review verdicts (R-D5, R8, R14)', () => {
   it('fails a complete verdict with blocking findings, keeping its receipt; advisory findings alone pass', () => {

@@ -36,15 +36,17 @@ export async function resumeEvidence(deps: SuperviseDeps, session: Session, jour
   const verifierOnly = frozen.kind === 'verifier_log';
   const patch = verifierOnly ? undefined : journal.patch;
   const verifierLog = verifierOnly ? undefined : journal.verifierLog;
+  // The context packet rides only with the writer's log (V511).
+  const contextPacket = verifierOnly ? undefined : journal.contextPacket;
   const intact = await unchanged(frozen) && (verifierOnly || !journal.fs || (patch !== undefined && await unchanged(patch)))
-    && (!verifierLog || await unchanged(verifierLog));
+    && (!verifierLog || await unchanged(verifierLog)) && (!contextPacket || await unchanged(contextPacket));
   const outcome: EvidenceOutcome = intact ? await uploadAgentLog({
     call: (method, route, body, options) => session.call(method, route, body, options), fetch: deps.fetch,
     monoMs: () => deps.clock.monoMs(), deadlineMono,
     route: `/api/v1/work-items/${journal.workItemId}/execution-attempts/${journal.attemptId}/evidence-manifest`, claimToken,
     log: {path: frozen.path, sha256: frozen.sha256, bytes: frozen.bytes},
     ...(verifierOnly ? {logKind: 'verifier_log' as const, logContentType: VERIFIER_LOG_CONTENT_TYPE} : {}),
-    also: [...(patch ? [patch] : []), ...(verifierLog ? [verifierLog] : [])], signal: deps.shutdown,
+    also: [...(patch ? [patch] : []), ...(verifierLog ? [verifierLog] : []), ...(contextPacket ? [contextPacket] : [])], signal: deps.shutdown,
     signer: {state: deps.state, enrollmentId: session.machine.enrollmentId, attemptId: journal.attemptId, workItemId: journal.workItemId,
       orgId: session.workspaceId},
   }) : {acknowledged: false};

@@ -20,12 +20,13 @@ import {attemptSliceName, cgroupSetupProblem, isInsideAttemptSlice, parseCgroupV
 import {checkoutPlanProblem} from './attemptCheckout.js';
 import {type AttemptPlan, planSha256, WRITER_ENTRY, writerPlanProblem} from './attemptPlan.js';
 import {type ApiResult, conflictsOf, postSettlement, type Session} from './attemptReport.js';
-import {captureLog, type EvidenceOutcome, type FrozenArtifact, uploadAgentLog} from './attemptEvidence.js';
+import {captureLog, type EvidenceOutcome, type FrozenArtifact, freezeContextPacket, taskContextPacket, uploadAgentLog} from './attemptEvidence.js';
 import {reconcileUnclaimed, resumeEvidence, resumeVerification, saveInstallOutput} from './attemptRecovery.js';
 import {type BaseVerification, freezeVerifierLog, type RunRecord, VERIFIER_LOG_CONTENT_TYPE, verifyBase, VerifyFailed,
   verifyResult} from './attemptVerify.js';
 import {buildSubmissions, pinOf, sendSubmissions, stepResults, testPlanProblem, type VerificationJournal} from './attemptVerifyRecords.js';
-import {reviewEnvelope, type ReviewOutcome, type ReviewRecord, reviewPlanProblem, runReview} from './attemptReview.js';
+import {planSkillsProblem, prepareSkills, SKILLS_DIR, SKILLS_MOUNT} from './attemptSkills.js';
+import {reviewEnvelope, reviewImagePolicyProblem, type ReviewOutcome, type ReviewRecord, reviewPlanProblem, runReview} from './attemptReview.js';
 import type {AttemptFsRecord, AttemptFsSystem} from './attemptFilesystem.js';
 import {checkAttemptVolume, freezePatch, installDependencies, prepareWorkspace, releaseWorkspace, type WorkspaceContext, WorkspaceRefused,
   writerVolumes} from './attemptWorkspace.js';
@@ -121,6 +122,8 @@ export interface AttemptJournal {
   fs?: AttemptFsRecord;
   /** The write scope's patch, frozen beside the log for the evidence manifest. */
   patch?: FrozenArtifact;
+  /** The context packet the writer was given, declared with its log (V511). */
+  contextPacket?: FrozenArtifact;
   /** Set while the checkout is being prepared; a stop that could not wait for it to end leaves it set, and the workspace held. */
   preparing?: boolean;
   /**
@@ -237,7 +240,8 @@ function attemptSpecs(deps: SuperviseDeps, journal: AttemptJournal, attemptId: s
     name: `sift-a-${journal.runId}-agent`, imageRef: plan.imageRef, networkId, labels: labels('agent'),
     entrypoint: 'node', command: ['/sift/attemptLauncher.js', ...plan.command],
     mounts: [{source: deps.assets.launcher, target: '/sift/attemptLauncher.js'}, {source: inputFile, target: '/sift/input.json'},
-      ...(deps.assets.writer ? [{source: deps.assets.writer, target: WRITER_ENTRY}] : [])],
+      ...(deps.assets.writer ? [{source: deps.assets.writer, target: WRITER_ENTRY}] : []),
+      ...(plan.skills?.length ? [{source: path.join(path.dirname(inputFile), SKILLS_DIR), target: SKILLS_MOUNT}] : [])],
     // With a checkout, /workspace is the repository: read-only except the write scope. Without one, empty scratch.
     tmpfs: workspace ? ['/tmp'] : ['/tmp', '/workspace'], ...(workspace ? {volumes: workspace, workdir: '/workspace'} : {}),
     env: {
@@ -473,6 +477,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
   // plan is pinned now, before the attach, so a plan without its three steps refuses with nothing run.
   if (plan.test !== undefined && (testPlanProblem(plan.test) || !checkout || !plan.install || !deps.assets.junitReport)) return refuseStart('plan_invalid');
   if (plan.review !== undefined && (reviewPlanProblem(plan.review) || !plan.test)) return refuseStart('plan_invalid');
+  if (planSkillsProblem(plan.skills)) return refuseStart('plan_invalid');
   const pin = plan.test ? pinOf(await session.call('GET', `/api/v1/work-items/${workItem.id}/verification-plan`, undefined,
     {timeoutMs: within(15_000)}).then((reply) => (reply.status === 200 ? reply.body : undefined), () => undefined)) : undefined;
   if (plan.test && !pin) return refuseStart('plan_invalid');
@@ -674,7 +679,7 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
             const selectedTree = runs.find((run) => run.role === 'selected')?.treeId;
             if (!failure && plan.review && reviewImageId && selectedTree) {
               review = await runReview({...verifying, signal: verifyLife.signal, record: fs0, reviewImageRef: plan.review.imageRef, reviewImageId,
-                model: plan.review.model, sidecarAsset: deps.assets.sidecar, fetch: deps.fetch, hostAddresses: deps.hostAddresses(),
+                model: plan.review.model, policyRevision: plan.review.policyRevision, sidecarAsset: deps.assets.sidecar, fetch: deps.fetch, hostAddresses: deps.hostAddresses(),
                 relay: {apiUrl: machine.apiUrl, token: session.token, workspaceId, workItemId: journal.workItemId, attemptId, claimToken},
                 nextCallId: async () => {
                   const seq = journal.callSeq + 1;
@@ -709,7 +714,8 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
         fetch: deps.fetch, monoMs: () => deps.clock.monoMs(), deadlineMono: Math.min(cap, deps.clock.monoMs() + EVIDENCE_BUDGET_MS),
         route: `/api/v1/work-items/${workItem.id}/execution-attempts/${attemptId}/evidence-manifest`, claimToken, log: primary,
         ...(log ? {} : {logKind: 'verifier_log' as const, logContentType: VERIFIER_LOG_CONTENT_TYPE}),
-        also: [...(patch ? [patch] : []), ...(log && verifierLog ? [verifierLog] : [])], signal: deps.shutdown,
+        also: [...(patch ? [patch] : []), ...(log && verifierLog ? [verifierLog] : []), ...(log && journal.contextPacket ? [journal.contextPacket] : [])],
+        signal: deps.shutdown,
         signer: {state: deps.state, enrollmentId: machine.enrollmentId, attemptId, workItemId: journal.workItemId, orgId: workspaceId}}) : {acknowledged: false};
       // Shutdown arrived mid-upload: nothing is decided or posted; the next start finishes it under the recovered claim.
       if (evidence.cancelled) return keepUnsettled();
@@ -785,15 +791,25 @@ export async function superviseOnce(deps: SuperviseDeps): Promise<SuperviseOutco
       deps.log(`The server did not return the attempt's input (HTTP ${accepted?.status ?? 'unknown'}).`);
       return await finish('start_failed');
     }
+    const context = taskContextPacket(input.task);
+    if (typeof context === 'string') {
+      deps.log(`The attempt's input was refused: ${context}.`);
+      return await finish('start_failed');
+    }
     await save({...journal, inputSha256: input.payloadSha256});
     const imageId = await guard(ensureImage(boundedDocker, plan.imageRef));
     // The reviewer image is pulled now, so a missing one refuses the start rather than the review.
     if (plan.review) reviewImageId = await guard(ensureImage(boundedDocker, plan.review.imageRef));
+    const policyProblem = plan.review ? await guard(reviewImagePolicyProblem(boundedDocker, plan.review.imageRef, plan.review.policyRevision)) : undefined;
+    if (policyProblem) { deps.log(`The reviewer cannot review this plan: ${policyProblem}.`); return await finish('start_failed'); }
     const nonce = randomBytes(16).toString('hex');
     await fs.mkdir(inputDir, {recursive: true, mode: 0o755});
     const inputFile = path.join(inputDir, 'input.json');
     await fs.writeFile(inputFile, JSON.stringify({version: 1, attemptId, workItemId: workItem.id,
       inputSha256: input.payloadSha256, task: input.task, plan, planSha256: journal.planSha256}), {mode: 0o444});
+    if (context) await save({...journal, contextPacket: await freezeContextPacket(inputDir, context)});
+    const skillProblem = await prepareSkills(session, {workItemId: workItem.id, attemptId, claimToken, timeoutMs: within(30_000), signal: life.signal}, plan.skills, inputDir);
+    if (skillProblem) { deps.log(`The plan's skills were refused: ${skillProblem}.`); return await finish('start_failed'); }
 
     // The checkout comes first: the writer's mounts name its volumes. A refusal ends the start before any writer exists.
     // The writer's mounts. Not `workspace`: that name is the attach workspace every attempt report carries.

@@ -15,6 +15,7 @@ import {evidenceStatementSignedPayload} from './attemptEvidence.js';
 import {ATTEMPT_FS_BYTES, type AttemptFsSystem} from './attemptFilesystem.js';
 import {type AttemptJournal, JOURNAL, superviseOnce, type SuperviseDeps} from './superviseLoop.js';
 import {type AttemptPlan, planSha256, serverPlan, WRITER_ENTRY} from './attemptPlan.js';
+import {skillDigest} from './attemptSkills.js';
 import {systemClock} from './superviseAuthority.js';
 import {parseJUnit} from './junitReport.js';
 import {buildReceipt} from '../review/receipt.js';
@@ -56,6 +57,10 @@ const reviewReceipt = (kind: 'complete' | 'incomplete', blocking = 0) => buildRe
 const STEP_ID = (n: number) => `5e000000-0000-4000-8000-00000000000${n}`;
 
 interface Scenario {
+  /** What the attempt's skills route serves (skill-pin-v1.md); absent answers 404. */
+  skills?: {status?: number; skills: unknown};
+  /** The task the server returns for the attempt's input, in place of the default. */
+  inputTask?: Record<string, unknown>;
   dispatch?: object | null;
   /** The server's frozen plan for the work item (U6); absent answers 404. */
   serverPlan?: {plan: object; sha256: string};
@@ -240,10 +245,14 @@ function world(scenario: Scenario = {}) {
       modelRoles.push((init.headers as Record<string, string>)['X-Sift-Model-Role']);
       return new Response('event: done\n\n', {status: 200});
     }
+    if (route.endsWith('/skills')) {
+      events.push('skills');
+      return scenario.skills ? reply(scenario.skills.status ?? 200, {skills: scenario.skills.skills}) : reply(404, {});
+    }
     if (route.endsWith('/input')) {
       events.push('input');
       if (scenario.inputStatus) return reply(scenario.inputStatus, {});
-      return reply(200, {payloadSha256: INPUT_SHA, task: {version: 2, title: 'From the server'}, replayed: false});
+      return reply(200, {payloadSha256: INPUT_SHA, task: scenario.inputTask ?? {version: 2, title: 'From the server'}, replayed: false});
     }
     if (route.endsWith('/evidence-manifest/acknowledge')) {
       const n = events.filter((e) => e === 'evidence-ack').length + 1;
@@ -665,6 +674,37 @@ describe('superviseOnce', () => {
     expect(w.agentInput.value).toMatchObject({plan, planSha256: planSha256(plan as AttemptPlan)});
     // The adapter is mounted read-only where the plan's command names it.
     expect(w.containers.get('c-agent')?.join(' ')).toContain(`/opt/sift/writerAdapter.js,target=${WRITER_ENTRY}`);
+  });
+
+  describe('pinned skills (skill-pin-v1.md)', () => {
+    const skillFile = Buffer.from('# Dates');
+    const files = [{path: 'SKILL.md', sha256: createHash('sha256').update(skillFile).digest('hex'), bytes: skillFile.length,
+      content: skillFile.toString('base64')}];
+    const pin = {key: 'date-parsing', version: 2, sha256: skillDigest(files)};
+    const run = async (served: unknown) => {
+      const plan = {...PLAN, command: ['node', WRITER_ENTRY], writer: {protocol: 'anthropic', model: 'claude-opus-5-5'}, skills: [pin]};
+      const w = world({serverPlan: {plan, sha256: planSha256(plan as AttemptPlan)}, skills: {skills: served}});
+      const result = await superviseOnce(deps(w, {
+        resolvePlan: (workItem, get) => serverPlan(get, String(workItem.id), null),
+        assets: {sidecar: '/opt/sift/relaySidecar.js', launcher: '/opt/sift/attemptLauncher.js', writer: '/opt/sift/writerAdapter.js'},
+      }));
+      return {w, result};
+    };
+
+    it('fetches the pinned skills after the input, checks them, and mounts them read-only for the writer', async () => {
+      const {w} = await run([{...pin, files}]);
+      expect(w.events.indexOf('input')).toBeLessThan(w.events.indexOf('skills'));
+      expect(w.events.indexOf('skills')).toBeLessThan(w.events.indexOf('create:c-agent'));
+      expect(w.containers.get('c-agent')?.join(' ')).toMatch(/skills,target=\/sift\/skills,readonly/);
+    });
+
+    it('fails the start on a skill changed after approval, before any writer exists', async () => {
+      const changed = Buffer.from('# Dates, changed');
+      const {w, result} = await run([{...pin, files: [{...files[0], sha256: createHash('sha256').update(changed).digest('hex'), bytes: changed.length,
+        content: changed.toString('base64')}]}]);
+      expect(result).toMatchObject({kind: 'finished', reason: 'start_failed'});
+      expect(w.events).not.toContain('create:c-agent');
+    });
   });
 
   it('refuses a server plan that does not hash to its sha256, and an adapter plan with no writer, before creating anything', async () => {
@@ -1719,6 +1759,25 @@ describe('superviseOnce', () => {
           expect(log.runs).toHaveLength(3);
         });
 
+        const packetText = 'Project: Parser (active)';
+        const contextPacket = {text: packetText, sha256: createHash('sha256').update(packetText).digest('hex'), bytes: packetText.length};
+        const fixedRuns = {base: failing, selected: fixed, regression: fixed};
+
+        it('declares the task\'s context packet with the writer\'s log (V511)', async () => {
+          const {w, run} = await verifyWorld({verify: fixedRuns, inputTask: {version: 2, title: 'Fix', inputContext: {contextPacket}}});
+          expect(await run()).toMatchObject({kind: 'finished', reason: 'workload_exited', exitCode: 0, settled: true});
+          expect(declaredKinds(w)).toEqual(['agent_log', 'patch', 'verifier_log', 'context_packet']);
+          expect(w.evidence.declared.at(-1)).toContainEqual({kind: 'context_packet', sha256: contextPacket.sha256, bytes: packetText.length,
+            contentType: 'text/markdown'});
+        });
+
+        it('refuses a context packet that does not match its digest before any writer exists', async () => {
+          const {w, run} = await verifyWorld({verify: fixedRuns,
+            inputTask: {version: 2, title: 'Fix', inputContext: {contextPacket: {...contextPacket, text: 'Project: Other (active)'}}}});
+          expect(await run()).toMatchObject({kind: 'finished', reason: 'start_failed'});
+          expect(w.events).not.toContain('create:c-agent');
+        });
+
         it('blocks a base whose test already passes: no writer, the verifier log is the evidence, then a failed start with its reason', async () => {
           const {w, run} = await verifyWorld({verify: {base: fixed}});
           expect(await run()).toMatchObject({kind: 'finished', reason: 'verification_failed', settled: true});
@@ -1881,6 +1940,14 @@ describe('superviseOnce', () => {
             expect(w.events.filter((e) => e.startsWith('verify-record:'))).toEqual(['verify-record:base:passed', 'verify-record:selected:passed', 'verify-record:regression:passed']);
             expect(String(w.posts.find((p) => p.path.endsWith('/fail'))!.body.failureReason)).toMatch(reason);
             expect(w.events).not.toContain('review');
+          });
+
+          it('refuses a start whose reviewer image declares another policy than the plan pins, before any writer (Release #18034)', async () => {
+            const {w, run} = await checkoutWorld({files}, {}, {}, {resolvePlan: async () => ({...CHECKOUT_PLAN, install: {manager: 'npm'}, test: TEST,
+              review: {...REVIEW, policyRevision: `sha256:${'9'.repeat(64)}`}}), assets: VERIFY_ASSETS});
+            expect(await run()).toMatchObject({kind: 'finished', reason: 'start_failed'});
+            expect(w.events).not.toContain('create:c-agent');
+            expect(w.events).not.toContain('start:c-verifier');
           });
 
           it('refuses a review plan without a pinned image or without verification', async () => {
